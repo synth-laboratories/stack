@@ -1,0 +1,1503 @@
+# SMR code TUI sketch: OpenTUI, ncode, GLM-5.2, and Synth research control
+
+Date: 2026-06-19
+
+Top-level product shape: local/remote research loop
+
+Synth should treat local and remote as two execution planes connected by explicit
+data flows. Local code prepares, debugs, interprets, and steers research work.
+Remote SMR runs the durable factory: scheduled optimizers, hosted workers,
+model training/fine-tuning, evidence capture, reports, and WorkProducts.
+
+The primary data flows between local and remote are uploaded inputs and
+downloaded outputs:
+
+- Uploads: harness code, benchmark definitions, prompts, optimizer configs,
+  datasets, baselines, candidate policies, eval suites, run manifests, and
+  private notes.
+- Remote outputs: optimizer traces, candidate prompts/policies, model artifacts,
+  evaluation results, provenance, reports, WorkProducts, and publish eligibility
+  metadata.
+- Downloads: WorkProduct bundles, reports, scorecards, model/eval artifacts,
+  replay packs, and reproducibility notes for local inspection.
+
+```text
+              local lab bench / cockpit
+        prepare, tweak, inspect, interpret
+
+   +------------------------------------------------+
+   | local repo + TUI + agent + benchmark harnesses |
+   |                                                |
+   |  - edit harnesses                             |
+   |  - run small optimizers                       |
+   |  - inspect traces and artifacts               |
+   |  - compare downloaded results                 |
+   +-----------------------+------------------------+
+                           |
+                           | upload inputs
+                           | harnesses, configs, prompts,
+                           | baselines, datasets, eval specs
+                           v
+   +------------------------------------------------+
+   | cloud SMR / Research Factory                   |
+   |                                                |
+   |  - schedules and campaigns                     |
+   |  - hosted optimizers                           |
+   |  - GPU/CPU workers                             |
+   |  - SFT / RL / eval pipelines                   |
+   |  - evidence and WorkProducts                   |
+   +-----------------------+------------------------+
+                           |
+                           | download outputs
+                           | reports, WorkProducts, traces,
+                           | scorecards, model/eval artifacts
+                           v
+        local interpretation, follow-up edits, publication review
+```
+
+The local TUI should make both planes visible without confusing authority:
+local state is useful for development and inspection; remote SMR remains the
+durable source of truth for scheduled factory work, hosted execution, audit,
+publication gates, and WorkProduct generation.
+
+Example remote/local flow: Harvey Lab
+
+An engineer using Harvey Lab could move through the loop like this:
+
+1. Local harness work
+
+   The engineer starts in a local repo with a Harvey Lab task/harness. They use
+   the local agent and TUI to tweak the harness, fix prompt formatting, inspect
+   traces, and run small smoke/eval loops against a baseline. The goal is to make
+   the task reproducible and diagnostically useful before spending hosted compute.
+
+2. Local GEPA-style optimizer iteration
+
+   They run a small local optimizer pass, for example GEPA-style prompt or policy
+   search, to find obvious harness issues and cheap improvements. The local TUI
+   shows candidate variants, scores, failures, and trace excerpts. Outputs are
+   local-only until the engineer decides the setup is worth promoting.
+
+3. Upload to SMR
+
+   The engineer uploads a run manifest to cloud SMR: harness version, baseline,
+   optimizer config, prompt set, eval suite, privacy classification, budget, and
+   desired WorkProduct shape. SMR records this as a campaign/experiment/run group
+   rather than an ad hoc job.
+
+4. Hosted GELO / large optimizer pass
+
+   SMR schedules hosted optimizer jobs, such as GELO or another heavier optimizer,
+   across managed CPU/GPU workers. The remote view tracks queue state, active
+   workers, provider jobs, cost, best-so-far candidates, failures, retries, and
+   next scheduled event. The local TUI observes and controls this through backend
+   APIs, not by owning the state.
+
+5. SFT via Tinker
+
+   If optimizer output produces useful trajectories or candidate data, SMR
+   packages the selected data for SFT through Tinker. The factory records
+   dataset lineage, model/version ids, training status, cost, checkpoints, and
+   safety/privacy caveats. Local tools can inspect the produced dataset and
+   training summary, but the training job remains remote-authoritative.
+
+6. Eval against baseline
+
+   SMR evaluates the tuned or selected candidate against the original baseline
+   and any agreed comparison set. The eval produces scorecards, confidence notes,
+   failure cases, trace samples, reproducibility metadata, and a pass/fail
+   publication recommendation.
+
+7. Download WorkProduct
+
+   When the run group is ready, the engineer downloads the WorkProduct bundle:
+   report, scorecard, artifacts, selected traces, replay instructions, and
+   provenance. Locally, they inspect the result, compare against their initial
+   hypothesis, and either publish/approve it or start the next local iteration.
+
+Context
+
+- Local RL TUI inspected from `gamebench/tasks/crafter-singleplayer/rl_rust`.
+- Command shape:
+  `TINKER_API_KEY=<present> ./target/release/crafter-rl watch`
+- The watcher already uses OpenTUI Rust bindings:
+  `gamebench/tasks/crafter-singleplayer/rl_rust/src/watch_tui.rs`
+- Service state comes from:
+  `service.sqlite`, `run_registry.jsonl`, per-run `watch_display.json`, `updates.jsonl`,
+  `evals.jsonl`, `checkpoints.jsonl`, `train_batches.jsonl`, and reports under
+  `reports/rl_rust/service/runs/...`.
+
+Observed RL TUI shape
+
+The current watcher is already the right design language. It is a dense terminal
+operations cockpit:
+
+- Left panel: recent/live run list, status, age, algorithm, reward, goal rate.
+- Middle-left: train/eval overview with algorithm, task, model, backend, limits,
+  steps, seeds, and current status.
+- Center: metrics grid and achievement chart area.
+- Right panel: progress or run info, toggled by `c`.
+- Bottom strip: achievements and behavior.
+- Bottom log: done line, timing, totals, latest event, controls.
+
+Useful existing controls:
+
+- `q`: quit
+- `j` / `k`: move between runs
+- `enter` or click: open selected run
+- `c`: run info
+- `f`: train/eval
+- `m`: cycle panel
+- `n` / `p`: achievement
+- `[` / `]`: scroll runs
+
+Product thesis
+
+Build a terminal-native Synth operations cockpit, not a web dashboard clone.
+
+The TUI should answer:
+
+- What is the Synth agent doing right now?
+- Which Managed Research runs and Factories are alive?
+- What is the next scheduled Factory event, and why will it or will it not fire?
+- Which local optimizers and RL services are making progress?
+- Which hosted optimizer runs are queued/running/failed/published/deleted?
+- What can I safely cancel, archive, or delete from here?
+
+This becomes the operator view for local and hosted research work. Public
+`/open-research` remains the publish-safe mirror. The TUI is the private control
+surface.
+
+Local TUI shape
+
+The local TUI should feel like a research operations cockpit with an embedded
+agent, not a decorative dashboard. It should be dense, keyboard-first, and useful
+while jobs are actively changing.
+
+Primary tabs:
+
+```text
+[Overview] [Remote] [Local] [Experiments] [WorkProducts] [Agent] [Settings]
+```
+
+Global status bar:
+
+```text
+Synth Research Factory   org=synth   programme=Open Frontier
+api=connected   local=connected   remote=healthy   publish=2 pending
+```
+
+Overview screen:
+
+```text
++--------------------------------------------------------------------------------+
+| Synth Research Factory                                      2026-06-19 18:42 ET |
+| programme: Open Frontier        track: Crafter / GameBench        api: healthy |
++---------------------------+-------------------------------+--------------------+
+| Programmes / Factories    | Active Work                   | Next Scheduled     |
+|                           |                               |                    |
+| > Open Frontier           | REMOTE  crafter-gelo-prod     | optimizer batch    |
+|   Harvey Lab              |         running  14 workers   | fires in 11m 22s   |
+|   Private Synth Internal  |         best=12.8  cost=$42   | reason: cadence ok |
+|                           |                               |                    |
+| Factory                  | LOCAL   crafter-rl-watch      | report draft       |
+|   phase3-prod-proof done |         running  pid=43122    | due in 3h          |
+|   open-frontier running  |         best=10.4  unsynced=3 | privacy: needs rev |
++---------------------------+-------------------------------+--------------------+
+| Score / Progress          | Evidence / Artifacts                               |
+|                           |                                                    |
+| best remote: 12.8         | latest WorkProduct: crafter-weekly-report-draft    |
+| best local:  10.4         | publish eligible: 2 experiments                    |
+| baseline:     7.1         | blocked: 1 artifact missing privacy classification |
+| delta:       +5.7         |                                                    |
++---------------------------+----------------------------------------------------+
+| Event Stream                                                                  |
+| 18:41 remote/crafter-gelo-prod candidate cft-184 scored 12.8                  |
+| 18:39 local/crafter-rl-watch synced 2 trace packs                             |
+| 18:37 scheduler/open-frontier accepted next optimizer batch                    |
+| 18:34 workproduct/crafter-weekly-report entered privacy review                |
++--------------------------------------------------------------------------------+
+| q quit | tab switch | j/k select | enter open | a actions | / command | ? help |
++--------------------------------------------------------------------------------+
+```
+
+Remote screen:
+
+```text
++--------------------------------------------------------------------------------+
+| Remote Optimizers / Hosted Experiments                         plane=remote    |
++----------------------+----------+------------------------+-------+------+------+
+| Job                  | Status   | Executor               | Best  | Cost | Next |
++----------------------+----------+------------------------+-------+------+------+
+| > crafter-gelo-prod  | running  | synth-gpu pool / 14    | 12.8  | $42  | live |
+|   crafter-ablate     | queued   | runpod / cpu spot      | --    | --   | 23m  |
+|   harvey-sft-tinker  | running  | tinker / sft           | --    | $18  | live |
+|   minigrid-transfer  | paused   | baseten / serverless   | 8.1   | $0   | man  |
++----------------------+----------+------------------------+-------+------+------+
+| Selected: crafter-gelo-prod                                                   |
+| campaign: open-frontier-crafter        experiment: gelo-harness-v4            |
+| queue: running 14 / desired 16         failures: 2 retrying                   |
+| model route: gemini-3.1-flash-lite     budget: $120 cap / $42 spent           |
+| artifacts: 184 candidates, 61 traces, 9 scorecards, 1 report draft            |
+| publish: 2 candidates eligible, 1 waiting privacy review                      |
++--------------------------------------------------------------------------------+
+| Logs / Events                                                                  |
+| worker-12 candidate cft-184 eval pass seed=44 score=12.8                      |
+| scheduler withheld 2 workers: provider quota                                  |
+| artifact pack remote://.../cft-181 marked private trace-only                  |
++--------------------------------------------------------------------------------+
+| s stop | r retry | p pause | u upload local manifest | d download bundle       |
++--------------------------------------------------------------------------------+
+```
+
+Local screen:
+
+```text
++--------------------------------------------------------------------------------+
+| Local Lab / Cockpit                                             plane=local     |
++----------------------+----------+---------------------+----------+-------------+
+| Service              | Status   | Workspace           | Best     | Sync        |
++----------------------+----------+---------------------+----------+-------------+
+| > crafter-rl-watch   | running  | gamebench/crafter   | 10.4     | 3 pending   |
+|   harvey-harness-dev | idle     | harvey-lab          | 0.72 acc | synced      |
+|   gepa-local         | running  | harvey-lab          | +4.2%    | local-only  |
+|   ncode-agent        | attached | synth-ai            | --       | connected   |
++----------------------+----------+---------------------+----------+-------------+
+| Selected: gepa-local                                                           |
+| pid: 43122                    started: 38m ago                                  |
+| input: prompts/local/gepa-v2.toml                                               |
+| output: .synth/local-runs/gepa-local-2026-06-19                                 |
+| upload candidate: yes, manifest valid, privacy class missing                    |
++--------------------------------------------------------------------------------+
+| Local Artifacts                                                                |
+| [ ] trace-pack-0181        12 MB   local-only                                  |
+| [x] prompt-candidates.json 84 KB   ready to upload                             |
+| [x] eval-scorecard.json    16 KB   ready to upload                             |
++--------------------------------------------------------------------------------+
+| o open file | u upload selected | x mark private | e edit manifest | t tail logs |
++--------------------------------------------------------------------------------+
+```
+
+Experiments screen:
+
+```text
++--------------------------------------------------------------------------------+
+| Experiments                                                     programme=Open |
++----------------------+---------+---------+---------+------------+-------------+
+| Experiment           | Plane   | Status  | Baseline| Current    | Publish     |
++----------------------+---------+---------+---------+------------+-------------+
+| > gelo-harness-v4    | remote  | running | 7.1     | 12.8       | partial     |
+|   gepa-v2-local      | local   | running | 0.68    | 0.72       | local-only  |
+|   sft-tinker-v1      | remote  | running | 7.1     | pending    | blocked     |
+|   harness-v3         | remote  | done    | 7.1     | 10.9       | published   |
++----------------------+---------+---------+---------+------------+-------------+
+| Comparison                                                                        |
+| baseline -> local GEPA -> hosted GELO -> SFT -> final eval                       |
+| 7.1      -> 10.4       -> 12.8        -> pending -> pending                      |
++--------------------------------------------------------------------------------+
+| Evidence                                                                         |
+| scorecards: 9   traces: 61   reports: 2   reproducibility packs: 1              |
++--------------------------------------------------------------------------------+
+```
+
+WorkProducts screen:
+
+```text
++--------------------------------------------------------------------------------+
+| WorkProducts / Publication Queue                                                |
++-------------------------------+------------+-------------+---------------------+
+| WorkProduct                   | Status     | Visibility  | Action              |
++-------------------------------+------------+-------------+---------------------+
+| > crafter-weekly-report       | review     | public-safe | approve/publish     |
+|   harvey-lab-sft-pack         | building   | private     | wait                |
+|   phase3-prod-proof-report    | published  | public      | open                |
++-------------------------------+------------+-------------+---------------------+
+| Selected: crafter-weekly-report                                                 |
+| includes: report.md, scorecard.json, selected_traces.zip, provenance.json        |
+| blocked checks: none                                                            |
+| caveats: run budget capped, raw traces private, provider logs excluded           |
++--------------------------------------------------------------------------------+
+| v view | d download | p publish | h hold | c copy public URL                    |
++--------------------------------------------------------------------------------+
+```
+
+Agent screen:
+
+```text
++--------------------------------------------------------------------------------+
+| Synth Agent                                                             local   |
++----------------------------+---------------------------------------------------+
+| Context                    | Conversation / Tool Stream                        |
+| programme: Open Frontier   | > Why did GELO stop improving after cft-184?      |
+| selected: crafter-gelo     |                                                   |
+| repo: gamebench/crafter    | agent: Inspecting scorecards and failed seeds...  |
+| model: synth/router        | tool: GET /experiments/gelo-harness-v4/results    |
+| autonomy: medium           | tool: download trace-pack cft-184                 |
+|                            | agent: Best gains came from shorter inventory...  |
++----------------------------+---------------------------------------------------+
+| Suggested actions                                                               |
+| [upload local GEPA candidates] [open failed seed replay] [draft WorkProduct]     |
++--------------------------------------------------------------------------------+
+```
+
+Core actions:
+
+- `upload`: create a backend-owned upload with manifest, files, privacy class,
+  and target campaign/experiment.
+- `download`: fetch a WorkProduct, replay pack, trace bundle, or scorecard into
+  the local workspace.
+- `promote`: move a local run into a remote SMR campaign after manifest checks.
+- `pause/resume/cancel`: operate on remote jobs through backend lifecycle APIs.
+- `publish/hold`: operate only on WorkProduct/public projection state, never raw
+  run state.
+- `explain`: ask the embedded agent to summarize progress, blockers, next event,
+  or why a schedule did not fire.
+
+Implementation note:
+
+The TUI should render from typed backend read models and local service adapters.
+It should not scrape raw DB rows, raw Redis keys, provider dashboards, or
+filesystem internals except for explicitly local adapters such as the RL watcher
+state directory. Remote authority stays behind SMR/backend APIs.
+
+NCode / Noumena alignment
+
+Noumena Code is interesting because its product shape is close to the thing we
+want: terminal control, scoped workspaces, cloud agents, stacked review, and an
+agent runtime tied to source-control state.
+
+Do not start by deeply forking ncode. Start with a sidecar Synth TUI that can:
+
+- attach to a repo/workspace,
+- launch or observe an ncode session if available,
+- read Synth backend/SMR/optimizer/RL status,
+- open links to review/workspace/artifacts,
+- later become an ncode plugin/fork if the extension seam is stable.
+
+Preferred integration order:
+
+1. Standalone `synth-tui` proof.
+2. ncode launcher wrapper: `ncode` remains the agent REPL, `synth-tui` is the
+   operations cockpit.
+3. ncode-native panel or command palette integration once its public extension
+   surface is clear.
+4. shared scoped-workspace semantics with Synth Managed Research runs.
+
+GLM-5.2 hosting shape
+
+Host GLM-5.2 behind a Synth model gateway, not as direct ungoverned credentials
+inside the terminal.
+
+Model policy sketch:
+
+- planner / long-context reviewer: `glm-5.2`, reasoning effort max/high, 1M
+  context when warranted.
+- routine worker: lower-cost model or existing Codex/OpenCode profile.
+- validator: high-reasoning model, separate trace and artifact boundary.
+- summarizer / UI narrator: cheap fast model.
+
+Gateway requirements:
+
+- OpenAI-compatible and/or Anthropic-compatible streaming endpoint.
+- per-role model policy and cost caps.
+- org/user/API-key attribution.
+- no raw secrets in terminal logs.
+- traces connected to SMR run ids, Factory ids, optimizer run ids, and local RL
+  run ids.
+- ability to route ncode, Synth agent actors, and TUI assistant panes through the
+  same policy layer.
+
+Backend model gateway decision
+
+Decision recorded:
+
+- `Jstack/.jstack/records/decisions/backend/2026-06-19-backend-model-gateway.md`
+
+The model gateway should live in the backend API. `synth-ai`, ncode, `synth-tui`,
+SMR actors, and local tools should call Synth using a Synth API key and a Synth
+model alias. They should not carry provider credentials or choose provider
+endpoints directly.
+
+Boundary:
+
+```text
+ncode / synth-tui / SMR actors / local RL summarizers
+        |
+        | SYNTH_API_KEY
+        v
+backend /api/v1/model-gateway/*
+        |
+        | provider credentials, policy, accounting, traces
+        v
+Z.ai hosted | Baseten | RunPod vLLM/SGLang | OpenAI | Anthropic | future Synth GPU pool
+```
+
+Backend owns:
+
+- authentication and org/user/project attribution
+- provider credentials and provider account selection
+- model alias registry
+- policy and routing
+- per-role budget and rate limits
+- streaming proxy
+- usage events and cost accounting
+- provider health and failover
+- audit metadata
+- trace correlation to SMR, Factory, optimizer, RL, and ncode session ids
+
+`synth-ai` owns:
+
+- typed SDK/client wrappers
+- CLI helpers for local use
+- SMR actor config that points at Synth model aliases
+- TUI integration helpers
+- no provider-key storage
+
+Terminal clients own:
+
+- rendering
+- navigation
+- local workspace context
+- current session selection
+- passing Synth API credentials to backend only
+
+Initial API sketch:
+
+```text
+GET  /api/v1/model-gateway/models
+GET  /api/v1/model-gateway/providers
+GET  /api/v1/model-gateway/providers/health
+GET  /api/v1/model-gateway/policies
+GET  /api/v1/model-gateway/usage
+POST /api/v1/model-gateway/chat/completions
+POST /api/v1/model-gateway/responses
+POST /api/v1/model-gateway/embeddings
+```
+
+OpenAI-compatible lane for existing agent tools:
+
+```text
+OPENAI_BASE_URL=https://api.usesynth.ai/api/v1/model-gateway/openai
+OPENAI_API_KEY=<synth_api_key>
+OPENAI_MODEL=glm-5.2
+```
+
+The OpenAI-compatible lane should be syntactic compatibility only. Backend still
+does Synth auth, attribution, policy, provider selection, and usage accounting.
+
+Core request shape:
+
+```json
+{
+  "model": "glm-5.2",
+  "role": "planner|worker|validator|summarizer|tui_assistant|ncode_agent",
+  "messages": [],
+  "stream": true,
+  "metadata": {
+    "smr_run_id": "...",
+    "factory_id": "...",
+    "optimizer_run_id": "...",
+    "rl_run_id": "...",
+    "ncode_session_id": "...",
+    "workspace_id": "..."
+  },
+  "budget": {
+    "max_cost_usd": 5.0,
+    "max_output_tokens": 8192
+  }
+}
+```
+
+Core response metadata:
+
+```json
+{
+  "request_id": "...",
+  "model": "glm-5.2",
+  "resolved_provider": "zai|baseten|runpod|synth_gpu",
+  "resolved_provider_model": "...",
+  "input_tokens": 0,
+  "output_tokens": 0,
+  "cache_read_tokens": 0,
+  "cache_write_tokens": 0,
+  "cost_usd": 0.0,
+  "latency_ms": 0,
+  "trace_id": "...",
+  "usage_event_id": "..."
+}
+```
+
+Suggested backend tables
+
+Use backend-owned Postgres tables as source of truth. Redis can cache health or
+short-lived stream state, but should not own policy, usage, or provider state.
+
+```text
+model_gateway_providers
+  provider_id
+  kind                         -- zai | baseten | runpod | openai | anthropic | synth_gpu
+  display_name
+  status                       -- enabled | disabled | degraded
+  base_url
+  auth_ref_id                  -- encrypted credential reference, not raw secret
+  default_timeout_ms
+  metadata_json
+  created_at
+  updated_at
+
+model_gateway_models
+  model_id                     -- glm-5.2
+  display_name
+  capability_json              -- context, tool calling, structured output, vision, etc.
+  default_policy_id
+  status
+  created_at
+  updated_at
+
+model_gateway_provider_models
+  provider_model_id
+  model_id
+  provider_id
+  provider_model_name
+  serving_mode                 -- hosted_api | baseten_endpoint | runpod_serverless | runpod_pod
+  health_status
+  context_window_tokens
+  max_output_tokens
+  supports_streaming
+  supports_tools
+  supports_json_schema
+  supports_context_cache
+  price_input_per_mtok
+  price_output_per_mtok
+  metadata_json
+
+model_gateway_policies
+  policy_id
+  org_id
+  name
+  default_model_id
+  role_routing_json
+  allowed_provider_ids_json
+  denied_provider_ids_json
+  max_cost_per_request_usd
+  max_cost_per_day_usd
+  max_output_tokens
+  data_boundary
+  fallback_mode                -- disabled | same_provider | allowed_providers
+
+model_gateway_requests
+  request_id
+  org_id
+  user_id
+  project_id
+  model_id
+  role
+  policy_id
+  status                       -- queued | streaming | succeeded | failed | cancelled
+  trace_id
+  smr_run_id
+  factory_id
+  optimizer_run_id
+  rl_run_id
+  ncode_session_id
+  workspace_id
+  started_at
+  finished_at
+  error_code
+  error_message
+
+model_gateway_provider_attempts
+  attempt_id
+  request_id
+  provider_id
+  provider_model_id
+  status
+  http_status
+  input_tokens
+  output_tokens
+  cache_read_tokens
+  cache_write_tokens
+  latency_ms
+  cost_usd
+  error_code
+  error_message
+
+model_gateway_usage_events
+  usage_event_id
+  request_id
+  org_id
+  model_id
+  provider_id
+  role
+  billable_units_json
+  cost_usd
+  recorded_at
+```
+
+Provider rollout
+
+Phase 0: fastest truth-finding
+
+- Use Z.ai hosted API or Baseten managed endpoint behind backend.
+- Goal is not infra optimization. Goal is to answer whether GLM-5.2 improves
+  Synth agent planning, code/research review, and long-context summarization.
+- Wire one model alias: `glm-5.2`.
+- Wire one OpenAI-compatible streaming endpoint for ncode and TUI experiments.
+- Record usage metadata and traces from day one.
+
+Phase 1: Baseten production-ish lane
+
+- Use Baseten when we want a managed deployment with less GPU operations burden.
+- Treat it as the stable managed serving lane for early internal use.
+- Add provider health, endpoint revision, cold-start/scale timing, p50/p95
+  latency, and error-rate panels.
+- Do not expose Baseten-specific configuration to terminal users.
+
+Phase 2: RunPod price/perf lane
+
+- Use RunPod Pods for long-lived vLLM/SGLang serving experiments.
+- Use RunPod Serverless for request-driven inference if cold start and model
+  load behavior are acceptable for the role.
+- Tune batch size, quantization, KV cache, context length, and concurrency.
+- Measure real SMR/ncode/TUI workloads, not synthetic chat-only prompts.
+- Keep RunPod behind the same backend provider adapter.
+
+Phase 3: Synth GPU lane
+
+- Move steady load to Synth-managed/reserved GPU capacity only after we know
+  request volume, context sizes, concurrency, and cost curves.
+- Keep Baseten or Z.ai as managed fallback if reliability wins.
+- Keep RunPod as burst or experimental serving backend if economics are good.
+
+Serving adapters
+
+Z.ai hosted adapter:
+
+- simplest correctness path
+- good for API compatibility and model behavior discovery
+- least control over serving internals
+
+Baseten adapter:
+
+- managed deployment
+- stronger operational ergonomics
+- better fit for production-ish internal endpoint
+- less low-level control than owning vLLM/SGLang
+
+RunPod adapter:
+
+- raw GPU control
+- good for vLLM/SGLang experiments
+- good for cost/performance tuning
+- operational responsibility moves to us
+
+Provider selection policy
+
+Default role routing:
+
+```json
+{
+  "planner": "glm-5.2",
+  "long_context_reviewer": "glm-5.2",
+  "validator": "glm-5.2",
+  "worker": "codex_gpt_5_4_mini_high",
+  "tui_assistant": "glm-5.2",
+  "summarizer": "fast_cheap"
+}
+```
+
+Initial provider preference:
+
+```text
+planner: Z.ai or Baseten first, RunPod only after serving soak
+validator: Baseten first, Z.ai fallback
+tui_assistant: fastest healthy provider
+summarizer: cheap provider
+self-host experiments: RunPod
+```
+
+Fallback policy should default to disabled for launch proofs. A hidden provider
+fallback can invalidate cost, privacy, or benchmark claims. Enable fallback only
+when the policy explicitly permits the target provider and records the attempt.
+
+TUI model gateway panel
+
+The Models tab should make the backend gateway visible as a system, not just a
+dropdown.
+
+```text
+Models
+├── aliases
+│   ├── glm-5.2 -> baseten/glm-5.2 endpoint rev 4
+│   ├── codex_gpt_5_4_mini_high -> OpenAI/Codex profile
+│   └── fast_cheap -> ...
+├── health
+│   ├── Z.ai       healthy   p95 3.2s   err 0.2%
+│   ├── Baseten    healthy   p95 2.8s   err 0.1%
+│   └── RunPod     degraded  p95 9.8s   err 4.0%
+├── usage
+│   ├── today cost
+│   ├── request count
+│   ├── cache hit rate
+│   └── top callers
+└── policy
+    ├── current org policy
+    ├── role routing
+    ├── fallback mode
+    └── budget headroom
+```
+
+Every SMR/Factory/optimizer/RL detail pane should show the model gateway context
+when the selected object used model calls:
+
+- model alias
+- resolved provider
+- role
+- trace id
+- token/cost summary
+- provider attempt count
+- fallback occurred: yes/no
+
+ncode integration detail
+
+The clean ncode integration is an OpenAI-compatible endpoint backed by Synth:
+
+```text
+OPENAI_BASE_URL=https://api.usesynth.ai/api/v1/model-gateway/openai
+OPENAI_API_KEY=<synth_api_key>
+OPENAI_MODEL=glm-5.2
+```
+
+But the richer integration should pass Synth metadata:
+
+- repo path / workspace id
+- ncode session id
+- branch/worktree
+- current issue/task id
+- SMR run id when ncode is acting as an SMR participant
+- model role: `ncode_agent`
+
+If ncode does not expose stable metadata hooks, the first version can wrap the
+process and bind a generated `ncode_session_id` in the TUI.
+
+Security and integrity rules
+
+- No provider keys in ncode, `synth-tui`, local RL logs, or SMR workspaces.
+- No raw prompt/response persistence unless the org policy allows it.
+- Store redacted metadata by default; attach full traces only to the configured
+  trace store.
+- Fallback across providers must be explicit and visible.
+- Destructive actions from the TUI must call backend-owned APIs.
+- No raw DB writes from the TUI.
+- No filesystem deletion for hosted optimizer state unless backend durable
+  publish/deleted state proves it is safe.
+- Public `/open-research` must never expose private provider traces or raw
+  prompt material.
+
+First gateway spike
+
+Scope:
+
+1. Backend route: `POST /api/v1/model-gateway/openai/chat/completions`.
+2. One model alias: `glm-5.2`.
+3. One provider adapter: Z.ai or Baseten.
+4. Streaming response.
+5. Request row and provider-attempt row.
+6. Usage row with approximate cost fields.
+7. `synth-ai` client wrapper.
+8. `synth-tui` Models panel reads models/health/usage.
+9. ncode can point at the OpenAI-compatible endpoint.
+
+Out of scope for spike:
+
+- RunPod production serving
+- full provider failover
+- billing enforcement beyond basic budget refusal
+- UI controls to edit model policies
+- destructive optimizer actions
+
+Acceptance:
+
+- ncode can complete a small task through Synth backend with `OPENAI_BASE_URL`
+  pointed at the model gateway.
+- `synth-tui` shows the active model request while it streams or immediately
+  after completion.
+- The backend request row has org/user attribution.
+- Provider attempt records the resolved provider, latency, token usage, and
+  error/success.
+- No provider secret appears in terminal output, process args, logs, or traces.
+- The same gateway can be called by an SMR actor using a typed `synth-ai` client.
+
+Open questions
+
+- Should the first provider be Z.ai hosted API or Baseten?
+- Does Baseten have the exact GLM-5.2 weight/serving image we want, or do we
+  package it ourselves?
+- What is the minimum RunPod GPU shape for useful 1M-context GLM-5.2 serving?
+- Which trace store owns full prompt/response bodies for internal runs?
+- Do we bill gateway usage as generic model spend or per-product spend
+  attributed to SMR/Factory/optimizer/RL?
+- Should Open Frontier public reports include provider alias only, or provider
+  plus model gateway request ids?
+
+TUI information architecture
+
+Top-level navigation:
+
+```text
+Synth TUI
+├── Agent
+├── Research
+├── Factories
+├── Optimizers
+├── RL
+├── Workspaces
+├── Models
+└── Admin
+```
+
+Global layout:
+
+```text
+┌─SYNTH────────────────────────────────────────────────────────────────────────┐
+│ profile  model  workspace  backend  org  cost  health  alerts              │
+└──────────────────────────────────────────────────────────────────────────────┘
+┌─NAV────────────┐ ┌─LIVE DETAIL──────────────────────────────┐ ┌─ACTIONS────┐
+│ Agent          │ │ selected run/factory/optimizer/session    │ │ approve    │
+│ Research       │ │ status, trace, timeline, diffs, evidence  │ │ cancel     │
+│ Factories      │ │ charts and artifacts                      │ │ archive    │
+│ Optimizers     │ └───────────────────────────────────────────┘ │ delete     │
+│ RL             │ ┌─EVENT LOG─────────────────────────────────┐ │ open       │
+│ Workspaces     │ │ typed events, failures, latest observation│ │ retry      │
+└────────────────┘ └───────────────────────────────────────────┘ └────────────┘
+```
+
+Agent tab:
+
+- active Synth agent sessions
+- ncode session status
+- current model and tool policy
+- workspace path / scoped files
+- last tool call
+- diff/patch summary
+- intervention prompt
+
+Research tab:
+
+- Managed Research projects/runs
+- run status, actor roles, current participant
+- WorkProducts and artifacts
+- task graph / milestones
+- cost, runtime, token usage
+- terminal reason and missing evidence
+
+Factories tab:
+
+- Factory list
+- Factory status and owner
+- next scheduled event and fires-in
+- last scheduler cycle: launched/skipped/failed plus reason
+- active efforts
+- latest run
+- latest WorkProduct
+- public projection readiness
+- rejection reasons
+
+Open Frontier detail should show:
+
+- current Crafter/GameBench run
+- next wake
+- accepted leaderboard evidence
+- candidate rejections
+- score trend
+- rollout media/traces
+- soak health
+
+Optimizers tab:
+
+- hosted GEPA / GELO optimizer runs
+- `optimizer_runs.status`
+- `optimizer_runs.finalize_state`
+- cursor seq / cursor checkpoint
+- cancellation requested
+- required artifacts
+- artifact publish state
+- recent events
+- billing/cost state
+
+Actions:
+
+- cancel running run through backend API
+- archive terminal failed/cancelled run
+- mark deleted only through backend-owned finalize-state path
+- reconcile local scratch only after durable publish/deleted state is proven
+
+Never implement delete by raw DB write or filesystem scrape. The TUI should call
+backend-owned APIs or a backend-owned CLI that applies the same checks as
+`routes_optimizers.py` and `scripts/manage_local_optimizer_state.py`.
+
+RL tab:
+
+Reuse the current `crafter-rl watch` mental model:
+
+- runs list
+- train/eval overview
+- reward and goal-rate trend
+- achievement board
+- token/timing throughput
+- rollout progress
+- live logs
+- per-run report/artifact openers
+
+This can start as an embedded adapter over the local RL service:
+
+- `GET /runs`
+- `GET /runs/{run_id}/state`
+- `GET /runs/{run_id}/events`
+- `watch_display.json` cache for fast paint
+
+Workspaces tab:
+
+- local Synth slot state
+- ncode scoped workspace
+- SMR managed workspace
+- local optimizer scratch roots
+- RL service run roots
+- compute/container health
+- disk and memory warnings
+
+Models tab:
+
+- hosted GLM-5.2 endpoint health
+- active model policy
+- per-role model selection
+- latency/cost/tokens
+- quota and rate limit
+- fallback disabled/enabled state
+
+Admin tab:
+
+- auth source presence, never raw values
+- API target
+- org/project context
+- dangerous action policy
+- audit stream
+
+Data feeds
+
+Read models:
+
+- Managed Research: synth-ai SDK plus backend SMR endpoints.
+- Factories: backend Factory status/proof-readiness endpoints.
+- Hosted optimizers: `/api/v1/optimizers/*`, `OptimizerRunProjection`, and
+  normalized optimizer event projection.
+- Local optimizer scratch: backend-owned reconcile surface only.
+- Local RL: `crafter-rl service` plus per-run display cache.
+- ncode: initially process/session wrapper; later direct events if ncode exposes
+  a stable API.
+
+Event contract should normalize into:
+
+```json
+{
+  "source": "smr|factory|optimizer|rl|agent|workspace|model",
+  "object_type": "run|factory|effort|job|session|workspace|model",
+  "object_id": "...",
+  "status": "queued|running|succeeded|failed|cancelled|scheduled|due",
+  "stage": "...",
+  "message": "...",
+  "severity": "info|warning|error",
+  "at": "...",
+  "links": []
+}
+```
+
+First implementation spike
+
+Build a standalone `synth-tui` read-only cockpit:
+
+1. Use OpenTUI.
+2. Show four panes:
+   - Managed Research runs
+   - Open Frontier Factory
+   - hosted optimizer runs
+   - local Crafter RL service
+3. Poll read-model APIs only.
+4. Add keyboard navigation and detail panes.
+5. Add action stubs that print the backend API command that would be invoked.
+6. Add actual cancel/archive/delete only after backend action endpoints and
+   confirmation semantics are finalized.
+
+Acceptance for the spike:
+
+- Launches from a repo with one command.
+- Shows at least one live/recent SMR run or says none clearly.
+- Shows Open Frontier next wake and latest WorkProduct.
+- Shows hosted optimizer runs with status/finalize state.
+- Shows local RL runs using the same data as `crafter-rl watch`.
+- No raw secrets in process listings, logs, screenshots, or terminal output.
+- Destructive actions require typed confirmation and call backend-owned paths.
+
+Design call
+
+The promising version is not "put web Open Research inside a terminal." It is:
+
+Synth's Mission Control for agents, factories, optimizers, RL, workspaces, and
+models, optimized for operators who are already in a terminal.
+
+Sources checked
+
+- OpenTUI: https://github.com/anomalyco/opentui
+- Noumena Code: https://code.noumena.com/ and https://code.noumena.com/docs/cli
+- Z.ai GLM-5.2: https://docs.z.ai/guides/llm/glm-5.2
+- Baseten docs: https://docs.baseten.co/overview
+- RunPod docs: https://docs.runpod.io/overview
+- RunPod Serverless: https://www.runpod.io/product/serverless
+- Local RL TUI: `gamebench/tasks/crafter-singleplayer/rl_rust/src/watch_tui.rs`
+- Hosted optimizer backend routes:
+  `backend/app/api/v1/routes_optimizers.py`
+- Local optimizer reconciliation:
+  `backend/scripts/manage_local_optimizer_state.py`
+
+
+Plain-text capture: Inspect at Scale
+
+Source:
+
+- Dylan Garcia, "Inspect at Scale"
+- X article URL: https://x.com/_dylanga/status/2067999346780524753
+- Article focus: Ramp's Inspect agent platform after broad internal adoption.
+- Access path: opened and read in Safari through Computer Use accessibility tree.
+- Note: this is a paraphrased plaintext capture with short excerpts, not a full
+  verbatim copy of the third-party article.
+
+Short excerpt:
+
+"Up next, we will show you how Inspect is evolving"
+
+Key reported numbers:
+
+- 76.5% of PRs merged at Ramp in the past six months were created with Inspect.
+- 98.6% of Ramp employees in Engineering, Product, Design, and Data have used
+  Inspect at least once.
+- 58.1% of those users create over 50 sessions per month.
+- More than 750 people use Inspect daily.
+- Inspect creates more than 10,000 daily sessions.
+- Ramp has roughly 800k Inspect sessions, 30M tool calls, and 100M message
+  parts in its session data lake.
+- A custom review agent, Review Buddy, reviewed 8,836 PRs in one month during
+  beta.
+
+Plain-text digest:
+
+Ramp says Inspect has moved from an engineering coding helper toward an internal
+agentic work environment. The article frames Inspect as a system that can start
+from a feature idea, bug report, Slack thread, screenshot, or rough prompt and
+route work into code changes, reviews, monitors, automations, and internal apps.
+The intended direction is broader than code generation: Inspect should become a
+software-factory environment that understands teams, ownership, incidents,
+planning context, long-running initiatives, and validation workflows.
+
+The first major theme is data. Ramp stores sanitized session signal from Inspect
+sessions so the team can understand access patterns, failure paths, tool rework,
+hallucinations, tool errors, and usage of internal systems such as design-system
+MCPs. The article treats telemetry as product infrastructure: session data is
+used to find where the product succeeds, where it breaks, and where defaults or
+tools should change.
+
+The second theme is experience and latency. Inspect traces sessions end to end,
+from first prompt in Slack or browser, through sandbox boot and repository
+initialization, down to bash commands and tool calls. Ramp rewrote its sandbox
+control path from a Bun HTTP server running inside every sandbox to a direct
+WebSocket path through a Cloudflare Durable Object. This removed a slow,
+failure-prone control component and reduced average time-to-interactive from
+about 6.5 seconds to about 2 seconds. The team also improved compute-region
+placement, reduced prompt-to-model overhead by about 600ms per message, and
+optimized session-fetching database patterns.
+
+The third theme is per-repository sandbox design. Inspect does not use one
+generic container for every codebase. Ramp tunes each repository environment
+around the commands, dependencies, caches, tools, MCPs, and startup paths needed
+for that repo. For the Python monolith, they prewarm build caches, mypy
+incremental cache, test databases, and other first-run setup during image
+creation. For infrastructure repos, they run `terraform init` during image build
+so targeted plans are ready when requested. The article argues that repository
+specific defaults are invisible when right and painful at scale when wrong.
+
+The fourth theme is intake. Inspect should feel like a coworker that already
+knows the company. Sessions can start from Slack, browser, automations, and other
+surfaces. In Slack, users can mention Inspect or react to a message with an
+Inspect emoji. The thread, attachments, screenshots, and channel name can supply
+enough context to route the session to the right repository without a repo picker
+or rewritten spec.
+
+The fifth theme is cost control. Ramp treats cost as a product problem. They
+moved default Inspect sessions to GPT-5.5 at medium reasoning because that gave
+the best quality, speed, and cost balance for most sessions, while still letting
+users choose provider, model, and reasoning level. For automations, Ramp routes
+work by priority and latency sensitivity: urgent or user-facing work can use
+stronger/faster paths, while background checks, summaries, maintenance tasks,
+investigations, and follow-ups can run on cheaper models or flex tiers. In May
+2026, this reduced daily LLM spend by roughly 35% while automation volume kept
+growing.
+
+The sixth theme is context hygiene. Ramp cut unnecessary tools, context blocks,
+system instructions, and prompt/tool bloat. The lesson is that every extra
+default token gets multiplied across millions of calls. They now eagerly load
+only common-path tools and prompts, deferring everything else until a task
+requires it.
+
+The seventh theme is tool-call optimization. Inspect sessions search files, read
+code, run commands, inspect diffs, and call internal systems constantly. Small
+tool improvements compound. Ramp explicitly tells models to prefer `rg` over
+`grep` because ripgrep is much faster in their traces: about 41% faster at p95
+and 80% faster at p99.
+
+The eighth theme is that token savings can backfire when they disrupt agent
+semantics. Ramp tested RTK for five weeks in its most-used repositories. RTK
+proxied about 3.2M shell commands across roughly 150k sessions and reported
+about 335B input tokens saved, which looked like about $1M in theoretical gross
+token savings. But RTK's OpenCode integration rewrote commands before execution
+and proxied them through its binary, so the model saw a different command than
+the one it requested. That confused models: they tried to bypass wrappers,
+adjust flags, escape commands, or retry. The theoretical per-command token
+savings disappeared into rework. Ramp's lesson is that token optimizations must
+preserve the model's understanding of the environment.
+
+The final direction is toward a complete software factory. Ramp mentions custom
+review agents such as Review Buddy and Testo, multi-model PR challenges, checks,
+and production-oriented validation. The closing claim is that Inspect is moving
+from "just" a coding agent toward an agentic work environment for Ramp's whole
+software factory, potentially reducing the need to go to GitHub as the primary
+work surface.
+
+Implications for Synth:
+
+- Our `synth-tui` idea should emphasize end-to-end traceability, not just live
+  panes.
+- The model gateway should expose role defaults, flex tiers, and cost controls
+  as product surfaces.
+- Factory and SMR runs need first-class session data: tool calls, command
+  timings, retries, failures, and artifact lineage.
+- Per-repo/per-benchmark workspace images are not polish; they are the main
+  scalability mechanism.
+- Slack/Linear/browser/ncode/TUI intake should route into the same backend run
+  and workspace model.
+- Context hygiene should be explicit in the gateway and actor profile design.
+- Any command-output compression or proxy layer must preserve tool semantics and
+  make rewrites legible to the model, or it will create hidden rework.
+
+
+Research addendum: Devin product moves and Cursor recursive agents
+
+Date researched: 2026-06-20
+
+Sources:
+
+- Devin product site: https://devin.ai/
+- Cognition blog index: https://cognition.com/blog
+- Devin 2.2: https://cognition.com/blog/introducing-devin-2-2
+- Devin can now Manage Devins:
+  https://cognition.com/blog/devin-can-now-manage-devins
+- Devin can now Schedule Devins:
+  https://cognition.com/blog/devin-can-now-schedule-devins
+- Devin Auto-Triage: https://cognition.com/blog/auto-triage
+- Devin Desktop: https://cognition.com/blog/introducing-devin-desktop
+- Cursor product page: https://cursor.com/en-US/product
+- Cursor scaling agents research:
+  https://cursor.com/blog/scaling-agents
+- Cursor subagents changelog:
+  https://cursor.com/changelog/2-4
+- Cursor Agents Window changelog:
+  https://cursor.com/changelog/3-0
+- Cursor `/multitask` changelog:
+  https://cursor.com/changelog/page/5
+- Cursor cloud subagents changelog:
+  https://cursor.com/changelog/cloud-in-agents-window
+
+Devin: product moves
+
+Cognition is moving Devin from "single autonomous coder" toward an enterprise
+software-factory system:
+
+- Cloud software engineer for complex, multi-repo teams.
+- Learns codebase and tribal knowledge.
+- Works through GitHub, Linear, Slack/Teams, Datadog, Sentry, and many other
+  tools.
+- Handles PR review, visual QA, documentation, code migrations, scheduled
+  chores, issue triage, incident response, CI failure repair, web research,
+  scraping, and browser automation.
+- Can spin up a "team of Devins" for large tasks.
+- Gets better over time by reading past session trajectories.
+
+Important current product moves:
+
+1. Managed Devins
+
+Devin can break down a large task and delegate scoped pieces to parallel child
+Devins. Each child is a full Devin session with its own isolated VM, terminal,
+browser, development environment, test runner, and session link. The parent
+session coordinates the work, assigns pieces, monitors progress, resolves
+conflicts, and compiles results. It can message child sessions, monitor compute
+usage, sleep/terminate child sessions, and schedule follow-ups.
+
+This is close to our Factory/Campaign concept. The product primitive is not just
+"parallel workers"; it is parent-owned decomposition plus child-session
+inspection and intervention.
+
+2. Scheduled Devins
+
+Devin can turn a successful one-off workflow into a recurring session. The user
+describes what should happen and the cadence; Devin sets up the schedule and
+runs it. It carries state between runs by reading/writing its own notes, so a
+release-note run, feature-request triage, or stale-flag cleanup can pick up from
+the prior run instead of reprocessing everything.
+
+This maps directly to our Factory runtime: recurring efforts must have durable
+memory, next wake, last run, skipped/failed reasons, and stateful continuity.
+
+3. Managed + scheduled composition
+
+Cognition explicitly composes scheduled Devins with managed Devins: for example,
+a weekly QA pass can wake up, create one child Devin per page/flow, collect
+screenshots and reports, summarize failures, and post to Slack.
+
+This is a strong pattern for Open Research: scheduled Factory effort wakes up,
+spawns isolated child researchers/evaluators, collects evidence, and publishes
+only accepted artifacts.
+
+4. Auto-Triage
+
+Auto-Triage watches Slack, Linear, GitHub, Sentry, Datadog, custom webhooks, and
+other inbound surfaces. It investigates alerts or bug reports immediately,
+checks code and observability tools, links related issues, asks for missing
+context, tags owners, and can open a PR. It maintains long-running context about
+prior incidents, recurring issues, routing preferences, and known fixes. It is
+explicitly built for untrusted inputs using sandboxing, prompt-injection
+protections, and data-exfiltration protections.
+
+For Synth this means Factory intake should not be only "manual run" or
+"schedule." It should support event-triggered research and engineering loops,
+with explicit untrusted-input handling.
+
+5. Devin 2.2 autonomy loop
+
+Devin 2.2 added stronger end-to-end testing with computer use, desktop support,
+self-review, and auto-fix. Devin can test its PR in its Linux desktop and return
+screen recordings. Cognition describes the loop as plan, code, review its own
+output, catch issues, and fix before the human opens the PR.
+
+For Synth this supports a "closed evidence loop" requirement: every run should
+not only produce an artifact, but also produce verification evidence and a
+self-review result.
+
+6. Devin Desktop
+
+Devin Desktop is the successor to Windsurf. The Agent Command Center becomes
+the default IDE surface for managing local and cloud agents, PRs, and context.
+Spaces let related agents share context. Devin Desktop supports ACP so other
+compatible agents can run alongside Devin. The IDE remains important for manual
+last-mile edits, review, QA, extensions, LSPs, terminals, and workflows.
+
+This is directly relevant to `synth-tui` and ncode: the product surface is an
+agent command center, not a chat box. The operator manages agents, workspaces,
+contexts, PRs, artifacts, and reviews from one place.
+
+7. Productivity proof / guarantee
+
+Cognition's June 2026 blog index emphasizes measuring human-equivalent hours
+and an AI Productivity Guarantee for enterprise customers. The marketing move is
+"prove ROI with measured engineering value," not just "show cool autonomous
+runs."
+
+For Synth, Factory proof should include value accounting: accepted artifacts,
+human minutes saved, cost, elapsed time, rejected work, and where human review
+was still necessary.
+
+Cursor: recursive agents and product moves
+
+Cursor's direction is converging on many-agent operations inside an agent-first
+development environment:
+
+- Agents Window as a first-class interface.
+- Many agents in parallel across local repos, worktrees, cloud, and SSH.
+- Cloud agents in browser/mobile.
+- CLI agents.
+- Slack/GitHub/Linear surfaces.
+- Codebase indexing, rules, skills, MCP, plugins, and review.
+- Subagents with separate context, tools, prompts, and models.
+
+Important current product moves:
+
+1. Agents Window
+
+Cursor 3 introduced the Agents Window for running many agents in parallel across
+repos and environments. It keeps IDE depth but centers the interface on agents.
+It also added design mode, agent tabs, isolated worktrees, and `/best-of-n` for
+running the same task across multiple models/worktrees and comparing outcomes.
+
+This supports our `synth-tui` direction: a terminal Mission Control should show
+many runs/workspaces at once and let the operator compare branches, artifacts,
+and model choices.
+
+2. Subagents
+
+Cursor describes subagents as independent agents specialized for discrete parts
+of a parent task. They run in parallel, use their own context, and can have
+custom prompts, tool access, and models. Cursor ships default subagents for
+codebase research, terminal commands, and parallel work streams; users can
+define custom subagents. Cursor also introduced Skills as procedural
+instructions and dynamic context packages.
+
+This maps to Synth roles:
+
+- planner
+- codebase researcher
+- experiment designer
+- rollout runner
+- evidence validator
+- report writer
+- artifact publisher
+
+3. Recursive planner/worker research
+
+Cursor's long-running autonomous coding research tried flat self-coordination
+with shared state and locks, then optimistic concurrency, and found that flat
+agent groups became brittle and risk-averse. The working pattern was a role
+split:
+
+- planners continuously explore and create tasks
+- planners can spawn sub-planners for specific areas
+- workers focus on assigned tasks without big-picture coordination
+- judge agents decide whether to continue
+- fresh iterations combat tunnel vision and drift
+
+Cursor reports this scaled to hundreds of workers on a single codebase, weeklong
+runs, a browser-from-scratch experiment with over 1M lines across 1,000 files,
+and a multi-week Solid-to-React migration. They found GPT-5.2 better for
+extended autonomous work and better as a planner than GPT-5.1-Codex, while
+different models fit different roles. They also found that too little structure
+causes conflict/duplication/drift, while too much structure creates fragility.
+
+This is the clearest "recursive agents" lesson for Synth:
+
+- avoid a flat pool of equal workers
+- use typed planner/worker/validator roles
+- allow recursive sub-planning under a coordinator
+- keep writes constrained and attributable
+- use judges/fresh starts to prevent drift
+- route models by role, not by one universal default
+
+4. `/multitask`
+
+Cursor's `/multitask` in Agents Window runs async subagents instead of leaving
+work queued. It can break larger tasks into smaller chunks and send them to a
+fleet of async subagents simultaneously.
+
+For Synth, this is equivalent to "split this Factory effort into child runs now"
+or "parallelize this research campaign," with all child runs visible under one
+parent object.
+
+5. Cloud subagents and `/in-cloud`
+
+Cursor added cloud environment setup and cloud subagents in the Agents Window.
+Cloud environment setup captures a reusable snapshot in `.cursor/environment.json`
+so future agents start faster and can test changes. `/in-cloud` launches a cloud
+subagent in its own VM and branch for the next task, keeping the local workspace
+clean. Cloud subagents can babysit PRs, run in the background without
+interrupting the parent agent, and hand sessions between local and cloud.
+
+For Synth this reinforces the Research Workspace object:
+
+- isolated VM/container per child run
+- branch/worktree per child
+- reusable environment snapshot
+- foreground/background handoff
+- babysit/retry/continue semantics
+- explicit current owner and next event
+
+6. Cloud Agents API direction
+
+Cursor's changelog describes durable agents and per-prompt runs, run-scoped
+follow-ups/status/streaming/cancellation, SSE with reconnect via
+`Last-Event-ID`, terminal states, lifecycle controls such as archive/unarchive
+and permanent delete, structured error codes, and separate agent/run objects.
+
+This matches several backend patterns we should adopt for `synth-tui`:
+
+- separate agent object from run object
+- run-scoped streaming and cancellation
+- SSE reconnect with cursor/event id
+- explicit terminal states
+- archive/unarchive/delete lifecycle controls
+- structured error codes
+
+Synthesis for Synth
+
+The external pattern is now consistent:
+
+- Devin: enterprise software factory, parent/child Devins, scheduled stateful
+  work, auto-triage, desktop agent command center, verification loop.
+- Cursor: agent-first IDE/window, recursive planners/workers, subagents,
+  worktrees/cloud VMs, role-specific models, durable run APIs.
+- Ramp Inspect: data lake, traces, cost controls, per-repo sandboxes, intake
+  from Slack/browser/automations, command/tool optimization.
+
+Synth's next product shape should be:
+
+```text
+Synth Research / Engineering Factory
+├── Intake
+│   ├── manual prompt
+│   ├── schedule
+│   ├── Slack/Linear/GitHub/webhook
+│   └── public Open Research programme trigger
+├── Coordinator
+│   ├── planner
+│   ├── sub-planners
+│   ├── workers
+│   ├── validators
+│   └── publisher
+├── Workspace
+│   ├── local slot
+│   ├── cloud VM/container
+│   ├── branch/worktree
+│   ├── environment snapshot
+│   └── tool/MCP policy
+├── Run Control
+│   ├── next wake
+│   ├── event history
+│   ├── SSE stream
+│   ├── cancel/archive/delete
+│   └── terminal reason
+├── Evidence
+│   ├── traces
+│   ├── command/tool timings
+│   ├── artifacts
+│   ├── screenshots/media
+│   ├── WorkProducts
+│   └── publish gate
+└── Operator Surface
+    ├── synth-tui
+    ├── web dashboard
+    ├── ncode/OpenTUI sidecar
+    └── public /open-research mirror
+```
+
+Specific implementation implications:
+
+- Add `FactoryCampaign` / `ResearchCampaign` as the parent object above
+  Factory efforts.
+- Add child-run grouping under a campaign or run, not a flat list.
+- Add `agent_role`, `parent_run_id`, `coordinator_run_id`, and `workspace_id` to
+  the run read model.
+- Add event-sourced run streams with reconnect cursors for TUI and web.
+- Add durable scheduler state and event history, not just logs.
+- Add model role routing through the backend model gateway.
+- Add workspace snapshots for GameBench/Crafter and future benchmarks.
+- Add explicit lifecycle controls: cancel, sleep, archive, unarchive, delete,
+  with backend authority and audit.
+- Add verification artifacts as first-class WorkProducts, not side files.
+- Add intake objects for Slack/Linear/GitHub/webhook/schedule/manual triggers.
+- Avoid flat multi-agent swarms; use coordinator + recursive planners + focused
+  workers + validators + judges.
