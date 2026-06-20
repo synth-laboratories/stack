@@ -64,6 +64,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
+    if (state.focusMode === "agent" && isEnterKey(key.name)) {
+      submitInputValue(view.input, options, state, remount)
+      return
+    }
+
     if (state.focusMode === "context") {
       handleContextKey(key, options, state)
       remount()
@@ -72,9 +77,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
   function attachInput(input: ReturnType<typeof Input>): void {
     input.on(InputRenderableEvents.ENTER, (value: string) => {
-      const prompt = value.trim()
-      if (!prompt || state.status === "running") return
-      void submitPrompt(prompt, options, state, remount)
+      submitInputValue(input, options, state, remount, value)
     })
   }
 
@@ -189,6 +192,23 @@ function createView(renderer: CliRenderer, options: StackAppOptions, state: AppS
   )
 
   return { root, input }
+}
+
+function submitInputValue(
+  input: ReturnType<typeof Input>,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  submittedValue?: string,
+): void {
+  const prompt = (submittedValue ?? input.value).trim()
+  if (!prompt || state.status === "running") return
+  input.value = ""
+  void submitPrompt(prompt, options, state, refresh)
+}
+
+function isEnterKey(name: string | undefined): boolean {
+  return name === "return" || name === "enter" || name === "linefeed" || name === "kpenter"
 }
 
 function statusLine(options: StackAppOptions, state: AppState): string {
