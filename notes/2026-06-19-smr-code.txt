@@ -428,6 +428,13 @@ stack-tui
 Codex adapter responsibilities:
 
 - Launch repo-scoped local work from the TUI.
+- Provide a fully functioning local Codex interface inside Stack, not just a
+  one-shot command launcher.
+- Accept free-form prompts from the TUI and show the live transcript/output.
+- Inject selected context from the TUI: current repo, selected local artifact,
+  selected remote run summary, selected WorkProduct, or selected scorecard.
+- Preserve local session history enough that an operator can inspect what Codex
+  was asked, what command ran, and what files/artifacts it referenced.
 - Run focused headless tasks with `codex exec` when a bounded command is enough.
 - Help inspect traces, scorecards, manifests, and WorkProducts.
 - Edit local harnesses, prompts, eval definitions, and upload manifests.
@@ -450,8 +457,10 @@ stack local           show local services and unsynced artifacts
 Codex execution modes:
 
 ```text
-interactive-ish:
-  TUI opens an Agent pane and shells out to Codex in a controlled workspace.
+local interactive:
+  TUI opens an Agent pane with prompt input, transcript, selected context, and
+  Codex process/output status. The operator can ask follow-up questions without
+  leaving Stack.
 
 headless:
   stack-tui runs codex exec with a generated prompt and captures stdout/stderr,
@@ -470,29 +479,37 @@ M0: repo skeleton
   - OpenTUI proof screen
   - config file for Synth API base, workspace root, and Codex command
 
-M1: read-only overview from existing owners
+M1: fully functioning local Codex interface
+  - Agent tab with prompt input, transcript, selected context, and process status
+  - run Codex against the current workspace through configured Codex command
+  - capture stdout/stderr, exit status, timestamps, and referenced artifacts
+  - support at least one follow-up prompt in the same Stack session
+  - no remote mutations from Codex; remote actions still go through owner APIs
+
+M2: read-only overview from existing owners
   - use existing Factory, SMR, optimizer, and WorkProduct endpoints first
   - show next scheduled event and hosted optimizer job health where available
   - record missing typed fields instead of adding a broad Stack facade
   - no mutation yet
 
-M2: local adapters
+M3: local adapters
   - read local RL watcher state
   - show local unsynced artifacts
   - detect local repo/workspace context
 
-M3: Codex adapter
-  - run a bounded `codex exec` task from selected context
-  - capture output into Stack event stream
-  - expose "inspect selected run" and "prepare upload manifest"
+M4: Codex context actions
+  - expose "inspect selected run", "summarize scorecard", and
+    "prepare upload manifest"
+  - inject selected local/remote context into the Agent pane
+  - keep Codex local and advisory for remote state
 
-M4: upload/download
+M5: upload/download
   - create upload manifest locally
   - use existing SMR/project upload APIs if they already preserve provenance
   - use existing WorkProduct/artifact download APIs where available
   - add only the smallest missing upload/download path at the owning service
 
-M5: lifecycle actions
+M6: lifecycle actions
   - pause/resume/cancel hosted optimizer jobs through backend API
   - publish/hold WorkProducts through publication API
   - audit all mutations with user, reason, and selected object id
@@ -522,6 +539,7 @@ Initial scope after this decision:
 
 ```text
 Stack v0 should be mostly a client:
+  - provide a real local Codex interface in the Agent tab
   - read Factory status from Factory endpoints
   - read SMR runs/experiments from SMR endpoints
   - read hosted optimizer jobs from optimizer endpoints
@@ -553,17 +571,22 @@ and a reachable local Synth backend,
 
 the operator can:
   1. open `stack`,
-  2. see remote factory/run status and the next scheduled event,
-  3. see local harness/optimizer artifacts,
-  4. ask Codex to inspect the local harness or downloaded scorecard,
-  5. generate an upload manifest,
-  6. upload the manifest/files to SMR,
-  7. watch the remote experiment/run appear,
-  8. download a WorkProduct bundle,
-  9. ask Codex to summarize the result against the baseline.
+  2. open the Agent tab and send a free-form prompt to local Codex,
+  3. see Codex output/transcript captured in the TUI,
+  4. ask at least one follow-up prompt in the same Stack session,
+  5. select a local harness artifact or downloaded scorecard as context,
+  6. ask Codex to inspect that selected context,
+  7. see remote factory/run status and the next scheduled event,
+  8. see local harness/optimizer artifacts,
+  9. generate an upload manifest,
+  10. upload the manifest/files to SMR,
+  11. watch the remote experiment/run appear,
+  12. download a WorkProduct bundle,
+  13. ask Codex to summarize the result against the baseline.
 
 The proof wins only if local state, remote state, and WorkProduct exchange are
-visible in one TUI without making the TUI the remote source of truth.
+visible in one TUI, and the Codex pane is usable as a real local agent interface,
+without making the TUI the remote source of truth.
 ```
 
 NCode / Noumena alignment
