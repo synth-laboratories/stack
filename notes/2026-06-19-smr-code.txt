@@ -471,6 +471,152 @@ background:
   local optimizers and remote SMR jobs.
 ```
 
+Prototype 0: OpenTUI plus local Codex
+
+Prototype 0 should prove the local operator loop before remote SMR integration.
+The goal is not to build the whole research cockpit yet. The goal is to make
+`stack` feel like a real terminal-native local agent surface with enough
+structure that SMR/optimizer views can attach later.
+
+Scope:
+
+```text
+Included:
+  - `stack` command opens an OpenTUI app.
+  - TUI detects the current workspace/repo.
+  - Agent pane accepts free-form prompts.
+  - Agent pane invokes local Codex through a configured command.
+  - Codex output appears in the TUI transcript.
+  - Operator can send a follow-up prompt in the same Stack session.
+  - Operator can select local context files/artifacts and include them in prompt.
+  - Session transcript is written to a local Stack session log.
+  - Local/Remote side panels can exist, but remote data is placeholder only.
+
+Excluded:
+  - no backend changes
+  - no SMR upload/download
+  - no hosted optimizer lifecycle actions
+  - no WorkProduct publication actions
+  - no ncode adapter
+  - no long-running remote job orchestration
+```
+
+Prototype 0 screen:
+
+```text
++--------------------------------------------------------------------------------+
+| Stack Prototype 0                                      workspace=./gamebench    |
+| codex=ready                                            mode=local              |
++------------------------------+--------------------------------+----------------+
+| Local Context                | Agent                          | Session        |
+|                              |                                |                |
+| repo: gamebench              | > Inspect the selected harness | status: idle   |
+| branch: local/dev            |                                | turns: 3       |
+| selected:                    | codex: The harness defines...  | last: 18:42    |
+|  [x] task.toml               |                                | log: .stack/...|
+|  [ ] scorecard.json          | > Use scorecard too            |                |
+|                              |                                |                |
++------------------------------+--------------------------------+----------------+
+| Remote / SMR                                                                   |
+| not wired yet                                                                  |
++--------------------------------------------------------------------------------+
+| tab switch | space select | enter send | c clear | l logs | q quit             |
++--------------------------------------------------------------------------------+
+```
+
+Prototype 0 architecture:
+
+```text
+stack
+├── config
+│   ├── workspace root
+│   ├── codex command
+│   └── session log directory
+├── tui
+│   ├── app shell
+│   ├── agent pane
+│   ├── local context pane
+│   └── placeholder remote pane
+├── codex
+│   ├── command builder
+│   ├── process runner
+│   ├── output capture
+│   └── transcript/session state
+└── local
+    ├── workspace detector
+    ├── file/artifact picker
+    └── session log writer
+```
+
+Codex invocation for Prototype 0:
+
+```text
+Default path:
+  stack spawns a local Codex command from the selected workspace.
+
+Command config:
+  codex_command = "codex"
+  codex_args = ["exec"]
+
+Prompt construction:
+  - user free-form prompt
+  - current workspace path
+  - selected file paths
+  - optional short excerpts or file summaries when safe
+  - instruction that Codex should treat remote state as unavailable/not wired
+```
+
+Session model:
+
+```text
+type StackLocalSession = {
+  id: string
+  workspace_root: string
+  started_at: string
+  codex_command: string
+  turns: StackCodexTurn[]
+}
+
+type StackCodexTurn = {
+  id: string
+  prompt: string
+  selected_paths: string[]
+  started_at: string
+  finished_at?: string
+  exit_code?: number
+  stdout: string
+  stderr: string
+}
+```
+
+Open implementation question:
+
+`codex exec` may not provide true interactive session continuity by default. That
+is acceptable for Prototype 0 if Stack carries the transcript and selected
+context forward by constructing follow-up prompts. If Codex exposes a stable
+resume/session command locally, Stack can use it later. The first proof should
+not block on that.
+
+Prototype 0 acceptance:
+
+```text
+From any local repo:
+
+  stack
+
+Then:
+  1. the OpenTUI app renders without a backend connection,
+  2. Stack shows the detected workspace path,
+  3. the operator can type a prompt in the Agent pane,
+  4. Stack runs Codex locally and streams or captures output into the transcript,
+  5. the operator can send a second prompt that includes prior Stack transcript
+     context,
+  6. the operator can select at least one local file and include it as context,
+  7. the session log is written under a local `.stack/` directory,
+  8. quitting leaves the repo and remote state untouched except for Stack's
+     local session log.
+```
+
 First implementation milestone:
 
 ```text
