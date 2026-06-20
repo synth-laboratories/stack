@@ -339,6 +339,142 @@ function renderTranscript(lines: string[]): string {
   return lines.slice(-80).join("\n")
 }
 
+function createCodexTranscriptSink(emit: (content: string) => void): {
+  write: (chunk: string) => void
+  flush: () => void
+  readonly hasVisibleOutput: boolean
+} {
+  let buffer = ""
+  let visibleOutput = false
+
+  const emitVisible = (content: string) => {
+    if (!content.trim()) return
+    visibleOutput = true
+    emit(`\n${content}`)
+  }
+
+  const processLine = (line: string) => {
+    if (!line.trim()) return
+    const rendered = renderCodexJsonLine(line)
+    emitVisible(rendered ?? line)
+  }
+
+  return {
+    write(chunk: string) {
+      buffer += chunk
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n")
+        if (newlineIndex < 0) return
+        const line = buffer.slice(0, newlineIndex)
+        buffer = buffer.slice(newlineIndex + 1)
+        processLine(line)
+      }
+    },
+    flush() {
+      if (!buffer) return
+      processLine(buffer)
+      buffer = ""
+    },
+    get hasVisibleOutput() {
+      return visibleOutput
+    },
+  }
+}
+
+function renderCodexJsonLine(line: string): string | undefined {
+  let event: unknown
+  try {
+    event = JSON.parse(line)
+  } catch {
+    return undefined
+  }
+  return renderCodexEvent(event)
+}
+
+function renderCodexEvent(event: unknown): string | undefined {
+  const record = asRecord(event)
+  if (!record) return undefined
+
+  const payload = asRecord(record.payload)
+  if (readString(record.type) === "response_item" && payload) {
+    return renderCodexEvent(payload)
+  }
+
+  const eventType = readString(record.type) ?? ""
+  const payloadType = payload ? readString(payload.type) ?? "" : ""
+  const type = payloadType || eventType
+
+  if (readString(record.role) === "user" || readString(payload?.role) === "user") {
+    return undefined
+  }
+
+  if (type === "function_call") {
+    const name = readString(record.name) ?? readString(payload?.name) ?? "tool"
+    const args = readString(record.arguments) ?? readString(payload?.arguments)
+    return `[tool] ${name}${args ? ` ${oneLine(args, 240)}` : ""}`
+  }
+
+  if (type === "function_call_output") {
+    const output = readString(record.output) ?? readString(payload?.output) ?? ""
+    return `[tool result] ${truncateDisplay(output, 1200)}`
+  }
+
+  if (type.includes("command") || type.includes("tool") || type.includes("exec")) {
+    const name = readString(record.name) ?? readString(payload?.name) ?? type
+    const text = extractText(record) ?? extractText(payload)
+    return `[tool] ${name}${text ? ` ${oneLine(text, 240)}` : ""}`
+  }
+
+  if (type.includes("message") || type.includes("output_text") || type.includes("assistant")) {
+    const text = extractText(record) ?? extractText(payload)
+    return text ? truncateDisplay(text, 4000) : undefined
+  }
+
+  if (eventType.includes("error") || type.includes("error")) {
+    const text = extractText(record) ?? extractText(payload) ?? JSON.stringify(record)
+    return `[error] ${truncateDisplay(text, 1200)}`
+  }
+
+  return undefined
+}
+
+function extractText(value: unknown): string | undefined {
+  if (typeof value === "string") return value
+  const record = asRecord(value)
+  if (!record) {
+    if (Array.isArray(value)) {
+      const parts = value.map(extractText).filter((part): part is string => Boolean(part))
+      return parts.length ? parts.join("\n") : undefined
+    }
+    return undefined
+  }
+
+  for (const key of ["text", "message", "content", "output", "response"]) {
+    const text = extractText(record[key])
+    if (text) return text
+  }
+
+  return undefined
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" ? value : undefined
+}
+
+function oneLine(value: string, maxLength: number): string {
+  return truncateDisplay(value.replace(/\s+/g, " ").trim(), maxLength)
+}
+
+function truncateDisplay(value: string, maxLength: number): string {
+  if (value.length <= maxLength) return value
+  return `${value.slice(0, maxLength)}\n...(truncated ${value.length - maxLength} chars)`
+}
+
 function handleContextKey(
   key: { name?: string },
   options: StackAppOptions,
@@ -362,26 +498,31 @@ async function submitPrompt(
   refresh: () => void,
 ): Promise<void> {
   state.status = "running"
-  state.transcript.push(`\n> ${prompt}`)
-  state.transcript.push("\ncodex:")
   refresh()
 
   const selectedFiles = options.workspace.files.filter((file) => file.selected)
+  const outputSink = createCodexTranscriptSink((content) => {
+    state.transcript.push(content)
+    refresh()
+  })
+
   try {
     const turn = await runCodexTurn({
       config: options.config,
       userPrompt: prompt,
       selectedFiles,
       priorTurns: options.session.turns,
-      onOutput: (chunk) => {
-        state.transcript.push(chunk)
-        refresh()
-      },
+      onOutput: outputSink.write,
     })
+    outputSink.flush()
+    if (!outputSink.hasVisibleOutput) {
+      state.transcript.push("\n(no visible response)")
+    }
     options.session.turns.push(turn)
     state.status = turn.exitCode === 0 ? "idle" : "error"
     state.lastSessionLogPath = await writeSessionLog(options.session, options.config.sessionLogDir)
   } catch (error) {
+    outputSink.flush()
     state.status = "error"
     state.transcript.push(`\n[stack] ${error instanceof Error ? error.message : String(error)}`)
     state.lastSessionLogPath = await writeSessionLog(options.session, options.config.sessionLogDir)
