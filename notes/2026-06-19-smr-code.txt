@@ -360,6 +360,159 @@ It should not scrape raw DB rows, raw Redis keys, provider dashboards, or
 filesystem internals except for explicitly local adapters such as the RL watcher
 state directory. Remote authority stays behind SMR/backend APIs.
 
+Codex-first local agent plan
+
+Decision:
+
+Use Codex as the first local coding-agent runtime for Stack. Stack itself is the
+OpenTUI research cockpit and Synth control-plane client; Codex is an adapter
+inside that cockpit, not the product boundary.
+
+Why:
+
+- Stack's hard problem is local/remote research control: factories, experiments,
+  hosted optimizer jobs, schedules, uploads/downloads, WorkProducts, and
+  publication gates.
+- Codex already provides a local agent runtime that can inspect repos, edit
+  files, run commands, and operate headlessly through `codex exec`.
+- A Codex adapter lets the first version focus on Synth-specific value instead
+  of forking or embedding a new coding-agent core.
+- Noumena Code / ncode remains useful design inspiration and can be added later
+  behind the same adapter boundary if its extension surface becomes valuable.
+
+Product architecture:
+
+```text
+stack-tui
+├── OpenTUI operator surface
+│   ├── Overview
+│   ├── Remote SMR
+│   ├── Local Lab
+│   ├── Experiments
+│   ├── WorkProducts
+│   └── Agent
+│
+├── Synth backend API client
+│   ├── factories / campaigns / experiments / runs
+│   ├── schedules and next-fire visibility
+│   ├── hosted optimizer job lifecycle
+│   ├── upload/download flows
+│   ├── artifacts and WorkProducts
+│   └── publication gates
+│
+├── Local adapters
+│   ├── codex adapter
+│   ├── local RL watcher adapter
+│   ├── local optimizer adapter
+│   └── filesystem artifact adapter
+│
+└── Future adapters
+    ├── ncode adapter
+    ├── synth-agent/model-gateway adapter
+    └── hosted desktop/session adapter
+```
+
+Codex adapter responsibilities:
+
+- Launch repo-scoped local work from the TUI.
+- Run focused headless tasks with `codex exec` when a bounded command is enough.
+- Help inspect traces, scorecards, manifests, and WorkProducts.
+- Edit local harnesses, prompts, eval definitions, and upload manifests.
+- Prepare a remote SMR upload bundle from local files.
+- Summarize remote run progress after the TUI downloads structured artifacts.
+- Never own remote SMR state or bypass backend lifecycle APIs.
+
+Initial commands exposed by Stack:
+
+```text
+stack                 open the TUI
+stack agent codex     open/attach the Codex-backed agent pane
+stack ask             ask Codex about selected local/remote context
+stack upload          upload selected local manifest/files to SMR
+stack download        download selected WorkProduct/artifact bundle
+stack remote          show remote factory/optimizer jobs
+stack local           show local services and unsynced artifacts
+```
+
+Codex execution modes:
+
+```text
+interactive-ish:
+  TUI opens an Agent pane and shells out to Codex in a controlled workspace.
+
+headless:
+  stack-tui runs codex exec with a generated prompt and captures stdout/stderr,
+  exit status, and artifact paths into the local event stream.
+
+background:
+  a long-running Codex task gets a local session id and is displayed alongside
+  local optimizers and remote SMR jobs.
+```
+
+First implementation milestone:
+
+```text
+M0: repo skeleton
+  - Rust or TypeScript decision
+  - OpenTUI proof screen
+  - config file for Synth API base, workspace root, and Codex command
+
+M1: backend read model viewer
+  - list programmes/factories/experiments/runs from Synth backend
+  - show next scheduled event and remote job health
+  - no mutation yet
+
+M2: local adapters
+  - read local RL watcher state
+  - show local unsynced artifacts
+  - detect local repo/workspace context
+
+M3: Codex adapter
+  - run a bounded `codex exec` task from selected context
+  - capture output into Stack event stream
+  - expose "inspect selected run" and "prepare upload manifest"
+
+M4: upload/download
+  - create upload manifest locally
+  - upload files through backend API
+  - download WorkProduct bundles into workspace
+
+M5: lifecycle actions
+  - pause/resume/cancel hosted optimizer jobs through backend API
+  - publish/hold WorkProducts through publication API
+  - audit all mutations with user, reason, and selected object id
+```
+
+Terminology:
+
+- Factory lifecycle: programme/factory/campaign scheduling and health.
+- Experiment/run lifecycle: research attempts, evaluations, and evidence state.
+- Hosted optimizer job lifecycle: queued/running/paused/retrying/cancelled/done
+  work on remote optimizer infrastructure.
+- WorkProduct lifecycle: build/review/hold/publish/archive for outputs that may
+  cross the private/public boundary.
+
+Acceptance test for the first useful local proof:
+
+```text
+Given a local Harvey Lab or Crafter harness workspace,
+and a reachable local Synth backend,
+
+the operator can:
+  1. open `stack`,
+  2. see remote factory/run status and the next scheduled event,
+  3. see local harness/optimizer artifacts,
+  4. ask Codex to inspect the local harness or downloaded scorecard,
+  5. generate an upload manifest,
+  6. upload the manifest/files to SMR,
+  7. watch the remote experiment/run appear,
+  8. download a WorkProduct bundle,
+  9. ask Codex to summarize the result against the baseline.
+
+The proof wins only if local state, remote state, and WorkProduct exchange are
+visible in one TUI without making the TUI the remote source of truth.
+```
+
 NCode / Noumena alignment
 
 Noumena Code is interesting because its product shape is close to the thing we
