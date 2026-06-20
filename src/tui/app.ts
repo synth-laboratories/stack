@@ -356,6 +356,7 @@ function createCodexTranscriptSink(emit: (content: string) => void): {
   const processLine = (line: string) => {
     if (!line.trim()) return
     const rendered = renderCodexJsonLine(line)
+    if (rendered === null) return
     emitVisible(rendered ?? line)
   }
 
@@ -381,7 +382,7 @@ function createCodexTranscriptSink(emit: (content: string) => void): {
   }
 }
 
-function renderCodexJsonLine(line: string): string | undefined {
+function renderCodexJsonLine(line: string): string | null | undefined {
   let event: unknown
   try {
     event = JSON.parse(line)
@@ -391,16 +392,29 @@ function renderCodexJsonLine(line: string): string | undefined {
   return renderCodexEvent(event)
 }
 
-function renderCodexEvent(event: unknown): string | undefined {
+function renderCodexEvent(event: unknown): string | null | undefined {
   const record = asRecord(event)
   if (!record) return undefined
 
   const payload = asRecord(record.payload)
-  if (readString(record.type) === "response_item" && payload) {
+  if ((readString(record.type) === "response_item" || readString(record.type) === "event_msg") && payload) {
     return renderCodexEvent(payload)
   }
 
   const eventType = readString(record.type) ?? ""
+  const item = asRecord(record.item)
+  if (item) {
+    return renderCodexEvent(item)
+  }
+
+  if (eventType === "thread.started" || eventType === "turn.started") {
+    return null
+  }
+
+  if (eventType === "turn.completed") {
+    return renderUsage(record) ?? null
+  }
+
   const payloadType = payload ? readString(payload.type) ?? "" : ""
   const type = payloadType || eventType
 
@@ -438,6 +452,20 @@ function renderCodexEvent(event: unknown): string | undefined {
   return undefined
 }
 
+function renderUsage(record: Record<string, unknown>): string | undefined {
+  const usage = asRecord(record.usage)
+  if (!usage) return undefined
+  const parts = [
+    readNumber(usage.input_tokens) !== undefined ? `input=${usage.input_tokens}` : undefined,
+    readNumber(usage.cached_input_tokens) !== undefined ? `cached=${usage.cached_input_tokens}` : undefined,
+    readNumber(usage.output_tokens) !== undefined ? `output=${usage.output_tokens}` : undefined,
+    readNumber(usage.reasoning_output_tokens) !== undefined
+      ? `reasoning=${usage.reasoning_output_tokens}`
+      : undefined,
+  ].filter((part): part is string => Boolean(part))
+  return parts.length ? `[usage] ${parts.join(" ")}` : undefined
+}
+
 function extractText(value: unknown): string | undefined {
   if (typeof value === "string") return value
   const record = asRecord(value)
@@ -464,6 +492,10 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" ? value : undefined
 }
 
 function oneLine(value: string, maxLength: number): string {

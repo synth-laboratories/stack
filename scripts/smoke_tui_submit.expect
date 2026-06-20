@@ -2,12 +2,16 @@
 
 set timeout 30
 set smoke_dir "/tmp/stack-tui-smoke"
+set stty_init "rows 45 columns 160"
 
 file delete -force $smoke_dir
 file mkdir $smoke_dir
 
-set env(STACK_CODEX_COMMAND) "/bin/echo"
-set env(STACK_CODEX_ARGS) "STACK_SMOKE_OK"
+set output_log "$smoke_dir/output.log"
+log_file $output_log
+
+set env(STACK_CODEX_COMMAND) "bun"
+set env(STACK_CODEX_ARGS) "run scripts/fake_codex_jsonl.ts"
 set env(STACK_SESSION_DIR) $smoke_dir
 
 spawn ./bin/stack
@@ -15,7 +19,8 @@ expect "Ask local Codex"
 after 1000
 send -- "hello from expect\r"
 expect "hello from expect"
-expect "STACK_SMOKE_OK"
+expect "Not much. I'm here and ready to help with the local workspace."
+expect -exact {[usage] input=12 cached=3 output=9 reasoning=2}
 send -- "\033"
 expect eof
 
@@ -30,9 +35,21 @@ set handle [open $session_path r]
 set content [read $handle]
 close $handle
 
-foreach needle {"\"prompt\": \"hello from expect\"" "\"exitCode\": 0" "STACK_SMOKE_OK"} {
+foreach needle {"\"prompt\": \"hello from expect\"" "\"exitCode\": 0" "agent_message"} {
   if {[string first $needle $content] < 0} {
     puts stderr "missing expected session content: $needle"
+    exit 1
+  }
+}
+
+set handle [open $output_log r]
+set output [read $handle]
+close $handle
+
+set forbidden_events [list "{\"type\":\"thread.started\"" "{\"type\":\"turn.started\"" "{\"type\":\"item.completed\"" "{\"type\":\"turn.completed\""]
+foreach forbidden $forbidden_events {
+  if {[string first $forbidden $output] >= 0} {
+    puts stderr "terminal leaked raw Codex JSONL event: $forbidden"
     exit 1
   }
 }
