@@ -1,10 +1,14 @@
+const sleep = (milliseconds: number) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
 console.log(
   JSON.stringify({
     type: "thread.started",
     thread_id: "stack-smoke-thread",
   }),
 )
+await sleep(200)
 console.log(JSON.stringify({ type: "turn.started" }))
+await sleep(200)
 console.log(
   JSON.stringify({
     type: "item.completed",
@@ -15,6 +19,7 @@ console.log(
     },
   }),
 )
+await sleep(200)
 console.log(
   JSON.stringify({
     type: "turn.completed",

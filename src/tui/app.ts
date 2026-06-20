@@ -22,6 +22,7 @@ type AppState = {
   focusMode: FocusMode
   selectedIndex: number
   status: "idle" | "running" | "error"
+  spinnerFrame: number
   transcript: string[]
   inputBuffer: string
   lastSessionLogPath?: string
@@ -45,6 +46,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     focusMode: "agent",
     selectedIndex: 0,
     status: "idle",
+    spinnerFrame: 0,
     transcript: ["Stack Prototype 0 ready. Type a prompt and press Enter."],
     inputBuffer: "",
   }
@@ -78,6 +80,12 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     view = mountView(renderer, options, state, view)
   }
 
+  const spinnerInterval = setInterval(() => {
+    if (state.status !== "running") return
+    state.spinnerFrame += 1
+    remount()
+  }, 120)
+
   renderer._internalKeyInput.onInternal("keypress", (key: StackKeyEvent) => {
     if (isEnterKey(key) && submitFromCurrentInput(key)) return
   })
@@ -91,7 +99,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     }
 
     if (key.name === "escape") {
-      closeRenderer(renderer)
+      closeRenderer(renderer, spinnerInterval)
       return
     }
 
@@ -283,8 +291,13 @@ function isPrintableInput(sequence: string): boolean {
 }
 
 function renderAgentInput(state: AppState): string {
-  if (state.status === "running") return "Codex is running..."
+  if (state.status === "running") return `${runningSpinner(state)} Codex is running...`
   return state.inputBuffer ? `${state.inputBuffer}_` : "Ask local Codex..."
+}
+
+function runningSpinner(state: AppState): string {
+  const frames = ["|", "/", "-", "\\"]
+  return frames[state.spinnerFrame % frames.length] ?? "|"
 }
 
 function statusLine(options: StackAppOptions, state: AppState): string {
@@ -530,6 +543,7 @@ async function submitPrompt(
   refresh: () => void,
 ): Promise<void> {
   state.status = "running"
+  state.spinnerFrame = 0
   refresh()
 
   const selectedFiles = options.workspace.files.filter((file) => file.selected)
@@ -568,7 +582,8 @@ function shortPath(path: string): string {
   return rel || "."
 }
 
-function closeRenderer(renderer: CliRenderer): void {
+function closeRenderer(renderer: CliRenderer, spinnerInterval?: ReturnType<typeof setInterval>): void {
+  if (spinnerInterval) clearInterval(spinnerInterval)
   renderer.destroy()
   process.exit(0)
 }

@@ -19,6 +19,7 @@ expect "Ask local Codex"
 after 1000
 send -- "hello from expect\r"
 expect "hello from expect"
+expect "Codex is running"
 expect "Not much. I'm here and ready to help with the local workspace."
 expect -exact {[usage] input=12 cached=3 output=9 reasoning=2}
 send -- "\033"
