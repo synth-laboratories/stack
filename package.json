@@ -8,7 +8,8 @@
   },
   "scripts": {
     "start": "bun run src/main.ts",
-    "check": "tsc --noEmit"
+    "check": "tsc --noEmit",
+    "smoke:tui": "expect scripts/smoke_tui_submit.expect"
   },
   "dependencies": {
     "@opentui/core": "^0.4.1"

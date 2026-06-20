@@ -1,0 +1,40 @@
+#!/usr/bin/env expect
+
+set timeout 30
+set smoke_dir "/tmp/stack-tui-smoke"
+
+file delete -force $smoke_dir
+file mkdir $smoke_dir
+
+set env(STACK_CODEX_COMMAND) "/bin/echo"
+set env(STACK_CODEX_ARGS) "STACK_SMOKE_OK"
+set env(STACK_SESSION_DIR) $smoke_dir
+
+spawn ./bin/stack
+expect "Ask local Codex"
+after 1000
+send -- "hello from expect\r"
+expect "hello from expect"
+expect "STACK_SMOKE_OK"
+send -- "\033"
+expect eof
+
+set files [glob -nocomplain -directory $smoke_dir *.json]
+if {[llength $files] != 1} {
+  puts stderr "expected exactly one session json in $smoke_dir, found [llength $files]"
+  exit 1
+}
+
+set session_path [lindex $files 0]
+set handle [open $session_path r]
+set content [read $handle]
+close $handle
+
+foreach needle {"\"prompt\": \"hello from expect\"" "\"exitCode\": 0" "STACK_SMOKE_OK"} {
+  if {[string first $needle $content] < 0} {
+    puts stderr "missing expected session content: $needle"
+    exit 1
+  }
+}
+
+puts "stack_tui_submit_smoke_ok $session_path"

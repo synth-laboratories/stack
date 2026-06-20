@@ -1,8 +1,6 @@
 import {
   Box,
   createCliRenderer,
-  Input,
-  InputRenderableEvents,
   Text,
   type CliRenderer,
 } from "@opentui/core"
@@ -25,12 +23,12 @@ type AppState = {
   selectedIndex: number
   status: "idle" | "running" | "error"
   transcript: string[]
+  inputBuffer: string
   lastSessionLogPath?: string
 }
 
 type MountedView = {
   root: ReturnType<typeof Box>
-  input: ReturnType<typeof Input>
 }
 
 type StackKeyEvent = {
@@ -48,6 +46,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     selectedIndex: 0,
     status: "idle",
     transcript: ["Stack Prototype 0 ready. Type a prompt and press Enter."],
+    inputBuffer: "",
   }
 
   let view: MountedView | undefined
@@ -57,11 +56,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
   const submitFromCurrentInput = (key?: StackKeyEvent): boolean => {
     if (!view || state.focusMode !== "agent" || state.status === "running") return false
-    const prompt = view.input.value.trim()
+    const prompt = state.inputBuffer.trim()
     if (!prompt) return false
     key?.preventDefault?.()
     key?.stopPropagation?.()
-    submitInputValue(view.input, options, state, remount)
+    submitInputValue(prompt, options, state, remount)
     return true
   }
 
@@ -69,8 +68,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     exitOnCtrlC: true,
     prependInputHandlers: [
       (sequence: string) => {
-        if (!isRawEnterSequence(sequence)) return false
-        return submitFromCurrentInput()
+        return handleRawAgentInput(sequence, state, submitFromCurrentInput, remount)
       },
     ],
   })
@@ -107,12 +105,6 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     }
   })
 
-  function attachInput(input: ReturnType<typeof Input>): void {
-    input.on(InputRenderableEvents.ENTER, (value: string) => {
-      submitInputValue(input, options, state, remount, value)
-    })
-  }
-
   function mountView(
     renderer: CliRenderer,
     options: StackAppOptions,
@@ -125,30 +117,12 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
     const nextView = createView(renderer, options, state)
     renderer.root.add(nextView.root)
-    attachInput(nextView.input)
-    if (state.focusMode === "agent") nextView.input.focus()
-    else nextView.input.blur()
     nextView.root.requestRender()
     return nextView
   }
 }
 
 function createView(renderer: CliRenderer, options: StackAppOptions, state: AppState): MountedView {
-  const input = Input({
-    id: "stack-agent-input",
-    placeholder: state.status === "running" ? "Codex is running..." : "Ask local Codex...",
-    width: Math.max(30, Math.min(100, renderer.width - 8)),
-    keyBindings: [
-      { name: "enter", action: "submit" },
-      { name: "m", ctrl: true, action: "submit" },
-      { name: "j", ctrl: true, action: "submit" },
-    ],
-    backgroundColor: "#161616",
-    focusedBackgroundColor: "#242424",
-    textColor: "#ffffff",
-    cursorColor: "#4ec9b0",
-  })
-
   const root = Box(
     {
       id: "stack-root",
@@ -197,7 +171,11 @@ function createView(renderer: CliRenderer, options: StackAppOptions, state: AppS
           gap: 1,
         },
         Text({ content: renderTranscript(state.transcript), fg: "#d4d4d4", flexGrow: 1 }),
-        input,
+        Text({
+          content: renderAgentInput(state),
+          fg: state.inputBuffer ? "#ffffff" : "#666666",
+          bg: "#161616",
+        }),
       ),
       Box(
         {
@@ -228,19 +206,17 @@ function createView(renderer: CliRenderer, options: StackAppOptions, state: AppS
     }),
   )
 
-  return { root, input }
+  return { root }
 }
 
 function submitInputValue(
-  input: ReturnType<typeof Input>,
+  prompt: string,
   options: StackAppOptions,
   state: AppState,
   refresh: () => void,
-  submittedValue?: string,
 ): void {
-  const prompt = (submittedValue ?? input.value).trim()
   if (!prompt || state.status === "running") return
-  input.value = ""
+  state.inputBuffer = ""
   void submitPrompt(prompt, options, state, refresh)
 }
 
@@ -266,6 +242,49 @@ function isRawEnterSequence(sequence: string): boolean {
     sequence === "\x1bOM" ||
     sequence === "\x1b[13~"
   )
+}
+
+function handleRawAgentInput(
+  sequence: string,
+  state: AppState,
+  submit: () => boolean,
+  refresh: () => void,
+): boolean {
+  if (state.focusMode !== "agent") return false
+
+  if (isRawEnterSequence(sequence)) {
+    return submit()
+  }
+
+  if (sequence === "\t" || sequence === "\x1b" || state.status === "running") {
+    return false
+  }
+
+  if (sequence === "\x7f" || sequence === "\b") {
+    state.inputBuffer = state.inputBuffer.slice(0, -1)
+    refresh()
+    return true
+  }
+
+  if (!isPrintableInput(sequence)) return false
+
+  state.inputBuffer += sequence
+  refresh()
+  return true
+}
+
+function isPrintableInput(sequence: string): boolean {
+  for (const char of sequence) {
+    const code = char.codePointAt(0)
+    if (code === undefined) return false
+    if (code < 32 || code === 127) return false
+  }
+  return sequence.length > 0
+}
+
+function renderAgentInput(state: AppState): string {
+  if (state.status === "running") return "Codex is running..."
+  return state.inputBuffer ? `${state.inputBuffer}_` : "Ask local Codex..."
 }
 
 function statusLine(options: StackAppOptions, state: AppState): string {
