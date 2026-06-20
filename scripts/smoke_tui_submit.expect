@@ -21,7 +21,10 @@ send -- "hello from expect\r"
 expect "hello from expect"
 expect "Codex is running"
 expect "Not much. I'm here and ready to help with the local workspace."
-expect -exact {[usage] input=12 cached=3 output=9 reasoning=2}
+expect "input:"
+expect "cached:"
+expect "output:"
+expect "reasoning:"
 send -- "\033"
 expect eof
 
@@ -36,7 +39,7 @@ set handle [open $session_path r]
 set content [read $handle]
 close $handle
 
-foreach needle {"\"prompt\": \"hello from expect\"" "\"exitCode\": 0" "agent_message"} {
+foreach needle {"\"prompt\": \"hello from expect\"" "\"exitCode\": 0" "agent_message" "\"inputTokens\": 12" "\"cachedInputTokens\": 3" "\"outputTokens\": 9" "\"reasoningOutputTokens\": 2"} {
   if {[string first $needle $content] < 0} {
     puts stderr "missing expected session content: $needle"
     exit 1
@@ -47,7 +50,7 @@ set handle [open $output_log r]
 set output [read $handle]
 close $handle
 
-set forbidden_events [list "{\"type\":\"thread.started\"" "{\"type\":\"turn.started\"" "{\"type\":\"item.completed\"" "{\"type\":\"turn.completed\""]
+set forbidden_events [list "{\"type\":\"thread.started\"" "{\"type\":\"turn.started\"" "{\"type\":\"item.completed\"" "{\"type\":\"turn.completed\"" {[usage]}]
 foreach forbidden $forbidden_events {
   if {[string first $forbidden $output] >= 0} {
     puts stderr "terminal leaked raw Codex JSONL event: $forbidden"

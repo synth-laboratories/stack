@@ -9,8 +9,16 @@ export type StackCodexTurn = {
   startedAt: string
   finishedAt?: string
   exitCode?: number
+  usage?: StackCodexUsage
   stdout: string
   stderr: string
+}
+
+export type StackCodexUsage = {
+  inputTokens?: number
+  cachedInputTokens?: number
+  outputTokens?: number
+  reasoningOutputTokens?: number
 }
 
 export type StackLocalSession = {

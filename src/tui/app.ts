@@ -8,7 +8,7 @@ import { relative } from "node:path"
 import type { StackConfig } from "../config.js"
 import { runCodexTurn } from "../codex/adapter.js"
 import type { WorkspaceInfo } from "../local/workspace.js"
-import { type StackLocalSession, writeSessionLog } from "../session.js"
+import { type StackCodexUsage, type StackLocalSession, writeSessionLog } from "../session.js"
 
 type FocusMode = "agent" | "context"
 
@@ -23,9 +23,15 @@ type AppState = {
   selectedIndex: number
   status: "idle" | "running" | "error"
   spinnerFrame: number
+  lastUsage?: StackCodexUsage
   transcript: string[]
   inputBuffer: string
   lastSessionLogPath?: string
+}
+
+type CodexRenderedLine = {
+  content: string | null
+  usage?: StackCodexUsage
 }
 
 type MountedView = {
@@ -334,9 +340,26 @@ function sessionText(options: StackAppOptions, state: AppState): string {
     `model: ${options.config.codexModel}`,
     `effort: ${options.config.codexReasoningEffort}`,
     "",
+    "usage:",
+    ...usageText(state.lastUsage),
+    "",
     "log:",
     state.lastSessionLogPath ? relative(options.workspace.root, state.lastSessionLogPath) : "(after first turn)",
   ].join("\n")
+}
+
+function usageText(usage: StackCodexUsage | undefined): string[] {
+  if (!usage) return ["(after first turn)"]
+  return [
+    `input: ${formatUsageNumber(usage.inputTokens)}`,
+    `cached: ${formatUsageNumber(usage.cachedInputTokens)}`,
+    `output: ${formatUsageNumber(usage.outputTokens)}`,
+    `reasoning: ${formatUsageNumber(usage.reasoningOutputTokens)}`,
+  ]
+}
+
+function formatUsageNumber(value: number | undefined): string {
+  return value === undefined ? "-" : value.toLocaleString("en-US")
 }
 
 function renderContextFiles(workspace: WorkspaceInfo, selectedIndex: number): string[] {
@@ -352,7 +375,10 @@ function renderTranscript(lines: string[]): string {
   return lines.slice(-80).join("\n")
 }
 
-function createCodexTranscriptSink(emit: (content: string) => void): {
+function createCodexTranscriptSink(
+  emit: (content: string) => void,
+  updateUsage: (usage: StackCodexUsage) => void,
+): {
   write: (chunk: string) => void
   flush: () => void
   readonly hasVisibleOutput: boolean
@@ -369,8 +395,13 @@ function createCodexTranscriptSink(emit: (content: string) => void): {
   const processLine = (line: string) => {
     if (!line.trim()) return
     const rendered = renderCodexJsonLine(line)
-    if (rendered === null) return
-    emitVisible(rendered ?? line)
+    if (rendered === undefined) {
+      emitVisible(line)
+      return
+    }
+    if (rendered.usage) updateUsage(rendered.usage)
+    if (rendered.content === null) return
+    emitVisible(rendered.content)
   }
 
   return {
@@ -395,7 +426,7 @@ function createCodexTranscriptSink(emit: (content: string) => void): {
   }
 }
 
-function renderCodexJsonLine(line: string): string | null | undefined {
+function renderCodexJsonLine(line: string): CodexRenderedLine | undefined {
   let event: unknown
   try {
     event = JSON.parse(line)
@@ -405,7 +436,7 @@ function renderCodexJsonLine(line: string): string | null | undefined {
   return renderCodexEvent(event)
 }
 
-function renderCodexEvent(event: unknown): string | null | undefined {
+function renderCodexEvent(event: unknown): CodexRenderedLine | undefined {
   const record = asRecord(event)
   if (!record) return undefined
 
@@ -421,62 +452,59 @@ function renderCodexEvent(event: unknown): string | null | undefined {
   }
 
   if (eventType === "thread.started" || eventType === "turn.started") {
-    return null
+    return { content: null }
   }
 
   if (eventType === "turn.completed") {
-    return renderUsage(record) ?? null
+    return { content: null, usage: readUsage(record) }
   }
 
   const payloadType = payload ? readString(payload.type) ?? "" : ""
   const type = payloadType || eventType
 
   if (readString(record.role) === "user" || readString(payload?.role) === "user") {
-    return undefined
+    return { content: null }
   }
 
   if (type === "function_call") {
     const name = readString(record.name) ?? readString(payload?.name) ?? "tool"
     const args = readString(record.arguments) ?? readString(payload?.arguments)
-    return `[tool] ${name}${args ? ` ${oneLine(args, 240)}` : ""}`
+    return { content: `[tool] ${name}${args ? ` ${oneLine(args, 240)}` : ""}` }
   }
 
   if (type === "function_call_output") {
     const output = readString(record.output) ?? readString(payload?.output) ?? ""
-    return `[tool result] ${truncateDisplay(output, 1200)}`
+    return { content: `[tool result] ${truncateDisplay(output, 1200)}` }
   }
 
   if (type.includes("command") || type.includes("tool") || type.includes("exec")) {
     const name = readString(record.name) ?? readString(payload?.name) ?? type
     const text = extractText(record) ?? extractText(payload)
-    return `[tool] ${name}${text ? ` ${oneLine(text, 240)}` : ""}`
+    return { content: `[tool] ${name}${text ? ` ${oneLine(text, 240)}` : ""}` }
   }
 
   if (type.includes("message") || type.includes("output_text") || type.includes("assistant")) {
     const text = extractText(record) ?? extractText(payload)
-    return text ? truncateDisplay(text, 4000) : undefined
+    return text ? { content: truncateDisplay(text, 4000) } : undefined
   }
 
   if (eventType.includes("error") || type.includes("error")) {
     const text = extractText(record) ?? extractText(payload) ?? JSON.stringify(record)
-    return `[error] ${truncateDisplay(text, 1200)}`
+    return { content: `[error] ${truncateDisplay(text, 1200)}` }
   }
 
   return undefined
 }
 
-function renderUsage(record: Record<string, unknown>): string | undefined {
+function readUsage(record: Record<string, unknown>): StackCodexUsage | undefined {
   const usage = asRecord(record.usage)
   if (!usage) return undefined
-  const parts = [
-    readNumber(usage.input_tokens) !== undefined ? `input=${usage.input_tokens}` : undefined,
-    readNumber(usage.cached_input_tokens) !== undefined ? `cached=${usage.cached_input_tokens}` : undefined,
-    readNumber(usage.output_tokens) !== undefined ? `output=${usage.output_tokens}` : undefined,
-    readNumber(usage.reasoning_output_tokens) !== undefined
-      ? `reasoning=${usage.reasoning_output_tokens}`
-      : undefined,
-  ].filter((part): part is string => Boolean(part))
-  return parts.length ? `[usage] ${parts.join(" ")}` : undefined
+  return {
+    inputTokens: readNumber(usage.input_tokens),
+    cachedInputTokens: readNumber(usage.cached_input_tokens),
+    outputTokens: readNumber(usage.output_tokens),
+    reasoningOutputTokens: readNumber(usage.reasoning_output_tokens),
+  }
 }
 
 function extractText(value: unknown): string | undefined {
@@ -544,13 +572,20 @@ async function submitPrompt(
 ): Promise<void> {
   state.status = "running"
   state.spinnerFrame = 0
+  state.lastUsage = undefined
   refresh()
 
   const selectedFiles = options.workspace.files.filter((file) => file.selected)
-  const outputSink = createCodexTranscriptSink((content) => {
-    state.transcript.push(content)
-    refresh()
-  })
+  const outputSink = createCodexTranscriptSink(
+    (content) => {
+      state.transcript.push(content)
+      refresh()
+    },
+    (usage) => {
+      state.lastUsage = usage
+      refresh()
+    },
+  )
 
   try {
     const turn = await runCodexTurn({
@@ -564,6 +599,7 @@ async function submitPrompt(
     if (!outputSink.hasVisibleOutput) {
       state.transcript.push("\n(no visible response)")
     }
+    turn.usage = state.lastUsage
     options.session.turns.push(turn)
     state.status = turn.exitCode === 0 ? "idle" : "error"
     state.lastSessionLogPath = await writeSessionLog(options.session, options.config.sessionLogDir)
