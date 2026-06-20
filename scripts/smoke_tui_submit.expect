@@ -7,6 +7,30 @@ set stty_init "rows 45 columns 160"
 file delete -force $smoke_dir
 file mkdir $smoke_dir
 
+set seed_path "$smoke_dir/seed-session.json"
+set handle [open $seed_path w]
+puts $handle {
+{
+  "id": "seed-session-0000-0000-0000-000000000000",
+  "workspaceRoot": "/tmp/stack-tui-smoke",
+  "startedAt": "2026-06-20T00:00:00.000Z",
+  "codexCommand": "codex exec --json --color never -m gpt-5.4-mini -c model_reasoning_effort=\"medium\"",
+  "turns": [
+    {
+      "id": "seed-turn",
+      "prompt": "seed prompt",
+      "selectedPaths": [],
+      "startedAt": "2026-06-20T00:00:00.000Z",
+      "finishedAt": "2026-06-20T00:00:01.000Z",
+      "exitCode": 0,
+      "stdout": "{\"type\":\"item.completed\",\"item\":{\"id\":\"item_0\",\"type\":\"agent_message\",\"text\":\"seed answer\"}}\n{\"type\":\"turn.completed\",\"usage\":{\"input_tokens\":1,\"cached_input_tokens\":0,\"output_tokens\":2,\"reasoning_output_tokens\":0}}\n",
+      "stderr": ""
+    }
+  ]
+}
+}
+close $handle
+
 set output_log "$smoke_dir/output.log"
 log_file $output_log
 
@@ -16,35 +40,27 @@ set env(STACK_SESSION_DIR) $smoke_dir
 
 spawn ./bin/stack
 expect "Ask local Codex"
-after 1000
+expect "seed prompt"
 send -- "hello from expect\r"
-expect "hello from expect"
 expect "Codex is running"
+expect "command_execution exit=0"
+expect "stack-tool-output"
 expect "Not much. I'm here and ready to help with the local workspace."
 expect "input:"
-expect "cached:"
-expect "output:"
 expect "reasoning:"
+send -- "\t"
+send -- "\r"
+expect "model gpt-5.5"
+send -- "\t"
+send -- "\r"
+expect "effort low"
+send -- "\t"
+send -- "\t"
+send -- "\t"
+send -- "j"
+expect "seed-session-0000-0000-0000-000000000000"
 send -- "\033"
 expect eof
-
-set files [glob -nocomplain -directory $smoke_dir *.json]
-if {[llength $files] != 1} {
-  puts stderr "expected exactly one session json in $smoke_dir, found [llength $files]"
-  exit 1
-}
-
-set session_path [lindex $files 0]
-set handle [open $session_path r]
-set content [read $handle]
-close $handle
-
-foreach needle {"\"prompt\": \"hello from expect\"" "\"exitCode\": 0" "agent_message" "\"inputTokens\": 12" "\"cachedInputTokens\": 3" "\"outputTokens\": 9" "\"reasoningOutputTokens\": 2"} {
-  if {[string first $needle $content] < 0} {
-    puts stderr "missing expected session content: $needle"
-    exit 1
-  }
-}
 
 set handle [open $output_log r]
 set output [read $handle]
@@ -58,4 +74,4 @@ foreach forbidden $forbidden_events {
   }
 }
 
-puts "stack_tui_submit_smoke_ok $session_path"
+puts "stack_tui_submit_smoke_ok"

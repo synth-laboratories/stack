@@ -13,6 +13,34 @@ console.log(
   JSON.stringify({
     type: "item.completed",
     item: {
+      id: "item_tool",
+      type: "command_execution",
+      command: "/bin/zsh -lc 'printf stack-tool-output'",
+      aggregated_output: "",
+      exit_code: null,
+      status: "in_progress",
+    },
+  }),
+)
+await sleep(200)
+console.log(
+  JSON.stringify({
+    type: "item.completed",
+    item: {
+      id: "item_tool",
+      type: "command_execution",
+      command: "/bin/zsh -lc 'printf stack-tool-output'",
+      aggregated_output: "stack-tool-output",
+      exit_code: 0,
+      status: "completed",
+    },
+  }),
+)
+await sleep(200)
+console.log(
+  JSON.stringify({
+    type: "item.completed",
+    item: {
       id: "item_0",
       type: "agent_message",
       text: "Not much. I'm here and ready to help with the local workspace.",
