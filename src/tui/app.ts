@@ -33,6 +33,15 @@ type MountedView = {
   input: ReturnType<typeof Input>
 }
 
+type StackKeyEvent = {
+  name?: string
+  ctrl?: boolean
+  sequence?: string
+  raw?: string
+  preventDefault?: () => void
+  stopPropagation?: () => void
+}
+
 export async function runStackApp(options: StackAppOptions): Promise<void> {
   const renderer = await createCliRenderer({
     exitOnCtrlC: true,
@@ -51,7 +60,21 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     view = mountView(renderer, options, state, view)
   }
 
-  renderer.keyInput.on("keypress", (key: { name?: string; ctrl?: boolean }) => {
+  const submitFromCurrentInput = (key?: StackKeyEvent): boolean => {
+    if (state.focusMode !== "agent" || state.status === "running") return false
+    const prompt = view.input.value.trim()
+    if (!prompt) return false
+    key?.preventDefault?.()
+    key?.stopPropagation?.()
+    submitInputValue(view.input, options, state, remount)
+    return true
+  }
+
+  renderer._internalKeyInput.onInternal("keypress", (key: StackKeyEvent) => {
+    if (isEnterKey(key) && submitFromCurrentInput(key)) return
+  })
+
+  renderer.keyInput.on("keypress", (key: StackKeyEvent) => {
     if (key.ctrl && key.name === "c") return
     if (key.name === "tab") {
       state.focusMode = state.focusMode === "agent" ? "context" : "agent"
@@ -64,8 +87,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
-    if (state.focusMode === "agent" && isEnterKey(key.name)) {
-      submitInputValue(view.input, options, state, remount)
+    if (isEnterKey(key) && submitFromCurrentInput(key)) {
       return
     }
 
@@ -106,6 +128,11 @@ function createView(renderer: CliRenderer, options: StackAppOptions, state: AppS
     id: "stack-agent-input",
     placeholder: state.status === "running" ? "Codex is running..." : "Ask local Codex...",
     width: Math.max(30, Math.min(100, renderer.width - 8)),
+    keyBindings: [
+      { name: "enter", action: "submit" },
+      { name: "m", ctrl: true, action: "submit" },
+      { name: "j", ctrl: true, action: "submit" },
+    ],
     backgroundColor: "#161616",
     focusedBackgroundColor: "#242424",
     textColor: "#ffffff",
@@ -207,8 +234,18 @@ function submitInputValue(
   void submitPrompt(prompt, options, state, refresh)
 }
 
-function isEnterKey(name: string | undefined): boolean {
-  return name === "return" || name === "enter" || name === "linefeed" || name === "kpenter"
+function isEnterKey(key: StackKeyEvent): boolean {
+  return (
+    key.name === "return" ||
+    key.name === "enter" ||
+    key.name === "linefeed" ||
+    key.name === "kpenter" ||
+    (key.ctrl === true && (key.name === "m" || key.name === "j")) ||
+    key.sequence === "\r" ||
+    key.sequence === "\n" ||
+    key.raw === "\r" ||
+    key.raw === "\n"
+  )
 }
 
 function statusLine(options: StackAppOptions, state: AppState): string {
