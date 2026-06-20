@@ -43,10 +43,6 @@ type StackKeyEvent = {
 }
 
 export async function runStackApp(options: StackAppOptions): Promise<void> {
-  const renderer = await createCliRenderer({
-    exitOnCtrlC: true,
-  })
-
   const state: AppState = {
     focusMode: "agent",
     selectedIndex: 0,
@@ -54,20 +50,34 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     transcript: ["Stack Prototype 0 ready. Type a prompt and press Enter."],
   }
 
-  let view = mountView(renderer, options, state, undefined)
-
-  const remount = () => {
-    view = mountView(renderer, options, state, view)
+  let view: MountedView | undefined
+  let remount = () => {
+    view?.root.requestRender()
   }
 
   const submitFromCurrentInput = (key?: StackKeyEvent): boolean => {
-    if (state.focusMode !== "agent" || state.status === "running") return false
+    if (!view || state.focusMode !== "agent" || state.status === "running") return false
     const prompt = view.input.value.trim()
     if (!prompt) return false
     key?.preventDefault?.()
     key?.stopPropagation?.()
     submitInputValue(view.input, options, state, remount)
     return true
+  }
+
+  const renderer = await createCliRenderer({
+    exitOnCtrlC: true,
+    prependInputHandlers: [
+      (sequence: string) => {
+        if (!isRawEnterSequence(sequence)) return false
+        return submitFromCurrentInput()
+      },
+    ],
+  })
+
+  view = mountView(renderer, options, state, undefined)
+  remount = () => {
+    view = mountView(renderer, options, state, view)
   }
 
   renderer._internalKeyInput.onInternal("keypress", (key: StackKeyEvent) => {
@@ -245,6 +255,16 @@ function isEnterKey(key: StackKeyEvent): boolean {
     key.sequence === "\n" ||
     key.raw === "\r" ||
     key.raw === "\n"
+  )
+}
+
+function isRawEnterSequence(sequence: string): boolean {
+  return (
+    sequence === "\r" ||
+    sequence === "\n" ||
+    sequence === "\r\n" ||
+    sequence === "\x1bOM" ||
+    sequence === "\x1b[13~"
   )
 }
 
