@@ -161,8 +161,9 @@ The TUI should answer:
 - Which Managed Research runs and Factories are alive?
 - What is the next scheduled Factory event, and why will it or will it not fire?
 - Which local optimizers and RL services are making progress?
-- Which hosted optimizer runs are queued/running/failed/published/deleted?
-- What can I safely cancel, archive, or delete from here?
+- Which hosted optimizer jobs are queued/running/paused/retrying/cancelled/done?
+- What hosted optimizer jobs can I safely pause/cancel/retry, and what
+  WorkProducts can I safely hold/publish/archive from here?
 
 This becomes the operator view for local and hosted research work. Public
 `/open-research` remains the publish-safe mirror. The TUI is the private control
@@ -246,7 +247,7 @@ Remote screen:
 | scheduler withheld 2 workers: provider quota                                  |
 | artifact pack remote://.../cft-181 marked private trace-only                  |
 +--------------------------------------------------------------------------------+
-| s stop | r retry | p pause | u upload local manifest | d download bundle       |
+| p pause | r retry | c cancel | i inspect | u upload manifest | a artifacts   |
 +--------------------------------------------------------------------------------+
 ```
 
@@ -346,8 +347,10 @@ Core actions:
   and target campaign/experiment.
 - `download`: fetch a WorkProduct, replay pack, trace bundle, or scorecard into
   the local workspace.
-- `promote`: move a local run into a remote SMR campaign after manifest checks.
-- `pause/resume/cancel`: operate on remote jobs through backend lifecycle APIs.
+- `promote`: create an upload bundle from a local run and attach it to a remote
+  campaign/experiment after manifest checks.
+- `pause/resume/cancel`: operate on hosted optimizer jobs through backend
+  lifecycle APIs.
 - `publish/hold`: operate only on WorkProduct/public projection state, never raw
   run state.
 - `explain`: ask the embedded agent to summarize progress, blockers, next event,
@@ -367,6 +370,16 @@ Decision:
 Use Codex as the first local coding-agent runtime for Stack. Stack itself is the
 OpenTUI research cockpit and Synth control-plane client; Codex is an adapter
 inside that cockpit, not the product boundary.
+
+Naming:
+
+- Product/repo: `stack`
+- CLI/TUI command: `stack`
+- Implementation module can be `stack-tui` if a separate crate/package needs a
+  precise name.
+- Older research-note references to `synth-tui` mean this same product direction
+  before the repo was named `stack`; do not introduce a second product called
+  `synth-tui`.
 
 Why:
 
@@ -457,9 +470,10 @@ M0: repo skeleton
   - OpenTUI proof screen
   - config file for Synth API base, workspace root, and Codex command
 
-M1: backend read model viewer
-  - list programmes/factories/experiments/runs from Synth backend
-  - show next scheduled event and remote job health
+M1: read-only overview from existing owners
+  - use existing Factory, SMR, optimizer, and WorkProduct endpoints first
+  - show next scheduled event and hosted optimizer job health where available
+  - record missing typed fields instead of adding a broad Stack facade
   - no mutation yet
 
 M2: local adapters
@@ -474,13 +488,52 @@ M3: Codex adapter
 
 M4: upload/download
   - create upload manifest locally
-  - upload files through backend API
-  - download WorkProduct bundles into workspace
+  - use existing SMR/project upload APIs if they already preserve provenance
+  - use existing WorkProduct/artifact download APIs where available
+  - add only the smallest missing upload/download path at the owning service
 
 M5: lifecycle actions
   - pause/resume/cancel hosted optimizer jobs through backend API
   - publish/hold WorkProducts through publication API
   - audit all mutations with user, reason, and selected object id
+```
+
+Backend scope discipline:
+
+- Do not add a broad `Stack` backend facade unless existing owner APIs make the
+  TUI incorrect or unmaintainable.
+- Prefer composition in the TUI over backend bloat when the relationship is
+  display-only and can be derived from stable ids already exposed by owners.
+- Add backend code only at the owning boundary:
+  - Factory owns schedule/next-fire/health.
+  - SMR owns research runs, experiments, workspace uploads, and run evidence.
+  - Hosted optimizer service owns optimizer job lifecycle and optimizer events.
+  - WorkProduct/publication service owns review, publish, hold, archive, and
+    bundle downloads.
+- If the TUI needs a field that is authoritative and not exposed, add that field
+  to the owner read model rather than creating a parallel Stack projection.
+- If the TUI needs to mutate state, call the owner action endpoint. If no owner
+  action endpoint exists, add it there or leave the action disabled.
+- The only Stack-local state should be UI preferences, selected workspace,
+  cached display data, local adapter state, and local upload manifests before
+  they are submitted.
+
+Initial scope after this decision:
+
+```text
+Stack v0 should be mostly a client:
+  - read Factory status from Factory endpoints
+  - read SMR runs/experiments from SMR endpoints
+  - read hosted optimizer jobs from optimizer endpoints
+  - read/download WorkProducts from WorkProduct endpoints
+  - read local RL/optimizer state from local adapters
+  - use Codex locally for interpretation and manifest preparation
+
+Backend additions are allowed only when:
+  - a source-of-truth owner has no typed read path for required data,
+  - an owner lacks a safe action endpoint for a needed mutation,
+  - upload/download provenance cannot be represented by existing APIs,
+  - or privacy/publication gates cannot be enforced through existing paths.
 ```
 
 Terminology:
@@ -1165,9 +1218,9 @@ Event contract should normalize into:
 }
 ```
 
-First implementation spike
+Earlier implementation spike, revised after the `stack` naming decision
 
-Build a standalone `synth-tui` read-only cockpit:
+Build a standalone `stack` read-only cockpit:
 
 1. Use OpenTUI.
 2. Show four panes:
@@ -1178,8 +1231,9 @@ Build a standalone `synth-tui` read-only cockpit:
 3. Poll read-model APIs only.
 4. Add keyboard navigation and detail panes.
 5. Add action stubs that print the backend API command that would be invoked.
-6. Add actual cancel/archive/delete only after backend action endpoints and
-   confirmation semantics are finalized.
+6. Add actual hosted optimizer pause/cancel/retry and WorkProduct hold/publish/
+   archive only after owner action endpoints and confirmation semantics are
+   finalized.
 
 Acceptance for the spike:
 
@@ -1189,7 +1243,7 @@ Acceptance for the spike:
 - Shows hosted optimizer runs with status/finalize state.
 - Shows local RL runs using the same data as `crafter-rl watch`.
 - No raw secrets in process listings, logs, screenshots, or terminal output.
-- Destructive actions require typed confirmation and call backend-owned paths.
+- Mutating actions require typed confirmation and call owner backend paths.
 
 Design call
 
