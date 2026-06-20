@@ -27,3 +27,7 @@ Controls:
 
 Stack writes local session logs under `.stack/sessions/`. Remote SMR,
 WorkProducts, and hosted optimizer jobs are placeholders in Prototype 0.
+
+The status bar shows the Codex model and reasoning effort from
+`~/.codex/config.toml`. Override them for a run with `STACK_CODEX_MODEL` and
+`STACK_CODEX_REASONING_EFFORT`.

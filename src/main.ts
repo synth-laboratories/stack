@@ -6,7 +6,7 @@ import { createSession } from "./session.js"
 import { runStackApp } from "./tui/app.js"
 
 const workspace = await detectWorkspace()
-const config = loadConfig(workspace.root)
+const config = await loadConfig(workspace.root)
 const session = createSession(workspace.root, `${config.codexCommand} ${config.codexArgs.join(" ")}`)
 
 await runStackApp({ config, workspace, session })
