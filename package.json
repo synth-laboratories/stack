@@ -1,15 +1,44 @@
 {
   "name": "@synth-laboratories/stack",
-  "version": "0.0.0",
+  "version": "0.2.0-dev.20260626.2",
+  "description": "Synth operator cockpit — OpenTUI, Codex agent pane, and Stack MCP for local and hosted research ops.",
   "private": true,
   "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/synth-laboratories/stack.git"
+  },
+  "bugs": {
+    "url": "https://github.com/synth-laboratories/stack/issues"
+  },
+  "homepage": "https://github.com/synth-laboratories/stack#readme",
   "bin": {
-    "stack": "./bin/stack"
+    "stack": "./bin/stack",
+    "stack-mcp": "./bin/stack-mcp"
   },
   "scripts": {
     "start": "bun run src/main.ts",
     "check": "tsc --noEmit",
-    "smoke:tui": "expect scripts/smoke_tui_submit.expect"
+    "smoke:tui": "expect scripts/smoke_tui_submit.expect",
+    "smoke:tui:scroll": "expect scripts/smoke_tui_scroll.expect",
+    "smoke:tui:gepa": "bun run scripts/smoke_tui_gepa.ts",
+    "smoke:tui:gepa:live": "bun run scripts/smoke_tui_gepa_live.ts",
+    "smoke:tui:resilience": "expect scripts/smoke_tui_resilience.expect",
+    "smoke:tui:all": "bun run check && expect scripts/smoke_tui_submit.expect && expect scripts/smoke_tui_scroll.expect && bun run scripts/smoke_tui_gepa.ts && expect scripts/smoke_tui_resilience.expect",
+    "smoke:transcript": "bun run scripts/smoke_transcript.ts",
+    "smoke:agent-context": "bun run scripts/smoke_agent_context.ts",
+    "smoke:rate-limits": "bun run scripts/smoke_rate_limits.ts",
+    "smoke:usage-cost": "bun run scripts/smoke_usage_cost.ts",
+    "smoke:openai-pricing": "bun run scripts/smoke_openai_pricing.ts",
+    "smoke:throughput": "bun run scripts/smoke_throughput.ts",
+    "smoke:bombadil:tui-scroll": "bun run scripts/smoke_bombadil_tui_scroll.ts",
+    "smoke:install-skills": "bun run scripts/smoke_install_skills.ts",
+    "smoke:bootstrap": "bun run scripts/smoke_bootstrap.ts",
+    "smoke:version": "bun run scripts/smoke_version.ts",
+    "smoke:agent-bridge": "bun run scripts/smoke_agent_bridge_codex.ts",
+    "release-check": "bun run scripts/release_check.ts",
+    "sync-version": "bun run scripts/sync_version.ts",
+    "bump-dev": "bun run scripts/bump_dev.ts"
   },
   "dependencies": {
     "@opentui/core": "^0.4.1"

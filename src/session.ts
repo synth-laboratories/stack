@@ -1,6 +1,21 @@
 import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
+import { buildSessionUsageSummary, type CodexModelPricing } from "./codex/usage-cost.js"
+
+export type StackSessionUsageTotals = {
+  inputTokens: number
+  cachedInputTokens: number
+  outputTokens: number
+  reasoningOutputTokens: number
+  turnCountWithUsage: number
+}
+
+export type StackSessionUsageSummary = {
+  model: string
+  totals: StackSessionUsageTotals
+  estimatedSpendUsd?: number
+}
 
 export type StackCodexTurn = {
   id: string
@@ -26,6 +41,9 @@ export type StackLocalSession = {
   workspaceRoot: string
   startedAt: string
   codexCommand: string
+  codexModel?: string
+  codexThreadId?: string
+  usageSummary?: StackSessionUsageSummary
   turns: StackCodexTurn[]
 }
 
@@ -36,6 +54,7 @@ export type StackSessionSummary = {
   updatedAt: string
   turnCount: number
   lastPrompt?: string
+  usageSummary?: StackSessionUsageSummary
 }
 
 export function createSession(workspaceRoot: string, codexCommand: string): StackLocalSession {
@@ -56,7 +75,10 @@ export async function readSessionLog(path: string): Promise<StackLocalSession> {
   return parsed
 }
 
-export async function listSessionHistory(sessionLogDir: string): Promise<StackSessionSummary[]> {
+export async function listSessionHistory(
+  sessionLogDir: string,
+  pricingRows?: readonly CodexModelPricing[],
+): Promise<StackSessionSummary[]> {
   let entries: string[]
   try {
     entries = await readdir(sessionLogDir)
@@ -72,6 +94,13 @@ export async function listSessionHistory(sessionLogDir: string): Promise<StackSe
         try {
           const [session, info] = await Promise.all([readSessionLog(path), stat(path)])
           const lastTurn = session.turns.at(-1)
+          const usageSummary =
+            session.usageSummary ??
+            buildSessionUsageSummary(
+              session.turns,
+              session.codexModel ?? inferCodexModel(session.codexCommand),
+              pricingRows,
+            )
           return {
             id: session.id,
             path,
@@ -79,6 +108,7 @@ export async function listSessionHistory(sessionLogDir: string): Promise<StackSe
             updatedAt: info.mtime.toISOString(),
             turnCount: session.turns.length,
             lastPrompt: lastTurn?.prompt,
+            usageSummary,
           }
         } catch {
           return undefined
@@ -91,14 +121,24 @@ export async function listSessionHistory(sessionLogDir: string): Promise<StackSe
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
 }
 
-export async function writeSessionLog(session: StackLocalSession, sessionLogDir: string): Promise<string> {
+export async function writeSessionLog(
+  session: StackLocalSession,
+  sessionLogDir: string,
+  options?: { codexModel?: string; pricingRows?: readonly CodexModelPricing[] },
+): Promise<string> {
   await mkdir(sessionLogDir, { recursive: true })
+  if (options?.codexModel) session.codexModel = options.codexModel
+  session.usageSummary = buildSessionUsageSummary(
+    session.turns,
+    session.codexModel ?? inferCodexModel(session.codexCommand),
+    options?.pricingRows,
+  )
   const path = join(sessionLogDir, `${session.id}.json`)
   await writeFile(path, `${JSON.stringify(session, null, 2)}\n`, "utf8")
   return path
 }
 
-function readUsageFromStdout(stdout: string): StackCodexUsage | undefined {
+export function readUsageFromStdout(stdout: string): StackCodexUsage | undefined {
   for (const line of stdout.split("\n")) {
     if (!line.trim()) continue
     let record: unknown
@@ -129,4 +169,9 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined
+}
+
+function inferCodexModel(codexCommand: string): string {
+  const match = codexCommand.match(/(?:^|\s)-m\s+(\S+)/)
+  return match?.[1] ?? "gpt-5.4-mini"
 }

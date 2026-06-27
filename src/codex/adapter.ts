@@ -1,6 +1,7 @@
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import type { StackConfig } from "../config.js"
+import { STACK_HARNESS_NAME } from "../harness.js"
 import type { LocalContextFile } from "../local/workspace.js"
 import type { StackCodexTurn } from "../session.js"
 
@@ -60,9 +61,11 @@ async function buildPrompt(options: CodexRunOptions): Promise<string> {
     .join("\n\n")
 
   return [
-    "You are running inside Stack Prototype 0, a local OpenTUI Codex cockpit.",
-    "Remote SMR, WorkProduct, and hosted optimizer actions are not wired in this prototype.",
-    "Treat any remote state as unavailable. Work only with the local workspace and selected context.",
+    `You are running inside ${STACK_HARNESS_NAME}, a local OpenTUI Codex cockpit.`,
+    "Stack shows live SMR, Factory, hosted optimizer, and local optimizer status in the left rail.",
+    "When the Stack live-ops MCP tools are available, use them for mediated live operations instead of bypassing backend owner routes.",
+    "Use Stack MCP for live status, live SMR messages/control, Factory-project messages, hosted optimizer cancel, and README-smoke launch/status.",
+    "If Stack MCP reports missing auth, offline routes, or no active target, say that directly and do not fall back to raw databases, Redis keys, or compatibility projections.",
     "Keep the answer concise and actionable.",
     "",
     "## User prompt",

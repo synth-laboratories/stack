@@ -1,0 +1,32 @@
+/** High-contrast dark palette for Stack TUI readability. */
+export const stackTuiTheme = {
+  fgPrimary: "#ececec",
+  fgSecondary: "#bcbcbc",
+  fgMuted: "#b4b4b4",
+  fgPlaceholder: "#ababab",
+  fgAccent: "#9cdcfe",
+  fgAccentStrong: "#4ec9b0",
+  fgOnAccent: "#ffffff",
+  bgSubtle: "#1e1e1e",
+  bgChipActive: "#264f78",
+  borderInactive: "#707070",
+  borderActive: "#4ec9b0",
+  fgDivider: "#666666",
+  chipInactive: "#d0d0d0",
+  /** Per-role transcript colors — user/agent pop; thinking/tools recede. */
+  transcript: {
+    userLabel: "#9cdcfe",
+    userBody: "#f5f5f5",
+    agentLabel: "#4ec9b0",
+    agentBody: "#f0f0f0",
+    thinkingLabel: "#7a8494",
+    thinkingBody: "#6e7680",
+    toolLabel: "#c4b454",
+    toolBody: "#9a8f60",
+    stackLabel: "#6a9955",
+    stackBody: "#8fb878",
+    subagentLabel: "#c586c0",
+    subagentBody: "#b48cb4",
+    meta: "#606870",
+  },
+} as const

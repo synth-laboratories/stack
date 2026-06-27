@@ -1,32 +1,432 @@
 # Stack
 
-Private Synth Labs repository for the local/remote research stack: cloud SMR,
-Research Factory control, local terminal operations, optimizer flows, and
-WorkProduct data exchange.
+Synth operator cockpit: local OpenTUI + Codex agent pane + Stack MCP for SMR,
+Research Factory, optimizers, containers, and WorkProduct exchange across dev,
+staging, and prod.
+
+**Version:** `stack --version` shows **channel** (`stable` | `dev`) and last public
+**release** on dev builds · [CHANGELOG.md](CHANGELOG.md) · [docs/RELEASE.md](docs/RELEASE.md)
 
 ## Notes
 
+**Status (2026-06-26):** Stack is a **private** Synth Labs repo. There is **no public
+release yet** — no git tag published, no GitHub Release, and no live Homebrew tap.
+Versioning and tap formulas are **prepared** (`version.json`, `packaging/homebrew/`,
+[docs/RELEASE.md](docs/RELEASE.md)) for when we go public.
+
+| Today | Planned (not live yet) |
+| --- | --- |
+| Private `git clone` + `make install` for teammates with repo access | `brew tap synth-laboratories/tap` + `brew install stack` |
+| **dev** channel on `main` (`make bump-dev`) | **stable** channel on tagged `vX.Y.Z` releases |
+| Internal Jstack product spec + ship packet | Public GitHub Release + tap push |
+
+Until the first public release: use **git clone** (below), not Homebrew. Stable channel
+in `version.json` (`release: 0.1.0`) is the intended first public version — not shipped
+externally yet.
+
 - [SMR code TUI sketch](notes/2026-06-19-smr-code.txt)
 
-## Prototype 0
+## Install
 
-Prototype 0 is a local OpenTUI cockpit with a working Codex agent pane.
+Requires [Bun](https://bun.sh) and the local Codex CLI. Synth workspace repos
+(`synth-dev`, `synth-ai`, etc.) are needed for full local/hosted ops — see the
+bundled **`stack-local-setup`** Codex skill.
+
+**Private repo access required today.**
+
+### Git clone (current — private development)
+
+```bash
+git clone git@github.com:synth-laboratories/stack.git   # private; org access required
+cd stack
+make install
+stack --version
+```
+
+### Homebrew (planned — after public release)
+
+Not available yet. When the repo is public and `v0.1.0` (or later) is tagged:
+
+```bash
+brew tap synth-laboratories/tap
+brew install stack          # stable — tagged public releases
+brew install stack-dev      # dev/nightly — main branch
+stack --version
+```
+
+Maintainer prep lives in `packaging/homebrew/README.md`. Dev channel on main:
+`make bump-dev` · stable cuts: `docs/RELEASE.md`.
+
+### Direct repo launch (no install)
 
 ```bash
 bun install
 ./bin/stack
+./bin/stack --version
 ```
 
-Controls:
+### Sharing with others (internal, today)
+
+Teammates need **private repo access**, then `make install`. Each user edits
+`stack.config.json` for their checkout paths and auth env files (`SYNTH_API_KEY` in
+`synth-ai/.env` for dev). Never commit secrets.
+
+To update an existing install:
+
+```bash
+cd ~/Documents/GitHub/stack   # or your clone path
+git pull
+make install
+stack --version
+```
+
+**After first public release:** git tags `vX.Y.Z`, GitHub Release notes from
+`CHANGELOG.md`, and Homebrew tap publish — see `docs/RELEASE.md`.
+
+**Jstack product context:** spec at `Jstack/.jstack/product/specs/stack.md`, roadmap at
+`Jstack/.jstack/product/roadmaps/stack.md`, release record at
+`Jstack/.jstack/records/products/stack/`.
+
+Then from any terminal:
+
+```bash
+stack
+```
+
+## Controls
 
 - `Enter`: send the Agent prompt to local Codex
-- `Tab`: switch between Agent input and Local Context
-- `j` / `k`: move through Local Context files
-- `Space`: include/exclude the highlighted context file
+- `Tab`: switch between Agent input, model, effort, environment, Local
+  Research, hosted optimizers, remote SMR, and session history
+- `x`: toggle the Stack Agent Bridge between local-only and remote-only mode.
+  Local mode shows local eval/optimizer state; remote mode shows auth, SMRs,
+  Factories, hosted optimizers, and the mediation target the agent can operate
+  through Stack MCP.
+- Environment: `j` / `k` moves across dev, staging, and prod. `r` refreshes
+  account, hosted optimizer, and remote SMR state for the selected environment.
+- Local Research: `Enter` starts the local GEPA service, `r` refreshes, and
+  `j` / `k` moves through recent optimizer jobs
+- Hosted Optimizers: `r` refreshes and `j` / `k` moves through recent hosted
+  optimizer jobs from the selected remote environment. `o` cycles known artifact
+  names for the selected hosted job, `v` stages bounded artifact preview, `d`
+  stages artifact download, and `c` stages cancel for the selected hosted
+  optimizer job; `Enter` confirms the staged action.
+- Remote SMR: `r` refreshes, `j` / `k` moves through recent remote jobs, and
+  `f` moves through factories. `o` cycles the selected WorkProduct/artifact
+  output for the selected run. `t` cycles the mediation target across the
+  selected run, selected Factory, and selected hosted optimizer. Type a message
+  draft in the Agent input, move focus to Remote SMR, then press `m` to stage a
+  live run or Factory-project message. `e` stages a local README smoke SMR eval
+  launch through the canonical `synth-dev` eval wrapper. Type a local path in
+  the Agent input, optionally as `local/path -> remote/path`, then press `a` to
+  stage run-file upload for the selected run. `p`, `u`, `s`, `w`, `d`, `v`, and
+  `l` stage other remote actions; `Enter` confirms the staged action. `v`
+  previews a bounded slice of the selected output through the same backend owner
+  content route used by downloads. `l` previews the latest saved download for
+  the selected run from Stack's local download state. Confirmed downloads save under
+  `.stack/downloads/<environment>/<run-id>/`, and the latest saved output is
+  persisted in `.stack/downloads/<environment>/history.json` and shown in the
+  Live Ops rail and selected-run detail across TUI restarts.
 - `Esc`: quit
 
-Stack writes local session logs under `.stack/sessions/`. Remote SMR,
-WorkProducts, and hosted optimizer jobs are placeholders in Prototype 0.
+Stack writes local session logs under `.stack/sessions/`. Current release includes
+read-only remote SMR visibility for jobs, run artifacts, WorkProducts, and
+factories, hosted optimizer job visibility/detail, and local optimizer job
+visibility. The implemented remote action surface covers live SMR/Factory
+messages, SMR lifecycle controls, README-smoke eval launch/status, run-file
+upload, WorkProduct/artifact preview/download, persisted saved-download
+preview, hosted optimizer cancel, and hosted optimizer artifact
+preview/download.
+
+### Workspace Config
+
+Stack reads `stack.config.json` from this repo. `workingDir` controls where
+Codex runs and what the Agent pane shows as `cwd`; relative paths resolve from
+the Stack repo root. The dev API defaults to the local backend port used by
+`synth-dev` eval launches.
+
+```json
+{
+  "workingDir": "..",
+  "defaultEnvironment": "dev",
+  "environments": {
+    "dev": {
+      "label": "Dev",
+      "apiBaseUrl": "http://127.0.0.1:8000",
+      "authEnv": "SYNTH_API_KEY",
+      "optimizerDbPath": ".stack/optimizers/gepa-service.sqlite",
+      "optimizerServiceUrl": "http://127.0.0.1:8879"
+    },
+    "staging": {
+      "label": "Staging",
+      "apiBaseUrl": "https://staging-api.usesynth.ai",
+      "authEnv": "SYNTH_STAGING_API_KEY"
+    },
+    "prod": {
+      "label": "Prod",
+      "apiBaseUrl": "https://api.usesynth.ai",
+      "authEnv": "SYNTH_API_KEY"
+    }
+  }
+}
+```
+
+Override it for one run with `STACK_WORKING_DIR=/path/to/workspace ./bin/stack`.
+Stack passes `--skip-git-repo-check` to Codex by default so parent workspaces
+such as `~/Documents/GitHub` can be used even though they are not single git
+repositories.
+
+The Agent pane includes a Stack Agent Bridge strip above chat. It shows the
+active bridge mode, the Stack MCP status tool Codex should start from, selected
+environment, backend-owner route/MCP readiness, current mediation target, any
+message draft, and pending action. The left rail is an Agent Bridge status rail
+for local optimizers, hosted optimizer runs, live SMR runs, Factories, and the
+current mediation target. Local-only and remote-only mode deliberately hide the
+inactive side so Codex and the human operator do not mix local service actions
+with remote owner-route actions. The Sessions panel shows the selected remote account
+profile, API base URL, auth environment variable, health status, hosted
+optimizer jobs, recent remote SMR jobs, selected-run artifact and WorkProduct
+summaries, selected-run file mounts, and remote factories. Local optimizer state remains local; hosted
+optimizers, remote SMR, and Factory views use the selected environment profile.
+
+The Remote SMR `e` action starts the configured README smoke through:
+
+```bash
+<synth-dev>/scripts/eval.sh run smr/suites/readme_smoke_docker_codex.toml --target local-dockerized --instance slot1
+```
+
+Stack persists README-smoke launch state under
+`.stack/evals/readme-smoke-<environment>.json`, keeps a bounded stdout/stderr
+tail in the Live Ops rail, keeps recent failure lines from the wrapper, parses
+run/project ids and post-terminal verifier fields when the wrapper emits them,
+and refreshes the remote SMR snapshot so the created run can be monitored from
+the same cockpit. If the wrapper emits only a project id, Stack correlates it to
+the recent remote job list to recover the run id. When the run is known and
+present in the remote snapshot, Stack selects it as the current remote run and
+mediation target. The selected run view shows the active WorkProduct/artifact
+index, id, status/type, linked artifact id, creation time, preview text, and
+latest saved download path. Override the launch path with `STACK_SYNTH_DEV_ROOT`,
+`STACK_EVAL_COMMAND`,
+`STACK_README_SMOKE_SUITE`, `STACK_README_SMOKE_TARGET`, and
+`STACK_README_SMOKE_INSTANCE`.
+
+### Stack MCP
+
+Agents can use the same backend-owner live operations surface through the Stack
+MCP stdio server:
+
+```bash
+./bin/stack-mcp
+```
+
+The server reads `stack.config.json` and supports both JSONL and
+`Content-Length` JSON-RPC framing. It exposes:
+
+- `stack_status`: concise Stack Agent Bridge status for Codex, including
+  local optimizer state, remote SMR/Factory state, hosted optimizer state,
+  auth, README-smoke state, and suggested next actions
+- `stack_list_live_smrs`: list recent live SMR runs with output/message/file
+  counts
+- `stack_list_factories`: list remote Research Factories with routable
+  project/run hints
+- `stack_list_hosted_optimizer_runs`: list hosted optimizer runs with selected
+  detail, artifact names, events, and cancellation hints
+- `stack_launch_read_smoke`: launch the configured README-smoke SMR eval
+- `stack_live_status`: account health, live SMR runs, Factories, hosted
+  optimizer runs, and README-smoke launch state
+- `stack_message_live_run`: send an operator message to a live SMR run
+- `stack_message_factory_project`: send an operator message through the
+  Factory-owned message route
+- `stack_control_live_run`: pause, resume, or stop a live SMR run
+- `stack_cancel_hosted_optimizer`: cancel a hosted optimizer run
+- `stack_preview_hosted_optimizer_artifact`: preview bounded text from a hosted
+  optimizer artifact through the optimizer owner route
+- `stack_download_hosted_optimizer_artifact`: download a hosted optimizer
+  artifact through the optimizer owner route into Stack download state
+- `stack_download_run_output`: download a run WorkProduct or artifact through
+  owner content routes into `.stack/downloads/<environment>/<run-id>/`
+- `stack_preview_run_output`: preview bounded WorkProduct or artifact text
+  through owner content routes without saving a local file
+- `stack_list_saved_downloads`: list persisted Stack download history for the
+  selected environment
+- `stack_preview_saved_download`: preview bounded text from a previously saved
+  Stack download without calling the backend
+- `stack_upload_run_file`: upload a local file to a live SMR run through the
+  run-file owner route
+- `stack_start_readme_smoke_eval`: launch the configured README-smoke SMR eval
+- `stack_readme_smoke_eval_status`: read the persisted launcher status,
+  parsed verifier context, and bounded output tail
+
+Codex should load the bundled Stack skills for Synth work:
+
+- **`synth-via-stack`** — optimizers (local GEPA + hosted), **synth-ai** SDK/CLI, eval
+  container contract (`/health`, `/info`, `/rollout`), local → hosted graduation
+- **`stack-agent-bridge`** — Stack MCP operator workflow (SMR, Factory, previews, downloads)
+
+Skills live in `.codex/skills/` in this repo. `make install` and every Stack launch symlink
+them into `~/.codex/skills/` so Codex injects them into agent context. Read `AGENTS.md` in
+this repo for the bootstrap list.
+
+Validate skill install with:
+
+```bash
+bun run smoke:install-skills
+```
+
+Codex should use **`stack-agent-bridge`** for live operator actions and **`synth-via-stack`**
+when explaining or executing optimizer/container workflows. Start live ops with
+`stack_status`, explicitly choose local or remote mode before live actions,
+preview outputs before downloads, and avoid bypassing Stack/backend owner
+routes.
+
+Validate the agent bridge with:
+
+```bash
+bun run smoke:agent-bridge
+```
+
+That smoke launches a real Codex turn with Stack MCP registered, invokes
+`$stack-agent-bridge`, requires read-only Stack MCP calls to `stack_status` and
+`stack_list_live_smrs`, checks the Codex JSONL event stream for those MCP tool
+calls, and writes proof artifacts under `/tmp/stack-agent-bridge-proof/`.
+
+Validate the OpenTUI agent pane end-to-end without manual dogfood:
+
+```bash
+bun run smoke:tui:gepa          # mock Banking77 GEPA receipt through PTY (~15s, no API)
+bun run smoke:tui:resilience    # 196-col live-turn/spinner stress (OpenTUI crash regression)
+bun run smoke:tui:all           # submit + scroll + gepa + resilience
+bun run smoke:tui:gepa:live       # optional real run_acceptance.py (~50s; skips without key)
+```
+
+The GEPA smoke uses `scripts/fake_codex_banking77_gepa.ts` as `STACK_CODEX_COMMAND`,
+submits a Banking77 prompt, asserts uplift markers in the terminal, validates
+session JSON, and fails if raw Codex JSONL leaks or OpenTUI throws
+`Failed to create optimized buffer`.
+
+For local dev, load `SYNTH_API_KEY` before starting the MCP server. The server
+does not read SMR databases, raw Redis keys, or compatibility projections; it
+uses the same typed backend routes as the TUI and fails closed when an owner
+route rejects the operation. Codex turns launched from Stack register this MCP
+server with `STACK_ENVIRONMENT` set to the selected TUI environment, so tool
+calls without an explicit `environment` argument still follow the visible
+dev/staging/prod selector.
+
+Stack also registers this MCP server automatically for Codex turns launched
+from the Agent pane. Override the command with `STACK_MCP_COMMAND`, or disable
+that per-turn MCP registration with `STACK_CODEX_STACK_MCP=0`.
+
+Remote reads are deliberately backend-authoritative:
+
+- account health: `GET <api>/health`
+- hosted optimizer jobs: `GET <api>/api/v1/optimizers/runs?limit=12`
+- hosted optimizer detail:
+  `GET <api>/api/v1/optimizers/runs/{run_id}` and
+  `GET <api>/api/v1/optimizers/runs/{run_id}/state`
+- hosted optimizer events:
+  `GET <api>/api/v1/optimizers/runs/{run_id}/events?stream=false&limit=20`
+- recent jobs: `GET <api>/smr/jobs?limit=8`
+- live run messages:
+  `GET <api>/smr/runs/{run_id}/runtime/messages?limit=20`, or the
+  project-scoped run path when available
+- run artifacts: `GET <api>/smr/runs/{run_id}/artifacts?limit=20`
+- run WorkProducts:
+  `GET <api>/smr/projects/{project_id}/runs/{run_id}/work-products`
+- run file mounts: `GET <api>/smr/runs/{run_id}/file-mounts`
+- factories: `GET <api>/smr/factories?include_archived=false`
+- factory schedule/status preview: `GET <api>/smr/factories/{factory_id}/status`
+
+Remote actions are also backend-authoritative and require an explicit staged
+confirmation in the TUI:
+
+- pause run: `POST <api>/smr/runs/{run_id}/pause`, or the project-scoped run
+  path when the selected run has a project id
+- resume run: `POST <api>/smr/runs/{run_id}/resume`, or the project-scoped run
+  path when available
+- stop run: `POST <api>/smr/runs/{run_id}/stop`, or the project-scoped run
+  path when available
+- live run message:
+  `POST <api>/smr/runs/{run_id}/runtime/messages`
+- Factory/project message:
+  `POST <api>/smr/factories/{factory_id}/messages`; the backend resolves the
+  active, non-archived linked project and delegates to project message fanout
+- factory wake preview: `POST <api>/smr/factories/{factory_id}/wake-due` with
+  `dry_run: true`
+- WorkProduct download:
+  `GET <api>/smr/work-products/{work_product_id}/content?disposition=attachment`
+- artifact download:
+  `GET <api>/smr/artifacts/{artifact_id}/content?disposition=attachment`
+- run file upload:
+  `POST <api>/smr/runs/{run_id}/files:upload`
+- hosted optimizer cancel:
+  `POST <api>/api/v1/optimizers/runs/{run_id}/cancel`
+- hosted optimizer artifact preview/download:
+  `GET <api>/api/v1/optimizers/runs/{run_id}/artifacts/{artifact_name}`
+
+Current push order is intentionally staged: improve local job UX first, then
+remote SMR run UX, then remote Factory UX, then authenticated remote actions
+for file-flow expansion and hosted optimizer control. Hosted optimizer jobs and
+cancel are read/executed through the backend optimizer owner surface, not the
+local GEPA service DB and not SMR compatibility projections.
+
+## Easy start (local + hosted ops panel)
+
+Stack tries to remove setup friction on the right ops panel (`p` toggles **Local** vs **Synth Hosted**).
+Load the bundled **`stack-local-setup`** Codex skill for full copy-paste install/serve/Docker commands.
+
+| What | Behavior |
+| --- | --- |
+| **Auth** | Loads `SYNTH_API_KEY` from the env file in `stack.config.json` (e.g. `../synth-ai/.env`) automatically |
+| **Docker + dev slot** | On **dev**, if API offline: checks `docker info`, runs `synth-dev/scripts/local.sh up slot1` (disable with `STACK_AUTO_START_DEV_SLOT=0`) |
+| **Local GEPA** | On **dev**, auto-starts `synth-optimizers gepa service` if not running (disable with `STACK_AUTO_START_LOCAL_OPTIMIZER=0`) |
+| **Disable all auto-start** | `STACK_AUTO_START=0` |
+| **Start GEPA manually** | Local panel + empty prompt + **Enter** |
+| **Hosted data** | Projects, containers, and hosted optimizers refresh every 20s when account is connected |
+| **Setup hints** | Right panel shows copy-paste next steps when auth, Docker, API, CLI, or GEPA is missing |
+
+One-shot install:
+
+```bash
+make -C ~/Documents/GitHub/stack install
+pip install synth-optimizers synth-ai
+docker info
+cd ~/Documents/GitHub/synth-dev && ./scripts/local.sh up slot1
+stack
+```
+
+Dockerized eval smoke:
+
+```bash
+cd ~/Documents/GitHub/synth-dev
+./scripts/eval.sh run smr/suites/readme_smoke_docker_codex.toml \
+  --target local-dockerized --instance slot1
+```
+
+Bootstrap logs: `.stack/bootstrap/dev-slot.log`, `.stack/optimizers/gepa-service.log`.
+
+## Local Optimizers
+
+Stack uses the existing optimizer service instead of duplicating optimizer
+state. The Local Optimizers panel starts and reads:
+
+```bash
+synth-optimizers gepa service --db .stack/optimizers/gepa-service.sqlite --bind 127.0.0.1:8879
+```
+
+The left panel is `Local Research` and leads with the local optimizer job list:
+total, active, queued, completed, failed, selected job, and recent jobs. Service
+reachability, worker/queue counters, and storage details sit underneath that job view. Stack reads
+`/health`, `/workspace`, and `/runs`; older local services fall back to
+`/status`. Stack passes `--workers` only when the installed optimizer CLI
+advertises that flag.
+
+Useful overrides:
+
+- `STACK_OPTIMIZER_COMMAND`: command to run, default `synth-optimizers`
+- `STACK_OPTIMIZER_BIND`: host:port, default `127.0.0.1:8879`
+- `STACK_OPTIMIZER_WORKERS`: worker pool size, default `4`
+- `STACK_OPTIMIZER_DB`: SQLite service DB path
+- `STACK_OPTIMIZER_SERVICE_URL`: read endpoint if different from `--bind`
 
 The status bar shows the Codex model and reasoning effort from
 `~/.codex/config.toml`. Override them for a run with `STACK_CODEX_MODEL` and

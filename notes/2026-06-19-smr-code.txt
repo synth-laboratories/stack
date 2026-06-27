@@ -617,6 +617,65 @@ Then:
      local session log.
 ```
 
+Prototype 0 implementation update, 2026-06-20:
+
+The first working Stack prototype is now a TypeScript/Bun OpenTUI app with a
+local Codex adapter and local optimizer visibility. It is intentionally still a
+local cockpit, not a backend facade.
+
+Implemented:
+
+- `./bin/stack` launches the OpenTUI app from the `stack` repo.
+- `stack.config.json` can set the working directory separately from the app
+  root; Josh's local config points the Codex workspace at `~/Documents/GitHub`
+  rather than only the `stack` repo.
+- Agent pane runs local Codex via `codex exec --json --color never` using
+  ChatGPT auth, default model `gpt-5.4-mini`, and medium reasoning effort.
+- Model and reasoning effort are switchable in the TUI; effort includes
+  `xhigh`.
+- The transcript renders user messages, agent messages, tool calls, tool
+  results, usage, and live thinking/tool previews rather than raw JSON.
+- Session logs are written under `.stack/sessions/`; the Sessions panel lists
+  prior sessions and supports resume/fork-style local inspection.
+- Conversation scrolling is live-tail by default, with page/wheel scrolling and
+  an `End` return-to-live behavior.
+- Local Research panel polls a local `synth-optimizers gepa service` workspace
+  DB at `.stack/optimizers/gepa-service.sqlite`.
+- The optimizer adapter reads service health, workspace status, run request
+  status counts, and `run_requests` rows from the service `/status` response.
+- The Local Research job list now renders compact rows with status and
+  started/submitted/finished time (`st`, `su`, `fi`) and keeps detailed errors
+  in the selected-job detail view instead of wrapping them inline.
+
+Local Research lessons:
+
+- `synth-optimizers` currently returns HTTP 200 with
+  `{"error":"not_found"}` for unsupported routes such as `/workspace`, so the
+  Stack adapter must treat that payload as missing and fall back to `/status`.
+- `/status` may contain both `runs: []` and non-empty `run_requests`; the
+  adapter must prefer the non-empty array instead of stopping at the empty
+  `runs` list.
+- Stack should not create optimizer configs or wrapper code under the product
+  repo. Real optimizer configs belong with cookbooks/optimizers, and Stack only
+  submits or observes requests through the workspace DB/service.
+- The private Banking77 cookbook currently advertises a MIPROv2 optimizer
+  contract but not the GEPA contract/program shape required by the installed
+  GEPA runner. A real Banking77 GEPA fix belongs in the cookbook/container or
+  optimizer package, not in Stack.
+- A checked-in HealthBench GEPA config exists, but its relative `cwd`/path shape
+  did not launch cleanly when submitted from Stack's workspace DB. This is a
+  config/runner portability issue to fix at the optimizer/cookbook boundary.
+
+Current Prototype 0 boundary:
+
+- Stack owns local UI, session state, local Codex orchestration, and read-only
+  local optimizer visibility.
+- `synth-optimizers` owns GEPA workspace DB schema, job lifecycle, and worker
+  execution.
+- Cookbooks own task-specific optimizer configs and container contracts.
+- Remote SMR/Factory/WorkProduct integration is still future scope and should
+  use owner APIs, not Stack-local projections.
+
 First implementation milestone:
 
 ```text
@@ -1877,3 +1936,284 @@ Specific implementation implications:
 - Add intake objects for Slack/Linear/GitHub/webhook/schedule/manual triggers.
 - Avoid flat multi-agent swarms; use coordinator + recursive planners + focused
   workers + validators + judges.
+
+## Stack Prototype 0 Implementation Update - 2026-06-21
+
+Current push order:
+
+1. Better local job UX: Local Research should lead with optimizer jobs, active/queued/done counts, selected job details, errors, config paths, and service health. This is the local hosted-optimizer analogue.
+2. Remote SMR run UX: add a remote run panel that reads the selected Synth environment and shows managed research runs, run state, artifacts, and next actions.
+3. Remote Factory UX: add factory/campaign visibility above individual SMR runs, including schedule, next event, public/private publish state, WorkProducts, and evidence.
+4. Account and environment support: Stack supports dev, staging, and prod profiles. Environment switching controls remote API base/auth/account status; Local Research remains local optimizer state.
+
+Implemented in this slice:
+
+- `stack.config.json` now declares `dev`, `staging`, and `prod` profiles.
+- The Agent control row has an environment selector next to model/auth/effort.
+- The Sessions panel includes remote account profile/status information.
+- The Local Research panel now formats optimizer jobs as a jobs table with selected job details and service health below.
+
+
+Additional implementation update - remote read-only SMR slice:
+
+- Added a read-only remote SMR snapshot against selected environment profiles.
+- The Sessions panel now shows Remote SMR status, recent jobs, and factories.
+- Remote reads use backend routes only: /smr/jobs, /smr/factories, and /smr/factories/{factory_id}/status.
+- No remote mutation is wired yet. Hosted optimizer control, uploads/downloads, WorkProduct downloads, and factory wake controls remain next slices.
+
+Additional implementation update - remote detail UX:
+
+- Remote SMR now has its own focus mode in the Sessions panel.
+- Remote job selection uses `j/k`; factory selection uses `f` / right-arrow and
+  left-arrow.
+- The selected remote run shows state, phase, timestamps, runbook/reason,
+  artifact counts, WorkProduct counts, and first artifact/WorkProduct labels
+  where available.
+- The selected factory shows status/kind, next wake, active/waiting effort
+  counts, latest run, and latest WorkProduct.
+- Remote read-only detail endpoints now include:
+  - `/smr/runs/{run_id}/artifacts?limit=20`
+  - `/smr/projects/{project_id}/runs/{run_id}/work-products`
+- This keeps the product path aligned with the agreed sequence:
+  1. better local job UX,
+  2. remote SMR run UX,
+  3. remote Factory UX,
+  4. remote account/actions for dev/staging/prod,
+  5. hosted optimizer control and file/work product data flow.
+
+Additional implementation update - confirmed remote actions:
+
+- Remote SMR actions are staged before execution. `p`, `u`, `s`, and `w` set a
+  pending action, and `Enter` confirms it.
+- Run actions use existing backend-owned lifecycle endpoints only:
+  - `/smr/runs/{run_id}/pause`
+  - `/smr/runs/{run_id}/resume`
+  - `/smr/runs/{run_id}/stop`
+  - project-scoped equivalents when the selected run has `project_id`
+- Factory wake uses `/smr/factories/{factory_id}/wake-due` with
+  `dry_run: true` first, so Prototype 0 can show wake readiness without
+  launching remote work accidentally.
+- The TUI records the last action result inline in the Remote SMR panel and
+  refreshes the remote snapshot after a confirmed action.
+- Hosted optimizer job listing is not invented in Stack yet because the current
+  public optimizer gateway exposes submit/get/state/events/cancel by run id, but
+  not an org-wide list. The next hosted optimizer slice should either use an
+  existing projection endpoint if one is exposed or add a typed backend read
+  surface owned by the optimizer service.
+
+Additional implementation update - hosted optimizer visibility:
+
+- Added the backend-owned hosted optimizer collection endpoint:
+  `/api/v1/optimizers/runs?limit=12`.
+- Stack now reads that endpoint through the selected `dev`, `staging`, or
+  `prod` profile and renders it as a separate Hosted Optimizers section in the
+  Sessions panel.
+- Hosted Optimizers has its own focus mode. `r` refreshes and `j/k` moves
+  through recent hosted optimizer jobs.
+- The selected hosted job shows algorithm, status/finalize state, storage mode,
+  cursor sequence, submitted/updated/terminal timestamps, cancellation flag, and
+  error text when present.
+- Local Research remains local optimizer-service state. Hosted Optimizers is
+  remote backend state. Remote SMR remains managed research/factory state.
+  Keeping these three surfaces separate is the product decision.
+- Hosted optimizer control actions are still future scope; the current slice is
+  list and inspect only.
+
+Additional implementation update - hosted optimizer detail and cancel:
+
+- Hosted Optimizers now enriches recent jobs with selected-detail data from:
+  - `/api/v1/optimizers/runs/{run_id}`
+  - `/api/v1/optimizers/runs/{run_id}/state`
+- The selected hosted job shows backend detail status, backend update time,
+  result keys, state keys, artifact names, and detail-load issues.
+- Hosted Optimizers now follows the same staged-action pattern as Remote SMR:
+  `c` stages cancel, and `Enter` confirms.
+- Confirmed cancel uses the backend owner endpoint:
+  `/api/v1/optimizers/runs/{run_id}/cancel`.
+- Remaining hosted optimizer UX work is richer action coverage and
+  upload/download/work-product file flow, not the basic list/detail/cancel loop.
+
+Additional implementation update - Stack MCP output download:
+
+- Stack MCP now exposes `stack_download_run_output` for SMR run output fetches.
+- The tool selects a WorkProduct or artifact by `output_id`, or by zero-based
+  index. With no kind supplied it follows the TUI order: WorkProducts first,
+  then artifacts.
+- Downloads stay on backend owner routes:
+  - `/smr/work-products/{work_product_id}/content?disposition=attachment`
+  - `/smr/artifacts/{artifact_id}/content?disposition=attachment`
+- Proof call downloaded WorkProduct `e9655075-8a5b-5f17-b497-6eb2349f7643`
+  from run `52165d93-1339-4ae1-8f7e-12e509bb3021` to
+  `.stack/downloads/dev/52165d93-1339-4ae1-8f7e-12e509bb3021/work-product-report.md`.
+
+Additional implementation update - Stack MCP run-file upload:
+
+- Stack MCP now exposes `stack_upload_run_file` for local-to-run file handoff.
+- The tool reads a local path relative to Stack `workingDir` when not absolute,
+  sends base64 content, and defaults visibility to `model`.
+- Uploads stay on the backend resource-catalog owner route:
+  - `/smr/runs/{run_id}/files:upload`
+- The backend remains responsible for stored-file persistence, model-visible
+  mount creation, project repo mirroring, and orchestrator notification.
+- Proof call uploaded `.stack/downloads/dev/52165d93-1339-4ae1-8f7e-12e509bb3021/work-product-report.md`
+  to run `15a6c70d-0eba-4a11-b1e5-326d9cc0e88e` at
+  `stack/proofs/work-product-report.md` with stored file id
+  `243be6d7-edd2-422c-9a10-ed8fac39e161`; readback through
+  `/smr/projects/a625d9c2-aa71-4343-a85c-6261695ae4df/files/243be6d7-edd2-422c-9a10-ed8fac39e161/content`
+  returned 200 and 2016 bytes.
+
+Additional implementation update - run-file mount visibility:
+
+- Remote run detail now also reads `/smr/runs/{run_id}/file-mounts`.
+- The Live Ops rail shows selected-run file mount counts as
+  `files <active>/<total>`.
+- The selected remote run detail shows run-file count and first mounted paths,
+  using the same backend owner route as the file upload flow.
+
+Additional implementation update - hosted optimizer event visibility:
+
+- Hosted Optimizers now enrich selected recent jobs with bounded event backfill:
+  - `/api/v1/optimizers/runs/{run_id}/events?stream=false&limit=20`
+- The hosted rail shows event count for the selected hosted optimizer when
+  detail is loaded.
+- The selected hosted job detail shows event count, latest event sequence, and
+  the latest event types.
+
+Additional implementation update - Stack-mediated README-smoke proof:
+
+- The active slot backend was missing the public owner route
+  `GET /api/v1/optimizers/runs`; Stack hosted optimizer snapshots saw
+  `405 Method Not Allowed` until the projection-backed list route was ported
+  into the active backend worktree.
+- After restarting only `slot1 backend-api`, the route returned 200 and Stack
+  MCP `stack_live_status` reported Hosted Optimizers as `ready`.
+- Stack MCP `stack_start_readme_smoke_eval` launched the configured
+  README-smoke suite through `synth-dev/scripts/eval.sh`.
+- The launched run was visible through Stack live status as run
+  `99351d13-f27b-44d9-a876-b7a4e8477823` in project
+  `ca12abf6-8596-4cb2-8a69-ea05628619b9`; final Stack-visible state was
+  `done` with 3 artifacts, 1 WorkProduct, and 5 active file mounts.
+- The eval wrapper exited nonzero after the SMR run completed because
+  post-terminal verification failed on `resolved_host_kind`; that friction is
+  logged in Jstack as an evals papercut.
+
+Additional implementation update - durable README-smoke mediation:
+
+- README-smoke launch snapshots now persist under
+  `.stack/evals/readme-smoke-<environment>.json`.
+- Both Stack MCP and the TUI read the persisted launch snapshot, so a new MCP
+  server or TUI process can show the most recent README-smoke launch instead of
+  reverting to idle process-local state.
+- The launcher enriches the snapshot from wrapper output when fields are
+  present: run id, project id, output root, runlog, phase log, SMR state,
+  verification state/failures, reward, auto-grade cost, and actual spend cents.
+- If a persisted active PID no longer exists and no terminal wrapper status was
+  captured, Stack marks the eval snapshot `stale` rather than silently showing
+  it as still running.
+
+Additional implementation update - TUI run-file attach and eval targeting:
+
+- Remote SMR focus now supports `a` to stage attaching a local file to the
+  selected live run, using the Agent draft as `local/path` or
+  `local/path -> remote/path`.
+- Confirmed attach calls the same backend owner route as the MCP upload tool:
+  `/smr/runs/{run_id}/files:upload`.
+- When a README-smoke launch snapshot contains a run id and the remote snapshot
+  contains that run, Stack selects it as the active remote run and mediation
+  target so follow-up messages, downloads, and file uploads naturally apply to
+  the Stack-launched eval run.
+
+Additional implementation update - TUI download visibility:
+
+- Remote output downloads now return structured saved-path metadata to the TUI.
+- After `d` then `Enter` succeeds, Stack records the recent download in memory
+  and surfaces the latest saved output in the Live Ops rail and selected-run
+  detail, alongside the existing `.stack/downloads/<environment>/<run-id>/`
+  save location.
+
+Additional implementation update - eval failure and output detail:
+
+- README-smoke launch snapshots now keep a compact `failureLines` trail derived
+  from wrapper stdout/stderr lines containing errors, failures, exceptions,
+  tracebacks, verifier failure fields, or `resolved_host_kind`.
+- The Live Ops rail prefers verifier failures or recent failure lines over a
+  generic eval tail when the README-smoke wrapper fails.
+- The Remote SMR selected-run view now renders a selected-output detail block
+  for the active WorkProduct/artifact: index, id, status/type, linked artifact,
+  creation time, and latest saved download when present.
+- The Stack MCP download tool also returns structured download metadata so
+  agents can cite the saved path and byte count directly.
+
+Additional implementation update - persisted download history:
+
+- Remote output downloads now append a bounded history file at
+  `.stack/downloads/<environment>/history.json`.
+- The TUI hydrates recent remote downloads from that file on startup and after
+  environment changes, so the Live Ops rail and selected-run detail retain the
+  latest saved output context across TUI restarts.
+- The history is written by the same remote action boundary that saves the
+  downloaded file; if the history write fails, the download still returns saved
+  path metadata and includes the history error in action result data.
+
+Additional implementation update - bounded output previews:
+
+- Stack now has a `preview-output` remote action that reads a capped byte range
+  from the selected WorkProduct/artifact through the same backend owner content
+  routes used by downloads.
+- Preview requests send an HTTP `Range` header and still enforce the local byte
+  cap if the backend returns a full response.
+- The TUI stages that action with `v` and renders the latest preview in the
+  Live Ops rail and selected output detail block.
+- The MCP server exposes the same path as `stack_preview_run_output`, returning
+  structured preview metadata so an agent chat can inspect small result content
+  without first saving a local download.
+
+Additional implementation update - live README-smoke Stack proof:
+
+- Stack MCP launched README-smoke through `stack_start_readme_smoke_eval` on
+  slot1 and monitored it with `stack_readme_smoke_eval_status`.
+- The eval reached SMR state `done` but the wrapper exited nonzero on the known
+  post-terminal verification failure `failed_resolved_host_kind`.
+- The wrapper emitted `project_id` but not `run_id`; Stack now correlates the
+  README-smoke snapshot to recent SMR jobs by project id, so the MCP/TUI can
+  select the live run even when the eval wrapper omits a run id.
+- The proof run resolved to run `eb577dbe-9309-402b-b736-d7fb95644c1f` and
+  project `f51af898-ea73-4d25-83f3-1e453ce3ce84`; `stack_preview_run_output`
+  successfully previewed the README Smoke WorkProduct through backend owner
+  content routes.
+
+Additional implementation update - saved download previews:
+
+- Stack now previews persisted downloads from
+  `.stack/downloads/<environment>/history.json` without calling the backend
+  again.
+- The remote action layer validates that saved preview paths stay inside
+  Stack's own download state and reads only a bounded byte prefix.
+- The TUI stages this with `l` and renders saved-preview text in the Live Ops
+  rail and selected-run detail.
+- The MCP server exposes `stack_list_saved_downloads` and
+  `stack_preview_saved_download` so agents can inspect saved WorkProducts or
+  artifacts after a TUI restart.
+
+Additional implementation update - hosted optimizer artifact flow:
+
+- Hosted Optimizers now exposes selected artifact operations through the
+  optimizer owner artifact route:
+  `/api/v1/optimizers/runs/{run_id}/artifacts/{artifact_name}`.
+- The hosted TUI focus uses `o` to cycle known artifact names, `v` to stage a
+  bounded preview, and `d` to stage a download into Stack download state.
+- The selected hosted job shows the active artifact plus the latest preview or
+  download result when present.
+- Stack MCP exposes `stack_preview_hosted_optimizer_artifact` and
+  `stack_download_hosted_optimizer_artifact` for agent-mediated hosted
+  artifact inspection.
+
+Additional implementation update - environment-pinned Stack MCP:
+
+- Codex turns launched from Stack now register `stack_live_ops` with
+  `mcp_servers.stack_live_ops.env.STACK_ENVIRONMENT` set to the selected TUI
+  environment.
+- Cycling dev/staging/prod refreshes Codex args, so MCP tool calls without an
+  explicit `environment` argument follow the visible environment selector.
+- The mediation strip and Live Ops rail now distinguish Stack MCP disabled,
+  missing auth, and selected-environment states.

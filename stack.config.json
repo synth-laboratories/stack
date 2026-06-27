@@ -1,0 +1,24 @@
+{
+  "workingDir": "..",
+  "defaultEnvironment": "dev",
+  "environments": {
+    "dev": {
+      "label": "Dev",
+      "apiBaseUrl": "http://127.0.0.1:8000",
+      "authEnv": "SYNTH_API_KEY",
+      "authEnvFile": "../synth-ai/.env",
+      "optimizerDbPath": ".stack/optimizers/gepa-service.sqlite",
+      "optimizerServiceUrl": "http://127.0.0.1:8879"
+    },
+    "staging": {
+      "label": "Staging",
+      "apiBaseUrl": "https://staging-api.usesynth.ai",
+      "authEnv": "SYNTH_STAGING_API_KEY"
+    },
+    "prod": {
+      "label": "Prod",
+      "apiBaseUrl": "https://api.usesynth.ai",
+      "authEnv": "SYNTH_API_KEY"
+    }
+  }
+}

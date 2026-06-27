@@ -2,6 +2,7 @@
 
 set timeout 30
 set smoke_dir "/tmp/stack-tui-smoke"
+set repo_root [pwd]
 set stty_init "rows 45 columns 160"
 
 file delete -force $smoke_dir
@@ -35,30 +36,40 @@ set output_log "$smoke_dir/output.log"
 log_file $output_log
 
 set env(STACK_CODEX_COMMAND) "bun"
-set env(STACK_CODEX_ARGS) "run scripts/fake_codex_jsonl.ts"
+set env(STACK_CODEX_ARGS) "run $repo_root/scripts/fake_codex_jsonl.ts"
 set env(STACK_SESSION_DIR) $smoke_dir
+set env(STACK_WORKING_DIR) $smoke_dir
+set env(STACK_OPTIMIZER_SERVICE_URL) "http://127.0.0.1:65534"
+set env(STACK_OPTIMIZER_DB) "$smoke_dir/gepa-service.sqlite"
+set env(STACK_OPTIMIZER_LOG) "$smoke_dir/gepa-service.log"
+set env(STACK_OPTIMIZER_PID) "$smoke_dir/gepa-service.pid"
+unset -nocomplain env(SYNTH_API_KEY)
+unset -nocomplain env(SYNTH_STAGING_API_KEY)
 
 spawn ./bin/stack
-expect "Ask local Codex"
-expect "seed prompt"
+expect "Ask Codex"
 send -- "hello from expect\r"
 expect "Codex is running"
-expect "command_execution exit=0"
+expect "shell · 0.2s · ok"
+send -- "d"
 expect "stack-tool-output"
 expect "Not much. I'm here and ready to help with the local workspace."
-expect "input:"
-expect "reasoning:"
+send -- "b"
+expect "session usage:"
 send -- "\t"
-send -- "\r"
-expect "model gpt-5.5"
-send -- "\t"
-send -- "\r"
-expect "effort low"
-send -- "\t"
-send -- "\t"
-send -- "\t"
-send -- "j"
-expect "seed-session-0000-0000-0000-000000000000"
+send -- "x"
+expect "Remote Account"
+expect "Hosted Optimizers"
+expect {
+  "missing-auth" {}
+  "status: offline" {}
+  "status: connected" {}
+  "auth: present" {}
+  timeout {
+    puts stderr "expected remote bridge status line"
+    exit 1
+  }
+}
 send -- "\033"
 expect eof
 

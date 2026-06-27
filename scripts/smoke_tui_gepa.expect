@@ -1,0 +1,73 @@
+#!/usr/bin/env expect
+
+if {[info exists env(STACK_GEPA_SMOKE_REAL)]} {
+  set timeout 240
+} else {
+  set timeout 45
+}
+
+if {[info exists env(STACK_GEPA_SMOKE_DIR)]} {
+  set smoke_dir $env(STACK_GEPA_SMOKE_DIR)
+} else {
+  set smoke_dir "/tmp/stack-tui-gepa-smoke"
+}
+set repo_root [pwd]
+set stty_init "rows 45 columns 160"
+
+file delete -force $smoke_dir
+file mkdir $smoke_dir
+
+set output_log "$smoke_dir/output.log"
+log_file $output_log
+
+set env(STACK_CODEX_COMMAND) "bun"
+set env(STACK_CODEX_ARGS) "run $repo_root/scripts/fake_codex_banking77_gepa.ts"
+set env(STACK_SESSION_DIR) $smoke_dir
+set env(STACK_WORKING_DIR) $smoke_dir
+set env(STACK_GEPA_SMOKE_ARTIFACT_DIR) "$smoke_dir/artifacts"
+set env(STACK_OPTIMIZER_SERVICE_URL) "http://127.0.0.1:65534"
+set env(STACK_OPTIMIZER_DB) "$smoke_dir/gepa-service.sqlite"
+set env(STACK_OPTIMIZER_LOG) "$smoke_dir/gepa-service.log"
+set env(STACK_OPTIMIZER_PID) "$smoke_dir/gepa-service.pid"
+unset -nocomplain env(STACK_GEPA_SMOKE_REAL)
+unset -nocomplain env(SYNTH_API_KEY)
+unset -nocomplain env(SYNTH_STAGING_API_KEY)
+
+spawn ./bin/stack
+expect "Ask Codex"
+send -- "Run Banking77 GEPA smoke via run_acceptance.py and report uplift receipt.\r"
+expect "Codex is running"
+expect "tool  shell"
+expect "· ok"
+expect "STACK_GEPA_SMOKE_OK"
+expect "train_uplift=+0.50"
+expect "challenger_dominates=true"
+send -- "\033"
+expect eof
+
+set handle [open $output_log r]
+set output [read $handle]
+close $handle
+
+if {[string first "Failed to create optimized buffer" $output] >= 0} {
+  puts stderr "OpenTUI buffer allocation crash detected"
+  exit 1
+}
+
+set forbidden_events [list "{\"type\":\"thread.started\"" "{\"type\":\"turn.started\"" "{\"type\":\"item.completed\"" "{\"type\":\"turn.completed\"" {[usage]}]
+foreach forbidden $forbidden_events {
+  if {[string first $forbidden $output] >= 0} {
+    puts stderr "terminal leaked raw Codex JSONL event: $forbidden"
+    exit 1
+  }
+}
+
+if {![info exists env(STACK_GEPA_SMOKE_REAL)]} {
+  set artifact_registry "$smoke_dir/artifacts/acceptance_openai_baseline_cost_stop_stacksmoke/candidate_registry.json"
+  if {![file exists $artifact_registry]} {
+    puts stderr "missing mock artifact registry: $artifact_registry"
+    exit 1
+  }
+}
+
+puts "stack_tui_gepa_smoke_ok"
