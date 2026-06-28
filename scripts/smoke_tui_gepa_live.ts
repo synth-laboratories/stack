@@ -29,6 +29,8 @@ const expect = spawnSync("expect", [expectScript], {
   timeout: timeoutMs,
   env: {
     ...process.env,
+    STACK_CODEX_TRANSPORT: process.env.STACK_CODEX_TRANSPORT ?? "exec",
+    STACK_GEPA_REAL_CODEX: "1",
     STACK_GEPA_SMOKE_REAL: "1",
     STACK_GEPA_SMOKE_DIR: smokeDir,
     STACK_SESSION_DIR: smokeDir,
