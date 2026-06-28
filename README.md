@@ -220,6 +220,10 @@ credentials it falls back to the deterministic pass, emits
 `monitor.model_fallback` when the model worker was explicitly requested, and
 keeps the same `agent.*`, `monitor.*`, actor checkpoint, API, and export
 contract.
+When the skills focus detects Stack/Synth work without a recorded skill use and
+`skill_context_push` is enabled, the monitor emits a visible
+`monitor.skill_context_push` message for the primary actor instead of silently
+mutating context.
 
 Model-worker overrides:
 

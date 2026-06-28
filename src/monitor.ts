@@ -3,6 +3,7 @@ import { dirname, join } from "node:path"
 import type { StackConfig } from "./config.js"
 import type { AgentContextSnapshot } from "./codex/agent-context.js"
 import type { CodexGoalSnapshot } from "./codex/goal-context.js"
+import { pushSkillContext } from "./codex/skills.js"
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import {
@@ -77,6 +78,13 @@ type FocusCheck = {
   severity: MonitorSeverity
   summary: string
   evidence?: string
+}
+
+type SkillContextPushDecision = {
+  skillId: string
+  reason: string
+  evidenceEventIds: string[]
+  message: string
 }
 
 export type StackMonitorActorRuntimeState = {
@@ -396,6 +404,43 @@ export async function runMonitorForNewEvents(input: {
       payload: item,
     })
   }
+  const contextPushes = skillContextPushDecisions({
+    config: monitorConfig,
+    pass,
+    priorEvents,
+    pendingEvents: candidate.pendingEvents,
+    triggerEventIds: candidate.triggerEventIds,
+    turn: input.turn ?? syntheticTurnFromEvents(input.session, candidate.pendingEvents),
+  })
+  for (const decision of contextPushes) {
+    const push = pushSkillContext(input.config.appRoot, {
+      threadId,
+      monitorActorId: actorId,
+      targetActorId: "primary_codex",
+      skillId: decision.skillId,
+      reason: decision.reason,
+      evidenceEventIds: decision.evidenceEventIds,
+      message: decision.message,
+      workspaceRoot: input.config.workspaceRoot,
+    })
+    appendThreadMetaEvent(input.config.appRoot, {
+      event_id: push.eventId,
+      type: "monitor.skill_context_push",
+      thread_id: push.threadId,
+      observed_at: push.createdAt,
+      actor_id: push.monitorActorId,
+      actor_role: "monitor",
+      payload: {
+        target_actor_id: push.targetActorId,
+        skill_id: push.skillId,
+        source_path: push.sourcePath,
+        reason: push.reason,
+        evidence_event_ids: push.evidenceEventIds,
+        message_id: push.messageId,
+        message: push.message,
+      },
+    })
+  }
 
   const usage = pass.usage ?? estimateMonitorUsage(candidate.pendingEvents, pass.summary)
   appendThreadMetaEvent(input.config.appRoot, {
@@ -433,6 +478,7 @@ export async function runMonitorForNewEvents(input: {
     severity: pass.severity,
     wakeDelta: 1,
     queueDelta: queueItems.length,
+    contextPushDelta: contextPushes.length,
   })
   writeMonitorActorState(input.config.appRoot, completedState)
   appendThreadMetaEvent(input.config.appRoot, {
@@ -464,14 +510,20 @@ export async function runMonitorForNewEvents(input: {
 
 export function monitorRailLines(snapshot: StackMonitorSnapshot, columns: number): string[] {
   const width = Math.max(24, columns - 2)
-  const lines = ["Monitor"]
+  const strictness =
+    snapshot.strictness === "conservative"
+      ? "cons"
+      : snapshot.strictness === "aggressive"
+        ? "aggr"
+        : snapshot.strictness
+  const lines = ["monitor"]
   lines.push(
     truncate(
-      `${snapshot.status} · ${snapshot.strictness} · wakes ${snapshot.wakeCount} · queued ${snapshot.queuedCount}`,
+      `${snapshot.status} · ${strictness} · wakes ${snapshot.wakeCount} · q ${snapshot.queuedCount}`,
       width,
     ),
   )
-  lines.push(truncate(`mode ${snapshot.modeSource} · M cycles off/passive/cons/aggr`, width))
+  lines.push(truncate(`mode ${snapshot.modeSource} · M cycles`, width))
   if (snapshot.lastWakeReason || snapshot.lastSeverity !== "none") {
     lines.push(truncate(`last ${snapshot.lastWakeReason ?? "summary"} · ${snapshot.lastSeverity}`, width))
   }
@@ -972,6 +1024,7 @@ function actorStateFromConfig(
     severity?: MonitorSeverity
     wakeDelta?: number
     queueDelta?: number
+    contextPushDelta?: number
     lastStartedAt?: string
     lastCompletedAt?: string
     lastErrorAt?: string
@@ -998,7 +1051,7 @@ function actorStateFromConfig(
     queue_counts: (previous?.queue_counts ?? 0) + (options.queueDelta ?? 0),
     steer_counts: previous?.steer_counts ?? 0,
     skill_read_counts: previous?.skill_read_counts ?? 0,
-    context_push_counts: previous?.context_push_counts ?? 0,
+    context_push_counts: (previous?.context_push_counts ?? 0) + (options.contextPushDelta ?? 0),
     last_started_at: options.lastStartedAt ?? previous?.last_started_at,
     last_completed_at: options.lastCompletedAt ?? previous?.last_completed_at,
     last_error_at: options.lastErrorAt ?? previous?.last_error_at,
@@ -1187,6 +1240,75 @@ function queueItemsFor(config: StackMonitorConfig, checks: FocusCheck[]): Record
 function queueThreshold(config: StackMonitorConfig): MonitorSeverity {
   if (config.strictness === "aggressive") return "low"
   return "medium"
+}
+
+function skillContextPushDecisions(input: {
+  config: StackMonitorConfig
+  pass: MonitorPassResult
+  priorEvents: StackThreadMetaEvent[]
+  pendingEvents: StackThreadMetaEvent[]
+  triggerEventIds: string[]
+  turn: StackCodexTurn
+}): SkillContextPushDecision[] {
+  if (!canPushSkillContext(input.config)) return []
+  const skillCheck = input.pass.checks.find((check) => check.focus === "skills")
+  if (!skillCheck || (skillCheck.status !== "warn" && skillCheck.status !== "fail")) return []
+  const queuedSkill = input.pass.queueItems.some((item) => readString(item.focus) === "skills")
+  if (!queuedSkill && !input.config.skills.pushWhenConfident && input.config.strictness !== "aggressive") return []
+  const skillId = recommendedSkillForMonitorPush(input.config, input.pendingEvents, input.turn)
+  if (!skillId || hasPushedSkill(input.priorEvents, skillId)) return []
+  const evidenceEventIds = uniqueStrings([
+    ...input.triggerEventIds,
+    ...input.pendingEvents.map((event) => event.event_id),
+  ])
+  const reason = skillCheck.summary
+  return [{
+    skillId,
+    reason,
+    evidenceEventIds,
+    message: [
+      `Monitor suggests reading skill ${skillId}.`,
+      `Reason: ${reason}.`,
+      evidenceEventIds.length > 0 ? `Evidence events: ${evidenceEventIds.slice(0, 5).join(", ")}.` : "",
+      "Apply only the relevant runbook guidance before the next action.",
+    ].filter(Boolean).join("\n"),
+  }]
+}
+
+function canPushSkillContext(config: StackMonitorConfig): boolean {
+  if (!config.skills.enabled || !config.focus.skills) return false
+  if (config.strictness === "off" || config.strictness === "passive") return false
+  const policy = config.intervention.skillContextPush.trim().toLowerCase()
+  return !["", "off", "never", "false", "disabled"].includes(policy)
+}
+
+function recommendedSkillForMonitorPush(
+  config: StackMonitorConfig,
+  events: StackThreadMetaEvent[],
+  turn: StackCodexTurn,
+): string | undefined {
+  const text = [
+    turn.prompt,
+    turn.stdout,
+    turn.stderr,
+    ...events.map((event) => JSON.stringify(event.payload)),
+  ].join("\n").toLowerCase()
+  const allowed = config.skills.allowedSkillIds
+  if ((text.includes("stackeval") || text.includes("gepa") || text.includes("synth")) && allowed.includes("synth-via-stack")) {
+    return "synth-via-stack"
+  }
+  if (allowed.includes("stack-agent-bridge")) return "stack-agent-bridge"
+  return allowed[0]
+}
+
+function hasPushedSkill(events: StackThreadMetaEvent[], skillId: string): boolean {
+  return events.some((event) =>
+    event.type === "monitor.skill_context_push" && readString(event.payload.skill_id) === skillId
+  )
+}
+
+function uniqueStrings(values: Array<string | undefined>): string[] {
+  return [...new Set(values.filter((value): value is string => Boolean(value)))]
 }
 
 function summarizeChecks(checks: FocusCheck[], severity: MonitorSeverity): string {

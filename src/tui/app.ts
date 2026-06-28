@@ -1609,7 +1609,7 @@ function rightContextFooterLineCount(renderer: CliRenderer, state: AppState): nu
 }
 
 function rightContextColumns(renderer: CliRenderer): number {
-  return Math.max(24, Math.floor(renderer.terminalWidth * 0.26) - 4)
+  return Math.max(24, Math.min(34, Math.floor(renderer.terminalWidth * 0.26) - 8))
 }
 
 function handleOpsMouseScroll(

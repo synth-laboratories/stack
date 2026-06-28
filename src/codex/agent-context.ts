@@ -405,7 +405,7 @@ function formatSeenSkillsLine(snapshot: AgentContextSnapshot, maxWidth: number):
     )
   }
   if (snapshot.discoveredSkills.length > 0) {
-    return `— (${snapshot.discoveredSkills.length} on disk, not injected yet)`
+    return truncateText(`— ${snapshot.discoveredSkills.length} disk, 0 injected`, maxWidth)
   }
   return "—"
 }
@@ -471,6 +471,11 @@ function truncateJoined(parts: string[], separator: string, maxWidth: number): s
   }
   if (text.length > maxWidth) text = `${text.slice(0, Math.max(0, maxWidth - 1))}…`
   return text
+}
+
+function truncateText(text: string, maxWidth: number): string {
+  if (text.length <= maxWidth) return text
+  return `${text.slice(0, Math.max(0, maxWidth - 1))}…`
 }
 
 function defaultCodexSessionsRoot(): string {
