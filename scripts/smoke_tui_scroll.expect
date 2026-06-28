@@ -7,6 +7,8 @@ set repo_root [pwd]
 file delete -force $smoke_dir
 file mkdir $smoke_dir
 
+source [file join $repo_root scripts tui_smoke_common.tcl]
+
 set output_log "$smoke_dir/output.log"
 log_file $output_log
 
@@ -20,13 +22,14 @@ set env(STACK_OPTIMIZER_LOG) "$smoke_dir/gepa-service.log"
 set env(STACK_OPTIMIZER_PID) "$smoke_dir/gepa-service.pid"
 unset -nocomplain env(SYNTH_API_KEY)
 unset -nocomplain env(SYNTH_STAGING_API_KEY)
+set env(STACK_CODEX_TRANSPORT) "exec"
 
 spawn ./bin/stack
 stty rows 45 columns 160 < $spawn_out(slave,name)
 
 expect "Ask Codex"
 send -- "scroll proof\r"
-expect "Codex is running"
+stack_tui_expect_running_turn
 expect "out 80"
 sleep 0.5
 
@@ -64,10 +67,7 @@ set handle [open $output_log r]
 set output [read $handle]
 close $handle
 
-if {[string first "Failed to create optimized buffer" $output] >= 0} {
-  puts stderr "OpenTUI buffer allocation crash detected"
-  exit 1
-}
+stack_tui_assert_no_crash_artifacts $output
 
 foreach required [list "PAGEUP_SCROLL_SENTINEL_61" "j/k navigate" "scroll-proof-line-"] {
   if {[string first $required $output] < 0} {

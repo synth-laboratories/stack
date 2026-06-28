@@ -6,6 +6,11 @@ import { basename, dirname, join, relative, resolve } from "node:path"
 export type AgentSkillRef = {
   name: string
   path: string
+  usedAt?: string
+  completedAt?: string
+  durationMs?: number
+  actorRole?: "primary" | "monitor" | "unknown"
+  reason?: "explicit_user" | "trigger_rule" | "monitor_push" | "detected_session_use"
 }
 
 export type AgentContextSnapshot = {
@@ -65,6 +70,7 @@ function codexSkillRoots(workspaceRoot: string, codexHome: string): string[] {
   let current = resolve(workspaceRoot)
   const stop = resolve(homedir())
   while (current.startsWith(stop) || current === stop) {
+    addRoot(join(current, ".stack", "skills"))
     addRoot(join(current, ".codex", "skills"))
     const parent = dirname(current)
     if (parent === current) break
@@ -179,7 +185,11 @@ export function parseAgentContextFromSessionJsonl(text: string): Pick<
         .filter((part): part is string => typeof part === "string")
         .join("\n")
       if (blob.includes("SKILL.md")) {
-        usedSkills = noteUsedSkillsFromText(blob, usedSkills)
+        usedSkills = noteUsedSkillsFromText(blob, usedSkills, {
+          usedAt: eventTimestamp(event),
+          actorRole: "primary",
+          reason: "detected_session_use",
+        })
       }
       continue
     }
@@ -230,14 +240,22 @@ export function skillRefFromPath(path: string): AgentSkillRef {
   return { name: basename(normalized), path: normalized }
 }
 
-export function noteUsedSkillsFromText(text: string, usedSkills: AgentSkillRef[]): AgentSkillRef[] {
+export function noteUsedSkillsFromText(
+  text: string,
+  usedSkills: AgentSkillRef[],
+  metadata: Partial<Pick<AgentSkillRef, "usedAt" | "completedAt" | "durationMs" | "actorRole" | "reason">> = {},
+): AgentSkillRef[] {
   const normalized = text.replace(/\\/g, "/")
   const matches = normalized.matchAll(/([^\s'"]+\/SKILL\.md)/g)
   let next = usedSkills
   for (const match of matches) {
     const path = match[1]
     if (!path || path.includes("skills_instructions")) continue
-    next = upsertUsedSkill(next, skillRefFromPath(path))
+    next = upsertUsedSkill(next, {
+      ...skillRefFromPath(path),
+      ...metadata,
+      usedAt: metadata.usedAt ?? new Date().toISOString(),
+    })
   }
   return next
 }
@@ -248,8 +266,21 @@ export function noteLoadedSkillsFromText(text: string, loadedSkills: AgentSkillR
 }
 
 export function upsertUsedSkill(usedSkills: AgentSkillRef[], skill: AgentSkillRef): AgentSkillRef[] {
-  if (usedSkills.some((entry) => entry.path === skill.path || entry.name === skill.name)) {
-    return usedSkills
+  const index = usedSkills.findIndex((entry) => entry.path === skill.path || entry.name === skill.name)
+  if (index >= 0) {
+    const existing = usedSkills[index]
+    if (!existing) return usedSkills
+    const next = [...usedSkills]
+    next[index] = {
+      ...existing,
+      ...skill,
+      usedAt: skill.usedAt ?? existing.usedAt,
+      completedAt: skill.completedAt ?? existing.completedAt,
+      durationMs: skill.durationMs ?? existing.durationMs,
+      actorRole: skill.actorRole ?? existing.actorRole,
+      reason: skill.reason ?? existing.reason,
+    }
+    return next
   }
   return [...usedSkills, skill]
 }
@@ -346,7 +377,7 @@ export function agentContextRailText(
   return agentContextRailLines(snapshot, columns, workspaceRoot).join("\n")
 }
 
-function agentContextRailLines(snapshot: AgentContextSnapshot, columns: number, workspaceRoot: string): string[] {
+export function agentContextRailLines(snapshot: AgentContextSnapshot, columns: number, workspaceRoot: string): string[] {
   const width = Math.max(20, columns - 2)
   const lines = ["context"]
   lines.push(`agents  ${formatAgentsLine(snapshot.agentsMd, workspaceRoot, width - 8)}`)
@@ -382,10 +413,36 @@ function formatSeenSkillsLine(snapshot: AgentContextSnapshot, maxWidth: number):
 function formatUsedSkillsLine(skills: AgentSkillRef[], maxWidth: number): string {
   if (skills.length === 0) return "—"
   return truncateJoined(
-    skills.map((skill) => skill.name),
+    skills.map(formatUsedSkillLabel),
     " · ",
     maxWidth,
   )
+}
+
+function formatUsedSkillLabel(skill: AgentSkillRef): string {
+  const parts = [skill.name]
+  if (skill.usedAt) parts.push(formatTimeOfDay(skill.usedAt))
+  if (typeof skill.durationMs === "number") parts.push(formatDuration(skill.durationMs))
+  if (skill.actorRole === "monitor") parts.push("monitor")
+  return parts.filter(Boolean).join(" ")
+}
+
+function formatTimeOfDay(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toTimeString().slice(0, 8)
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.round(ms / 60_000)}m`
+}
+
+function eventTimestamp(event: Record<string, unknown>): string {
+  const timestamp = event.timestamp ?? event.time ?? event.created_at
+  if (typeof timestamp === "string" && timestamp.trim()) return timestamp
+  return new Date().toISOString()
 }
 
 function shortAgentLabel(path: string, workspaceRoot: string): string {

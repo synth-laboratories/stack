@@ -72,6 +72,9 @@ def main() -> int:
 
     merged = deep_merge(pipeline, task)
     merged["preset"] = deep_merge({"name": preset_name}, presets[preset_name])
+    stack_api_url = os.environ.get("STACK_API_URL", "").strip()
+    if stack_api_url:
+        merged.setdefault("stack", {})["stack_api_url"] = stack_api_url
 
     paths = merged.get("paths", {})
     for key, value in list(paths.items()):

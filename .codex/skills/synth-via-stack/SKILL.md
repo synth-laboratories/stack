@@ -88,9 +88,27 @@ Workflow:
 
 1. Prove the container contract locally (single rollout smoke).
 2. Register the container URL with the local GEPA service / cookbook config.
-3. Run a small visible split; keep held-out rows out of search.
-4. Inspect job list, metrics, and saved candidates in Stack or service DB.
-5. Only then launch hosted jobs with the same container config.
+3. Choose the run size by the claim you need to make:
+   - **Smoke / plumbing:** `~8 train / ~8 heldout`, `1` generation, `1` proposal. This only proves the optimizer path, artifact capture, and scorer wiring. It must not be described as an optimized prompt proof, even if a prompt is accepted.
+   - **Dev / optimization signal:** `~50 train / ~50 heldout`, at least `3` generations and `2` proposals per generation, with enough rollout budget to evaluate seed, candidates, and terminal heldout. This can support "useful optimization signal" when a candidate is accepted and train/minibatch improves.
+   - **Gate / optimized prompt proof:** fixed heldout, `50+` train and `50+` heldout when cost permits, `5+` generations, `3+` proposals per generation, prompt acceptance required, seed-vs-best heldout measured, and heldout lift required. Reserve near-success claims for `80%+` heldout or a task-specific threshold recorded before the run.
+4. Keep held-out rows out of search. Terminal heldout must evaluate both the seed and the selected best candidate when the claim includes uplift.
+5. Inspect job list, metrics, saved candidates, and the candidate registry in Stack or service artifacts.
+6. Only then launch hosted jobs with the same container config.
+
+Do not confuse acceptance with optimization:
+
+- `prompt_accepted=true` means the optimizer accepted a candidate under its configured selection criterion, usually train or minibatch improvement.
+- **Optimized prompt proof** requires an accepted candidate, a saved prompt artifact, seed-vs-best comparison, terminal heldout score, and positive heldout lift or a predeclared reason heldout lift is not required.
+- If seed heldout and best heldout are tied, report "accepted prompt, no heldout lift" rather than "optimized prompt."
+- If seed heldout is missing, fail the gate or mark uplift unknown; do not infer uplift from train improvement.
+
+For GEPA configs, budget enough rollouts for the work you expect:
+
+- Seed full-train evaluation: at least `train_sample` rollouts.
+- Candidate minibatch/full-train evaluation: `generations * proposals_per_generation * minibatch_or_train_budget`.
+- Terminal heldout comparison: at least `heldout_sample * number_of_terminal_candidates`; for seed-vs-best, budget `2 * heldout_sample`.
+- Set `max_total_rollouts` above the sum of these expected phases so GEPA does not stop before terminal heldout.
 
 Package: **`synth-optimizers`** on PyPI. Public cookbooks show end-to-end GEPA loops.
 

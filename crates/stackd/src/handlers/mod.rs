@@ -5,6 +5,7 @@ pub mod threads;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use stack_core::events::EventLogError;
 use stack_core::session::SessionError;
 
 pub struct ApiError {
@@ -13,6 +14,13 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    pub fn bad_request(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            message: message.into(),
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -29,6 +37,18 @@ impl From<SessionError> for ApiError {
                 message: error.to_string(),
             },
             SessionError::InvalidId(_) => Self {
+                status: StatusCode::BAD_REQUEST,
+                message: error.to_string(),
+            },
+            _ => Self::internal(error.to_string()),
+        }
+    }
+}
+
+impl From<EventLogError> for ApiError {
+    fn from(error: EventLogError) -> Self {
+        match error {
+            EventLogError::InvalidThreadId(_) => Self {
                 status: StatusCode::BAD_REQUEST,
                 message: error.to_string(),
             },

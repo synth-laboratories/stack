@@ -1,4 +1,5 @@
 mod handlers;
+mod monitor_scheduler;
 mod openapi;
 mod server;
 

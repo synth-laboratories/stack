@@ -14,6 +14,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`make release-promote VERSION=x.y.z`** — cut stable and reopen dev line
 - **Homebrew** — `packaging/homebrew/stack.rb` (stable) and `stack-dev.rb` (HEAD main)
 - **`make install-brew`** — libexec install path for Homebrew
+- **Bombadil B0 guard** — `bun run smoke:bombadil:b0` / `make release-guard-b0`
+  emits a named `AT-STACK-BOMBADIL-B0` release proof JSON
+- **StackEval 1 packet prep** — `bun run stackeval:banking77-local-gepa` creates
+  the Banking77 local GEPA dogfood packet with prompt, metadata, model policy,
+  waste ledger, and release guard placeholders
 
 ## [0.1.0] - 2026-06-26
 

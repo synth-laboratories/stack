@@ -1,3 +1,11 @@
 node_modules/
-.stack/
+.stack/*
+!.stack/guidance/
+!.stack/guidance/**
+.stack/guidance/*.sqlite
+.stack/guidance/*.sqlite-shm
+.stack/guidance/*.sqlite-wal
+!.stack/monitors/
+!.stack/monitors/*.toml
+.env
 target/

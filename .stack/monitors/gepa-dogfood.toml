@@ -1,0 +1,39 @@
+[monitor]
+id = "gepa-dogfood"
+label = "GEPA Monitor"
+enabled = true
+mode = "observe_summarize_queue_steer"
+policy = "conservative"
+strictness = "conservative"
+
+[focus]
+selection = "any"
+style = true
+goal_progress = true
+skills = true
+tool_use = true
+scope_control = true
+acceptance = true
+
+[model]
+provider = "openai"
+model = "gpt-5.4-mini"
+reasoning_effort = "medium"
+worker = "auto"
+
+[wake]
+max_wakes_per_primary_turn = 6
+on_turn_completed = true
+on_tool_completed = true
+on_tool_failed = true
+delta_events = 12
+cooldown_ms = 250
+
+[intervention]
+max_queued_items_per_thread = 8
+skill_context_push = "queue_or_steer"
+
+[skills]
+enabled = true
+allowed_skill_ids = ["stack-agent-bridge", "synth-via-stack", "stackeval"]
+push_when_confident = false

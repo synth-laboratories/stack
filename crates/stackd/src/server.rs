@@ -1,6 +1,10 @@
 use crate::handlers::{export, health, threads};
+use crate::monitor_scheduler;
 use crate::openapi;
-use axum::{routing::get, Router};
+use axum::{
+    routing::{get, post},
+    Router,
+};
 use stack_core::config::StackPaths;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -20,6 +24,7 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
         stack_channel: read_version_field(&paths.app_root, "channel").await,
         paths,
     });
+    monitor_scheduler::spawn_monitor_scheduler(state.clone());
 
     let app = router(state);
     let listener = TcpListener::bind(addr).await?;
@@ -35,6 +40,24 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/threads", get(threads::list_threads))
         .route("/threads/:id", get(threads::get_thread))
         .route("/threads/:id/status", get(threads::get_status))
+        .route(
+            "/threads/:id/events",
+            get(threads::get_events).post(threads::append_event),
+        )
+        .route("/threads/:id/actors", get(threads::get_actors))
+        .route("/events/stream", get(threads::stream_events))
+        .route(
+            "/threads/:id/monitors/:monitor_id/pause",
+            post(threads::pause_monitor),
+        )
+        .route(
+            "/threads/:id/monitors/:monitor_id/resume",
+            post(threads::resume_monitor),
+        )
+        .route(
+            "/threads/:id/monitors/:monitor_id/mode",
+            post(threads::set_monitor_mode),
+        )
         .route("/threads/:id/trace", get(threads::get_trace))
         .route("/threads/:id/export", get(export::export_thread))
         .route("/doc", get(openapi::doc))

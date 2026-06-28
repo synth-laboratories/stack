@@ -6,6 +6,9 @@ use chrono::Utc;
 use serde::Serialize;
 use serde_json::json;
 use stack_core::codex_path::resolve_for_session;
+use stack_core::events::{
+    read_thread_events, read_thread_monitor_actor_states, thread_event_log_path,
+};
 use stack_core::redact::redact_for_export;
 use stack_core::session::{read_session_by_id, read_session_value_by_id, session_path};
 use std::sync::Arc;
@@ -41,12 +44,37 @@ pub async fn export_thread(
             files.push("codex.jsonl");
         }
     }
+    if let Ok(events_path) = thread_event_log_path(&state.paths.stack_dir, &id) {
+        let dest = export_dir.join("meta-events.jsonl");
+        if fs::copy(events_path, &dest).await.is_ok() {
+            files.push("meta-events.jsonl");
+        }
+    }
+    let events = read_thread_events(&state.paths.stack_dir, &id).await?;
+    let monitor_usage: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event.get("type").and_then(serde_json::Value::as_str) == Some("monitor.usage")
+        })
+        .cloned()
+        .collect();
+    if !monitor_usage.is_empty() {
+        write_json(export_dir.join("monitor_usage.json"), &json!(monitor_usage)).await?;
+        files.push("monitor_usage.json");
+    }
+    let actors = read_thread_monitor_actor_states(&state.paths.stack_dir, &id).await?;
+    if !actors.is_empty() {
+        write_json(export_dir.join("actors.json"), &json!(actors)).await?;
+        files.push("actors.json");
+    }
 
     let metadata = json!({
         "stack_session_id": session.id,
         "stack_session_path": stack_session_path,
         "codex_thread_id": codex_thread_id,
         "codex_session_path": codex_session_path,
+        "meta_events_path": ".stack/events/threads/<stack_session_id>.jsonl",
+        "actors_path": ".stack/actors/<stack_session_id>/monitors/*.json",
         "turn_count": session.turns.len(),
         "workspace_root": session.workspace_root,
         "started_at": session.started_at,

@@ -8,6 +8,8 @@ set stty_init "rows 45 columns 196"
 file delete -force $smoke_dir
 file mkdir $smoke_dir
 
+source [file join $repo_root scripts tui_smoke_common.tcl]
+
 set output_log "$smoke_dir/output.log"
 log_file $output_log
 
@@ -25,7 +27,7 @@ unset -nocomplain env(SYNTH_STAGING_API_KEY)
 spawn ./bin/stack
 expect "Ask Codex"
 send -- "stress the live agent pane at narrow width\r"
-expect "Codex is running"
+stack_tui_expect_running_turn
 expect "MCP access"
 send -- "d"
 send -- "d"

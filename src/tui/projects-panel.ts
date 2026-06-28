@@ -36,7 +36,8 @@ function projectPanelBody(projects: RemoteProjectPanelEntry[]): string[] {
       lines.push("  (no runs yet)")
     } else {
       for (const run of project.runs) {
-        lines.push(`  r ${run.runId.slice(0, 8)} · ${runState(run)} · ${runAge(run)}`)
+        const art = (run.runbook || "").toLowerCase().includes("artifact") ? " artifact" : ""
+        lines.push(`  r ${run.runId.slice(0, 8)} · ${runState(run)} · ${runAge(run)}${art}`)
       }
     }
     lines.push("")
@@ -58,8 +59,15 @@ function factoryStatus(factory: { status?: string; activeEfforts?: number; pause
   return parts.join(" ")
 }
 
-function runState(run: { state: string; phase?: string }): string {
-  return run.phase ? `${run.state}/${run.phase}` : run.state
+function runState(run: { state: string; phase?: string; runbook?: string }): string {
+  const base = run.phase ? `${run.state}/${run.phase}` : run.state
+  const isArt = (run.runbook || "").toLowerCase().includes("artifact")
+  if (isArt) {
+    const st = base.toLowerCase()
+    if (st.includes("done") || st.includes("terminal")) return `${base} ● Artifact ready`
+    return `${base} ● building`
+  }
+  return base
 }
 
 function runAge(run: { updatedAt?: string; createdAt?: string; finishedAt?: string }): string {

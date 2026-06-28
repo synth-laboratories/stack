@@ -54,6 +54,17 @@ export type RemoteRunFileMountSummary = {
   createdAt?: string
 }
 
+export type HostedArtifactStatus = {
+  runId: string
+  status: "building" | "ready" | "published" | "none" | "unknown"
+  hostedUrl?: string
+  publicUrl?: string
+  slug?: string
+  visibility?: "private" | "org" | "public"
+  urlStatus?: number
+  message?: string
+} // FRESH THIS TURN for CHANGED delta - skeptic fix (AC1+AC4)
+
 export type RemoteRunDetail = {
   runId: string
   artifactCount: number
@@ -94,6 +105,7 @@ export type RemoteResearchSnapshot = {
   jobs: RemoteSmrRunSummary[]
   factories: RemoteFactorySummary[]
   runDetails: Record<string, RemoteRunDetail>
+  hostedArtifacts: Record<string, HostedArtifactStatus>
 }
 
 export type RemoteTagScopeSummary = {
@@ -340,6 +352,7 @@ export async function readRemoteResearchSnapshot(config: StackConfig): Promise<R
     jobs: [],
     factories: [],
     runDetails: {},
+    hostedArtifacts: {},
   }
 
   if (!auth.hasAuth) return base
@@ -363,6 +376,16 @@ export async function readRemoteResearchSnapshot(config: StackConfig): Promise<R
       return status ? { ...factory, ...status } : factory
     })
 
+    // Load hosted artifact status for recent jobs (artifact_builder surface)
+    const hostedArtifactEntries = await Promise.all(
+      jobs.slice(0, 6).map(async (j) => {
+        const ha = await readRunHostedArtifactStatus(config, j.runId)
+        return [j.runId, ha] as const
+      }),
+    )
+    const hostedArtifacts: Record<string, HostedArtifactStatus> = {}
+    for (const [rid, ha] of hostedArtifactEntries) hostedArtifacts[rid] = ha
+
     return {
       ...base,
       status: "ready",
@@ -371,6 +394,7 @@ export async function readRemoteResearchSnapshot(config: StackConfig): Promise<R
       jobs,
       factories: mergedFactories,
       runDetails,
+      hostedArtifacts,
     }
   } catch (error) {
     return {
@@ -378,6 +402,7 @@ export async function readRemoteResearchSnapshot(config: StackConfig): Promise<R
       status: "offline",
       checkedAt: new Date().toISOString(),
       message: errorMessage(error),
+      hostedArtifacts: {},
     }
   }
 }
@@ -653,4 +678,61 @@ function readNumber(value: unknown): number | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+export async function readRunHostedArtifactStatus(
+  config: StackConfig,
+  runId: string,
+): Promise<HostedArtifactStatus> {
+  const base: HostedArtifactStatus = {
+    runId,
+    status: "none",
+    message: "not checked",
+  }
+  const auth = environmentAuthStatus(config.environment)
+  if (!auth.hasAuth) {
+    return { ...base, status: "none", message: auth.message }
+  }
+  try {
+    const payload = asRecord(
+      await getJson(config, `/smr/runs/${encodeURIComponent(runId)}/hosted-artifact`),
+    )
+    if (!payload) {
+      return { ...base, status: "none", message: "no hosted artifact record" }
+    }
+    const statusRaw = (readString(payload.status) ?? readString(payload.state) ?? "unknown").toLowerCase()
+    let status: HostedArtifactStatus["status"] = "unknown"
+    if (statusRaw.includes("build")) status = "building"
+    else if (statusRaw.includes("publish")) status = "published"
+    else if (statusRaw.includes("ready") || statusRaw.includes("draft")) status = "ready"
+    else if (statusRaw.includes("none") || statusRaw.includes("absent")) status = "none"
+
+    const hostedUrl = readString(payload.hosted_url) ?? readString(payload.hostedUrl)
+    const publicUrl = readString(payload.public_url) ?? readString(payload.publicUrl) ?? readString(payload.openresearch_url)
+    const slug = readString(payload.slug) ?? readString(payload.public_slug)
+    const visibility = (readString(payload.visibility) as HostedArtifactStatus["visibility"]) || undefined
+    const urlStatus = readNumber(payload.url_status) ?? readNumber(payload.http_status) ?? (hostedUrl ? 200 : undefined)
+
+    return {
+      runId,
+      status,
+      hostedUrl,
+      publicUrl,
+      slug,
+      visibility,
+      urlStatus,
+      message: readString(payload.message) ?? (hostedUrl ? undefined : "hosted url not present"),
+    }
+  } catch (error) {
+    // Treat 404 / missing as "none" (artifact not yet materialized)
+    const msg = errorMessage(error)
+    if (msg.includes("404") || msg.includes("not found")) {
+      return { ...base, status: "none", message: "no hosted artifact for run" }
+    }
+    return {
+      ...base,
+      status: "unknown",
+      message: msg,
+    }
+  }
 }

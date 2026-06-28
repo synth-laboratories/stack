@@ -8,6 +8,8 @@ set stty_init "rows 45 columns 160"
 file delete -force $smoke_dir
 file mkdir $smoke_dir
 
+source [file join $repo_root scripts tui_smoke_common.tcl]
+
 set seed_path "$smoke_dir/seed-session.json"
 set handle [open $seed_path w]
 puts $handle {
@@ -49,7 +51,7 @@ unset -nocomplain env(SYNTH_STAGING_API_KEY)
 spawn ./bin/stack
 expect "Ask Codex"
 send -- "hello from expect\r"
-expect "Codex is running"
+stack_tui_expect_running_turn
 expect "shell · 0.2s · ok"
 send -- "d"
 expect "stack-tool-output"

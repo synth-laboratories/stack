@@ -49,6 +49,9 @@ export type StackConfig = {
   codexReasoningEffort: string
   codexProvider: string
   codexAuthPlan: string
+  codexSubagentsEnabled: boolean
+  codexSubagentModel: string
+  codexSubagentReasoningEffort: string
   codexPricing: CodexModelPricing[]
   codexPricingSource?: string
   codexPricingOverrides: CodexModelPricing[]
@@ -67,6 +70,8 @@ export type StackConfig = {
   readmeSmokeSuite: string
   readmeSmokeTarget: string
   readmeSmokeInstance: string
+  initialPromptFile?: string
+  autoSubmitInitialPrompt: boolean
 }
 
 type StackConfigFile = {
@@ -99,17 +104,25 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     appRoot,
     process.env.STACK_WORKING_DIR ?? fileConfig.workingDir ?? appRoot,
   )
-  const codexModel = normalizeOption(process.env.STACK_CODEX_MODEL, CODEX_MODEL_OPTIONS, DEFAULT_CODEX_MODEL)
+  const codexModelProfile = parseCodexModelProfile(process.env.STACK_CODEX_MODEL)
+  const codexModel = normalizeOption(
+    codexModelProfile.model,
+    CODEX_MODEL_OPTIONS,
+    DEFAULT_CODEX_MODEL,
+    "STACK_CODEX_MODEL",
+  )
   const codexReasoningEffort = normalizeOption(
-    process.env.STACK_CODEX_REASONING_EFFORT,
+    process.env.STACK_CODEX_REASONING_EFFORT ?? codexModelProfile.reasoningEffort,
     CODEX_REASONING_EFFORT_OPTIONS,
     DEFAULT_CODEX_REASONING_EFFORT,
+    "STACK_CODEX_REASONING_EFFORT",
   )
   const environments = resolveEnvironmentAuthFiles(appRoot, readEnvironments(fileConfig))
   const environmentName = normalizeOption(
     process.env.STACK_ENVIRONMENT ?? fileConfig.defaultEnvironment,
     STACK_ENVIRONMENT_OPTIONS,
     DEFAULT_ENVIRONMENT,
+    process.env.STACK_ENVIRONMENT ? "STACK_ENVIRONMENT" : "defaultEnvironment",
   )
   const environment = environments[environmentName]
   loadEnvironmentAuth(environment)
@@ -125,6 +138,9 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     process.env.STACK_MCP_COMMAND ?? join(appRoot, "bin", "stack-mcp"),
   )
   const stackMcpEnabled = process.env.STACK_CODEX_STACK_MCP !== "0"
+  const codexSubagentsEnabled = readBooleanEnv(process.env.STACK_CODEX_SUBAGENTS, true)
+  const codexSubagentModel = process.env.STACK_CODEX_SUBAGENT_MODEL ?? "gpt-5.4-mini"
+  const codexSubagentReasoningEffort = process.env.STACK_CODEX_SUBAGENT_REASONING_EFFORT ?? "medium"
 
   return {
     appRoot,
@@ -140,6 +156,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
       : defaultCodexArgs(
           codexModel,
           codexReasoningEffort,
+          codexSubagentsEnabled,
           stackMcpEnabled ? stackMcpCommand : undefined,
           environmentName,
         ),
@@ -147,6 +164,9 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     codexReasoningEffort,
     codexProvider: process.env.STACK_CODEX_PROVIDER ?? DEFAULT_CODEX_PROVIDER,
     codexAuthPlan: process.env.STACK_CODEX_AUTH_PLAN ?? DEFAULT_CODEX_AUTH_PLAN,
+    codexSubagentsEnabled,
+    codexSubagentModel,
+    codexSubagentReasoningEffort,
     codexPricing: defaultCodexPricing(),
     codexPricingOverrides: readCodexPricingOverrides(fileConfig),
     codexArgsLocked: Boolean(process.env.STACK_CODEX_ARGS),
@@ -177,6 +197,10 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
       process.env.STACK_README_SMOKE_INSTANCE ??
       fileConfig.readmeSmoke?.instance ??
       "slot1",
+    initialPromptFile: process.env.STACK_INITIAL_PROMPT_FILE
+      ? resolveConfigPath(appRoot, process.env.STACK_INITIAL_PROMPT_FILE)
+      : undefined,
+    autoSubmitInitialPrompt: process.env.STACK_AUTOSUBMIT === "1",
   }
 }
 
@@ -236,6 +260,19 @@ export function setCodexReasoningEffort(config: StackConfig, reasoningEffort: st
   refreshCodexArgs(config)
 }
 
+export function setCodexSubagentsEnabled(config: StackConfig, enabled: boolean): void {
+  config.codexSubagentsEnabled = enabled
+  refreshCodexArgs(config)
+}
+
+export function setCodexSubagentModel(config: StackConfig, model: string): void {
+  config.codexSubagentModel = model
+}
+
+export function setCodexSubagentReasoningEffort(config: StackConfig, reasoningEffort: string): void {
+  config.codexSubagentReasoningEffort = reasoningEffort
+}
+
 export function setStackEnvironment(config: StackConfig, environmentName: StackEnvironmentName): void {
   config.environmentName = environmentName
   config.environment = config.environments[environmentName]
@@ -279,6 +316,7 @@ function refreshCodexArgs(config: StackConfig): void {
   config.codexArgs = defaultCodexArgs(
     config.codexModel,
     config.codexReasoningEffort,
+    config.codexSubagentsEnabled,
     config.stackMcpEnabled ? config.stackMcpCommand : undefined,
     config.environmentName,
   )
@@ -287,6 +325,7 @@ function refreshCodexArgs(config: StackConfig): void {
 export function defaultCodexArgs(
   model: string,
   reasoningEffort: string,
+  subagentsEnabled: boolean,
   stackMcpCommand?: string,
   stackEnvironmentName?: StackEnvironmentName,
 ): string[] {
@@ -300,6 +339,8 @@ export function defaultCodexArgs(
     model,
     "-c",
     `model_reasoning_effort="${reasoningEffort}"`,
+    "-c",
+    `features.multi_agent=${subagentsEnabled ? "true" : "false"}`,
   ]
   if (stackMcpCommand) {
     args.push(
@@ -327,9 +368,39 @@ function parseArgs(value: string): string[] {
     .filter((part) => part.length > 0)
 }
 
-function normalizeOption<T extends string>(value: string | undefined, options: readonly T[], fallback: T): T {
-  if (value !== undefined && options.includes(value as T)) return value as T
-  return fallback
+function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+  if (value === undefined || value.trim().length === 0) return fallback
+  const normalized = value.trim().toLowerCase()
+  if (["1", "true", "yes", "on", "enabled"].includes(normalized)) return true
+  if (["0", "false", "no", "off", "disabled"].includes(normalized)) return false
+  throw new Error(`STACK_CODEX_SUBAGENTS=${JSON.stringify(value)} is not supported; expected on/off`)
+}
+
+function normalizeOption<T extends string>(
+  value: string | undefined,
+  options: readonly T[],
+  fallback: T,
+  label?: string,
+): T {
+  if (value === undefined || value.trim().length === 0) return fallback
+  if (options.includes(value as T)) return value as T
+  throw new Error(
+    `${label ?? "option"}=${JSON.stringify(value)} is not supported; expected one of ${options.join(", ")}`,
+  )
+}
+
+function parseCodexModelProfile(value: string | undefined): { model?: string; reasoningEffort?: string } {
+  const trimmed = value?.trim()
+  if (!trimmed) return {}
+  for (const effort of CODEX_REASONING_EFFORT_OPTIONS) {
+    const suffix = `-${effort}`
+    if (!trimmed.endsWith(suffix)) continue
+    const model = trimmed.slice(0, -suffix.length)
+    if (CODEX_MODEL_OPTIONS.includes(model as (typeof CODEX_MODEL_OPTIONS)[number])) {
+      return { model, reasoningEffort: effort }
+    }
+  }
+  return { model: trimmed }
 }
 
 function readEnvironments(fileConfig: StackConfigFile): Record<StackEnvironmentName, StackEnvironmentConfig> {

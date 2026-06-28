@@ -1,3 +1,4 @@
+import { StyledText, dim, fg, type TextChunk } from "@opentui/core"
 import type { LocalBootstrapSnapshot } from "../local/bootstrap.js"
 import type { OptimizerRunSummary, OptimizerSnapshot } from "../local/optimizers.js"
 import type { RemoteAccountSnapshot } from "../remote/account.js"
@@ -5,6 +6,10 @@ import type { ContainersPanelSnapshot } from "../remote/containers.js"
 import type { HostedOptimizerRunSummary, HostedOptimizerSnapshot } from "../remote/optimizers.js"
 import type { RemoteProjectsPanelSnapshot, RemoteTagScopeSummary } from "../remote/research.js"
 import type { RemoteUsageSnapshot } from "../remote/usage.js"
+import type { StackThreadMetaEvent } from "../thread-events.js"
+import type { SubagentLog } from "./subagents.js"
+import { subagentDisplayName, subagentDurationSeconds, subagentStatusLabel } from "./subagents.js"
+import { stackTuiTheme as theme } from "./theme.js"
 
 export type OpsPanelAgentUsage = {
   codexAuthPlan: string
@@ -12,7 +17,7 @@ export type OpsPanelAgentUsage = {
   codexBudget?: string
 }
 
-export type RightPanelMode = "hosted" | "local"
+export type RightPanelMode = "hosted" | "local" | "actors"
 
 export type OpsPanelFocus = {
   focusMode: string
@@ -30,14 +35,31 @@ export type OpsPanelSetup = {
   localBootstrap?: LocalBootstrapSnapshot
 }
 
+export type OpsPanelMetaEvent = Pick<StackThreadMetaEvent, "event_id" | "type" | "observed_at" | "actor_role" | "payload">
+
+export type OpsPanelActors = {
+  primaryModel: string
+  primaryStatus: string
+  turnCount: number
+  currentTurnStartedAt?: string
+  codexSubagentsEnabled: boolean
+  codexSubagentModel: string
+  codexSubagentReasoningEffort: string
+  codexArgsLocked: boolean
+  codexArgs: string[]
+  subagents: SubagentLog[]
+}
+
 export function opsPanelTitle(mode: RightPanelMode, environmentName: string): string {
+  if (mode === "actors") return `Actors · ${environmentName}`
   return mode === "hosted" ? `Synth Hosted · ${environmentName}` : `Local · ${environmentName}`
 }
 
 export function opsPanelHint(mode: RightPanelMode, focused: boolean): string {
   if (!focused) return "click or tab to focus · scroll"
+  if (mode === "actors") return "p → local · enter toggle subagents · j/k scroll"
   return mode === "hosted"
-    ? "p → local · j/k scroll · r refresh (hosted tab)"
+    ? "p → actors · j/k scroll · r refresh (hosted tab)"
     : "p → hosted · enter starts GEPA · j/k scroll · r refresh"
 }
 
@@ -51,14 +73,19 @@ export function opsPanelText(input: {
   hosted: HostedOptimizerSnapshot
   containers: ContainersPanelSnapshot
   localOptimizers: OptimizerSnapshot
+  actors: OpsPanelActors
   focus: OpsPanelFocus
+  metaEvents: OpsPanelMetaEvent[]
   scrollOffset: number
   visibleRows: number
 }): string {
-  const lines =
-    input.mode === "hosted"
+  const body = input.mode === "actors"
+    ? actorsLines(input.actors)
+    : input.mode === "hosted"
       ? [...hostedSynthLines(input.account, input.usage, input.agentUsage, input.projects, input.hosted, input.focus)]
       : [...localSynthLines(input.containers, input.localOptimizers, input.focus)]
+  const meta = metaEventLines(input.metaEvents)
+  const lines = [...meta, "", ...body]
   const window = scrollWindow(lines, input.scrollOffset, input.visibleRows)
   const header = [...setupHintLines(input), opsPanelHint(input.mode, input.focus.focusMode === "ops"), ""]
   if (lines.length === 0) return [...header, "(empty)"].join("\n")
@@ -66,6 +93,16 @@ export function opsPanelText(input: {
     header.unshift(`scroll ${input.scrollOffset + 1}-${input.scrollOffset + window.length}/${lines.length}`)
   }
   return [...header, ...window].join("\n")
+}
+
+export function renderOpsPanelStyled(input: Parameters<typeof opsPanelText>[0]): StyledText {
+  const text = opsPanelText(input)
+  const chunks: TextChunk[] = []
+  for (const [index, line] of text.split("\n").entries()) {
+    if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
+    chunks.push(...styledOpsLine(line))
+  }
+  return new StyledText(chunks)
 }
 
 export function opsPanelLineCount(input: {
@@ -78,9 +115,37 @@ export function opsPanelLineCount(input: {
   hosted: HostedOptimizerSnapshot
   containers: ContainersPanelSnapshot
   localOptimizers: OptimizerSnapshot
+  actors: OpsPanelActors
   focus: OpsPanelFocus
+  metaEvents: OpsPanelMetaEvent[]
 }): number {
   return opsPanelText({ ...input, scrollOffset: 0, visibleRows: Number.MAX_SAFE_INTEGER }).split("\n").length
+}
+
+function styledOpsLine(line: string): TextChunk[] {
+  if (line.includes("multi_agent on")) return styledStatusLine(line, "multi_agent on", "#3fb950")
+  if (line.includes("multi_agent off")) return styledStatusLine(line, "multi_agent off", theme.synth.red)
+  if (line.includes("features.multi_agent=true")) return styledStatusLine(line, "true", "#3fb950")
+  if (line.includes("features.multi_agent=false")) return styledStatusLine(line, "false", theme.synth.red)
+  if (line === "Launch config" || line === "Actors" || line === "Meta events") {
+    return [fg(theme.fgAccentStrong)(line)]
+  }
+  if (line.includes("(none yet)") || line.includes("F2 preview")) {
+    return [dim(fg(theme.fgMuted)(line))]
+  }
+  return [fg(theme.fgPrimary)(line)]
+}
+
+function styledStatusLine(line: string, needle: string, color: string): TextChunk[] {
+  const index = line.indexOf(needle)
+  if (index < 0) return [fg(theme.fgPrimary)(line)]
+  const before = line.slice(0, index)
+  const after = line.slice(index + needle.length)
+  return [
+    fg(theme.fgPrimary)(before),
+    fg(color)(needle),
+    fg(theme.fgPrimary)(after),
+  ]
 }
 
 function setupHintLines(input: {
@@ -99,6 +164,7 @@ function setupHintLines(input: {
     lines.push("Setup · docker unavailable")
     lines.push("  docker info  # start OrbStack / Docker Desktop")
   }
+  if (input.mode === "actors") return lines
   if (input.mode === "hosted") {
     if (input.projects.status === "offline" && input.setup.hasAuth) {
       const slot = input.setup.localBootstrap?.devSlotInstance ?? "slot1"
@@ -260,6 +326,78 @@ function localSynthLines(
   lines.push("", "Local Optimizers", localOptimizersHeader(localOptimizers), "")
   lines.push(...localOptimizersBody(localOptimizers, focus))
   return lines
+}
+
+function actorsLines(actors: OpsPanelActors): string[] {
+  const enabled = actors.codexSubagentsEnabled ? "on" : "off"
+  const locked = actors.codexArgsLocked ? "locked by STACK_CODEX_ARGS" : "enter toggles next launch"
+  const running = actors.subagents.filter((agent) => agent.status === "running" || agent.status === "spawning").length
+  const done = actors.subagents.filter((agent) => agent.status === "completed" || agent.status === "closed").length
+  const failed = actors.subagents.filter((agent) => agent.status === "errored" || agent.status === "interrupted").length
+  const lines = [
+    `Launch config`,
+    `  multi_agent ${enabled} · ${locked}`,
+    `  ${oneLine(featuresMultiAgentArg(actors.codexArgs), 46)}`,
+    `  subagent model ${oneLine(actors.codexSubagentModel, 18)} · ${actors.codexSubagentReasoningEffort}`,
+    "",
+    `Actors`,
+    `├─ primary ${oneLine(actors.primaryStatus, 9)} · ${oneLine(actors.primaryModel, 14)} · turn ${actors.turnCount}`,
+  ]
+  if (actors.currentTurnStartedAt && actors.primaryStatus === "running") {
+    lines.push(`│  running ${durationSinceLabel(actors.currentTurnStartedAt)}`)
+  }
+  if (actors.subagents.length === 0) {
+    lines.push("└─ workers none parsed from transcript")
+    lines.push("", `Usage`, `  workers 0 · model ${oneLine(actors.codexSubagentModel, 18)}`)
+    lines.push("", "F2 preview · transcript-derived; stackd actor tree lands L5")
+    return lines
+  }
+  actors.subagents.slice(0, 8).forEach((agent, index) => {
+    const last = index === Math.min(actors.subagents.length, 8) - 1
+    const branch = last ? "└─" : "├─"
+    const status = subagentStatusLabel(agent.status)
+    const duration = subagentDurationSeconds(agent)
+    const durationText = duration === undefined ? "" : ` · ${duration.toFixed(1)}s`
+    lines.push(`${branch} ${oneLine(subagentDisplayName(agent), 16)} ${oneLine(status, 8)}${durationText}`)
+    if (agent.agentType && agent.agentType !== agent.name) lines.push(`${last ? " " : "│"}  type ${oneLine(agent.agentType, 22)}`)
+  })
+  if (actors.subagents.length > 8) lines.push(`   ... +${actors.subagents.length - 8} workers`)
+  lines.push("", `Summary · ${done} done · ${running} active · ${failed} failed`)
+  lines.push(...subagentUsageLines(actors))
+  return lines
+}
+
+function subagentUsageLines(actors: OpsPanelActors): string[] {
+  const byType = new Map<string, number>()
+  for (const agent of actors.subagents) {
+    const key = agent.agentType || "default"
+    byType.set(key, (byType.get(key) ?? 0) + 1)
+  }
+  const counts = [...byType.entries()].map(([type, count]) => `${type} ${count}`).join(" · ")
+  return [
+    "",
+    "Usage",
+    `  workers ${actors.subagents.length} · model ${oneLine(actors.codexSubagentModel, 18)}`,
+    counts ? `  by type ${oneLine(counts, 42)}` : "",
+    "  tokens by worker: pending actor traces",
+  ].filter((line) => line.length > 0)
+}
+
+function featuresMultiAgentArg(args: readonly string[]): string {
+  const index = args.findIndex((arg) => arg === "features.multi_agent=true" || arg === "features.multi_agent=false")
+  if (index >= 0) return `toml ${args[index]}`
+  for (let i = 0; i < args.length - 1; i += 1) {
+    if (args[i] === "--enable" && args[i + 1] === "multi_agent") return "flag --enable multi_agent"
+    if (args[i] === "--disable" && args[i + 1] === "multi_agent") return "flag --disable multi_agent"
+  }
+  return "toml not explicit"
+}
+
+function durationSinceLabel(startedAt: string): string {
+  const elapsed = (Date.now() - Date.parse(startedAt)) / 1000
+  if (!Number.isFinite(elapsed) || elapsed < 0) return "-"
+  if (elapsed < 60) return `${elapsed.toFixed(0)}s`
+  return `${Math.floor(elapsed / 60)}m ${Math.floor(elapsed % 60)}s`
 }
 
 function projectsHeader(snapshot: RemoteProjectsPanelSnapshot): string {
@@ -466,6 +604,85 @@ function selectedLocalLines(run: OptimizerRunSummary): string[] {
     `  ${run.status}${run.phase ? ` / ${run.phase}` : ""}`,
     run.error ? `  issue ${oneLine(run.error, 36)}` : "",
   ].filter((line) => line.length > 0)
+}
+
+function metaEventLines(events: OpsPanelMetaEvent[]): string[] {
+  const visible = events.filter(isVisualMetaEvent).slice(-5).reverse()
+  const lines = ["Meta events"]
+  if (visible.length === 0) return [...lines, "  (none yet)"]
+  for (const event of visible) {
+    lines.push(`  ${metaEventLabel(event)} · ${shortTime(event.observed_at)} · ${metaEventSubject(event)}`)
+  }
+  return lines
+}
+
+function isVisualMetaEvent(event: OpsPanelMetaEvent): boolean {
+  return (
+    event.type === "skill.read" ||
+    event.type === "guidance.query" ||
+    event.type === "guidance.read" ||
+    event.type === "guidance.used" ||
+    event.type === "guidance.impact_judged" ||
+    event.type === "monitor.skill_context_push" ||
+    event.type === "monitor.wake" ||
+    isSkillFileReadEvent(event)
+  )
+}
+
+function metaEventLabel(event: OpsPanelMetaEvent): string {
+  if (event.type === "skill.read" || isSkillFileReadEvent(event)) return "skill"
+  if (event.type === "monitor.wake") return "monitor"
+  if (event.type === "monitor.skill_context_push") return "push"
+  if (event.type === "guidance.query") return "search"
+  if (event.type === "guidance.impact_judged") return "impact"
+  if (event.type.startsWith("guidance.")) return "guide"
+  return oneLine(event.type, 8)
+}
+
+function metaEventSubject(event: OpsPanelMetaEvent): string {
+  const payload = event.payload
+  const subject =
+    stringPayload(payload, "skill_id") ??
+    stringPayload(payload, "skill_name") ??
+    stringPayload(payload, "guidance_id") ??
+    stringPayload(payload, "query") ??
+    skillNameFromCommand(stringPayload(payload, "command")) ??
+    stringPayload(payload, "wake_reason") ??
+    stringPayload(payload, "reason") ??
+    event.event_id
+  const suffix = metaEventSuffix(event)
+  return oneLine(`${subject}${suffix}`, 34)
+}
+
+function metaEventSuffix(event: OpsPanelMetaEvent): string {
+  const impact = stringPayload(event.payload, "impact")
+  if (impact) return ` · ${impact}`
+  const resultCount = numberPayload(event.payload, "result_count")
+  if (resultCount !== undefined) return ` · ${resultCount} hits`
+  const actor = event.actor_role ? ` · ${event.actor_role}` : ""
+  return actor
+}
+
+function stringPayload(payload: Record<string, unknown>, key: string): string | undefined {
+  const value = payload[key]
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+function numberPayload(payload: Record<string, unknown>, key: string): number | undefined {
+  const value = payload[key]
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function isSkillFileReadEvent(event: OpsPanelMetaEvent): boolean {
+  if (event.type !== "agent.tool.completed") return false
+  const command = stringPayload(event.payload, "command")
+  return Boolean(skillNameFromCommand(command))
+}
+
+function skillNameFromCommand(command: string | undefined): string | undefined {
+  if (!command) return undefined
+  const match = command.match(/\/skills\/([^/"'\s]+)\/SKILL\.md/)
+  return match?.[1]
 }
 
 function countHostedRuns(runs: HostedOptimizerRunSummary[]): { active: number; done: number; failed: number } {

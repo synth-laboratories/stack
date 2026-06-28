@@ -17,19 +17,30 @@ export_stackd() {
     return 0
   fi
 
-  local session_id
-  session_id="$(curl -fsS "${api_url}/status" | python3 -c "import json,sys; d=json.load(sys.stdin); s=d.get('latest_session') or {}; print(s.get('id',''))")"
+  local session_id=""
+  if [[ -f "${packet_dir}/codex/stack_session_id.txt" ]]; then
+    session_id="$(tr -d '[:space:]' <"${packet_dir}/codex/stack_session_id.txt")"
+  fi
+  if [[ -z "${session_id}" ]]; then
+    session_id="$(curl -fsS "${api_url}/status" | python3 -c "import json,sys; d=json.load(sys.stdin); s=d.get('latest_session') or {}; print(s.get('id',''))")"
+  fi
   if [[ -z "${session_id}" ]]; then
     log "no latest session in stackd /status; skipping export"
     write_pipeline_state "${packet_dir}" "export" "skipped" "no session"
     return 0
   fi
 
+  python3 "${SCRIPT_DIR}/trace_stackd.py" wait-monitor \
+    --config-json "${config_json}" \
+    --packet-dir "${packet_dir}" \
+    --timeout-seconds 45 \
+    --poll-seconds 1
+
   log "exporting stackd session ${session_id}"
   local export_json
   export_json="$(curl -fsS "${api_url}/threads/${session_id}/export")"
   local export_dir
-  export_dir="$(python3 -c "import json,sys; print(json.load(sys.stdin)['export_dir'])" <<<"${export_json}")"
+  export_dir="$(EXPORT_JSON="${export_json}" python3 -c "import json,os; print(json.loads(os.environ['EXPORT_JSON'])['export_dir'])")"
 
   mkdir -p "${packet_dir}/stack-session"
   cp -R "${export_dir}/." "${packet_dir}/stack-session/stackd-export/" 2>/dev/null || true

@@ -8,7 +8,7 @@ RSYNC_EXCLUDES := \
 	--exclude .git \
 	--exclude .DS_Store
 
-.PHONY: install uninstall install-brew uninstall-brew deps check install-skills version sync-version bump-dev release-promote release-check homebrew-formulas smoke-tui smoke-tui-all smoke-tui-gepa smoke-tui-resilience smoke-stackd
+.PHONY: install uninstall install-brew uninstall-brew deps check install-skills version sync-version bump-dev release-promote release-check release-guard-b0 homebrew-formulas smoke-tui smoke-tui-all smoke-tui-gepa smoke-tui-resilience smoke-stackd smoke-bombadil-b0 stackeval-banking77-local-gepa
 
 deps:
 	cd "$(STACK_ROOT)" && bun install
@@ -31,6 +31,9 @@ smoke-tui-all:
 smoke-stackd:
 	cd "$(STACK_ROOT)" && bun run smoke:stackd
 
+smoke-bombadil-b0:
+	cd "$(STACK_ROOT)" && bun run smoke:bombadil:b0
+
 version:
 	@cd "$(STACK_ROOT)" && bun -e 'import { printStackVersion } from "./src/version.ts"; printStackVersion("stack")'
 
@@ -46,6 +49,12 @@ release-promote:
 
 release-check:
 	cd "$(STACK_ROOT)" && bun run release-check
+
+release-guard-b0:
+	cd "$(STACK_ROOT)" && bun run release:guard:b0
+
+stackeval-banking77-local-gepa:
+	cd "$(STACK_ROOT)" && bun run stackeval:banking77-local-gepa
 
 homebrew-formulas:
 	cd "$(STACK_ROOT)" && bun run scripts/update_homebrew_formula.ts $(if $(FETCH_STABLE),--fetch-stable,)

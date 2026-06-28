@@ -8,23 +8,22 @@ LIB_DIR="${SCRIPT_DIR}/lib"
 source "${LIB_DIR}/common.sh"
 
 usage() {
-  cat <<'EOF'
-Usage: stackeval run <task-id> [options]
-
-Options:
-  --preset NAME       smoke | dev | gate (default from pipeline.toml)
-  --packet-dir PATH   reuse existing packet directory
-  --from-stage NAME   resume from stage (prepare|preflight|harness|harvest|export|grade|review|finalize)
-  --skip STAGES       comma-separated stages to skip
-  --prepare-only      create packet and exit
-  --no-grade          skip grader + reviewer
-  --no-harness        skip GEPA harness (export/grade only)
-  -h, --help
-
-Examples:
-  stackeval run banking77-local-gepa --preset smoke
-  stackeval run banking77-local-gepa --preset gate --from-stage harvest
-EOF
+  printf '%s\n' \
+    "Usage: stackeval run <task-id> [options]" \
+    "" \
+    "Options:" \
+    "  --preset NAME       smoke | dev | gate (default from pipeline.toml)" \
+    "  --packet-dir PATH   reuse existing packet directory" \
+    "  --from-stage NAME   resume from stage (prepare|preflight|harness|harvest|export|grade|review|finalize)" \
+    "  --skip STAGES       comma-separated stages to skip" \
+    "  --prepare-only      create packet and exit" \
+    "  --no-grade          skip grader + reviewer" \
+    "  --no-harness        skip GEPA harness (export/grade only)" \
+    "  -h, --help" \
+    "" \
+    "Examples:" \
+    "  stackeval run banking77-local-gepa --preset smoke" \
+    "  stackeval run banking77-local-gepa --preset gate --from-stage harvest"
 }
 
 TASK=""

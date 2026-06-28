@@ -428,9 +428,9 @@ function styleAnnotatedTranscriptLine(line: AnnotatedTranscriptLine): TextChunk[
       if (line.part === "label") return [bold(fg(palette.agentLabel)(text))]
       return [fg(palette.agentBody)(text)]
     case "thinking":
-      if (line.part === "inline") return [dim(fg(palette.thinkingLabel)(text))]
-      if (line.part === "label") return [dim(fg(palette.thinkingLabel)(text))]
-      return [dim(fg(palette.thinkingBody)(text))]
+      if (line.part === "inline") return [dim(fg(palette.planningLabel)(text))]
+      if (line.part === "label") return [bold(fg(palette.planningLabel)(text))]
+      return [dim(fg(palette.planningBody)(text))]
     case "tool":
     case "tool_group":
       if (line.part === "inline") return [dim(fg(palette.toolLabel)(text))]
@@ -461,7 +461,7 @@ function blockToLines(
   const expanded = options.showDetails || options.expandedBlockIds.has(block.id)
   switch (block.kind) {
     case "user":
-      return sectionLines("▌ you", indent(block.text), columns)
+      return sectionLines("›", ` ${block.text}`, columns, true)
     case "thinking":
       return renderThinkingBlock(block, columns, expanded, options)
     case "tool": {
@@ -479,7 +479,7 @@ function blockToLines(
     case "subagent_group":
       return renderSubagentGroupBlock(block, subagentLogs, columns, expanded, options)
     case "agent":
-      return sectionLines(`▌ ${harnessSpeakerLabel(undefined, options.harnessCommand)}`, indent(block.text), columns)
+      return sectionLines(harnessSpeakerLabel(undefined, options.harnessCommand), indent(block.text), columns)
     case "stack":
       return sectionLines("⎿ stack", indent(block.text), columns)
     default:
@@ -495,12 +495,12 @@ function renderThinkingBlock(
 ): string[] {
   const duration = thinkingDurationLabel(block)
   const label = block.live && options.running
-    ? `⎿ thinking ▸ ${spinner(options.spinnerFrame)}`
-    : `⎿ thinking ${expanded ? "▾" : "▸"}${duration}`
+    ? `◆ Thinking ${spinner(options.spinnerFrame)}`
+    : `◆ Thought${duration}${expanded ? " ▾" : ""}`
   const text = cleanThinkingText(block.text)
   const placeholder = !text || text === "…"
   if (!expanded || placeholder) {
-    const summary = placeholder ? "" : ` ${truncateInline(text, 72)}`
+    const summary = placeholder ? "" : ` ${truncateInline(text, 96)}`
     return sectionLines(label.trim(), summary.trim(), columns, true)
   }
   return sectionLines(label, indent(text), columns)
@@ -666,7 +666,7 @@ function thinkingDurationLabel(block: Extract<TranscriptBlock, { kind: "thinking
   const start = new Date(block.startedAt).getTime()
   const seconds = Math.max(0, (end - start) / 1000)
   if (!Number.isFinite(seconds) || seconds <= 0) return ""
-  return `  ${seconds.toFixed(1)}s`
+  return ` for ${seconds.toFixed(1)}s`
 }
 
 function toolGroupDurationLabel(block: Extract<TranscriptBlock, { kind: "tool_group" }>): string {

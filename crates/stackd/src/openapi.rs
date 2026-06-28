@@ -44,9 +44,72 @@ pub async fn doc() -> Json<Value> {
             },
             "/threads/{stackSessionId}/trace": {
                 "get": {
-                    "summary": "Return Stack/Codex trace pointers and turn summaries",
+                    "summary": "Return Stack/Codex trace pointers, turn summaries, and meta-harness events",
                     "parameters": [{ "name": "stackSessionId", "in": "path", "required": true }],
                     "responses": { "200": { "description": "trace response" }, "404": { "description": "missing session" } }
+                }
+            },
+            "/threads/{stackSessionId}/events": {
+                "get": {
+                    "summary": "Return thread-scoped Stack core agent and meta-harness events",
+                    "parameters": [{ "name": "stackSessionId", "in": "path", "required": true }],
+                    "responses": { "200": { "description": "array of core/meta events" }, "404": { "description": "missing session" } }
+                },
+                "post": {
+                    "summary": "Append a thread-scoped Stack core agent or meta-harness event",
+                    "parameters": [{ "name": "stackSessionId", "in": "path", "required": true }],
+                    "requestBody": { "required": true, "description": "Stack event object; stackd fills thread_id, observed_at, event_id, and payload defaults" },
+                    "responses": { "200": { "description": "appended event and event log path" }, "400": { "description": "invalid event" } }
+                }
+            },
+            "/events/stream": {
+                "get": {
+                    "summary": "Server-sent event stream for a thread event log",
+                    "parameters": [
+                        { "name": "thread_id", "in": "query", "required": true },
+                        { "name": "after_event_id", "in": "query", "required": false },
+                        { "name": "poll_ms", "in": "query", "required": false }
+                    ],
+                    "responses": { "200": { "description": "text/event-stream of Stack events" }, "400": { "description": "invalid thread id" } }
+                }
+            },
+            "/threads/{stackSessionId}/actors": {
+                "get": {
+                    "summary": "Return thread-scoped Stack actor checkpoint state",
+                    "parameters": [{ "name": "stackSessionId", "in": "path", "required": true }],
+                    "responses": { "200": { "description": "array of actor state objects" }, "404": { "description": "missing session" } }
+                }
+            },
+            "/threads/{stackSessionId}/monitors/{monitorId}/pause": {
+                "post": {
+                    "summary": "Pause a monitor actor and emit monitor.paused",
+                    "parameters": [
+                        { "name": "stackSessionId", "in": "path", "required": true },
+                        { "name": "monitorId", "in": "path", "required": true }
+                    ],
+                    "responses": { "200": { "description": "updated actor state and event" }, "404": { "description": "missing session" } }
+                }
+            },
+            "/threads/{stackSessionId}/monitors/{monitorId}/resume": {
+                "post": {
+                    "summary": "Resume a monitor actor and emit monitor.resumed",
+                    "parameters": [
+                        { "name": "stackSessionId", "in": "path", "required": true },
+                        { "name": "monitorId", "in": "path", "required": true }
+                    ],
+                    "requestBody": { "required": false, "description": "{ strictness?: passive|conservative|aggressive }" },
+                    "responses": { "200": { "description": "updated actor state and event" }, "404": { "description": "missing session" } }
+                }
+            },
+            "/threads/{stackSessionId}/monitors/{monitorId}/mode": {
+                "post": {
+                    "summary": "Set monitor strictness and emit monitor.mode_changed or monitor.paused",
+                    "parameters": [
+                        { "name": "stackSessionId", "in": "path", "required": true },
+                        { "name": "monitorId", "in": "path", "required": true }
+                    ],
+                    "requestBody": { "required": true, "description": "{ strictness: off|passive|conservative|aggressive }" },
+                    "responses": { "200": { "description": "updated actor state and event" }, "400": { "description": "invalid strictness" }, "404": { "description": "missing session" } }
                 }
             },
             "/threads/{stackSessionId}/export": {

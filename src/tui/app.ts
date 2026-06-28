@@ -1,13 +1,20 @@
 import {
   Box,
   createCliRenderer,
+  StyledText,
   Text,
+  dim,
+  fg,
   type CliRenderer,
+  type TextChunk,
 } from "@opentui/core"
+import { renderAgentContextStyled } from "./context-rail.js"
+import { renderThreadsRailStyled } from "./threads-rail.js"
 import { stackTuiTheme as theme } from "./theme.js"
 import { randomUUID } from "node:crypto"
+import { readFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { basename, relative, resolve } from "node:path"
+import { basename, relative, resolve, join } from "node:path"
 import {
   CODEX_MODEL_OPTIONS,
   CODEX_REASONING_EFFORT_OPTIONS,
@@ -15,13 +22,16 @@ import {
   environmentAuthStatus,
   setCodexModel,
   setCodexReasoningEffort,
+  setCodexSubagentModel,
+  setCodexSubagentReasoningEffort,
+  setCodexSubagentsEnabled,
   setStackEnvironment,
   type StackConfig,
   type StackEnvironmentName,
 } from "../config.js"
+import { syncStackSubagentAgentFiles } from "../codex/subagent-config.js"
 import {
   agentContextRailLineCount,
-  agentContextRailText,
   emptyAgentContext,
   extractCodexThreadIdFromTurns,
   mergeAgentContext,
@@ -29,6 +39,14 @@ import {
   readAgentContextFromSession,
   type AgentContextSnapshot,
 } from "../codex/agent-context.js"
+import {
+  emptyGoalContext,
+  goalContextStripLines,
+  mergeGoalContext,
+  parseGoalFromCodexJsonLine,
+  readGoalFromSession,
+  type CodexGoalSnapshot,
+} from "../codex/goal-context.js"
 import {
   formatCodexBudgetSuffix,
   readCodexRateLimitsFromSession,
@@ -38,9 +56,29 @@ import {
 import {
   buildSessionUsageSummary,
   formatSessionUsageSummary,
-  formatThreadUsageLine,
 } from "../codex/usage-cost.js"
-import { runCodexTurn } from "../codex/adapter.js"
+import {
+  emptyMonitorSnapshot,
+  cycleMonitorMode,
+  monitorRailLines,
+  refreshMonitorSnapshot,
+  runMonitorAfterTurn,
+  runMonitorForNewEvents,
+  type StackMonitorSnapshot,
+} from "../monitor.js"
+import { recordCoreAgentEventsFromCodexLine } from "../core-agent-events.js"
+import {
+  CodexAppServerSession,
+  probeCodexAppServerAvailability,
+  runCodexAppServerTurn,
+  runCodexTurn,
+} from "../codex/app-server-session.js"
+import { resolveCodexTransport } from "../codex/app-server-client.js"
+import {
+  createStackAppShutdown,
+  registerFatalProcessHandlers,
+  registerRendererShutdown,
+} from "./terminal-cleanup.js"
 import {
   isEvalLaunchActive,
   readReadmeSmokeEvalLaunch,
@@ -66,6 +104,7 @@ import { authSetupHint, readRemoteAccountSnapshot, type RemoteAccountSnapshot } 
 import {
   downloadRemoteOutput,
   executeRemoteRunAction,
+  openUrlInSystemBrowser,
   previewRemoteOutput,
   previewSavedRemoteDownload,
   previewRemoteFactoryWakeDue,
@@ -97,6 +136,8 @@ import {
 import {
   readRemoteProjectsPanelSnapshot,
   readRemoteResearchSnapshot,
+  readRunHostedArtifactStatus,
+  type HostedArtifactStatus,
   type RemoteFactorySummary,
   type RemoteProjectsPanelSnapshot,
   type RemoteRunDetail,
@@ -114,6 +155,7 @@ import {
   type StackSessionUsageSummary,
   writeSessionLog,
 } from "../session.js"
+import { readThreadMetaEvents, type StackThreadMetaEvent } from "../thread-events.js"
 import {
   appendStackBlock,
   appendUserBlock,
@@ -147,11 +189,25 @@ import {
   opsPanelLineCount,
   opsPanelText,
   opsPanelTitle,
+  renderOpsPanelStyled,
   type OpsPanelAgentUsage,
+  type OpsPanelMetaEvent,
   type RightPanelMode,
 } from "./ops-panel.js"
 
-type FocusMode = "agent" | "model" | "effort" | "environment" | "ops" | "optimizers" | "hosted" | "remote" | "history"
+type FocusMode =
+  | "agent"
+  | "model"
+  | "effort"
+  | "subagent-model"
+  | "subagent-effort"
+  | "subagents"
+  | "environment"
+  | "ops"
+  | "optimizers"
+  | "hosted"
+  | "remote"
+  | "history"
 type LiveOpsMode = "local" | "remote"
 type HostedOptimizerActionKind = "cancel-run" | "preview-artifact" | "download-artifact"
 type MediationTargetKind = "remote-run" | "factory" | "hosted-optimizer"
@@ -221,6 +277,13 @@ type AppState = {
   threadsRailColumns: number
   harnessCommand: string
   codexRateLimits?: CodexRateLimitsSnapshot
+  goalContext: CodexGoalSnapshot
+  planningColumns: number
+  codexTransport: "app-server" | "exec"
+  queuedMessages: string[]
+  lastSteerHint?: string
+  monitorSnapshot: StackMonitorSnapshot
+  metaEvents: StackThreadMetaEvent[]
 }
 
 type MountedView = {
@@ -236,12 +299,46 @@ type StackKeyEvent = {
   stopPropagation?: () => void
 }
 
-const COMMON_FOCUS_ORDER: FocusMode[] = ["agent", "model", "effort", "environment", "ops"]
+type PanelMouseEvent = {
+  preventDefault?: () => void
+  stopPropagation?: () => void
+}
+
+type PanelFocusHandlers = {
+  onMouseDown(event: PanelMouseEvent): void
+}
+
+function panelFocusHandlers(state: AppState, focusMode: FocusMode, refresh: () => void): PanelFocusHandlers {
+  return {
+    onMouseDown(event) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      state.focusMode = focusMode
+      refresh()
+    },
+  }
+}
+
+function defaultLiveOpsFocus(state: AppState): FocusMode {
+  return state.liveOpsMode === "local" ? "optimizers" : "remote"
+}
+
+const COMMON_FOCUS_ORDER: FocusMode[] = [
+  "agent",
+  "model",
+  "effort",
+  "subagent-model",
+  "subagent-effort",
+  "subagents",
+  "environment",
+  "ops",
+]
 const LOCAL_FOCUS_ORDER: FocusMode[] = [...COMMON_FOCUS_ORDER, "optimizers", "history"]
 const REMOTE_FOCUS_ORDER: FocusMode[] = [...COMMON_FOCUS_ORDER, "hosted", "remote", "history"]
 const SESSION_HISTORY_VISIBLE_ROWS = 7
 
 export async function runStackApp(options: StackAppOptions): Promise<void> {
+  syncStackSubagentAgentFiles(options.config)
   const optimizerSnapshot = await readOptimizerSnapshot(options.config)
   const optimizerCliAvailable = isOptimizerCliAvailable(options.config.optimizerCommand)
   const localStackBoot = await ensureLocalStackBootstrap(options.config)
@@ -265,7 +362,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     spinnerFrame: 0,
     emaTokensPerSecond: seedEmaFromTurns(options.session.turns),
     blocks: [],
-    inputBuffer: "",
+    inputBuffer: readInitialPrompt(options.config),
     toolLogs: [],
     subagentLogs: [],
     history: await listSessionHistory(options.config.sessionLogDir, options.config.codexPricing),
@@ -278,7 +375,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     remoteResearchSnapshot,
     remoteProjectsSnapshot,
     containersSnapshot,
-    rightPanelMode: options.config.environmentName === "dev" ? "local" : "hosted",
+    rightPanelMode: "actors",
     opsScrollOffset: 0,
     hostedOptimizerSnapshot,
     evalLaunch: readReadmeSmokeEvalLaunch(options.config),
@@ -290,8 +387,27 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     selectedHostedOptimizerArtifactIndex: 0,
     mediationTargetKind: "remote-run",
     agentContext: emptyAgentContext(options.config.workspaceRoot),
+    goalContext: emptyGoalContext(),
+    planningColumns: 80,
     threadsRailColumns: 40,
     harnessCommand: options.config.codexCommand,
+    codexTransport: resolveCodexTransport(),
+    queuedMessages: [],
+    monitorSnapshot: emptyMonitorSnapshot(options.config.appRoot),
+    metaEvents: readThreadMetaEvents(options.config.appRoot, options.session.id),
+  }
+  let codexSessionHandle: { session?: CodexAppServerSession } = {}
+  if (state.codexTransport === "app-server") {
+    const appServerAvailable = await probeCodexAppServerAvailability(options.config)
+    if (!appServerAvailable) {
+      state.codexTransport = "exec"
+    } else {
+      codexSessionHandle.session = new CodexAppServerSession({
+        config: options.config,
+        resumeThreadId: options.session.codexThreadId,
+        onOutput: () => undefined,
+      })
+    }
   }
   refreshSessionThroughput(state, options.session.turns)
   selectEvalRunIfKnown(state)
@@ -307,6 +423,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const refreshHistory = async () => {
     state.history = await listSessionHistory(options.config.sessionLogDir, options.config.codexPricing)
     state.selectedHistoryIndex = clampIndex(state.selectedHistoryIndex, state.history.length)
+  }
+
+  const refreshMetaEvents = () => {
+    state.metaEvents = readThreadMetaEvents(options.config.appRoot, options.session.id)
   }
 
   let spinnerInterval: ReturnType<typeof setInterval> | undefined
@@ -412,19 +532,23 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     await refreshAfterEnvironmentChange(next)
   }
 
-  const submitFromCurrentInput = (key?: StackKeyEvent): boolean => {
-    if (!view || state.focusMode !== "agent" || state.status === "running") return false
+  const submitFromCurrentInput = (key?: StackKeyEvent, forceQueue = false): boolean => {
+    if (!view || state.focusMode !== "agent") return false
     const prompt = state.inputBuffer.trim()
     if (!prompt) return false
     key?.preventDefault?.()
     key?.stopPropagation?.()
-    submitInputValue(prompt, options, state, renderer, remount, refreshHistory)
+    if (prompt === "/exit") {
+      exitStack()
+      return true
+    }
+    submitInputValue(prompt, options, state, codexSessionHandle, renderer, remount, refreshHistory, refreshMetaEvents, forceQueue)
     return true
   }
 
   let renderer: CliRenderer
   renderer = await createCliRenderer({
-    exitOnCtrlC: true,
+    exitOnCtrlC: false,
     prependInputHandlers: [
       (sequence: string) => {
         return handleRawInput(
@@ -442,7 +566,6 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
           refreshRemoteProjects,
           refreshHostedOptimizers,
           refreshRemoteOpsPanel,
-          () => closeRenderer(renderer, spinnerInterval, optimizerInterval, projectsInterval, rateLimitsInterval),
           cycleStackEnvironmentFromUi,
         )
       },
@@ -454,11 +577,30 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     view = mountView(renderer, options, state, view)
   }
 
+  const shutdown = createStackAppShutdown()
+  const exitStack = () => shutdown.run(0)
+
+  if (options.config.autoSubmitInitialPrompt && state.inputBuffer.trim()) {
+    setTimeout(() => {
+      if (state.status === "running") return
+      submitInputValue(
+        state.inputBuffer.trim(),
+        options,
+        state,
+        codexSessionHandle,
+        renderer,
+        remount,
+        refreshHistory,
+        refreshMetaEvents,
+      )
+    }, 250)
+  }
+
   spinnerInterval = setInterval(() => {
     if (state.status !== "running") return
     if (isRecentAgentScroll(state)) return
     state.spinnerFrame += 1
-    remount()
+    view?.root.requestRender()
   }, 120)
 
   optimizerInterval = setInterval(() => {
@@ -476,12 +618,28 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     void refreshCodexRateLimits().finally(remount)
   }, 120_000)
 
+  registerFatalProcessHandlers(shutdown)
+  registerRendererShutdown(shutdown, renderer, [spinnerInterval, optimizerInterval, projectsInterval, rateLimitsInterval], [
+    () => {
+      void codexSessionHandle.session?.close()
+    },
+  ])
+
   renderer._internalKeyInput.onInternal("keypress", (key: StackKeyEvent) => {
+    if (isEnterKey(key) && key.ctrl && state.focusMode === "agent") {
+      submitFromCurrentInput(key, true)
+      return
+    }
+
     if (isEnterKey(key) && submitFromCurrentInput(key)) return
   })
 
   renderer.keyInput.on("keypress", (key: StackKeyEvent) => {
-    if (key.ctrl && key.name === "c") return
+    if (key.ctrl && key.name === "c") {
+      appendStackBlock(state.blocks, "type /exit to quit")
+      remount()
+      return
+    }
     if (key.name === "tab") {
       state.focusMode = nextFocusMode(state.focusMode, state.liveOpsMode)
       remount()
@@ -494,9 +652,25 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
+    if (isEnterKey(key) && key.ctrl && state.focusMode === "agent") {
+      submitFromCurrentInput(key, true)
+      return
+    }
+
+    if (isEnterKey(key) && submitFromCurrentInput(key)) {
+      return
+    }
+
     if (key.name === "escape") {
-      if (state.status === "running") return
-      closeRenderer(renderer, spinnerInterval, optimizerInterval, projectsInterval, rateLimitsInterval)
+      if (state.status === "running" && codexSessionHandle.session) {
+        appendStackBlock(state.blocks, "interrupt requested")
+        void codexSessionHandle.session.interrupt().finally(remount)
+        return
+      }
+      if (state.inputBuffer.length > 0) {
+        state.inputBuffer = ""
+        remount()
+      }
       return
     }
 
@@ -508,6 +682,13 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
     if (key.name === "d" && state.focusMode === "agent") {
       state.showDetails = !state.showDetails
+      remount()
+      return
+    }
+
+    if (key.name === "M" && state.focusMode === "agent") {
+      state.monitorSnapshot = cycleMonitorMode(options.config.appRoot, options.session.id)
+      appendStackBlock(state.blocks, `monitor ${state.monitorSnapshot.strictness}`)
       remount()
       return
     }
@@ -576,6 +757,24 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
+    if (state.focusMode === "subagent-model") {
+      handleSubagentModelKey(key, options.config)
+      remount()
+      return
+    }
+
+    if (state.focusMode === "subagent-effort") {
+      handleSubagentEffortKey(key, options.config)
+      remount()
+      return
+    }
+
+    if (state.focusMode === "subagents") {
+      handleSubagentsKey(key, options.config)
+      remount()
+      return
+    }
+
     if (state.focusMode === "environment") {
       void handleEnvironmentKey(key, options, state, refreshRemoteAccount, refreshRemoteUsage, refreshRemoteResearch, refreshRemoteProjects, refreshHostedOptimizers, remount)
     }
@@ -607,16 +806,21 @@ function createView(
 ): MountedView {
   const switcher = switcherPanel(options.config, state)
   const transcriptViewport = transcriptViewportMetrics(renderer, state)
+  state.planningColumns = transcriptViewport.columns
   updateThreadsRailColumns(renderer, state)
   const threadRows = threadsVisibleRows(renderer, state)
   const projectsRows = opsVisibleRows(renderer, state)
   const opsPanelInput = buildOpsPanelInput(options, state)
+  const focusHistory = panelFocusHandlers(state, "history", refresh)
+  const focusAgent = panelFocusHandlers(state, "agent", refresh)
+  const focusOps = panelFocusHandlers(state, "ops", refresh)
+  const focusLiveOps = panelFocusHandlers(state, defaultLiveOpsFocus(state), refresh)
   const agentChildren = [
     agentHeaderBar(options, state, refresh, applyStackEnvironmentFromUi),
-    ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.fgAccentStrong })] : []),
+    ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
     Text({ content: renderTranscriptPanel(state, transcriptViewport), flexGrow: 1 }),
     ...(switcher ? [switcher] : []),
-    agentControlRow(options.config, state),
+    agentControlRow(options, state, transcriptViewport.columns),
   ]
 
   const root = Box(
@@ -625,6 +829,7 @@ function createView(
       flexDirection: "column",
       width: "100%",
       height: "100%",
+      backgroundColor: theme.bgCanvas,
       padding: 1,
       gap: 1,
     },
@@ -646,18 +851,16 @@ function createView(
             borderStyle: "single",
             borderColor: state.focusMode === "history" ? theme.borderActive : theme.borderInactive,
             title: threadsRailTitle(options),
+            backgroundColor: theme.bgPanel,
             flexGrow: state.railsVisible ? 0 : 1,
             flexDirection: "column",
             padding: 1,
+            ...focusHistory,
             onMouseScroll(event) {
               handleThreadsMouseScroll(event, state, refresh)
             },
           },
-          Text({ content: threadsRailText(options, state, threadRows), fg: theme.fgPrimary, flexGrow: 1 }),
-          Text({
-            content: agentContextRailText(state.agentContext, options.config.workspaceRoot, state.threadsRailColumns),
-            fg: theme.fgSecondary,
-          }),
+          Text({ content: renderThreadsRailStyled(buildThreadsRailInput(options, state, threadRows)), flexGrow: 1 }),
         ),
         ...(state.railsVisible
           ? [
@@ -667,8 +870,10 @@ function createView(
                   borderStyle: "single",
                   borderColor: isLiveOpsFocus(state.focusMode) ? theme.borderActive : theme.borderInactive,
                   title: `Agent Bridge: ${liveOpsModeLabel(state.liveOpsMode)}`,
+                  backgroundColor: theme.bgPanel,
                   flexGrow: 1,
                   padding: 1,
+                  ...focusLiveOps,
                 },
                 Text({ content: liveOperationsRailText(options, state), fg: theme.fgPrimary }),
               ),
@@ -687,10 +892,12 @@ function createView(
               ? theme.borderActive
               : theme.borderInactive,
           title: "Agent",
+          backgroundColor: theme.bgCanvas,
           flexGrow: 1,
           padding: 1,
           flexDirection: "column",
           gap: 1,
+          ...focusAgent,
           onMouseScroll(event) {
             event.preventDefault()
             event.stopPropagation()
@@ -718,22 +925,27 @@ function createView(
             borderStyle: "single",
             borderColor: state.focusMode === "ops" ? theme.borderActive : theme.borderInactive,
             title: opsPanelTitle(state.rightPanelMode, options.config.environmentName),
+            backgroundColor: theme.bgPanel,
             flexGrow: state.railsVisible ? 1 : 1,
             padding: 1,
-            onMouseDown(event) {
-              event.preventDefault?.()
-              event.stopPropagation?.()
-              state.focusMode = "ops"
-              refresh()
-            },
+            ...focusOps,
             onMouseScroll(event) {
-              state.focusMode = "ops"
               handleOpsMouseScroll(event, state, opsPanelInput, projectsRows, refresh)
             },
           },
           Text({
-            content: opsPanelText({ ...opsPanelInput, scrollOffset: state.opsScrollOffset, visibleRows: projectsRows }),
-            fg: theme.fgPrimary,
+            content: renderOpsPanelStyled({
+              ...opsPanelInput,
+              scrollOffset: state.opsScrollOffset,
+              visibleRows: projectsRows,
+            }),
+            flexGrow: 1,
+          }),
+          Text({
+            content: renderAgentContextStyled(state.agentContext, options.config.workspaceRoot, rightContextColumns(renderer)),
+          }),
+          Text({
+            content: renderMonitorRailStyled(state.monitorSnapshot, rightContextColumns(renderer)),
           }),
         ),
         ...(state.railsVisible
@@ -747,8 +959,10 @@ function createView(
                       ? theme.borderActive
                       : theme.borderInactive,
                   title: "Session",
+                  backgroundColor: theme.bgPanel,
                   flexGrow: 1,
                   padding: 1,
+                  ...focusHistory,
                   onMouseScroll(event) {
                     handleSessionsMouseScroll(event, state, transcriptViewport, refresh)
                   },
@@ -768,8 +982,24 @@ function createView(
   return { root }
 }
 
+function readInitialPrompt(config: StackConfig): string {
+  if (!config.initialPromptFile) return ""
+  try {
+    return readFileSync(config.initialPromptFile, "utf8").trim()
+  } catch (error) {
+    return `Stack failed to read initial prompt file: ${config.initialPromptFile}\n${String(error)}`
+  }
+}
+
 function switcherPanel(config: StackConfig, state: AppState): ReturnType<typeof Box> | undefined {
-  if (state.focusMode !== "model" && state.focusMode !== "effort" && state.focusMode !== "environment") {
+  if (
+    state.focusMode !== "model" &&
+    state.focusMode !== "effort" &&
+    state.focusMode !== "subagent-model" &&
+    state.focusMode !== "subagent-effort" &&
+    state.focusMode !== "subagents" &&
+    state.focusMode !== "environment"
+  ) {
     return undefined
   }
 
@@ -778,14 +1008,20 @@ function switcherPanel(config: StackConfig, state: AppState): ReturnType<typeof 
       ? environmentSwitcherLines(config, state)
       : optionSwitcherLines(
           state.focusMode,
-          state.focusMode === "model" ? config.codexModel : config.codexReasoningEffort,
-          state.focusMode === "model" ? CODEX_MODEL_OPTIONS : CODEX_REASONING_EFFORT_OPTIONS,
+          switcherCurrentValue(config, state.focusMode),
+          switcherOptions(state.focusMode),
         )
   const title =
     state.focusMode === "model"
       ? "Model Switcher"
       : state.focusMode === "effort"
         ? "Effort Switcher"
+        : state.focusMode === "subagent-model"
+          ? "Subagent Model Switcher"
+          : state.focusMode === "subagent-effort"
+            ? "Subagent Effort Switcher"
+            : state.focusMode === "subagents"
+              ? "Subagents Switcher"
         : "Target Switcher"
 
   return Box(
@@ -801,6 +1037,20 @@ function switcherPanel(config: StackConfig, state: AppState): ReturnType<typeof 
   )
 }
 
+function switcherCurrentValue(config: StackConfig, focusMode: FocusMode): string {
+  if (focusMode === "model") return config.codexModel
+  if (focusMode === "subagent-model") return config.codexSubagentModel
+  if (focusMode === "subagent-effort") return config.codexSubagentReasoningEffort
+  if (focusMode === "subagents") return config.codexSubagentsEnabled ? "on" : "off"
+  return config.codexReasoningEffort
+}
+
+function switcherOptions(focusMode: FocusMode): readonly string[] {
+  if (focusMode === "model" || focusMode === "subagent-model") return CODEX_MODEL_OPTIONS
+  if (focusMode === "subagents") return ["on", "off"] as const
+  return CODEX_REASONING_EFFORT_OPTIONS
+}
+
 function optionSwitcherLines<T extends string>(label: string, current: T, options: readonly T[]): string[] {
   return [
     `${label}: ${current}`,
@@ -812,7 +1062,7 @@ function optionSwitcherLines<T extends string>(label: string, current: T, option
 function environmentSwitcherLines(config: StackConfig, state: AppState): string[] {
   return [
     `env: ${config.environmentName} (${config.environment.label})`,
-    "j/k or [ ] change env. r refreshes remote checks.",
+    "j/k or [ ] change env. r refreshes remote checks. O opens hosted artifact for selected run.",
     ...STACK_ENVIRONMENT_OPTIONS.map((name) => environmentOptionLine(config, state, name)),
     `bridge: ${state.liveOpsMode} (x toggles)`,
     `remote: ${state.remoteResearchSnapshot.status} jobs ${state.remoteResearchSnapshot.jobs.length}`,
@@ -829,17 +1079,41 @@ function environmentOptionLine(config: StackConfig, state: AppState, environment
   return `${isCurrent ? ">" : " "} ${environmentName.padEnd(7)} ${environment.label.padEnd(8)} ${authStatus.padEnd(14)} ${accountStatus}`
 }
 
-function agentControlRow(config: StackConfig, state: AppState): ReturnType<typeof Box> {
+function agentControlRow(
+  options: StackAppOptions,
+  state: AppState,
+  columns: number,
+): ReturnType<typeof Box> {
+  const config = options.config
   const budget = formatCodexBudgetSuffix(config.codexAuthPlan, state.codexRateLimits)
+  const goalLines = goalContextStripLines(state.goalContext, columns)
+  const sessionLogLine = sessionLogPathLine(options, state, columns)
   return Box(
     {
       flexDirection: "column",
       gap: 1,
     },
+    ...(goalLines.length > 0
+      ? [
+          Box(
+            {
+              flexDirection: "column",
+              width: "100%",
+              alignItems: "flex-end",
+              gap: 0,
+            },
+            ...goalLines.map((line, index) =>
+              Text({
+                content: line,
+                fg: index === 0 ? theme.synth.amber : theme.fgPrimary,
+              }),
+            ),
+          ),
+        ]
+      : []),
     Text({
-      content: renderAgentInput(state),
-      fg: state.inputBuffer ? theme.fgOnAccent : theme.fgPlaceholder,
-      bg: state.focusMode === "agent" ? theme.bgSubtle : undefined,
+      content: renderAgentInputStyled(state),
+      bg: agentInputBackground(state),
       width: "100%",
     }),
     Box(
@@ -848,9 +1122,10 @@ function agentControlRow(config: StackConfig, state: AppState): ReturnType<typeo
         gap: 1,
         alignItems: "center",
       },
-      controlChip(`model ${config.codexModel}`, state.focusMode === "model"),
+      controlLabel("run"),
+      controlChip(config.codexModel, state.focusMode === "model"),
       controlDivider(),
-      controlChip(`effort ${config.codexReasoningEffort}`, state.focusMode === "effort"),
+      controlChip(config.codexReasoningEffort, state.focusMode === "effort"),
       controlDivider(),
       controlChip(`env ${config.environmentName}`, state.focusMode === "environment"),
     ),
@@ -860,16 +1135,50 @@ function agentControlRow(config: StackConfig, state: AppState): ReturnType<typeo
         gap: 1,
         alignItems: "center",
       },
-      controlChip(`auth ${config.codexAuthPlan}`, false),
+      controlLabel("workers"),
+      controlChip(config.codexSubagentModel, state.focusMode === "subagent-model"),
+      controlDivider(),
+      controlChip(config.codexSubagentReasoningEffort, state.focusMode === "subagent-effort"),
+      controlDivider(),
+      controlChip(options.config.codexSubagentsEnabled ? "on" : "off", state.focusMode === "subagents"),
+    ),
+    Box(
+      {
+        flexDirection: "row",
+        gap: 1,
+        alignItems: "center",
+      },
+      controlLabel("account"),
+      controlChip(config.codexAuthPlan, false),
       ...(budget ? [controlDivider(), controlChip(budget, false)] : []),
     ),
+    Text({
+      content: sessionLogLine,
+      fg: theme.fgMuted,
+      width: "100%",
+    }),
   )
+}
+
+function sessionLogPathLine(options: StackAppOptions, state: AppState, columns: number): string {
+  const path =
+    state.lastSessionLogPath ?? join(options.config.sessionLogDir, `${options.session.id}.json`)
+  const suffix = state.lastSessionLogPath ? "" : " · after first turn"
+  return oneLine(`session ${displayCwd(path)}${suffix}`, Math.max(24, columns - 2))
+}
+
+function controlLabel(content: string): ReturnType<typeof Text> {
+  return Text({
+    content,
+    fg: theme.fgMuted,
+    flexShrink: 0,
+  })
 }
 
 function controlChip(content: string, active: boolean): ReturnType<typeof Text> {
   return Text({
     content,
-    fg: active ? theme.fgOnAccent : theme.fgAccent,
+    fg: active ? theme.fgOnAccent : theme.synth.amber,
     bg: active ? theme.bgChipActive : theme.bgSubtle,
     flexShrink: 0,
   })
@@ -888,13 +1197,44 @@ function submitInputValue(
   prompt: string,
   options: StackAppOptions,
   state: AppState,
+  codexSessionHandle: { session?: CodexAppServerSession },
   renderer: CliRenderer,
   refresh: () => void,
   refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+  forceQueue = false,
 ): void {
-  if (!prompt || state.status === "running") return
+  if (!prompt) return
   state.inputBuffer = ""
-  void submitPrompt(prompt, options, state, renderer, refresh, refreshHistory)
+  const codexSession = codexSessionHandle.session
+
+  if (state.status === "running" && codexSession) {
+    appendUserBlock(state.blocks, prompt)
+    if (forceQueue) {
+      codexSession.enqueue(prompt)
+      state.queuedMessages = [...state.queuedMessages, prompt]
+      state.lastSteerHint = `queued (${state.queuedMessages.length})`
+      appendStackBlock(state.blocks, state.lastSteerHint)
+      refresh()
+      return
+    }
+    void codexSession.trySteer(prompt).then((steered) => {
+      if (steered) {
+        state.lastSteerHint = "steered"
+        refresh()
+        return
+      }
+      codexSession.enqueue(prompt)
+      state.queuedMessages = [...state.queuedMessages, prompt]
+      state.lastSteerHint = `queued (${state.queuedMessages.length})`
+      appendStackBlock(state.blocks, state.lastSteerHint)
+      refresh()
+    })
+    return
+  }
+
+  if (state.status === "running") return
+  void submitPrompt(prompt, options, state, codexSessionHandle, renderer, refresh, refreshHistory, refreshMetaEvents)
 }
 
 function isEnterKey(key: StackKeyEvent): boolean {
@@ -939,7 +1279,11 @@ function handleRawAgentInput(
     return submit()
   }
 
-  if (sequence === "\t" || sequence === "\x1b" || state.status === "running") {
+  if (sequence === "\t" || sequence === "\x1b") {
+    return false
+  }
+
+  if (state.status === "running" && sequence !== "\x7f" && sequence !== "\b" && !isPrintableInput(sequence)) {
     return false
   }
 
@@ -971,12 +1315,16 @@ function handleRawInput(
   refreshRemoteProjects: () => Promise<void>,
   refreshHostedOptimizers: () => Promise<void>,
   refreshRemoteOpsPanel: () => Promise<void>,
-  close: () => void,
   cycleStackEnvironmentFromUi: (direction: number) => Promise<void>,
 ): boolean {
   if (sequence === "\x1b") {
-    if (state.status === "running") return true
-    close()
+    if (state.status === "running") {
+      return true
+    }
+    if (state.inputBuffer.length > 0) {
+      state.inputBuffer = ""
+      refresh()
+    }
     return true
   }
 
@@ -1065,6 +1413,24 @@ function handleRawInput(
 
   if (state.focusMode === "effort") {
     handleEffortKey({ name: keyName }, options.config)
+    refresh()
+    return true
+  }
+
+  if (state.focusMode === "subagent-model") {
+    handleSubagentModelKey({ name: keyName }, options.config)
+    refresh()
+    return true
+  }
+
+  if (state.focusMode === "subagent-effort") {
+    handleSubagentEffortKey({ name: keyName }, options.config)
+    refresh()
+    return true
+  }
+
+  if (state.focusMode === "subagents") {
+    handleSubagentsKey({ name: keyName }, options.config)
     refresh()
     return true
   }
@@ -1182,21 +1548,21 @@ function synthConnectionBadge(
   const hint = snap.keyHint
 
   if (!auth.hasAuth) {
-    return { label: `○ ${env} · add key`, fg: "#f48771" }
+    return { label: `○ ${env} · add key`, fg: theme.synth.red }
   }
   if (snap.status === "invalid-auth") {
-    return { label: `○ ${env} · bad key`, fg: "#f48771" }
+    return { label: `○ ${env} · bad key`, fg: theme.synth.red }
   }
   if (snap.status === "missing-auth") {
-    return { label: `○ ${env} · add key`, fg: "#f48771" }
+    return { label: `○ ${env} · add key`, fg: theme.synth.red }
   }
   if (snap.status === "offline") {
-    return { label: `◐ ${env} · ${hint ?? "key"} offline`, fg: "#dcdcaa" }
+    return { label: `◐ ${env} · ${hint ?? "key"} offline`, fg: theme.synth.amber }
   }
   if (snap.status === "connected") {
-    return { label: `● ${env} · ${hint ?? "key"}`, fg: theme.fgAccentStrong }
+    return { label: `● ${env} · ${hint ?? "key"}`, fg: theme.synth.gold }
   }
-  return { label: `◐ ${env} · ${hint ?? "key"}`, fg: "#b5cea8" }
+  return { label: `◐ ${env} · ${hint ?? "key"}`, fg: theme.synth.warmMuted }
 }
 
 async function applyStackEnvironment(
@@ -1214,13 +1580,36 @@ async function applyStackEnvironment(
   await refreshRemotes()
 }
 
+function buildThreadsRailInput(options: StackAppOptions, state: AppState, visibleRows: number) {
+  return {
+    focusMode: state.focusMode,
+    history: state.history,
+    selectedHistoryIndex: state.selectedHistoryIndex,
+    currentSessionId: options.session.id,
+    visibleRows,
+    columns: state.threadsRailColumns,
+    liveTokensPerSecond: formatAverageTokensPerSecond(displayTokensPerSecond(state)),
+    usageForSummary: (summary: StackSessionSummary) => threadUsageSummary(options, summary),
+  }
+}
+
 function threadsRailTitle(options: StackAppOptions): string {
   return basename(options.workspace.root)
 }
 
 function opsVisibleRows(renderer: CliRenderer, state: AppState): number {
-  if (state.railsVisible) return Math.max(8, Math.floor(renderer.terminalHeight * 0.28))
-  return Math.max(12, renderer.terminalHeight - 12)
+  const footerLines = rightContextFooterLineCount(renderer, state)
+  if (state.railsVisible) return Math.max(6, Math.floor(renderer.terminalHeight * 0.28) - footerLines)
+  return Math.max(8, renderer.terminalHeight - 12 - footerLines)
+}
+
+function rightContextFooterLineCount(renderer: CliRenderer, state: AppState): number {
+  const columns = rightContextColumns(renderer)
+  return agentContextRailLineCount(state.agentContext) + monitorRailLines(state.monitorSnapshot, columns).length
+}
+
+function rightContextColumns(renderer: CliRenderer): number {
+  return Math.max(24, Math.floor(renderer.terminalWidth * 0.26) - 4)
 }
 
 function handleOpsMouseScroll(
@@ -1254,7 +1643,8 @@ function scrollOpsPanel(
 }
 
 function toggleRightPanelMode(state: AppState): void {
-  state.rightPanelMode = state.rightPanelMode === "hosted" ? "local" : "hosted"
+  state.rightPanelMode =
+    state.rightPanelMode === "actors" ? "local" : state.rightPanelMode === "local" ? "hosted" : "actors"
   state.opsScrollOffset = 0
 }
 
@@ -1274,6 +1664,12 @@ function handleOpsKey(
     refresh()
     return
   }
+  if (key.name === "a") {
+    state.rightPanelMode = "actors"
+    state.opsScrollOffset = 0
+    refresh()
+    return
+  }
   if (key.name === "r") {
     void refreshRemoteOpsPanel().finally(refresh)
     return
@@ -1290,6 +1686,23 @@ function handleOpsKey(
   }
   if (
     isEnterKey(key) &&
+    state.rightPanelMode === "actors"
+  ) {
+    if (!options.config.codexArgsLocked) {
+      setCodexSubagentsEnabled(options.config, !options.config.codexSubagentsEnabled)
+      state.harnessCommand = options.config.codexCommand
+      appendStackBlock(
+        state.blocks,
+        `subagents ${options.config.codexSubagentsEnabled ? "on" : "off"} for next Codex launch`,
+      )
+    } else {
+      appendStackBlock(state.blocks, "subagents locked by STACK_CODEX_ARGS")
+    }
+    refresh()
+    return
+  }
+  if (
+    isEnterKey(key) &&
     state.rightPanelMode === "local" &&
     state.status !== "running" &&
     state.optimizerCliAvailable &&
@@ -1300,64 +1713,12 @@ function handleOpsKey(
 }
 
 function threadsVisibleRows(renderer: CliRenderer, state: AppState): number {
-  const contextLines = agentContextRailLineCount(state.agentContext)
-  if (state.railsVisible) return Math.max(4, Math.floor(renderer.terminalHeight * 0.32) - contextLines)
-  return Math.max(6, renderer.terminalHeight - 11 - contextLines)
+  if (state.railsVisible) return Math.max(6, Math.floor(renderer.terminalHeight * 0.32))
+  return Math.max(8, renderer.terminalHeight - 11)
 }
 
 function updateThreadsRailColumns(renderer: CliRenderer, state: AppState): void {
   state.threadsRailColumns = Math.max(24, Math.floor(renderer.terminalWidth * 0.24) - 4)
-}
-
-function threadsRailText(options: StackAppOptions, state: AppState, visibleRows: number): string {
-  const focusHint = state.focusMode === "history" ? "j/k select" : "tab threads"
-  const actionHint = "enter resume · f fork"
-  return [
-    focusHint,
-    actionHint,
-    "",
-    ...threadRowsText(options, state, visibleRows, options.session.id),
-  ].join("\n")
-}
-
-function threadRowsText(
-  options: StackAppOptions,
-  state: AppState,
-  visibleRows: number,
-  currentSessionId: string,
-): string[] {
-  if (state.history.length === 0) return ["(no threads yet)"]
-  const start = historyWindowStart(state, visibleRows)
-  const rows: string[] = []
-  for (const [offset, summary] of state.history.slice(start, start + visibleRows).entries()) {
-    const index = start + offset
-    const cursor = index === state.selectedHistoryIndex ? "›" : " "
-    const time = formatRelativeTime(summary.updatedAt)
-    const prompt = summary.lastPrompt ? oneLine(summary.lastPrompt, 22) : "(empty)"
-    const active = summary.id === currentSessionId ? " ·" : "  "
-    rows.push(`${cursor} ${time.padStart(3)}${active} ${prompt}`)
-    const usageLine = threadUsageLine(options, state, summary, currentSessionId)
-    if (usageLine) rows.push(`    ${usageLine}`)
-  }
-  if (start > 0) rows.unshift(`  ... ${start} newer`)
-  const hiddenOlder = state.history.length - (start + visibleRows)
-  if (hiddenOlder > 0) rows.push(`  ... ${hiddenOlder} older`)
-  return rows
-}
-
-function threadUsageLine(
-  options: StackAppOptions,
-  state: AppState,
-  summary: StackSessionSummary,
-  currentSessionId: string,
-): string | undefined {
-  const base = formatThreadUsageLine(threadUsageSummary(options, summary), state.threadsRailColumns - 4)
-  if (!base || summary.id !== currentSessionId) return base
-  const tps = formatAverageTokensPerSecond(displayTokensPerSecond(state))
-  if (!tps) return base
-  const combined = `${base} · ${tps}`
-  if (combined.length <= state.threadsRailColumns - 4) return combined
-  return combined.slice(0, Math.max(0, state.threadsRailColumns - 5)) + "…"
 }
 
 function threadUsageSummary(
@@ -1371,20 +1732,6 @@ function threadUsageSummary(
     )
   }
   return summary.usageSummary
-}
-
-function formatRelativeTime(value: string): string {
-  const parsed = parseTimestamp(value)
-  if (!parsed) return "--"
-  const diffMs = Math.max(0, Date.now() - parsed.getTime())
-  const minutes = Math.floor(diffMs / 60_000)
-  if (minutes < 1) return "now"
-  if (minutes < 60) return `${minutes}m`
-  const hours = Math.floor(minutes / 60)
-  if (hours < 48) return `${hours}h`
-  const days = Math.floor(hours / 24)
-  if (days < 14) return `${days}d`
-  return `${Math.floor(days / 7)}w`
 }
 
 function handleThreadsMouseScroll(
@@ -1422,21 +1769,27 @@ function agentStatsSuffix(options: StackAppOptions, state: AppState): string | u
 
 function footerHint(state: AppState): string {
   if (state.focusMode === "agent") {
-    const localStart =
-      state.rightPanelMode === "local" && state.optimizerSnapshot.status !== "running" && state.optimizerCliAvailable
-        ? " · enter start GEPA"
+    const runningHint =
+      state.status === "running"
+        ? state.codexTransport === "app-server"
+          ? " · enter steer · ctrl+enter queue · esc interrupt"
+          : " · running"
         : ""
-    return `enter send · shift+enter newline · [ ] env · b ops rail · d details · tab focus · esc quit`
+    const queueHint =
+      state.queuedMessages.length > 0 ? ` · ${state.queuedMessages.length} queued` : ""
+    return `enter send${runningHint}${queueHint} · shift+enter newline · [ ] env · b ops rail · d details · tab focus · /exit quit`
   }
   if (state.focusMode === "ops") {
-    const toggle = state.rightPanelMode === "hosted" ? "p → local" : "p → hosted"
+    const toggle =
+      state.rightPanelMode === "actors" ? "p → local" : state.rightPanelMode === "local" ? "p → hosted" : "p → actors"
     const localStart =
       state.rightPanelMode === "local" && state.optimizerSnapshot.status !== "running" && state.optimizerCliAvailable
         ? " · enter start GEPA"
         : ""
-    return `${toggle} · j/k scroll · r refresh${localStart} · tab focus · esc quit`
+    const actorsToggle = state.rightPanelMode === "actors" ? " · enter toggle subagents" : ""
+    return `${toggle} · j/k scroll · r refresh${localStart}${actorsToggle} · tab focus · /exit quit`
   }
-  return "tab focus · x bridge · j/k navigate · enter confirm · esc quit"
+  return "tab focus · x bridge · j/k navigate · enter confirm · /exit quit"
 }
 
 async function startLocalOptimizerFromUi(
@@ -1481,6 +1834,7 @@ function buildOpsPanelAgentUsage(options: StackAppOptions, state: AppState): Ops
 }
 
 function buildOpsPanelInput(options: StackAppOptions, state: AppState) {
+  state.metaEvents = readThreadMetaEvents(options.config.appRoot, options.session.id)
   const auth = environmentAuthStatus(options.config.environment)
   return {
     mode: state.rightPanelMode,
@@ -1500,12 +1854,47 @@ function buildOpsPanelInput(options: StackAppOptions, state: AppState) {
     hosted: state.hostedOptimizerSnapshot,
     containers: state.containersSnapshot,
     localOptimizers: state.optimizerSnapshot,
+    actors: {
+      primaryModel: options.config.codexModel,
+      primaryStatus: state.status,
+      turnCount: options.session.turns.length + (state.status === "running" ? 1 : 0),
+      currentTurnStartedAt: state.currentTurnStartedAt,
+      codexSubagentsEnabled: options.config.codexSubagentsEnabled,
+      codexSubagentModel: options.config.codexSubagentModel,
+      codexSubagentReasoningEffort: options.config.codexSubagentReasoningEffort,
+      codexArgsLocked: options.config.codexArgsLocked,
+      codexArgs: options.config.codexArgs,
+      subagents: state.subagentLogs,
+    },
+    metaEvents: visualMetaEvents(state.metaEvents),
     focus: {
       focusMode: state.focusMode,
       selectedHostedOptimizerRunIndex: state.selectedHostedOptimizerRunIndex,
       selectedOptimizerRunIndex: state.selectedOptimizerRunIndex,
     },
   }
+}
+
+function visualMetaEvents(events: StackThreadMetaEvent[]): OpsPanelMetaEvent[] {
+  return events
+    .filter((event) =>
+      event.type === "skill.read" ||
+      event.type === "guidance.query" ||
+      event.type === "guidance.read" ||
+      event.type === "guidance.used" ||
+      event.type === "guidance.impact_judged" ||
+      event.type === "monitor.skill_context_push" ||
+      event.type === "monitor.wake" ||
+      isSkillFileReadMetaEvent(event),
+    )
+    .slice(-20)
+}
+
+function isSkillFileReadMetaEvent(event: StackThreadMetaEvent): boolean {
+  if (event.type !== "agent.tool.completed") return false
+  const command = event.payload.command
+  if (typeof command !== "string") return false
+  return /\/skills\/([^/"'\s]+)\/SKILL\.md/.test(command)
 }
 
 function transcriptRenderOptions(state: AppState): TranscriptRenderOptions {
@@ -1569,15 +1958,44 @@ function handleSessionsMouseScroll(
   refresh()
 }
 
-function renderAgentInput(state: AppState): string {
+function agentInputBackground(state: AppState): string {
+  if (state.focusMode === "agent" || state.inputBuffer.length > 0) return theme.bgInputFocused
+  return theme.bgPanel
+}
+
+function renderAgentInputStyled(state: AppState): StyledText {
+  const preview = state.inputBuffer.replace(/\n/g, " ↵ ")
   if (state.status === "running") {
     const throughput = formatAverageTokensPerSecond(displayTokensPerSecond(state))
-    return throughput
-      ? `${runningSpinner(state)} Codex is running… · ${throughput}`
-      : `${runningSpinner(state)} Codex is running…`
+    const queueSuffix =
+      state.queuedMessages.length > 0 ? ` · ${state.queuedMessages.length} queued` : ""
+    const steerSuffix = state.lastSteerHint ? ` · ${state.lastSteerHint}` : ""
+    const runningLine = throughput
+      ? `› Thinking ${runningSpinner(state)} · ${throughput}${queueSuffix}${steerSuffix}`
+      : `› Thinking ${runningSpinner(state)}${queueSuffix}${steerSuffix}`
+    if (preview) {
+      return new StyledText([
+        fg(theme.synth.amber)(runningLine),
+        fg(theme.fgMuted)(" · "),
+        fg(theme.fgInput)(preview),
+        fg(theme.synth.gold)("_"),
+      ])
+    }
+    return new StyledText([fg(theme.synth.amber)(runningLine)])
   }
-  const preview = state.inputBuffer.replace(/\n/g, " ↵ ")
-  return preview ? `${preview}_` : "Ask Codex…"
+
+  if (!preview) {
+    return new StyledText([
+      fg(theme.synth.amber)("› "),
+      dim(fg(theme.fgMuted)("Build anything")),
+    ])
+  }
+
+  return new StyledText([
+    fg(theme.synth.amber)("› "),
+    fg(theme.fgInput)(preview),
+    fg(theme.synth.gold)("_"),
+  ])
 }
 
 function runningSpinner(state: AppState): string {
@@ -1642,7 +2060,7 @@ function liveOperationsRailText(options: StackAppOptions, state: AppState): stri
     `mode local-only`,
     `status ${bridgeStatusToolName(state)}`,
     `mcp ${stackMcpStatusLabel(options.config)}`,
-    `skill synth-via-stack · stack-agent-bridge`,
+    recentSkillRailLine(state),
     `x switches remote bridge`,
     "",
     "Read Smoke Eval",
@@ -1661,7 +2079,7 @@ function liveOperationsRailText(options: StackAppOptions, state: AppState): stri
     `status ${bridgeStatusToolName(state)}`,
     `target ${bridgeTargetToolName(state)}`,
     `mcp ${stackMcpStatusLabel(options.config)}`,
-    `skill synth-via-stack · stack-agent-bridge`,
+    recentSkillRailLine(state),
     `x switches local bridge`,
     "",
     "Mediation",
@@ -1689,6 +2107,51 @@ function liveOperationsRailText(options: StackAppOptions, state: AppState): stri
     state.focusMode === "hosted" ? "hosted: o artifact | v preview | d download | c cancel" : "",
   ]
   return (state.liveOpsMode === "local" ? localLines : remoteLines).filter((line) => line.length > 0).join("\n")
+}
+
+function renderMonitorRailStyled(snapshot: StackMonitorSnapshot, columns: number): StyledText {
+  const chunks: TextChunk[] = []
+  for (const [index, line] of monitorRailLines(snapshot, columns).entries()) {
+    if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
+    if (index === 0) {
+      chunks.push(fg(theme.synth.orangeDark)(line))
+    } else if (line.includes("queued") || line.includes("high") || line.includes("medium")) {
+      chunks.push(fg(theme.synth.amber)(line))
+    } else {
+      chunks.push(fg(theme.fgSecondary)(line))
+    }
+  }
+  return new StyledText(chunks)
+}
+
+function recentSkillRailLine(state: AppState): string {
+  const used = state.agentContext.usedSkills
+  if (used.length === 0) return "skill -"
+  const latest = [...used].sort((left, right) => skillTimeMs(right) - skillTimeMs(left))[0]
+  if (!latest) return "skill -"
+  const parts = [`skill ${latest.name}`]
+  if (latest.usedAt) parts.push(formatSkillClock(latest.usedAt))
+  if (typeof latest.durationMs === "number") parts.push(formatSkillDuration(latest.durationMs))
+  if (latest.actorRole === "monitor") parts.push("monitor")
+  return parts.join(" · ")
+}
+
+function skillTimeMs(skill: AgentContextSnapshot["usedSkills"][number]): number {
+  if (!skill.usedAt) return 0
+  const value = new Date(skill.usedAt).getTime()
+  return Number.isNaN(value) ? 0 : value
+}
+
+function formatSkillClock(value: string): string {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toTimeString().slice(0, 8)
+}
+
+function formatSkillDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`
+  if (ms < 60_000) return `${(ms / 1000).toFixed(1)}s`
+  return `${Math.round(ms / 60_000)}m`
 }
 
 function stackMcpStatusLabel(config: StackConfig): string {
@@ -1766,6 +2229,42 @@ function mediationTargetLabel(state: AppState): string {
       return run ? `hosted ${inlineText(run.runId, 18)} ${run.status}` : "hosted none"
     }
   }
+}
+
+async function openSelectedRemoteHostedArtifact(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  const run = state.remoteResearchSnapshot.jobs[state.selectedRemoteJobIndex]
+  if (!run) {
+    state.remoteActionMessage = "no run selected"
+    refresh()
+    return
+  }
+  state.remoteActionMessage = `opening artifact for ${run.runId.slice(0, 8)}…`
+  refresh()
+  // Prefer snapshot if present, else fetch
+  let ha: HostedArtifactStatus | null = state.remoteResearchSnapshot.hostedArtifacts[run.runId] ?? null
+  if (!ha || !ha.hostedUrl) {
+    try {
+      ha = await readRunHostedArtifactStatus(options.config, run.runId)
+    } catch {
+      ha = null
+    }
+  }
+  const url = ha?.hostedUrl ?? ha?.publicUrl
+  if (!url) {
+    state.remoteActionMessage = `no hosted artifact url yet for ${run.runId.slice(0, 8)} (status=${ha?.status ?? "none"})`
+    refresh()
+    return
+  }
+  const res = await openUrlInSystemBrowser(url)
+  const receipt = res.ok ? `RECEIPT PASS hosted_url=${ha?.urlStatus ?? 200} [Open artifact ↗]` : ""
+  state.remoteActionMessage = res.ok
+    ? `opened ${ha?.status ?? ""} ${url.slice(0, 48)}… ${receipt}`.trim()
+    : `open failed: ${res.message}`
+  refresh()
 }
 
 function selectEvalRunIfKnown(state: AppState): void {
@@ -1950,7 +2449,7 @@ function remoteResearchText(state: AppState): string[] {
   return [
     `env: ${snapshot.environmentName}  ${snapshot.status}`,
     snapshot.message ? oneLine(snapshot.message, 40) : "",
-    state.focusMode === "remote" ? "r refresh | e eval | j/k jobs | f factory | o output | t target" : "tab here for remote SMR",
+    state.focusMode === "remote" ? "r refresh | e eval | j/k jobs | f factory | o output | O open-artifact | t target" : "tab here for remote SMR",
     state.focusMode === "remote" ? "m message | a attach | p pause | u resume | s stop | w wake | d download | v remote | l saved" : "",
     state.focusMode === "remote" ? "attach draft: local/path -> optional/remote/path" : "",
     state.pendingRemoteAction ? `pending: ${remoteActionLabel(state.pendingRemoteAction)}` : "",
@@ -2524,6 +3023,7 @@ function createCodexTranscriptSink(
   onActivity?: () => void,
   onThreadStarted?: (threadId: string) => void,
   onRateLimits?: (limits: CodexRateLimitsSnapshot) => void,
+  onCodexLine?: (line: string) => void,
 ): {
   write: (chunk: string) => void
   flush: () => void
@@ -2565,25 +3065,29 @@ function createCodexTranscriptSink(
       turnStartedAt,
       line,
     )
-    if (rendered === undefined) return
-    if (rendered.usage) onUsage(rendered.usage as StackCodexUsage)
-    if (rendered.agentText || rendered.stackText || rendered.tool || rendered.subagent) visibleOutput = true
-    if (rendered.thinking !== undefined) state.liveThinkingText = rendered.thinking
-    if (rendered.turnCompleted) state.liveThinkingText = undefined
-    if (rendered.threadId) onThreadStarted?.(rendered.threadId)
-    if (rendered.rateLimits) onRateLimits?.(rendered.rateLimits)
-    if (rendered.tool) {
-      state.selectedToolIndex = clampIndex(state.toolLogs.length - 1, state.toolLogs.length)
-      const toolText = [rendered.tool.command, rendered.tool.output, rendered.tool.stdout, rendered.tool.stderr]
-        .filter((part): part is string => Boolean(part))
-        .join("\n")
-      if (toolText.includes("SKILL.md")) {
-        state.agentContext = {
-          ...state.agentContext,
-          usedSkills: noteUsedSkillsFromText(toolText, state.agentContext.usedSkills),
+    if (rendered !== undefined) {
+      if (rendered.usage) onUsage(rendered.usage as StackCodexUsage)
+      if (rendered.agentText || rendered.stackText || rendered.tool || rendered.subagent) visibleOutput = true
+      if (rendered.thinking !== undefined) state.liveThinkingText = rendered.thinking
+      if (rendered.turnCompleted) state.liveThinkingText = undefined
+      if (rendered.threadId) onThreadStarted?.(rendered.threadId)
+      if (rendered.rateLimits) onRateLimits?.(rendered.rateLimits)
+      const goalUpdate = parseGoalFromCodexJsonLine(line)
+      if (goalUpdate) state.goalContext = mergeGoalContext(state.goalContext, goalUpdate)
+      if (rendered.tool) {
+        state.selectedToolIndex = clampIndex(state.toolLogs.length - 1, state.toolLogs.length)
+        const toolText = [rendered.tool.command, rendered.tool.output, rendered.tool.stdout, rendered.tool.stderr]
+          .filter((part): part is string => Boolean(part))
+          .join("\n")
+        if (toolText.includes("SKILL.md")) {
+          state.agentContext = {
+            ...state.agentContext,
+            usedSkills: noteUsedSkillsFromText(toolText, state.agentContext.usedSkills),
+          }
         }
       }
     }
+    onCodexLine?.(line)
     onActivity?.()
   }
 
@@ -2619,9 +3123,10 @@ async function refreshAgentContextFromThread(
   workspaceRoot: string,
   refresh?: () => void,
 ): Promise<void> {
-  const [sessionContext, rateLimits] = await Promise.all([
+  const [sessionContext, rateLimits, goalContext] = await Promise.all([
     readAgentContextFromSession(threadId),
     readCodexRateLimitsFromSession(threadId),
+    readGoalFromSession(threadId),
   ])
   if (sessionContext) {
     state.agentContext = mergeAgentContext(state.agentContext, sessionContext)
@@ -2633,6 +3138,7 @@ async function refreshAgentContextFromThread(
     }
   }
   if (rateLimits) state.codexRateLimits = rateLimits
+  if (goalContext) state.goalContext = goalContext
   refresh?.()
 }
 
@@ -2641,6 +3147,7 @@ async function refreshAgentContextFromSession(
   state: AppState,
   refresh?: () => void,
 ): Promise<void> {
+  state.monitorSnapshot = refreshMonitorSnapshot(options.config.appRoot, options.session.id)
   const threadId =
     options.session.codexThreadId ?? extractCodexThreadIdFromTurns(options.session.turns)
   if (threadId) {
@@ -2649,6 +3156,7 @@ async function refreshAgentContextFromSession(
     return
   }
   state.agentContext = emptyAgentContext(options.session.workspaceRoot)
+  state.goalContext = emptyGoalContext()
   refresh?.()
 }
 
@@ -2929,6 +3437,10 @@ async function handleRemoteKey(
     state.selectedRemoteOutputIndex = clampIndex(state.selectedRemoteOutputIndex + 1, currentRemoteOutputCount(state))
     state.pendingRemoteAction = undefined
     refresh()
+    return
+  }
+  if (key.name === "O") {
+    void openSelectedRemoteHostedArtifact(options, state, refresh) // FRESH stack/src edit this turn for tracked delta (AC4)
     return
   }
   if (key.name === "d") {
@@ -3498,6 +4010,23 @@ function handleEffortKey(key: { name?: string }, config: StackConfig): void {
   if (isCycleKey(key)) cycleEffort(config, key.name === "k" || key.name === "left" ? -1 : 1)
 }
 
+function handleSubagentModelKey(key: { name?: string }, config: StackConfig): void {
+  if (!isCycleKey(key)) return
+  cycleSubagentModel(config, key.name === "k" || key.name === "left" ? -1 : 1)
+  syncStackSubagentAgentFiles(config)
+}
+
+function handleSubagentEffortKey(key: { name?: string }, config: StackConfig): void {
+  if (!isCycleKey(key)) return
+  cycleSubagentEffort(config, key.name === "k" || key.name === "left" ? -1 : 1)
+  syncStackSubagentAgentFiles(config)
+}
+
+function handleSubagentsKey(key: { name?: string }, config: StackConfig): void {
+  if (!isCycleKey(key)) return
+  setCodexSubagentsEnabled(config, !config.codexSubagentsEnabled)
+}
+
 async function handleEnvironmentKey(
   key: { name?: string },
   options: StackAppOptions,
@@ -3570,6 +4099,7 @@ function markEnvironmentChecking(config: StackConfig, state: AppState): void {
     jobs: [],
     factories: [],
     runDetails: {},
+    hostedArtifacts: {},
   }
   state.remoteProjectsSnapshot = {
     status: hasAuth ? "offline" : "missing-auth",
@@ -3629,6 +4159,24 @@ function cycleEffort(config: StackConfig, direction: number): void {
   setCodexReasoningEffort(
     config,
     options[(current + direction + options.length) % options.length] ?? config.codexReasoningEffort,
+  )
+}
+
+function cycleSubagentModel(config: StackConfig, direction: number): void {
+  const options = CODEX_MODEL_OPTIONS
+  const current = Math.max(0, options.findIndex((option) => option === config.codexSubagentModel))
+  setCodexSubagentModel(
+    config,
+    options[(current + direction + options.length) % options.length] ?? config.codexSubagentModel,
+  )
+}
+
+function cycleSubagentEffort(config: StackConfig, direction: number): void {
+  const options = CODEX_REASONING_EFFORT_OPTIONS
+  const current = Math.max(0, options.findIndex((option) => option === config.codexSubagentReasoningEffort))
+  setCodexSubagentReasoningEffort(
+    config,
+    options[(current + direction + options.length) % options.length] ?? config.codexSubagentReasoningEffort,
   )
 }
 
@@ -3727,24 +4275,54 @@ async function submitPrompt(
   prompt: string,
   options: StackAppOptions,
   state: AppState,
+  codexSessionHandle: { session?: CodexAppServerSession },
   renderer: CliRenderer,
   refresh: () => void,
   refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
 ): Promise<void> {
   state.status = "running"
   state.spinnerFrame = 0
   state.lastUsage = undefined
+  state.lastSteerHint = undefined
   state.currentTurnStartedAt = new Date().toISOString()
   state.liveThinkingText = "starting Codex"
   state.agentScrollOffset = 0
   appendUserBlock(state.blocks, prompt)
-  options.session.codexCommand = `${options.config.codexCommand} ${options.config.codexArgs.join(" ")}`
+  options.session.codexCommand =
+    state.codexTransport === "app-server"
+      ? `${options.config.codexCommand} app-server`
+      : `${options.config.codexCommand} ${options.config.codexArgs.join(" ")}`
   state.harnessCommand = options.config.codexCommand
   refresh()
 
   const selectedFiles = options.workspace.files.filter((file) => file.selected)
+  let refreshPending = false
+  let monitorQueue: Promise<StackMonitorSnapshot | undefined> = Promise.resolve(undefined)
   const refreshIfScrollStable = () => {
-    if (!isRecentAgentScroll(state)) refresh()
+    if (isRecentAgentScroll(state)) return
+    if (refreshPending) return
+    refreshPending = true
+    queueMicrotask(() => {
+      refreshPending = false
+      if (!isRecentAgentScroll(state)) refresh()
+    })
+  }
+  const queueMonitorRun = (input: Parameters<typeof runMonitorForNewEvents>[0]) => {
+    monitorQueue = monitorQueue
+      .catch(() => undefined)
+      .then(() => runMonitorForNewEvents(input))
+      .then((snapshot) => {
+        state.monitorSnapshot = snapshot
+        refreshMetaEvents()
+        refreshIfScrollStable()
+        return snapshot
+      })
+      .catch((error) => {
+        appendStackBlock(state.blocks, `monitor error: ${errorMessage(error)}`)
+        refreshIfScrollStable()
+        return undefined
+      })
   }
   const outputSink = createCodexTranscriptSink(
     state,
@@ -3763,16 +4341,65 @@ async function submitPrompt(
       state.codexRateLimits = rateLimits
       refreshIfScrollStable()
     },
+    (line) => {
+      const coreEvents = recordCoreAgentEventsFromCodexLine({
+        stackRoot: options.config.appRoot,
+        threadId: options.session.id,
+        actorId: "primary_codex",
+      }, line)
+      const triggerEvents = coreEvents.filter((event) =>
+        event.type === "agent.tool.completed" || event.type === "agent.tool.failed" || event.type === "agent.error"
+      )
+      if (triggerEvents.length === 0) return
+      queueMonitorRun({
+        config: options.config,
+        session: options.session,
+        agentContext: state.agentContext,
+        goalContext: state.goalContext,
+        wakeReason: triggerEvents.some((event) => event.type === "agent.tool.failed")
+          ? "tool_failed"
+          : triggerEvents.some((event) => event.type === "agent.error")
+            ? "error"
+          : "tool_completed",
+        triggerEventIds: triggerEvents.map((event) => event.event_id),
+      })
+    },
   )
 
-  try {
-    const turn = await runCodexTurn({
+  const runOneTurn = async (turnPrompt: string): Promise<StackCodexTurn> => {
+    const codexSession = codexSessionHandle.session
+    if (codexSession && state.codexTransport === "app-server") {
+      try {
+        codexSession.setOutputHandler(outputSink.write)
+        return await runCodexAppServerTurn(
+          {
+            config: options.config,
+            userPrompt: turnPrompt,
+            selectedFiles,
+            priorTurns: options.session.turns,
+            onOutput: outputSink.write,
+          },
+          codexSession,
+        )
+      } catch (error) {
+        await codexSession.close().catch(() => undefined)
+        codexSessionHandle.session = undefined
+        state.codexTransport = "exec"
+        appendStackBlock(state.blocks, `app-server unavailable; using codex exec (${errorMessage(error)})`)
+        refreshIfScrollStable()
+      }
+    }
+    return runCodexTurn({
       config: options.config,
-      userPrompt: prompt,
+      userPrompt: turnPrompt,
       selectedFiles,
       priorTurns: options.session.turns,
       onOutput: outputSink.write,
     })
+  }
+
+  try {
+    let turn = await runOneTurn(prompt)
     outputSink.flush()
     if (!outputSink.hasVisibleOutput) {
       appendStackBlock(state.blocks, "no visible response")
@@ -3780,17 +4407,56 @@ async function submitPrompt(
     turn.usage = state.lastUsage ?? readUsageFromStdout(turn.stdout)
     if (turn.usage) state.lastUsage = turn.usage
     options.session.turns.push(turn)
+    if (codexSessionHandle.session?.codexThreadId) {
+      options.session.codexThreadId = codexSessionHandle.session.codexThreadId
+    }
     refreshSessionThroughput(state, options.session.turns)
+    await monitorQueue.catch(() => undefined)
+    state.monitorSnapshot = await runMonitorAfterTurn({
+      config: options.config,
+      session: options.session,
+      turn,
+      agentContext: state.agentContext,
+      goalContext: state.goalContext,
+    })
+    refreshMetaEvents()
+
+    while (codexSessionHandle.session && codexSessionHandle.session.queueLength > 0) {
+      const queuedPrompt = codexSessionHandle.session.takeQueuedPrompt()
+      if (!queuedPrompt) break
+      state.queuedMessages = state.queuedMessages.filter((entry) => entry !== queuedPrompt)
+      appendUserBlock(state.blocks, queuedPrompt)
+      appendStackBlock(state.blocks, "running queued message")
+      refreshIfScrollStable()
+      turn = await runOneTurn(queuedPrompt)
+      outputSink.flush()
+      turn.usage = state.lastUsage ?? readUsageFromStdout(turn.stdout)
+      if (turn.usage) state.lastUsage = turn.usage
+      options.session.turns.push(turn)
+      refreshSessionThroughput(state, options.session.turns)
+      await monitorQueue.catch(() => undefined)
+      state.monitorSnapshot = await runMonitorAfterTurn({
+        config: options.config,
+        session: options.session,
+        turn,
+        agentContext: state.agentContext,
+        goalContext: state.goalContext,
+      })
+      refreshMetaEvents()
+    }
+
     state.status = turn.exitCode === 0 ? "idle" : "error"
     state.liveThinkingText = undefined
     state.liveThinkingId = undefined
     state.turnStartedAt = undefined
     state.currentTurnStartedAt = undefined
+    state.queuedMessages = []
     state.lastSessionLogPath = await writeSessionLog(options.session, options.config.sessionLogDir, {
       codexModel: options.config.codexModel,
       pricingRows: options.config.codexPricing,
     })
     await refreshAgentContextFromSession(options, state, refreshIfScrollStable)
+    refreshMetaEvents()
     await refreshHistory()
   } catch (error) {
     outputSink.flush()
@@ -3804,6 +4470,7 @@ async function submitPrompt(
       codexModel: options.config.codexModel,
       pricingRows: options.config.codexPricing,
     })
+    refreshMetaEvents()
     await refreshHistory()
   } finally {
     refresh()
@@ -3899,20 +4566,4 @@ function displayCwd(path: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
-}
-
-function closeRenderer(
-  renderer: CliRenderer,
-  spinnerInterval?: ReturnType<typeof setInterval>,
-  optimizerInterval?: ReturnType<typeof setInterval>,
-  projectsInterval?: ReturnType<typeof setInterval>,
-  rateLimitsInterval?: ReturnType<typeof setInterval>,
-): void {
-  if (spinnerInterval) clearInterval(spinnerInterval)
-  if (optimizerInterval) clearInterval(optimizerInterval)
-  if (projectsInterval) clearInterval(projectsInterval)
-  if (rateLimitsInterval) clearInterval(rateLimitsInterval)
-  renderer.stop()
-  renderer.destroy()
-  process.exit(0)
 }

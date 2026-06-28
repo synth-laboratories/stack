@@ -6,7 +6,7 @@
       "label": "Dev",
       "apiBaseUrl": "http://127.0.0.1:8000",
       "authEnv": "SYNTH_API_KEY",
-      "authEnvFile": "../synth-ai/.env",
+      "authEnvFile": ".env",
       "optimizerDbPath": ".stack/optimizers/gepa-service.sqlite",
       "optimizerServiceUrl": "http://127.0.0.1:8879"
     },

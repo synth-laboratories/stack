@@ -28,6 +28,28 @@ run_harness() {
   export BANKING77_POLICY_API_KEY_ENV="${BANKING77_POLICY_API_KEY_ENV:-${policy_api_key_env}}"
 
   log "running GEPA: ${gepa_config}"
+  python3 "${SCRIPT_DIR}/trace_stackd.py" ensure-session \
+    --config-json "${config_json}" \
+    --packet-dir "${packet_dir}" >/dev/null
+  python3 "${SCRIPT_DIR}/trace_stackd.py" record-skill \
+    --config-json "${config_json}" \
+    --packet-dir "${packet_dir}" \
+    --skill-id "stack-agent-bridge" \
+    --actor-id "primary_stackeval" \
+    --actor-role "primary" \
+    --reason "stackeval_harness_start"
+  python3 "${SCRIPT_DIR}/trace_stackd.py" record-skill \
+    --config-json "${config_json}" \
+    --packet-dir "${packet_dir}" \
+    --skill-id "synth-via-stack" \
+    --actor-id "primary_stackeval" \
+    --actor-role "primary" \
+    --reason "stackeval_harness_start"
+  python3 "${SCRIPT_DIR}/trace_stackd.py" harness-event \
+    --config-json "${config_json}" \
+    --packet-dir "${packet_dir}" \
+    --phase started \
+    --gepa-config "${gepa_config}"
   set +e
   (
     cd "${gepa_evals_project}/.." || exit 1
@@ -38,8 +60,24 @@ run_harness() {
 
   echo "${meta}" >"${packet_dir}/harness.meta.json"
   if [[ ${rc} -ne 0 ]]; then
+    python3 "${SCRIPT_DIR}/trace_stackd.py" harness-event \
+      --config-json "${config_json}" \
+      --packet-dir "${packet_dir}" \
+      --phase failed \
+      --gepa-config "${gepa_config}" \
+      --exit-code "${rc}" \
+      --stdout-log "${stdout_log}" \
+      --stderr-log "${stderr_log}"
     die "GEPA harness failed (exit ${rc}); see ${stderr_log}"
   fi
+  python3 "${SCRIPT_DIR}/trace_stackd.py" harness-event \
+    --config-json "${config_json}" \
+    --packet-dir "${packet_dir}" \
+    --phase completed \
+    --gepa-config "${gepa_config}" \
+    --exit-code "${rc}" \
+    --stdout-log "${stdout_log}" \
+    --stderr-log "${stderr_log}"
   log "GEPA harness completed"
 }
 

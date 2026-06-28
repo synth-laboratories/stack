@@ -1,4 +1,5 @@
 import { mkdir, open, readFile, stat, writeFile } from "node:fs/promises"
+import { spawn } from "node:child_process"
 import { basename, join, relative, resolve } from "node:path"
 import { environmentAuthStatus, type StackConfig } from "../config.js"
 import type { RemoteArtifactSummary, RemoteFactorySummary, RemoteSmrRunSummary, RemoteWorkProductSummary } from "./research.js"
@@ -611,4 +612,23 @@ function contentTypeForPath(path: string): string {
   if (normalized.endsWith(".csv")) return "text/csv"
   if (normalized.endsWith(".html")) return "text/html"
   return "application/octet-stream"
+}
+
+export async function openUrlInSystemBrowser(url: string): Promise<{ ok: boolean; message: string }> {
+  if (!url || !/^https?:\/\//i.test(url)) {
+    return { ok: false, message: "invalid url" }
+  }
+  const platform = process.platform
+  try {
+    if (platform === "darwin") {
+      spawn("open", [url], { stdio: "ignore", detached: true })
+    } else if (platform === "win32") {
+      spawn("cmd", ["/c", "start", "", url], { stdio: "ignore", detached: true })
+    } else {
+      spawn("xdg-open", [url], { stdio: "ignore", detached: true })
+    }
+    return { ok: true, message: `opened ${url}` }
+  } catch (err) {
+    return { ok: false, message: err instanceof Error ? err.message : String(err) }
+  }
 }

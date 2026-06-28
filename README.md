@@ -127,7 +127,11 @@ stack
   `.stack/downloads/<environment>/<run-id>/`, and the latest saved output is
   persisted in `.stack/downloads/<environment>/history.json` and shown in the
   Live Ops rail and selected-run detail across TUI restarts.
-- `Esc`: quit
+- During a Codex app-server turn, `Enter` steers with the current input,
+  `Ctrl+Enter` queues the current input as the next turn, and `Esc` requests a
+  turn interrupt. Outside an active turn, `Esc` clears the current input and
+  never quits Stack.
+- `/exit`: quit Stack explicitly.
 
 Stack writes local session logs under `.stack/sessions/`. Current release includes
 read-only remote SMR visibility for jobs, run artifacts, WorkProducts, and
@@ -155,10 +159,91 @@ bun run smoke:stackd
 startup fails. Logs are written to `.stack/runtime/stackd.log`.
 
 Routes in L1: `/health`, `/threads`, `/threads/:id`,
-`/threads/:id/status`, `/threads/:id/trace`, `/threads/:id/export`, and
+`/threads/:id/status`, `/threads/:id/events`, `/threads/:id/actors`,
+`/events/stream`,
+`/threads/:id/monitors/:monitorId/pause`,
+`/threads/:id/monitors/:monitorId/resume`,
+`/threads/:id/monitors/:monitorId/mode`, `/threads/:id/trace`,
+`/threads/:id/export`, and
 `/doc` (`/openapi.json`). Export writes
 `.stack/exports/<session-id>/<stamp>/` with `manifest.json`, redacted
-`session.json`, `metadata.json`, and optional `codex.jsonl`.
+`session.json`, `metadata.json`, optional `codex.jsonl`, and optional
+`meta-events.jsonl`, `monitor_usage.json`, and `actors.json`. Thread core-agent
+and meta-harness events live at `.stack/events/threads/<session-id>.jsonl` and
+capture Stack-side events such as `agent.tool.completed`, `agent.tool.failed`,
+`agent.turn.completed`, `skill.read`, `monitor.wake`, `monitor.summary`,
+`monitor.queued`, `monitor.usage`, `monitor.model_fallback`,
+`monitor.checkpoint`, and `monitor.skill_context_push`.
+Monitor actor checkpoints live under
+`.stack/actors/<session-id>/monitors/<monitor-actor-id>.json`.
+`POST /threads/:id/events` appends core or meta events through stackd, filling
+missing `thread_id`, `event_id`, `observed_at`, and `payload` defaults.
+`GET /events/stream?thread_id=<id>&after_event_id=<event>` provides an SSE feed
+over the same thread event log for TUI, monitor, and exporter subscribers.
+stackd also runs a monitor scheduler over the same event log by default; it
+dedupes trigger event ids, advances actor checkpoints, and emits
+`monitor.wake`/`monitor.summary`/`monitor.usage`/`monitor.checkpoint` when
+non-TUI producers append core events. With
+`STACK_MONITOR_MODEL_WORKER=openai_responses` or `worker = "openai_responses"`,
+the scheduler calls OpenAI Responses and persists `monitor_thread_id` so later
+wakes continue the same monitor actor thread. Set `STACKD_MONITOR_SCHEDULER=0`
+to disable it or `STACKD_MONITOR_POLL_MS=<ms>` to tune polling.
+
+### Stack Monitor
+
+The monitor runtime runs inside the Stack TUI while Codex execution is still
+owned there. It records Codex JSONL as normalized `agent.*` events, subscribes
+to tool/turn triggers, writes durable monitor actor checkpoints, emits
+thread-scoped `monitor.*` events, and shows the latest monitor status in the
+left rail.
+
+Profiles:
+
+- `.stack/monitors/default.toml`
+- `.stack/monitors/gepa-dogfood.toml`
+
+Useful overrides:
+
+- `STACK_MONITOR_PROFILE=gepa-dogfood`
+- `STACK_MONITOR_ENABLED=0`
+- `STACK_MONITOR_STRICTNESS=passive|conservative|aggressive`
+- In the TUI, `M` cycles the current thread through
+  `off -> passive -> conservative -> aggressive -> off` and records
+  `monitor.paused`, `monitor.resumed`, or `monitor.mode_changed`.
+
+The monitor pass is event-backed: it checks enabled focus areas such as style,
+goal progress, skills, tool use, scope control, and acceptance.
+The configured model slot is `gpt-5.4-mini` with medium reasoning. With
+`worker = "auto"`, Stack uses OpenAI Responses when `OPENAI_API_KEY` is
+available and persists the returned response id as `monitor_thread_id`; without
+credentials it falls back to the deterministic pass, emits
+`monitor.model_fallback` when the model worker was explicitly requested, and
+keeps the same `agent.*`, `monitor.*`, actor checkpoint, API, and export
+contract.
+
+Model-worker overrides:
+
+- TOML: `[model] worker = "auto" | "deterministic" | "openai_responses"`
+- Env: `STACK_MONITOR_MODEL_WORKER=auto|deterministic|openai_responses`
+
+### Actors Preview
+
+The right ops panel opens in **Actors** mode for the F2/L5 subagent preview. Press
+`p` to cycle `Actors -> Local -> Synth Hosted`, or press `a` while focused on the
+ops panel to return to Actors. The panel shows the current Codex
+`features.multi_agent=<bool>` launch override, whether launch args are locked by
+`STACK_CODEX_ARGS`, the configured Stack subagent model policy, the primary
+actor state, and transcript-derived worker subagents parsed from
+`spawn_agent` / `wait_agent`.
+
+Press `enter` in Actors mode to toggle subagents for the next Codex launch when
+`STACK_CODEX_ARGS` is not set. The bottom control row also exposes worker model,
+effort, and on/off chips; tab to a worker chip and use `j/k`, arrows, space, or
+enter to change the subagent policy for future launches. Stack syncs model and
+effort choices into project custom agents under `.codex/agents/` for `default`,
+`worker`, and `explorer`. Override the default before launch with
+`STACK_CODEX_SUBAGENTS=0` or `STACK_CODEX_SUBAGENTS=1`,
+`STACK_CODEX_SUBAGENT_MODEL`, and `STACK_CODEX_SUBAGENT_REASONING_EFFORT`.
 
 Env:
 
@@ -286,6 +371,22 @@ The server reads `stack.config.json` and supports both JSONL and
 - `stack_start_readme_smoke_eval`: launch the configured README-smoke SMR eval
 - `stack_readme_smoke_eval_status`: read the persisted launcher status,
   parsed verifier context, and bounded output tail
+- `stack_skills_list`: list first-class Stack skills from `.stack/skills/`
+  plus bridged Codex/plugin skill roots
+- `stack_skills_read`: read a skill's `SKILL.md` content and metadata; pass
+  `thread_id` to record a `skill.read` meta event for that thread
+- `stack_skills_search`: search skills by id, title, description, owner, and path
+- `stack_guidance_list`: list searchable Stack guidance from `.stack/guidance/`
+  plus selected Jstack/workspace sources such as Synth Style
+- `stack_search_guidance`: search guidance by query and optional scope; pass
+  `thread_id` to record a `guidance.query` meta event
+- `stack_guidance_read`: read a guidance item by id or path; pass `thread_id`
+  to record a `guidance.read` meta event
+- `stack_guidance_record_event`: record guidance lifecycle, usage, or impact
+  events such as doc added/updated/deleted, used, and impact judged
+- `stack_guidance_events`: list the local guidance SQLite event ledger
+- `stack_skills_push_context`: record a visible monitor-to-primary skill context
+  push and append it to the thread meta-harness event log
 
 Codex should load the bundled Stack skills for Synth work:
 
@@ -293,9 +394,11 @@ Codex should load the bundled Stack skills for Synth work:
   container contract (`/health`, `/info`, `/rollout`), local → hosted graduation
 - **`stack-agent-bridge`** — Stack MCP operator workflow (SMR, Factory, previews, downloads)
 
-Skills live in `.codex/skills/` in this repo. `make install` and every Stack launch symlink
-them into `~/.codex/skills/` so Codex injects them into agent context. Read `AGENTS.md` in
-this repo for the bootstrap list.
+Bundled source skills live in `.codex/skills/`. Every Stack launch syncs them into
+the first-class `.stack/skills/` catalog and symlinks the catalog entries into
+`~/.codex/skills/` so Codex injects them into agent context. Stack MCP exposes
+the same catalog to primary and monitor actors. The TUI context rail shows
+detected skill usage with the skill name and use time when Codex traces expose it.
 
 Validate skill install with:
 
@@ -333,6 +436,48 @@ The GEPA smoke uses `scripts/fake_codex_banking77_gepa.ts` as `STACK_CODEX_COMMA
 submits a Banking77 prompt, asserts uplift markers in the terminal, validates
 session JSON, and fails if raw Codex JSONL leaks or OpenTUI throws
 `Failed to create optimized buffer`.
+
+Validate the first release UI guard with Bombadil:
+
+```bash
+bun run smoke:bombadil:b0
+```
+
+That command wraps the current scroll smoke as `AT-STACK-BOMBADIL-B0` and writes
+a ship-readable proof JSON at `/tmp/stack-bombadil-b0-proof.json` by default.
+Override with `STACK_BOMBADIL_B0_PROOF=/path/to/proof.json`.
+
+Prepare the first human dogfood packet (interactive TUI):
+
+```bash
+bun run stackeval:banking77-local-gepa
+```
+
+For the **full TOML + shell pipeline** (pinned GEPA harness, harvest, stackd export,
+Codex grader + reviewer):
+
+```bash
+./bin/stackeval run banking77-local-gepa --preset smoke
+./bin/stackeval prepare banking77-local-gepa --preset smoke   # packet only
+```
+
+Configs live in `../Jstack/.jstack/product/stackeval/` (`pipeline.toml`, `tasks/*.toml`).
+See `../Jstack/.jstack/product/stackeval/README.md` for stages and presets.
+During harness runs, StackEval creates a stackd session for the packet, records
+live `skill.read`/`skill.used` and `agent.tool.*` events, waits for monitor
+checkpoint evidence before export, and copies `/trace` plus the stackd export
+bundle into the packet. Use `STACK_API_URL=<url>` to point the pipeline at an
+isolated stackd instance, and set `STACKEVAL_REQUIRE_STACKD=1` when trace capture
+is an acceptance requirement.
+
+Legacy interactive prep (`bun run stackeval:banking77-local-gepa:prepare`) writes a
+packet under
+`../Jstack/.jstack/evidence/stackeval/banking77-local-gepa/<stamp>/` with the
+starting prompt, metadata, preflight, operator pickup, acceptance, model policy,
+waste ledger, and release guard files. The task root also gets `latest.json`
+pointing at the newest packet.
+The default StackEval model is `gpt-5.5-low`; override only with
+`STACKEVAL_MODEL` and record why in the packet.
 
 For local dev, load `SYNTH_API_KEY` before starting the MCP server. The server
 does not read SMR databases, raw Redis keys, or compatibility projections; it

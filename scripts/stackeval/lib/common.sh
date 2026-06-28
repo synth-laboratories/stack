@@ -65,20 +65,9 @@ write_pipeline_state() {
   local stage="$2"
   local status="$3"
   local detail="${4:-}"
-  python3 - "${packet_dir}" "${stage}" "${status}" "${detail}" <<'PY'
-import json, sys
-from datetime import datetime, timezone
-from pathlib import Path
-
-packet = Path(sys.argv[1])
-stage, status, detail = sys.argv[2], sys.argv[3], sys.argv[4]
-path = packet / "pipeline.json"
-state = {"stages": [], "updated_at": datetime.now(timezone.utc).isoformat()}
-if path.is_file():
-    state = json.loads(path.read_text())
-state["stages"] = [row for row in state.get("stages", []) if row.get("stage") != stage]
-state["stages"].append({"stage": stage, "status": status, "detail": detail, "at": datetime.now(timezone.utc).isoformat()})
-state["updated_at"] = datetime.now(timezone.utc).isoformat()
-path.write_text(json.dumps(state, indent=2) + "\n")
-PY
+  python3 "${STACKEVAL_LIB_DIR}/pipeline_state.py" \
+    --packet-dir "${packet_dir}" \
+    --stage "${stage}" \
+    --status "${status}" \
+    --detail "${detail}"
 }

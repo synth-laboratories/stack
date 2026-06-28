@@ -9,11 +9,34 @@ import {
   type StackConfig,
   type StackEnvironmentName,
 } from "../config.js"
+import {
+  discoverStackSkills,
+  pushSkillContext,
+  readStackSkill,
+  searchStackSkills,
+  skillToJson,
+} from "../codex/skills.js"
+import {
+  discoverStackGuidance,
+  guidanceToJson,
+  readStackGuidance,
+  searchStackGuidance,
+  type StackGuidanceScope,
+} from "../codex/guidance.js"
+import {
+  guidanceEventToJson,
+  listStackGuidanceEvents,
+  recordStackGuidanceEvent,
+  type StackGuidanceEventType,
+  type StackGuidanceImpact,
+} from "../codex/guidance-events.js"
+import { appendThreadMetaEvent, stackEventId } from "../thread-events.js"
 import { readReadmeSmokeEvalLaunch, startReadmeSmokeEval, type StackEvalLaunch } from "../local/evals.js"
 import { readOptimizerSnapshot } from "../local/optimizers.js"
 import {
   downloadRemoteOutput,
   executeRemoteRunAction,
+  openUrlInSystemBrowser,
   previewRemoteOutput,
   previewSavedRemoteDownload,
   readRemoteDownloadHistory,
@@ -33,6 +56,8 @@ import { readHostedOptimizerSnapshot } from "../remote/optimizers.js"
 import {
   readRemoteResearchSnapshot,
   readRemoteRunDetail,
+  readRunHostedArtifactStatus,
+  type HostedArtifactStatus,
   type RemoteFactorySummary,
   type RemoteRunDetail,
   type RemoteSmrRunSummary,
@@ -222,6 +247,9 @@ export class StackMcpServer {
             active_smr_runs: research.jobs.filter((run) => isActiveState(run.state)).length,
             selected_smr_run_id: research.jobs[0]?.runId,
             selected_factory_id: research.factories[0]?.factoryId,
+            hosted_artifact_for_first: research.jobs[0]
+              ? (research.hostedArtifacts[research.jobs[0].runId] ?? null)
+              : null,
           }
         : undefined,
       hosted_optimizers: hosted
@@ -255,6 +283,7 @@ export class StackMcpServer {
       count: snapshot.jobs.length,
       runs: snapshot.jobs.map((run) => {
         const detail = snapshot.runDetails[run.runId]
+        const ha = snapshot.hostedArtifacts[run.runId]
         return {
           run_id: run.runId,
           project_id: run.projectId,
@@ -267,9 +296,65 @@ export class StackMcpServer {
           artifacts: detail?.artifactCount ?? 0,
           pending_messages: detail?.pendingRuntimeMessageCount ?? 0,
           file_mounts: detail?.activeFileMountCount ?? 0,
+          hosted_artifact: ha
+            ? {
+                status: ha.status,
+                hosted_url: ha.hostedUrl ?? null,
+                public_url: ha.publicUrl ?? null,
+                slug: ha.slug ?? null,
+                visibility: ha.visibility ?? null,
+                url_status: ha.urlStatus ?? null,
+              }
+            : null,
         }
       }),
     }) ?? null
+  }
+
+  async getRunArtifactStatus(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const runId = requiredString(args, "run_id")
+    const status = await readRunHostedArtifactStatus(config, runId)
+    const prefer = optionalString(args, "prefer") ?? "hosted"
+    const targetUrl = prefer === "public_shell" && status.publicUrl ? status.publicUrl : status.hostedUrl ?? status.publicUrl
+    return {
+      run_id: status.runId,
+      status: status.status,
+      hosted_url: status.hostedUrl ?? null,
+      public_url: status.publicUrl ?? null,
+      slug: status.slug ?? null,
+      visibility: status.visibility ?? null,
+      url_status: status.urlStatus ?? null,
+      message: status.message ?? null,
+      target_url: targetUrl ?? null,
+    }
+  }
+
+  async openHostedArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const runId = requiredString(args, "run_id")
+    const prefer = (optionalString(args, "prefer") ?? "hosted") as "hosted" | "public_shell"
+    const status = await readRunHostedArtifactStatus(config, runId)
+    const url = prefer === "public_shell" && status.publicUrl ? status.publicUrl : status.hostedUrl ?? status.publicUrl
+    if (!url) {
+      return {
+        ok: false,
+        run_id: runId,
+        status: status.status,
+        message: status.message || "no hosted or public url for run",
+      }
+    }
+    const openRes = await openUrlInSystemBrowser(url)
+    return {
+      ok: openRes.ok,
+      run_id: runId,
+      opened_url: url,
+      prefer,
+      status: status.status,
+      visibility: status.visibility ?? null,
+      message: openRes.message,
+      receipt: openRes.ok ? `RECEIPT PASS hosted_url=${status.urlStatus ?? 200} [Open artifact ↗]` : null,
+    }
   }
 
   async listFactories(args: JsonObject): Promise<JsonValue> {
@@ -608,6 +693,289 @@ export class StackMcpServer {
     this.evalLaunch = correlateReadmeSmokeRun(this.evalLaunch, snapshot.jobs)
     return this.evalLaunch as unknown as JsonValue
   }
+
+  async listSkills(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const query = optionalString(args, "query")
+    const limit = optionalInteger(args, "limit") ?? 100
+    if (limit < 1 || limit > 500) throw new RpcError(-32602, "limit must be between 1 and 500")
+    const skills = query
+      ? searchStackSkills(config.appRoot, query, { workspaceRoot: config.workspaceRoot, limit })
+      : discoverStackSkills(config.appRoot, { workspaceRoot: config.workspaceRoot }).slice(0, limit)
+    return {
+      count: skills.length,
+      skills: skills.map(skillToJson),
+    }
+  }
+
+  async readSkill(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const skillId = requiredString(args, "skill_id")
+    const maxBytes = optionalInteger(args, "max_bytes") ?? 50_000
+    if (maxBytes < 1 || maxBytes > 200_000) throw new RpcError(-32602, "max_bytes must be between 1 and 200000")
+    const result = readStackSkill(config.appRoot, skillId, { workspaceRoot: config.workspaceRoot, maxBytes })
+    if (!result) throw new RpcError(-32602, `unknown skill_id: ${skillId}`)
+    const threadId = optionalString(args, "thread_id")
+    const actorId = optionalString(args, "actor_id")
+    const actorRole = optionalActorRole(args)
+    let threadEventLogPath: string | undefined
+    let eventId: string | undefined
+    if (threadId) {
+      eventId = stackEventId("skill_read")
+      threadEventLogPath = appendThreadMetaEvent(config.appRoot, {
+        event_id: eventId,
+        type: "skill.read",
+        thread_id: threadId,
+        observed_at: new Date().toISOString(),
+        actor_id: actorId,
+        actor_role: actorRole,
+        payload: {
+          skill_id: result.skill.skillId,
+          skill_name: result.skill.name,
+          source_path: result.skill.sourcePath,
+          origin: result.skill.origin,
+          max_bytes: maxBytes,
+          truncated: result.truncated,
+          content_bytes: Buffer.byteLength(result.content, "utf8"),
+          reason: optionalString(args, "reason") ?? null,
+        },
+      })
+    }
+    return {
+      skill: skillToJson(result.skill),
+      content: result.content,
+      truncated: result.truncated,
+      ...(threadId ? { event_id: eventId, thread_event_log_path: threadEventLogPath } : {}),
+    }
+  }
+
+  async searchSkills(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const query = requiredString(args, "query")
+    const limit = optionalInteger(args, "limit") ?? 20
+    if (limit < 1 || limit > 100) throw new RpcError(-32602, "limit must be between 1 and 100")
+    const skills = searchStackSkills(config.appRoot, query, { workspaceRoot: config.workspaceRoot, limit })
+    return {
+      query,
+      count: skills.length,
+      skills: skills.map(skillToJson),
+    }
+  }
+
+  async listGuidance(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const scope = optionalGuidanceScope(args)
+    const limit = optionalInteger(args, "limit") ?? 100
+    if (limit < 1 || limit > 500) throw new RpcError(-32602, "limit must be between 1 and 500")
+    const guidance = discoverStackGuidance(config.appRoot, { workspaceRoot: config.workspaceRoot, scope }).slice(0, limit)
+    return {
+      count: guidance.length,
+      guidance: guidance.map(guidanceToJson),
+    }
+  }
+
+  async searchGuidance(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const query = requiredString(args, "query")
+    const scope = optionalGuidanceScope(args)
+    const limit = optionalInteger(args, "limit") ?? 20
+    const maxExcerptBytes = optionalInteger(args, "max_excerpt_bytes") ?? 600
+    if (limit < 1 || limit > 100) throw new RpcError(-32602, "limit must be between 1 and 100")
+    if (maxExcerptBytes < 0 || maxExcerptBytes > 5000) {
+      throw new RpcError(-32602, "max_excerpt_bytes must be between 0 and 5000")
+    }
+    const results = searchStackGuidance(config.appRoot, query, {
+      workspaceRoot: config.workspaceRoot,
+      scope,
+      limit,
+      maxExcerptBytes,
+    })
+    const threadId = optionalString(args, "thread_id")
+    const actorId = optionalString(args, "actor_id")
+    const actorRole = optionalActorRole(args)
+    let threadEventLogPath: string | undefined
+    let eventId: string | undefined
+    if (threadId) {
+      eventId = stackEventId("guidance_query")
+      threadEventLogPath = appendThreadMetaEvent(config.appRoot, {
+        event_id: eventId,
+        type: "guidance.query",
+        thread_id: threadId,
+        observed_at: new Date().toISOString(),
+        actor_id: actorId,
+        actor_role: actorRole,
+        payload: {
+          query,
+          scope: scope ?? "all",
+          hit_ids: results.map((item) => item.guidanceId),
+          result_count: results.length,
+        },
+      })
+    }
+    const guidanceEvent = guidanceEventToJson(recordStackGuidanceEvent(config.appRoot, {
+      eventType: "guidance.query",
+      actorId,
+      actorRole,
+      threadId,
+      payload: {
+        query,
+        scope: scope ?? "all",
+        hit_ids: results.map((item) => item.guidanceId),
+        result_count: results.length,
+        thread_event_id: eventId ?? null,
+      },
+    }))
+    return {
+      query,
+      scope: scope ?? "all",
+      count: results.length,
+      guidance_event: toJsonValue(guidanceEvent) ?? null,
+      guidance: results.map((item) => ({
+        ...guidanceToJson(item),
+        score: item.score,
+        excerpt: item.excerpt,
+      })),
+      ...(threadId ? { event_id: eventId, thread_event_log_path: threadEventLogPath } : {}),
+    }
+  }
+
+  async readGuidance(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const guidanceId = requiredString(args, "guidance_id")
+    const maxBytes = optionalInteger(args, "max_bytes") ?? 50_000
+    if (maxBytes < 1 || maxBytes > 200_000) throw new RpcError(-32602, "max_bytes must be between 1 and 200000")
+    const result = readStackGuidance(config.appRoot, guidanceId, { workspaceRoot: config.workspaceRoot, maxBytes })
+    if (!result) throw new RpcError(-32602, `unknown guidance_id: ${guidanceId}`)
+    const threadId = optionalString(args, "thread_id")
+    const actorId = optionalString(args, "actor_id")
+    const actorRole = optionalActorRole(args)
+    let threadEventLogPath: string | undefined
+    let eventId: string | undefined
+    if (threadId) {
+      eventId = stackEventId("guidance_read")
+      threadEventLogPath = appendThreadMetaEvent(config.appRoot, {
+        event_id: eventId,
+        type: "guidance.read",
+        thread_id: threadId,
+        observed_at: new Date().toISOString(),
+        actor_id: actorId,
+        actor_role: actorRole,
+        payload: {
+          guidance_id: result.item.guidanceId,
+          source_path: result.item.sourcePath,
+          origin: result.item.origin,
+          scope: result.item.scope,
+          max_bytes: maxBytes,
+          truncated: result.truncated,
+          content_bytes: Buffer.byteLength(result.content, "utf8"),
+          reason: optionalString(args, "reason") ?? null,
+        },
+      })
+    }
+    const guidanceEvent = guidanceEventToJson(recordStackGuidanceEvent(config.appRoot, {
+      eventType: "guidance.used",
+      guidanceId: result.item.guidanceId,
+      actorId,
+      actorRole,
+      threadId,
+      reason: optionalString(args, "reason"),
+      payload: {
+        source_path: result.item.sourcePath,
+        origin: result.item.origin,
+        scope: result.item.scope,
+        max_bytes: maxBytes,
+        truncated: result.truncated,
+        content_bytes: Buffer.byteLength(result.content, "utf8"),
+        thread_event_id: eventId ?? null,
+      },
+    }))
+    return {
+      guidance: guidanceToJson(result.item),
+      content: result.content,
+      truncated: result.truncated,
+      guidance_event: toJsonValue(guidanceEvent) ?? null,
+      ...(threadId ? { event_id: eventId, thread_event_log_path: threadEventLogPath } : {}),
+    }
+  }
+
+  async recordGuidanceEvent(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const eventType = requiredGuidanceEventType(args, "event_type")
+    const guidanceId = optionalString(args, "guidance_id")
+    const impact = optionalGuidanceImpact(args)
+    const confidence = optionalConfidence(args)
+    if (eventType === "guidance.impact_judged" && !impact) {
+      throw new RpcError(-32602, "impact is required when event_type is guidance.impact_judged")
+    }
+    const event = recordStackGuidanceEvent(config.appRoot, {
+      eventType,
+      guidanceId,
+      actorId: optionalString(args, "actor_id"),
+      actorRole: optionalActorRole(args),
+      threadId: optionalString(args, "thread_id"),
+      impact,
+      confidence,
+      reason: optionalString(args, "reason"),
+      evidenceEventIds: optionalStringArray(args, "evidence_event_ids") ?? [],
+      payload: optionalJsonObject(args, "payload") ?? {},
+    })
+    return {
+      ok: true,
+      event: toJsonValue(guidanceEventToJson(event)) ?? null,
+    }
+  }
+
+  async listGuidanceEvents(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const limit = optionalInteger(args, "limit") ?? 50
+    if (limit < 1 || limit > 500) throw new RpcError(-32602, "limit must be between 1 and 500")
+    const events = listStackGuidanceEvents(config.appRoot, {
+      guidanceId: optionalString(args, "guidance_id"),
+      eventType: optionalGuidanceEventType(args, "event_type"),
+      threadId: optionalString(args, "thread_id"),
+      limit,
+    })
+    return {
+      count: events.length,
+      events: toJsonValue(events.map(guidanceEventToJson)) ?? [],
+    }
+  }
+
+  async pushSkillContext(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const event = pushSkillContext(config.appRoot, {
+      threadId: requiredString(args, "thread_id"),
+      monitorActorId: requiredString(args, "monitor_actor_id"),
+      targetActorId: requiredString(args, "target_actor_id"),
+      skillId: requiredString(args, "skill_id"),
+      reason: requiredString(args, "reason"),
+      evidenceEventIds: optionalStringArray(args, "evidence_event_ids") ?? [],
+      message: optionalString(args, "message"),
+      workspaceRoot: config.workspaceRoot,
+    })
+    const threadEventLogPath = appendThreadMetaEvent(config.appRoot, {
+      event_id: event.eventId,
+      type: "monitor.skill_context_push",
+      thread_id: event.threadId,
+      observed_at: event.createdAt,
+      actor_id: event.monitorActorId,
+      actor_role: "monitor",
+      payload: {
+        target_actor_id: event.targetActorId,
+        skill_id: event.skillId,
+        source_path: event.sourcePath,
+        reason: event.reason,
+        evidence_event_ids: event.evidenceEventIds,
+        message_id: event.messageId,
+      },
+    })
+    return toJsonValue({
+      ok: true,
+      event_type: "monitor.skill_context_push",
+      event,
+      thread_event_log_path: threadEventLogPath,
+    }) ?? null
+  }
 }
 
 function correlateReadmeSmokeRun(
@@ -635,6 +1003,26 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       description: "List recent live SMR runs in a concise Codex-friendly shape, including output/message/file counts when loaded.",
       inputSchema: objectSchema({ environment: environmentProperty() }),
       handler: (args) => server.listLiveSmrs(args),
+    },
+    {
+      name: "stack_get_run_artifact_status", // FRESH mcp/server.ts edit this turn for delta
+      description: "Return hosted artifact status + urls for a given SMR run (used for artifact_builder runs). Includes hosted_url, public_url, status (building|ready|published), and whether the hosted URL returned 200.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        run_id: { type: "string", description: "SMR run_id to query for hosted artifact" },
+        prefer: { type: "string", enum: ["hosted", "public_shell"], description: "Which URL family to prefer for open actions" },
+      }),
+      handler: (args) => server.getRunArtifactStatus(args),
+    },
+    {
+      name: "stack_open_hosted_artifact",
+      description: "Launch the system browser to the hosted artifact (or public shell) for a run. Returns receipt string on success. Does not embed; uses external browser (same split as Codex browser vs Sites).",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        run_id: { type: "string", description: "SMR run_id owning the artifact" },
+        prefer: { type: "string", enum: ["hosted", "public_shell"], description: "hosted (default) or public_shell for usesynth.ai/openresearch/..." },
+      }),
+      handler: (args) => server.openHostedArtifact(args),
     },
     {
       name: "stack_list_factories",
@@ -825,6 +1213,162 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema({ environment: environmentProperty() }),
       handler: (args) => server.readmeSmokeStatus(args),
     },
+    {
+      name: "stack_skills_list",
+      description: "List first-class Stack skills from .stack/skills plus bridged Codex/plugin skill roots.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        query: stringProperty("Optional search query. When set, returns matching skills only."),
+        limit: numberProperty("Maximum skills to return. Defaults to 100, max 500."),
+      }),
+      handler: (args) => server.listSkills(args),
+    },
+    {
+      name: "stack_skills_read",
+      description: "Read a first-class skill by id, including SKILL.md content and metadata.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          skill_id: stringProperty("Skill id, skill name, or exact SKILL.md path."),
+          max_bytes: numberProperty("Maximum SKILL.md bytes to return. Defaults to 50000, max 200000."),
+          thread_id: stringProperty("Optional Stack thread/session id. When present, records a skill.read meta event."),
+          actor_id: stringProperty("Optional actor id for the skill.read event."),
+          actor_role: enumProperty(["primary", "monitor", "system", "unknown"], "Optional actor role for the skill.read event."),
+          reason: stringProperty("Optional reason recorded on the skill.read event."),
+        },
+        ["skill_id"],
+      ),
+      handler: (args) => server.readSkill(args),
+    },
+    {
+      name: "stack_skills_search",
+      description: "Search first-class Stack skills by id, title, description, owner, and path.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          query: stringProperty("Search terms."),
+          limit: numberProperty("Maximum skills to return. Defaults to 20, max 100."),
+        },
+        ["query"],
+      ),
+      handler: (args) => server.searchSkills(args),
+    },
+    {
+      name: "stack_guidance_list",
+      description: "List Stack guidance from .stack/guidance plus selected Jstack/workspace guidance sources.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        scope: enumProperty(["style", "records", "workflows", "all"], "Optional guidance scope. Defaults to all."),
+        limit: numberProperty("Maximum guidance items to return. Defaults to 100, max 500."),
+      }),
+      handler: (args) => server.listGuidance(args),
+    },
+    {
+      name: "stack_search_guidance",
+      description: "Search Stack guidance, Jstack Stack guidance spec, and Synth Style pointers by query.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          query: stringProperty("Search terms."),
+          scope: enumProperty(["style", "records", "workflows", "all"], "Optional guidance scope. Defaults to all."),
+          limit: numberProperty("Maximum guidance hits to return. Defaults to 20, max 100."),
+          max_excerpt_bytes: numberProperty("Maximum excerpt bytes per hit. Defaults to 600, max 5000."),
+          thread_id: stringProperty("Optional Stack thread/session id. When present, records a guidance.query meta event."),
+          actor_id: stringProperty("Optional actor id for the guidance.query event."),
+          actor_role: enumProperty(["primary", "monitor", "system", "unknown"], "Optional actor role for the guidance.query event."),
+        },
+        ["query"],
+      ),
+      handler: (args) => server.searchGuidance(args),
+    },
+    {
+      name: "stack_guidance_read",
+      description: "Read a guidance item by id, relative path, or exact source path; optionally record guidance.read.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          guidance_id: stringProperty("Guidance id, relative path, or exact source path."),
+          max_bytes: numberProperty("Maximum markdown bytes to return. Defaults to 50000, max 200000."),
+          thread_id: stringProperty("Optional Stack thread/session id. When present, records a guidance.read meta event."),
+          actor_id: stringProperty("Optional actor id for the guidance.read event."),
+          actor_role: enumProperty(["primary", "monitor", "system", "unknown"], "Optional actor role for the guidance.read event."),
+          reason: stringProperty("Optional reason recorded on the guidance.read event."),
+        },
+        ["guidance_id"],
+      ),
+      handler: (args) => server.readGuidance(args),
+    },
+    {
+      name: "stack_guidance_record_event",
+      description: "Record a guidance lifecycle, usage, or impact event in the local guidance SQLite ledger.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          event_type: enumProperty(
+            [
+              "guidance.doc_added",
+              "guidance.doc_updated",
+              "guidance.doc_deleted",
+              "guidance.used",
+              "guidance.impact_judged",
+              "guidance.query",
+            ],
+            "Guidance event type.",
+          ),
+          guidance_id: stringProperty("Optional guidance id associated with the event."),
+          actor_id: stringProperty("Optional actor id."),
+          actor_role: enumProperty(["primary", "monitor", "system", "unknown"], "Optional actor role."),
+          thread_id: stringProperty("Optional Stack thread/session id."),
+          impact: enumProperty(["helped", "hurt", "neutral", "unknown"], "Required for guidance.impact_judged."),
+          confidence: enumProperty(["low", "medium", "high"], "Optional confidence for impact or attribution."),
+          reason: stringProperty("Optional concise reason."),
+          evidence_event_ids: arrayProperty("Optional event ids, trace ids, or packet ids supporting this record."),
+          payload: jsonObjectProperty("Optional structured metadata for this event."),
+        },
+        ["event_type"],
+      ),
+      handler: (args) => server.recordGuidanceEvent(args),
+    },
+    {
+      name: "stack_guidance_events",
+      description: "List local guidance SQLite ledger events, newest first.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        guidance_id: stringProperty("Optional guidance id filter."),
+        event_type: enumProperty(
+          [
+            "guidance.doc_added",
+            "guidance.doc_updated",
+            "guidance.doc_deleted",
+            "guidance.used",
+            "guidance.impact_judged",
+            "guidance.query",
+          ],
+          "Optional guidance event type filter.",
+        ),
+        thread_id: stringProperty("Optional thread/session id filter."),
+        limit: numberProperty("Maximum events to return. Defaults to 50, max 500."),
+      }),
+      handler: (args) => server.listGuidanceEvents(args),
+    },
+    {
+      name: "stack_skills_push_context",
+      description: "Record an explicit monitor-to-primary skill context push. Returns the visible message that should be sent to the primary actor.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Stack thread/session id receiving the context push."),
+          monitor_actor_id: stringProperty("Monitor actor id issuing the push."),
+          target_actor_id: stringProperty("Primary actor id receiving the push."),
+          skill_id: stringProperty("Skill id to push."),
+          reason: stringProperty("Why the monitor is pushing this skill now."),
+          evidence_event_ids: arrayProperty("Optional event ids that justify the push."),
+          message: stringProperty("Optional explicit message body. Defaults to a concise skill handoff message."),
+        },
+        ["thread_id", "monitor_actor_id", "target_actor_id", "skill_id", "reason"],
+      ),
+      handler: (args) => server.pushSkillContext(args),
+    },
   ]
 }
 
@@ -908,6 +1452,14 @@ function numberProperty(description: string): JsonObject {
   return { type: "number", description }
 }
 
+function arrayProperty(description: string): JsonObject {
+  return { type: "array", items: { type: "string" }, description }
+}
+
+function jsonObjectProperty(description: string): JsonObject {
+  return { type: "object", additionalProperties: true, description }
+}
+
 function environmentProperty(): JsonObject {
   return {
     type: "string",
@@ -921,6 +1473,54 @@ function optionalBridgeMode(args: JsonObject): StackBridgeMode | undefined {
   if (!value) return undefined
   if (value === "local" || value === "remote" || value === "all") return value
   throw new RpcError(-32602, "mode must be local, remote, or all")
+}
+
+function optionalGuidanceScope(args: JsonObject): StackGuidanceScope | undefined {
+  const value = optionalString(args, "scope")
+  if (!value) return undefined
+  if (value === "style" || value === "records" || value === "workflows" || value === "all") return value
+  throw new RpcError(-32602, "scope must be style, records, workflows, or all")
+}
+
+function requiredGuidanceEventType(args: JsonObject, key: string): StackGuidanceEventType {
+  const value = requiredString(args, key)
+  const parsed = parseGuidanceEventType(value)
+  if (!parsed) throw new RpcError(-32602, `${key} must be a known guidance event type`)
+  return parsed
+}
+
+function optionalGuidanceEventType(args: JsonObject, key: string): StackGuidanceEventType | undefined {
+  const value = optionalString(args, key)
+  if (!value) return undefined
+  const parsed = parseGuidanceEventType(value)
+  if (!parsed) throw new RpcError(-32602, `${key} must be a known guidance event type`)
+  return parsed
+}
+
+function parseGuidanceEventType(value: string): StackGuidanceEventType | undefined {
+  if (
+    value === "guidance.doc_added" ||
+    value === "guidance.doc_updated" ||
+    value === "guidance.doc_deleted" ||
+    value === "guidance.used" ||
+    value === "guidance.impact_judged" ||
+    value === "guidance.query"
+  ) return value
+  return undefined
+}
+
+function optionalGuidanceImpact(args: JsonObject): StackGuidanceImpact | undefined {
+  const value = optionalString(args, "impact")
+  if (!value) return undefined
+  if (value === "helped" || value === "hurt" || value === "neutral" || value === "unknown") return value
+  throw new RpcError(-32602, "impact must be helped, hurt, neutral, or unknown")
+}
+
+function optionalConfidence(args: JsonObject): "low" | "medium" | "high" | undefined {
+  const value = optionalString(args, "confidence")
+  if (!value) return undefined
+  if (value === "low" || value === "medium" || value === "high") return value
+  throw new RpcError(-32602, "confidence must be low, medium, or high")
 }
 
 function isActiveState(value: string | undefined): boolean {
@@ -991,6 +1591,31 @@ function optionalInteger(args: JsonObject, key: string): number | undefined {
     throw new RpcError(-32602, `${key} must be an integer`)
   }
   return value
+}
+
+function optionalStringArray(args: JsonObject, key: string): string[] | undefined {
+  const value = args[key]
+  if (value === undefined || value === null) return undefined
+  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) {
+    throw new RpcError(-32602, `${key} must be an array of strings`)
+  }
+  return value
+}
+
+function optionalJsonObject(args: JsonObject, key: string): Record<string, unknown> | undefined {
+  const value = args[key]
+  if (value === undefined || value === null) return undefined
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new RpcError(-32602, `${key} must be an object`)
+  }
+  return value as Record<string, unknown>
+}
+
+function optionalActorRole(args: JsonObject): "primary" | "monitor" | "system" | "unknown" | undefined {
+  const value = optionalString(args, "actor_role")
+  if (!value) return undefined
+  if (value === "primary" || value === "monitor" || value === "system" || value === "unknown") return value
+  throw new RpcError(-32602, "actor_role must be primary, monitor, system, or unknown")
 }
 
 function optionalOutputKind(args: JsonObject, key: string): RemoteOutputSelection["kind"] | undefined {

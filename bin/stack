@@ -2,6 +2,19 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+for auth_env in "$SCRIPT_DIR/.env" "$SCRIPT_DIR/../synth-ai/.env"; do
+  if [[ -f "$auth_env" && -z "${SYNTH_API_KEY:-}" ]]; then
+    set -a
+    # shellcheck disable=SC1090
+    source "$auth_env"
+    set +a
+    break
+  fi
+done
+
+stack_reset_tty() {
+  printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1049l\033[?25h\033[0m' >&2 || true
+}
 
 stackd_health_ok() {
   command -v curl >/dev/null 2>&1 && curl -fsS --max-time 1 "$STACK_API_URL/health" >/dev/null 2>&1
@@ -23,6 +36,8 @@ stackd_autostart() {
   done
   printf 'warning: stackd did not become healthy at %s; continuing TUI without local API sidecar\n' "$STACK_API_URL" >&2
 }
+
+trap stack_reset_tty EXIT INT TERM HUP
 
 stackd_autostart
 exec bun run "$SCRIPT_DIR/src/main.ts" "$@"
