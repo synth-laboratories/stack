@@ -18,7 +18,7 @@
   },
   "scripts": {
     "start": "bun run src/main.ts",
-    "check": "tsc --noEmit",
+    "check": "tsc --noEmit && cargo build -p stackd",
     "smoke:tui": "expect scripts/smoke_tui_submit.expect",
     "smoke:tui:scroll": "expect scripts/smoke_tui_scroll.expect",
     "smoke:tui:gepa": "bun run scripts/smoke_tui_gepa.ts",
@@ -31,6 +31,7 @@
     "smoke:usage-cost": "bun run scripts/smoke_usage_cost.ts",
     "smoke:openai-pricing": "bun run scripts/smoke_openai_pricing.ts",
     "smoke:throughput": "bun run scripts/smoke_throughput.ts",
+    "smoke:stackd": "bun run scripts/smoke_local_api.ts",
     "smoke:bombadil:tui-scroll": "bun run scripts/smoke_bombadil_tui_scroll.ts",
     "smoke:install-skills": "bun run scripts/smoke_install_skills.ts",
     "smoke:bootstrap": "bun run scripts/smoke_bootstrap.ts",

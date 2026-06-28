@@ -138,6 +138,36 @@ upload, WorkProduct/artifact preview/download, persisted saved-download
 preview, hosted optimizer cancel, and hosted optimizer artifact
 preview/download.
 
+### stackd local API
+
+`stackd` is a read-only localhost indexer/exporter over `.stack/sessions/*.json`.
+The TUI still writes session files directly, and Codex still owns JSONL
+transcripts under `~/.codex/sessions/`.
+
+```bash
+./bin/stackd serve
+curl -s http://127.0.0.1:8792/health
+bun run smoke:stackd
+```
+
+`./bin/stack` auto-starts `stackd` when `/health` is unavailable, exports
+`STACK_API_URL` as `http://127.0.0.1:8792`, and continues without the sidecar if
+startup fails. Logs are written to `.stack/runtime/stackd.log`.
+
+Routes in L1: `/health`, `/threads`, `/threads/:id`,
+`/threads/:id/status`, `/threads/:id/trace`, `/threads/:id/export`, and
+`/doc` (`/openapi.json`). Export writes
+`.stack/exports/<session-id>/<stamp>/` with `manifest.json`, redacted
+`session.json`, `metadata.json`, and optional `codex.jsonl`.
+
+Env:
+
+- `STACK_ROOT`: app root; defaults to current directory for `stackd`
+- `STACK_API_URL`: client URL; defaults to `http://127.0.0.1:8792`
+- `STACK_API_BIND`: bind host; defaults to `127.0.0.1`, with `0.0.0.0` only by explicit opt-in
+- `STACK_API_PORT`: port; defaults to `8792`
+- `CODEX_HOME`: Codex home; defaults to `~/.codex`
+
 ### Workspace Config
 
 Stack reads `stack.config.json` from this repo. `workingDir` controls where

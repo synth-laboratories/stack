@@ -8,7 +8,7 @@ RSYNC_EXCLUDES := \
 	--exclude .git \
 	--exclude .DS_Store
 
-.PHONY: install uninstall install-brew uninstall-brew deps check install-skills version sync-version bump-dev release-promote release-check homebrew-formulas smoke-tui smoke-tui-all smoke-tui-gepa smoke-tui-resilience
+.PHONY: install uninstall install-brew uninstall-brew deps check install-skills version sync-version bump-dev release-promote release-check homebrew-formulas smoke-tui smoke-tui-all smoke-tui-gepa smoke-tui-resilience smoke-stackd
 
 deps:
 	cd "$(STACK_ROOT)" && bun install
@@ -27,6 +27,9 @@ smoke-tui-resilience:
 
 smoke-tui-all:
 	cd "$(STACK_ROOT)" && bun run smoke:tui:all
+
+smoke-stackd:
+	cd "$(STACK_ROOT)" && bun run smoke:stackd
 
 version:
 	@cd "$(STACK_ROOT)" && bun -e 'import { printStackVersion } from "./src/version.ts"; printStackVersion("stack")'
