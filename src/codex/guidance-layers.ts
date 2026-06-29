@@ -16,21 +16,9 @@ export function workspaceStyleFile(workspaceRoot: string): string {
   return join(workspaceRoot, "STYLE.md")
 }
 
-export function jstackRoots(workspaceRoot: string): string[] {
-  return [
-    join(workspaceRoot, "Jstack", ".jstack"),
-    join(workspaceRoot, ".jstack"),
-  ]
-}
-
 export function orgStyleDirs(workspaceRoot: string): string[] {
   return [
     join(workspaceRoot, ".stack", "guidance", "style", "org"),
-    ...jstackRoots(workspaceRoot).flatMap((root) => [
-      join(root, "style"),
-      join(root, "anger", "standards"),
-      join(root, "tanha", "standards"),
-    ]),
   ]
 }
 

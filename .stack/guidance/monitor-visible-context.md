@@ -1,18 +1,15 @@
 # Monitor-visible context manifest
 
-JSTACK_HEATMAP|ts=2026-06-29T02:48:00Z|repo=stack|kind=spec|file=.stack/guidance/monitor-visible-context.md|commit=pending|severity=LOW|time_lost=unknown
+STACK_MEMORY|ts=2026-06-29T02:48:00Z|repo=stack|kind=spec|file=.stack/guidance/monitor-visible-context.md|commit=pending|severity=LOW|time_lost=unknown
 
-This file is the stable list of Jstack/workspace context the Stack monitor is
+This file is the stable list of Stack/workspace context the Stack monitor is
 allowed to retrieve through the bounded guidance index. The monitor does not
-receive a raw dump of the Jstack tree.
+receive a raw dump of external memory trees.
 
 ## Indexed Context
 
 | Source | Scope | Style layer | Notes |
 | --- | --- | --- | --- |
-| `Jstack/.jstack/style/**/*.md` | `style` | `org` | Org writing, engineering, and product style docs. |
-| `Jstack/.jstack/anger/standards/*.md` | `style` | `org` | Org standards path when that tree exists. |
-| `Jstack/.jstack/tanha/standards/*.md` | `style` | `org` | Active Jstack standards path in this checkout. |
 | `backend/specifications/tanha/references/synthstyle.md` | `style` | `org` | Synth Style source of truth for this workspace. |
 | `specifications/old/tanha/references/synthstyle.md` | `style` | `org` | Historical Synth Style copy when that checkout exists. |
 | `.stack/guidance/style/*.md` | `style` | `app` | Stack product norms and focused excerpts. |
@@ -26,9 +23,9 @@ receive a raw dump of the Jstack tree.
 
 ## Excluded By Default
 
-- Arbitrary `Jstack/.jstack/daily_notes/**`
-- Jstack evidence packets
-- Jstack goal/spec progress files
+- Arbitrary daily notes outside `.stack/guidance/**`
+- External evidence packets
+- External goal/spec progress files
 - Full product specs and roadmaps
 - Lint output, generated artifacts, and temporary run logs
 - Growth records and unrelated product ledgers
@@ -42,8 +39,6 @@ when a monitor, StackEval run, or rollout harness should see it.
 `bun run smoke:guidance:l2` proves that the active checkout indexes:
 
 - at least one app-layer style item,
-- Jstack `.jstack/style`,
-- active Jstack standards,
 - Synth Style,
 - curated MLDP records,
 - curated papercuts.
