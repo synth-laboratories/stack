@@ -89,6 +89,7 @@ import { recordCoreAgentEventsFromCodexLine } from "../core-agent-events.js"
 import { startVoiceRecording, type VoiceRecordingHandle } from "../voice/recording.js"
 import { transcribeAndEnqueueGardenerVoice } from "../voice/dictation.js"
 import { readVoiceStatus, voiceStatusLine, type VoiceStatusSnapshot } from "../voice/status.js"
+import { readActiveStackevalPacket, stackevalPacketStatusLine } from "../stackeval/packet.js"
 import {
   CodexAppServerSession,
   probeCodexAppServerAvailability,
@@ -2396,14 +2397,18 @@ function statusLine(options: StackAppOptions, state: AppState): string {
 function mediationTopStrip(options: StackAppOptions, state: AppState): string {
   if (state.liveOpsMode === "local") {
     const optimizerCounts = optimizerJobCounts(state.optimizerSnapshot)
+    const stackevalLine = stackevalPacketStatusLine(readActiveStackevalPacket(options.config.appRoot))
     return [
       "bridge local",
       `tool ${bridgeStatusToolName(state)}`,
       `mcp ${stackMcpStatusLabel(options.config)}`,
       `eval ${state.evalLaunch.status}`,
+      stackevalLine ? inlineText(stackevalLine, 48) : "",
       `optimizers ${state.optimizerSnapshot.status} ${optimizerCounts.active}/${optimizerCounts.total} active`,
       "x remote bridge",
-    ].join(" | ")
+    ]
+      .filter((part) => part.length > 0)
+      .join(" | ")
   }
 
   return [

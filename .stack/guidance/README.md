@@ -32,13 +32,15 @@ Indexed from Stack/workspace when present:
 - `backend/specifications/tanha/references/synthstyle.md` as org Synth Style.
 - `specifications/old/tanha/references/synthstyle.md` as a historical org
   Synth Style copy when that checkout exists.
+- `.stack/guidance/style/jstack-style-excerpt.md` as the curated Jstack style
+  and standards excerpt visible to monitors.
 - `.stack/guidance/records/mldp/*.md`, `records/papercuts/*.md`, and
   `records/decisions/*.md` as local high-signal records.
 
 Not indexed by default: arbitrary daily notes, external evidence packets, full
-product specs, lints, or secrets. Copy only the specific high-signal record into
-`.stack/guidance/records/` when a monitor, StackEval run, or rollout harness
-should see it.
+product specs, raw `Jstack/.jstack/**`, raw same-repo `.jstack/**`, lints, or
+secrets. Copy only the specific high-signal record into `.stack/guidance/` when
+a monitor, StackEval run, or rollout harness should see it.
 
 ## Events
 

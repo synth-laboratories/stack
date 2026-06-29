@@ -35,6 +35,7 @@ import { appendThreadMetaEvent, stackEventId } from "../thread-events.js"
 import { stackdExport, stackdThread, stackdThreads, stackdTrace } from "../client/stackd.js"
 import { projectLogDocumentToVictoriaLogs, queryStackLogs } from "../observability/victorialogs.js"
 import { readReadmeSmokeEvalLaunch, startReadmeSmokeEval, type StackEvalLaunch } from "../local/evals.js"
+import { readActiveStackevalPacket } from "../stackeval/packet.js"
 import { readOptimizerSnapshot } from "../local/optimizers.js"
 import {
   downloadRemoteOutput,
@@ -210,6 +211,7 @@ export class StackMcpServer {
       ? readReadmeSmokeEvalLaunch(config)
       : correlateReadmeSmokeRun(this.evalLaunch ?? readReadmeSmokeEvalLaunch(config), research.jobs)
     this.evalLaunch = readmeSmoke
+    const stackevalPacket = readActiveStackevalPacket(config.appRoot)
 
     return toJsonValue({
       bridge: "stack-agent-bridge",
@@ -272,6 +274,16 @@ export class StackMcpServer {
         verification_state: readmeSmoke.verificationState,
         verification_failures: readmeSmoke.verificationFailures ?? [],
       },
+      stackeval_packet: stackevalPacket
+        ? {
+            task_id: stackevalPacket.taskId,
+            packet_dir: stackevalPacket.packetDir,
+            stamp: stackevalPacket.stamp,
+            preset: stackevalPacket.preset,
+            status: stackevalPacket.status,
+            updated_at: stackevalPacket.updatedAt ?? null,
+          }
+        : null,
       next_actions: bridgeNextActions(mode, auth.hasAuth, research?.jobs.length ?? 0, hosted?.runs.length ?? 0),
     }) ?? null
   }

@@ -17,6 +17,9 @@ const all = discoverStackGuidance(appRoot, { workspaceRoot })
 const appItems = all.filter((item) => item.styleLayer === "app")
 const orgItems = all.filter((item) => item.styleLayer === "org")
 const orgSynthStyle = all.find((item) => item.styleLayer === "org" && item.guidanceId.includes("synthstyle"))
+const curatedJstackStyle = all.find(
+  (item) => item.styleLayer === "app" && item.guidanceId === "app/style/jstack-style-excerpt",
+)
 const externalMemoryItems = all.filter(
   (item) =>
     item.sourcePath.includes("/Jstack/.jstack/") ||
@@ -29,6 +32,7 @@ const papercutHit = searchStackGuidance(appRoot, "banking77-policy-api-key-env",
 if (appItems.length === 0) failures.push("no app-layer style items discovered")
 if (orgItems.length === 0) failures.push("no org-layer style items discovered")
 if (!orgSynthStyle) failures.push("org synthstyle source not indexed")
+if (!curatedJstackStyle) failures.push("curated Jstack style excerpt not indexed")
 if (externalMemoryItems.length > 0) failures.push("external memory sources must not be indexed")
 if (!mldpLearning) failures.push("records/mldp/learnings.md not indexed")
 if (papercutHit.length === 0 || papercutHit[0]?.score === 0) {
@@ -70,6 +74,7 @@ const summary = {
   app_layer_count: appItems.length,
   org_layer_count: orgItems.length,
   org_synthstyle_id: orgSynthStyle?.guidanceId ?? null,
+  curated_jstack_style_id: curatedJstackStyle?.guidanceId ?? null,
   external_memory_count: externalMemoryItems.length,
   mldp_learning_id: mldpLearning?.guidanceId ?? null,
   papercut_top_hit: papercutHit[0]?.guidanceId ?? null,

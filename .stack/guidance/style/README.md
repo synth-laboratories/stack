@@ -8,7 +8,7 @@ grep-friendly markdown, and tagged with `style_layer` in MCP search results.
 | **org** | Workspace Synth Style source | Org / platform | `backend/specifications/tanha/references/synthstyle.md` |
 | **repo** | Workspace root | Team per repo | `STYLE.md`, `.stack/guidance/style/repo/*.md` |
 | **personal** | Operator home | Each user | `~/.stack/guidance/style/*.md` |
-| **app** | Stack app root | Stack product | `.stack/guidance/style/stack-norms.md`, excerpts |
+| **app** | Stack app root | Stack product | `.stack/guidance/style/stack-norms.md`, `.stack/guidance/style/jstack-style-excerpt.md`, excerpts |
 
 ## Precedence (inject / conflict)
 

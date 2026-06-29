@@ -12,6 +12,7 @@ receive a raw dump of external memory trees.
 | --- | --- | --- | --- |
 | `backend/specifications/tanha/references/synthstyle.md` | `style` | `org` | Synth Style source of truth for this workspace. |
 | `specifications/old/tanha/references/synthstyle.md` | `style` | `org` | Historical Synth Style copy when that checkout exists. |
+| `.stack/guidance/style/jstack-style-excerpt.md` | `style` | `app` | Curated Jstack style and standard excerpts copied into Stack-owned guidance. |
 | `.stack/guidance/style/*.md` | `style` | `app` | Stack product norms and focused excerpts. |
 | `.stack/guidance/style/repo/*.md` | `style` | `repo` | Repo-local style conventions. |
 | `STYLE.md` | `style` | `repo` | Workspace root style file when present. |
@@ -21,9 +22,22 @@ receive a raw dump of external memory trees.
 | `.stack/guidance/records/decisions/*.md` | `records` | none | Local Stack ADRs and curated decisions; raw external decision ledgers are not indexed directly. |
 | `.stack/guidance/workflows/*.md` | `workflows` | none | Optional local workflow prose when present. |
 
+## Jstack-Origin Context Exposed To Monitors
+
+Stack monitors can see only curated Stack-owned copies of Jstack context:
+
+| Jstack source class | Monitor-visible Stack path | Notes |
+| --- | --- | --- |
+| Style guidance | `.stack/guidance/style/jstack-style-excerpt.md` | Curated excerpt from `Jstack/.jstack/style/**`. |
+| Active standards | `.stack/guidance/style/jstack-style-excerpt.md` | Curated excerpt from active Jstack standards such as DB transaction discipline. |
+| MLDP learnings/mistakes/desires | `.stack/guidance/records/mldp/*.md` | Curated copies only; raw MLDP ledgers are not indexed directly. |
+| Papercuts | `.stack/guidance/records/papercuts/*.md` | Curated copies only; raw papercut ledgers are not indexed directly. |
+| Decisions | `.stack/guidance/records/decisions/*.md` | Local Stack ADRs and curated decision copies only. |
+
 ## Excluded By Default
 
 - Arbitrary daily notes outside `.stack/guidance/**`
+- Raw `Jstack/.jstack/**` and same-repo raw `.jstack/**`
 - External evidence packets
 - External goal/spec progress files
 - Full product specs and roadmaps
@@ -40,5 +54,6 @@ when a monitor, StackEval run, or rollout harness should see it.
 
 - at least one app-layer style item,
 - Synth Style,
+- curated Jstack style/standards excerpt,
 - curated MLDP records,
 - curated papercuts.

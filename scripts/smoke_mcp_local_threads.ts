@@ -49,6 +49,8 @@ const proc = Bun.spawn([join(appRoot, "target", "debug", "stackd"), "serve"], {
 })
 
 try {
+  process.env.STACK_API_URL = env.STACK_API_URL
+  process.env.STACK_API_PORT = env.STACK_API_PORT
   await waitForHealth(env.STACK_API_URL)
   const server = new StackMcpServer(appRoot)
   const listed = await server.callTool("stack_local_threads_list", {})
@@ -64,6 +66,10 @@ try {
   const exported = asRecord(await server.callTool("stack_local_thread_export", { thread_id: threadId }))
   const exportDir = typeof exported?.export_dir === "string" ? exported.export_dir : undefined
   if (!exportDir || !existsSync(join(exportDir, "manifest.json"))) failures.push("MCP export missing manifest")
+
+  const status = asRecord(await server.callTool("stack_status", {}))
+  const stackevalPacket = asRecord(status?.stackeval_packet)
+  if (!stackevalPacket?.task_id) failures.push("stack_status missing stackeval_packet.task_id")
 
   const summary = {
     ok: failures.length === 0,
