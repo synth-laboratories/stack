@@ -3,7 +3,7 @@
 Source of truth: `backend/specifications/tanha/references/synthstyle.md`.
 This file is a Stack-local kickoff pointer, not a fork of Synth Style.
 
-JSTACK_HEATMAP|ts=2026-06-28T23:10:00Z|repo=stack|kind=learning|file=.stack/guidance/style/synthstyle-excerpt.md|commit=379a3cc|severity=LOW|time_lost=unknown
+STACK_MEMORY|ts=2026-06-28T23:10:00Z|kind=learning|file=.stack/guidance/style/synthstyle-excerpt.md|severity=LOW|source=legacy
 
 ## High-signal principles for Stack
 

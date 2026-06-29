@@ -9,7 +9,13 @@ import {
   type TextChunk,
 } from "@opentui/core"
 import { renderAgentContextStyled } from "./context-rail.js"
-import { renderThreadsRailStyled } from "./threads-rail.js"
+import {
+  leftPanelLineCount,
+  leftPanelTitle,
+  renderLeftPanelStyled,
+  toggleLeftPanelMode,
+  type LeftPanelMode,
+} from "./left-panel.js"
 import { stackTuiTheme as theme } from "./theme.js"
 import { randomUUID } from "node:crypto"
 import { readFileSync } from "node:fs"
@@ -53,8 +59,20 @@ import {
   readLatestCodexRateLimits,
   type CodexRateLimitsSnapshot,
 } from "../codex/rate-limits.js"
+import { readCodexAccountSnapshot } from "../codex/account.js"
+import { codexAuthLedgerSummaryLines, recordCodexAuthObservation } from "../codex/auth-ledger.js"
+import {
+  enqueueGardenerInbox,
+  isExplicitGardenerPrefix,
+  markGardenerInboxRouted,
+  readGardenerInbox,
+  runGardenerAfterTurn,
+  stripGardenerMessagePrefix,
+  type GardenerInboxItem,
+} from "../gardener.js"
 import {
   buildSessionUsageSummary,
+  formatEstimatedSpend,
   formatSessionUsageSummary,
 } from "../codex/usage-cost.js"
 import {
@@ -64,9 +82,13 @@ import {
   refreshMonitorSnapshot,
   runMonitorAfterTurn,
   runMonitorForNewEvents,
+  setMonitorEnabled,
   type StackMonitorSnapshot,
 } from "../monitor.js"
 import { recordCoreAgentEventsFromCodexLine } from "../core-agent-events.js"
+import { startVoiceRecording, type VoiceRecordingHandle } from "../voice/recording.js"
+import { transcribeAndEnqueueGardenerVoice } from "../voice/dictation.js"
+import { readVoiceStatus, voiceStatusLine, type VoiceStatusSnapshot } from "../voice/status.js"
 import {
   CodexAppServerSession,
   probeCodexAppServerAvailability,
@@ -202,6 +224,7 @@ type FocusMode =
   | "subagent-model"
   | "subagent-effort"
   | "subagents"
+  | "monitor"
   | "environment"
   | "ops"
   | "optimizers"
@@ -253,6 +276,8 @@ type AppState = {
   remoteProjectsSnapshot: RemoteProjectsPanelSnapshot
   containersSnapshot: ContainersPanelSnapshot
   rightPanelMode: RightPanelMode
+  leftPanelMode: LeftPanelMode
+  leftPanelScrollOffset: number
   optimizerCliAvailable: boolean
   localBootstrapSnapshot: LocalBootstrapSnapshot
   opsScrollOffset: number
@@ -277,10 +302,19 @@ type AppState = {
   threadsRailColumns: number
   harnessCommand: string
   codexRateLimits?: CodexRateLimitsSnapshot
+  codexAccountEmail?: string
   goalContext: CodexGoalSnapshot
   planningColumns: number
   codexTransport: "app-server" | "exec"
   queuedMessages: string[]
+  talkToGardener: boolean
+  gardenerInboxSelectedIndex: number
+  gardenerGardenPath?: string
+  gardenerWorkerQueue: string[]
+  voiceStatus: VoiceStatusSnapshot
+  voiceRecording?: VoiceRecordingHandle
+  voiceRecordingStartedAt?: string
+  voiceTranscribing: boolean
   lastSteerHint?: string
   monitorSnapshot: StackMonitorSnapshot
   metaEvents: StackThreadMetaEvent[]
@@ -293,6 +327,8 @@ type MountedView = {
 type StackKeyEvent = {
   name?: string
   ctrl?: boolean
+  shift?: boolean
+  eventType?: "press" | "repeat" | "release"
   sequence?: string
   raw?: string
   preventDefault?: () => void
@@ -330,6 +366,7 @@ const COMMON_FOCUS_ORDER: FocusMode[] = [
   "subagent-model",
   "subagent-effort",
   "subagents",
+  "monitor",
   "environment",
   "ops",
 ]
@@ -376,6 +413,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     remoteProjectsSnapshot,
     containersSnapshot,
     rightPanelMode: "actors",
+    leftPanelMode: "threads",
+    leftPanelScrollOffset: 0,
     opsScrollOffset: 0,
     hostedOptimizerSnapshot,
     evalLaunch: readReadmeSmokeEvalLaunch(options.config),
@@ -392,7 +431,13 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     threadsRailColumns: 40,
     harnessCommand: options.config.codexCommand,
     codexTransport: resolveCodexTransport(),
+    codexAccountEmail: (await readCodexAccountSnapshot()).email,
     queuedMessages: [],
+    talkToGardener: false,
+    gardenerInboxSelectedIndex: 0,
+    gardenerWorkerQueue: [],
+    voiceStatus: readVoiceStatus(options.config),
+    voiceTranscribing: false,
     monitorSnapshot: emptyMonitorSnapshot(options.config.appRoot),
     metaEvents: readThreadMetaEvents(options.config.appRoot, options.session.id),
   }
@@ -433,10 +478,13 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   let optimizerInterval: ReturnType<typeof setInterval> | undefined
   let rateLimitsInterval: ReturnType<typeof setInterval> | undefined
 
+  const observeCodexAuth = async (rateLimits?: CodexRateLimitsSnapshot) => {
+    await observeCodexAuthState(options.config, options.session.id, rateLimits, state)
+  }
+
   const refreshCodexRateLimits = async () => {
     const latest = await readLatestCodexRateLimits()
-    if (!latest) return
-    state.codexRateLimits = latest
+    await observeCodexAuth(latest)
   }
 
   const refreshLocalBootstrap = async () => {
@@ -559,6 +607,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
           submitFromCurrentInput,
           remount,
           refreshHistory,
+          refreshMetaEvents,
+          codexSessionHandle,
           refreshOptimizers,
           refreshRemoteAccount,
           refreshRemoteUsage,
@@ -634,10 +684,19 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     if (isEnterKey(key) && submitFromCurrentInput(key)) return
   })
 
+  renderer.keyInput.on("keyrelease", (key: StackKeyEvent) => {
+    if (!isVoiceHoldKey(key)) return
+    void finishVoiceHoldToGardener(options, state, remount)
+  })
+
   renderer.keyInput.on("keypress", (key: StackKeyEvent) => {
     if (key.ctrl && key.name === "c") {
       appendStackBlock(state.blocks, "type /exit to quit")
       remount()
+      return
+    }
+    if (isVoiceHoldKey(key)) {
+      startVoiceHoldToGardener(options, state, remount)
       return
     }
     if (key.name === "tab") {
@@ -686,6 +745,13 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
+    if (key.name === "G" && state.focusMode === "agent") {
+      state.talkToGardener = !state.talkToGardener
+      appendStackBlock(state.blocks, state.talkToGardener ? "gardener talk mode ON" : "gardener talk mode off")
+      remount()
+      return
+    }
+
     if (key.name === "M" && state.focusMode === "agent") {
       state.monitorSnapshot = cycleMonitorMode(options.config.appRoot, options.session.id)
       appendStackBlock(state.blocks, `monitor ${state.monitorSnapshot.strictness}`)
@@ -721,7 +787,19 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     }
 
     if (state.focusMode === "history") {
-      void handleHistoryKey(key, options, state, remount, refreshHistory)
+      void handleHistoryKey(
+        key,
+        options,
+        state,
+        remount,
+        refreshHistory,
+        refreshRemoteAccount,
+        refreshRemoteUsage,
+        refreshMetaEvents,
+        codexSessionHandle,
+        renderer,
+        threadsVisibleRows(renderer, state),
+      )
       return
     }
 
@@ -775,6 +853,12 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
+    if (state.focusMode === "monitor") {
+      handleMonitorKey(key, options, state)
+      remount()
+      return
+    }
+
     if (state.focusMode === "environment") {
       void handleEnvironmentKey(key, options, state, refreshRemoteAccount, refreshRemoteUsage, refreshRemoteResearch, refreshRemoteProjects, refreshHostedOptimizers, remount)
     }
@@ -814,7 +898,6 @@ function createView(
   const focusHistory = panelFocusHandlers(state, "history", refresh)
   const focusAgent = panelFocusHandlers(state, "agent", refresh)
   const focusOps = panelFocusHandlers(state, "ops", refresh)
-  const focusLiveOps = panelFocusHandlers(state, defaultLiveOpsFocus(state), refresh)
   const agentChildren = [
     agentHeaderBar(options, state, refresh, applyStackEnvironmentFromUi),
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
@@ -849,36 +932,27 @@ function createView(
           {
             border: true,
             borderStyle: "single",
-            borderColor: state.focusMode === "history" ? theme.borderActive : theme.borderInactive,
-            title: threadsRailTitle(options),
+            borderColor: isLeftPanelFocused(state) ? theme.borderActive : theme.borderInactive,
+            title: leftPanelTitle(
+              state.leftPanelMode,
+              options.workspace.root,
+              options.config.environmentName,
+              state.liveOpsMode,
+            ),
             backgroundColor: theme.bgPanel,
-            flexGrow: state.railsVisible ? 0 : 1,
+            flexGrow: 1,
             flexDirection: "column",
             padding: 1,
             ...focusHistory,
             onMouseScroll(event) {
-              handleThreadsMouseScroll(event, state, refresh)
+              handleLeftPanelMouseScroll(event, options, state, threadRows, refresh)
             },
           },
-          Text({ content: renderThreadsRailStyled(buildThreadsRailInput(options, state, threadRows)), flexGrow: 1 }),
+          Text({
+            content: renderLeftPanelStyled(buildLeftPanelRenderInput(options, state, threadRows, liveOperationsRailText(options, state))),
+            flexGrow: 1,
+          }),
         ),
-        ...(state.railsVisible
-          ? [
-              Box(
-                {
-                  border: true,
-                  borderStyle: "single",
-                  borderColor: isLiveOpsFocus(state.focusMode) ? theme.borderActive : theme.borderInactive,
-                  title: `Agent Bridge: ${liveOpsModeLabel(state.liveOpsMode)}`,
-                  backgroundColor: theme.bgPanel,
-                  flexGrow: 1,
-                  padding: 1,
-                  ...focusLiveOps,
-                },
-                Text({ content: liveOperationsRailText(options, state), fg: theme.fgPrimary }),
-              ),
-            ]
-          : []),
       ),
       Box(
         {
@@ -888,6 +962,7 @@ function createView(
             state.focusMode === "agent" ||
             state.focusMode === "model" ||
             state.focusMode === "effort" ||
+            state.focusMode === "monitor" ||
             state.focusMode === "environment"
               ? theme.borderActive
               : theme.borderInactive,
@@ -939,13 +1014,13 @@ function createView(
               scrollOffset: state.opsScrollOffset,
               visibleRows: projectsRows,
             }),
-            flexGrow: 1,
-          }),
-          Text({
-            content: renderAgentContextStyled(state.agentContext, options.config.workspaceRoot, rightContextColumns(renderer)),
           }),
           Text({
             content: renderMonitorRailStyled(state.monitorSnapshot, rightContextColumns(renderer)),
+          }),
+          Text({ content: " " }),
+          Text({
+            content: renderAgentContextStyled(state.agentContext, options.config.workspaceRoot, rightContextColumns(renderer)),
           }),
         ),
         ...(state.railsVisible
@@ -998,6 +1073,7 @@ function switcherPanel(config: StackConfig, state: AppState): ReturnType<typeof 
     state.focusMode !== "subagent-model" &&
     state.focusMode !== "subagent-effort" &&
     state.focusMode !== "subagents" &&
+    state.focusMode !== "monitor" &&
     state.focusMode !== "environment"
   ) {
     return undefined
@@ -1006,9 +1082,9 @@ function switcherPanel(config: StackConfig, state: AppState): ReturnType<typeof 
   const lines =
     state.focusMode === "environment"
       ? environmentSwitcherLines(config, state)
-      : optionSwitcherLines(
+        : optionSwitcherLines(
           state.focusMode,
-          switcherCurrentValue(config, state.focusMode),
+          switcherCurrentValue(config, state, state.focusMode),
           switcherOptions(state.focusMode),
         )
   const title =
@@ -1022,7 +1098,9 @@ function switcherPanel(config: StackConfig, state: AppState): ReturnType<typeof 
             ? "Subagent Effort Switcher"
             : state.focusMode === "subagents"
               ? "Subagents Switcher"
-        : "Target Switcher"
+              : state.focusMode === "monitor"
+                ? "Monitor Switcher"
+                : "Target Switcher"
 
   return Box(
     {
@@ -1037,17 +1115,18 @@ function switcherPanel(config: StackConfig, state: AppState): ReturnType<typeof 
   )
 }
 
-function switcherCurrentValue(config: StackConfig, focusMode: FocusMode): string {
+function switcherCurrentValue(config: StackConfig, state: AppState, focusMode: FocusMode): string {
   if (focusMode === "model") return config.codexModel
   if (focusMode === "subagent-model") return config.codexSubagentModel
   if (focusMode === "subagent-effort") return config.codexSubagentReasoningEffort
   if (focusMode === "subagents") return config.codexSubagentsEnabled ? "on" : "off"
+  if (focusMode === "monitor") return isMonitorOn(state.monitorSnapshot) ? "on" : "off"
   return config.codexReasoningEffort
 }
 
 function switcherOptions(focusMode: FocusMode): readonly string[] {
   if (focusMode === "model" || focusMode === "subagent-model") return CODEX_MODEL_OPTIONS
-  if (focusMode === "subagents") return ["on", "off"] as const
+  if (focusMode === "subagents" || focusMode === "monitor") return ["on", "off"] as const
   return CODEX_REASONING_EFFORT_OPTIONS
 }
 
@@ -1148,6 +1227,25 @@ function agentControlRow(
         gap: 1,
         alignItems: "center",
       },
+      controlLabel("monitor"),
+      monitorControlChip(monitorOnOffLabel(state.monitorSnapshot), state.monitorSnapshot, state.focusMode === "monitor"),
+      controlDivider(),
+      controlChip(monitorStrictnessLabel(state.monitorSnapshot), false),
+      controlDivider(),
+      controlChip(`runtime ${monitorRuntimeLabel(state.monitorSnapshot.runtime)}`, false),
+      controlDivider(),
+      controlChip(state.monitorSnapshot.model, false),
+      controlDivider(),
+      controlChip(`effort ${monitorEffortLabel(state.monitorSnapshot.reasoningEffort)}`, false),
+      controlDivider(),
+      controlChip(formatEstimatedSpend(state.monitorSnapshot.threadSpendUsd) ?? "~$0", false),
+    ),
+    Box(
+      {
+        flexDirection: "row",
+        gap: 1,
+        alignItems: "center",
+      },
       controlLabel("account"),
       controlChip(config.codexAuthPlan, false),
       ...(budget ? [controlDivider(), controlChip(budget, false)] : []),
@@ -1184,6 +1282,46 @@ function controlChip(content: string, active: boolean): ReturnType<typeof Text> 
   })
 }
 
+function monitorControlChip(
+  content: string,
+  snapshot: StackMonitorSnapshot,
+  active: boolean,
+): ReturnType<typeof Text> {
+  const enabled = isMonitorOn(snapshot)
+  return Text({
+    content,
+    fg: active ? theme.fgOnAccent : enabled ? "#3fb950" : theme.synth.red,
+    bg: active ? theme.bgChipActive : theme.bgSubtle,
+    flexShrink: 0,
+  })
+}
+
+function isMonitorOn(snapshot: StackMonitorSnapshot): boolean {
+  return snapshot.enabled && snapshot.status !== "off" && snapshot.status !== "paused"
+}
+
+function monitorOnOffLabel(snapshot: StackMonitorSnapshot): string {
+  return isMonitorOn(snapshot) ? "on" : "off"
+}
+
+function monitorStrictnessLabel(snapshot: StackMonitorSnapshot): string {
+  if (!isMonitorOn(snapshot)) return "off"
+  if (snapshot.strictness === "conservative") return "cons"
+  if (snapshot.strictness === "aggressive") return "aggr"
+  return snapshot.strictness
+}
+
+function monitorRuntimeLabel(value: string): string {
+  if (value === "openai-responses" || value === "openai_responses") return "openai"
+  if (value === "deterministic-runtime" || value === "deterministic") return "det"
+  return value
+}
+
+function monitorEffortLabel(value: string): string {
+  if (value === "medium") return "med"
+  return value
+}
+
 function controlDivider(): ReturnType<typeof Text> {
   return Text({
     content: "│",
@@ -1207,6 +1345,21 @@ function submitInputValue(
   if (!prompt) return
   state.inputBuffer = ""
   const codexSession = codexSessionHandle.session
+
+  if (isExplicitGardenerPrefix(prompt) || state.talkToGardener) {
+    const message = isExplicitGardenerPrefix(prompt) ? stripGardenerMessagePrefix(prompt) : prompt
+    if (!message.trim()) {
+      refresh()
+      return
+    }
+    enqueueGardenerInbox(options.config.appRoot, options.session.id, message)
+    appendUserBlock(state.blocks, `[gardener] ${message}`)
+    const inboxCount = readGardenerInbox(options.config.appRoot, options.session.id).length
+    appendStackBlock(state.blocks, `gardener inbox (${inboxCount})`)
+    refreshMetaEvents()
+    refresh()
+    return
+  }
 
   if (state.status === "running" && codexSession) {
     appendUserBlock(state.blocks, prompt)
@@ -1235,6 +1388,66 @@ function submitInputValue(
 
   if (state.status === "running") return
   void submitPrompt(prompt, options, state, codexSessionHandle, renderer, refresh, refreshHistory, refreshMetaEvents)
+}
+
+function isVoiceHoldKey(key: { name?: string; shift?: boolean; raw?: string; sequence?: string }): boolean {
+  return (key.shift === true && key.name === "v") || key.name === "V" || key.raw === "V" || key.sequence === "V"
+}
+
+function startVoiceHoldToGardener(options: StackAppOptions, state: AppState, refresh: () => void): void {
+  if (state.voiceRecording || state.voiceTranscribing) return
+  state.voiceStatus = readVoiceStatus(options.config)
+  if (state.voiceStatus.health === "OFF") {
+    appendStackBlock(state.blocks, "voice disabled; enable voice in stack.config.json or STACK_VOICE_ENABLED=1")
+    refresh()
+    return
+  }
+  if (state.voiceStatus.health === "BLOCKED") {
+    appendStackBlock(state.blocks, `voice blocked: ${state.voiceStatus.message}`)
+    refresh()
+    return
+  }
+  try {
+    state.voiceRecording = startVoiceRecording(options.config.appRoot)
+    state.voiceRecordingStartedAt = state.voiceRecording.startedAt
+    appendStackBlock(state.blocks, "voice recording; release Shift+V to transcribe")
+  } catch (error) {
+    appendStackBlock(state.blocks, `voice recording failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+async function finishVoiceHoldToGardener(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  const recording = state.voiceRecording
+  if (!recording || state.voiceTranscribing) return
+  state.voiceRecording = undefined
+  state.voiceTranscribing = true
+  appendStackBlock(state.blocks, "voice transcribing...")
+  refresh()
+  try {
+    const captured = await recording.stop()
+    const result = await transcribeAndEnqueueGardenerVoice({
+      stackRoot: options.config.appRoot,
+      threadId: options.session.id,
+      audio: captured.audio,
+      mime: "audio/wav",
+      durationMs: captured.durationMs,
+      voiceConfig: options.config.voice,
+    })
+    state.leftPanelMode = "gardener"
+    state.voiceStatus = readVoiceStatus(options.config)
+    appendUserBlock(state.blocks, `[voice->gardener] ${result.transcription.text}`)
+    appendStackBlock(state.blocks, `voice queued in gardener inbox · ${result.transcription.provider}`)
+  } catch (error) {
+    appendStackBlock(state.blocks, `voice failed: ${errorMessage(error)}`)
+  } finally {
+    state.voiceTranscribing = false
+    refresh()
+  }
 }
 
 function isEnterKey(key: StackKeyEvent): boolean {
@@ -1308,6 +1521,8 @@ function handleRawInput(
   submit: () => boolean,
   refresh: () => void,
   refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+  codexSessionHandle: { session?: CodexAppServerSession },
   refreshOptimizers: () => Promise<void>,
   refreshRemoteAccount: () => Promise<void>,
   refreshRemoteUsage: () => Promise<void>,
@@ -1371,7 +1586,19 @@ function handleRawInput(
   }
 
   if (state.focusMode === "history") {
-    void handleHistoryKey({ name: keyName }, options, state, refresh, refreshHistory)
+    void handleHistoryKey(
+      { name: keyName },
+      options,
+      state,
+      refresh,
+      refreshHistory,
+      refreshRemoteAccount,
+      refreshRemoteUsage,
+      refreshMetaEvents,
+      codexSessionHandle,
+      renderer,
+      threadsVisibleRows(renderer, state),
+    )
     return true
   }
 
@@ -1431,6 +1658,12 @@ function handleRawInput(
 
   if (state.focusMode === "subagents") {
     handleSubagentsKey({ name: keyName }, options.config)
+    refresh()
+    return true
+  }
+
+  if (state.focusMode === "monitor") {
+    handleMonitorKey({ name: keyName }, options, state)
     refresh()
     return true
   }
@@ -1580,6 +1813,100 @@ async function applyStackEnvironment(
   await refreshRemotes()
 }
 
+function isLeftPanelFocused(state: AppState): boolean {
+  if (state.focusMode === "history") return true
+  return state.leftPanelMode === "bridge" && isLiveOpsFocus(state.focusMode)
+}
+
+function buildGardenerPanelInput(options: StackAppOptions, state: AppState) {
+  const inbox = readGardenerInbox(options.config.appRoot, options.session.id)
+  return {
+    stackRoot: options.config.appRoot,
+    threadId: options.session.id,
+    workerStatus: state.status,
+    talkToGardener: state.talkToGardener,
+    inbox,
+    selectedIndex: state.gardenerInboxSelectedIndex,
+    workerQueueCount: state.queuedMessages.length,
+    gardenPath: state.gardenerGardenPath,
+    voiceStatusLine: voiceStatusLine(state.voiceStatus),
+    voiceRecording: Boolean(state.voiceRecording),
+    voiceTranscribing: state.voiceTranscribing,
+  }
+}
+
+function buildLeftPanelRenderInput(
+  options: StackAppOptions,
+  state: AppState,
+  visibleRows: number,
+  bridgeText: string,
+) {
+  return {
+    mode: state.leftPanelMode,
+    threadsInput: buildThreadsRailInput(options, state, visibleRows),
+    account: state.remoteAccountSnapshot,
+    usage: state.remoteUsageSnapshot,
+    agentUsage: buildOpsPanelAgentUsage(options, state),
+    environmentName: options.config.environmentName,
+    bridgeText,
+    codexAuthHistory: codexAuthLedgerSummaryLines(options.config.appRoot),
+    gardener: buildGardenerPanelInput(options, state),
+    focused: isLeftPanelFocused(state),
+    scrollOffset: state.leftPanelScrollOffset,
+    visibleRows,
+  }
+}
+
+function handleLeftPanelMouseScroll(
+  event: { preventDefault?: () => void; stopPropagation?: () => void; scroll?: { direction?: string } },
+  options: StackAppOptions,
+  state: AppState,
+  visibleRows: number,
+  refresh: () => void,
+): void {
+  event.preventDefault?.()
+  event.stopPropagation?.()
+  const direction = event.scroll?.direction
+  if (direction !== "up" && direction !== "down") return
+  if (state.leftPanelMode === "threads") {
+    handleThreadsMouseScroll(event, state, refresh)
+    return
+  }
+  scrollLeftPanel(
+    options,
+    state,
+    visibleRows,
+    direction,
+  )
+  refresh()
+}
+
+function scrollLeftPanel(
+  options: StackAppOptions,
+  state: AppState,
+  visibleRows: number,
+  direction: "up" | "down",
+): void {
+  const bridgeText = liveOperationsRailText(options, state)
+  const lineCount = leftPanelLineCount({
+    mode: state.leftPanelMode,
+    threadsInput: buildThreadsRailInput(options, state, visibleRows),
+    account: state.remoteAccountSnapshot,
+    usage: state.remoteUsageSnapshot,
+    agentUsage: buildOpsPanelAgentUsage(options, state),
+    environmentName: options.config.environmentName,
+    bridgeText,
+    codexAuthHistory: codexAuthLedgerSummaryLines(options.config.appRoot),
+    gardener: buildGardenerPanelInput(options, state),
+  })
+  const maxOffset = Math.max(0, lineCount - visibleRows)
+  if (direction === "up") {
+    state.leftPanelScrollOffset = Math.max(0, state.leftPanelScrollOffset - 3)
+  } else {
+    state.leftPanelScrollOffset = Math.min(maxOffset, state.leftPanelScrollOffset + 3)
+  }
+}
+
 function buildThreadsRailInput(options: StackAppOptions, state: AppState, visibleRows: number) {
   return {
     focusMode: state.focusMode,
@@ -1591,10 +1918,6 @@ function buildThreadsRailInput(options: StackAppOptions, state: AppState, visibl
     liveTokensPerSecond: formatAverageTokensPerSecond(displayTokensPerSecond(state)),
     usageForSummary: (summary: StackSessionSummary) => threadUsageSummary(options, summary),
   }
-}
-
-function threadsRailTitle(options: StackAppOptions): string {
-  return basename(options.workspace.root)
 }
 
 function opsVisibleRows(renderer: CliRenderer, state: AppState): number {
@@ -1713,7 +2036,6 @@ function handleOpsKey(
 }
 
 function threadsVisibleRows(renderer: CliRenderer, state: AppState): number {
-  if (state.railsVisible) return Math.max(6, Math.floor(renderer.terminalHeight * 0.32))
   return Math.max(8, renderer.terminalHeight - 11)
 }
 
@@ -1768,6 +2090,25 @@ function agentStatsSuffix(options: StackAppOptions, state: AppState): string | u
 }
 
 function footerHint(state: AppState): string {
+  if (state.focusMode === "history" || (state.leftPanelMode === "bridge" && isLiveOpsFocus(state.focusMode))) {
+    const toggle =
+      state.leftPanelMode === "threads"
+        ? "p → account"
+        : state.leftPanelMode === "account"
+          ? "p → gardener"
+          : state.leftPanelMode === "gardener"
+            ? "p → bridge"
+            : "p → threads"
+    const modeHint =
+      state.leftPanelMode === "threads"
+        ? " · j/k sessions · f fork · enter resume"
+        : state.leftPanelMode === "account"
+          ? " · r refresh billing"
+          : state.leftPanelMode === "gardener"
+            ? " · j/k inbox · enter route · a route all"
+            : " · x local/remote · tab bridge controls"
+    return `${toggle}${modeHint} · tab focus · /exit quit`
+  }
   if (state.focusMode === "agent") {
     const runningHint =
       state.status === "running"
@@ -1777,7 +2118,8 @@ function footerHint(state: AppState): string {
         : ""
     const queueHint =
       state.queuedMessages.length > 0 ? ` · ${state.queuedMessages.length} queued` : ""
-    return `enter send${runningHint}${queueHint} · shift+enter newline · [ ] env · b ops rail · d details · tab focus · /exit quit`
+    const gardenerHint = state.talkToGardener ? " · gardener ON" : " · G gardener"
+    return `enter send${runningHint}${queueHint}${gardenerHint} · shift+enter newline · [ ] env · M monitor · b ops rail · d details · tab focus · /exit quit`
   }
   if (state.focusMode === "ops") {
     const toggle =
@@ -1828,6 +2170,7 @@ function buildOpsPanelAgentUsage(options: StackAppOptions, state: AppState): Ops
   }
   return {
     codexAuthPlan: options.config.codexAuthPlan,
+    codexEmail: state.codexAccountEmail,
     sessionSummary,
     codexBudget: formatCodexBudgetSuffix(options.config.codexAuthPlan, state.codexRateLimits),
   }
@@ -2115,6 +2458,10 @@ function renderMonitorRailStyled(snapshot: StackMonitorSnapshot, columns: number
     if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
     if (index === 0) {
       chunks.push(fg(theme.synth.orangeDark)(line))
+    } else if (line.includes("monitor ON")) {
+      chunks.push(fg("#3fb950")(line))
+    } else if (line.includes("monitor OFF") || line.includes("monitor PAUSED")) {
+      chunks.push(fg(theme.synth.red)(line))
     } else if (line.includes("queued") || line.includes("high") || line.includes("medium")) {
       chunks.push(fg(theme.synth.amber)(line))
     } else {
@@ -3117,11 +3464,32 @@ function isRecentAgentScroll(state: AppState): boolean {
   return state.lastAgentScrollAt !== undefined && Date.now() - state.lastAgentScrollAt < 450
 }
 
+async function observeCodexAuthState(
+  config: StackAppOptions["config"],
+  sessionId: string,
+  rateLimits?: CodexRateLimitsSnapshot,
+  state?: AppState,
+): Promise<void> {
+  const account = await readCodexAccountSnapshot()
+  if (state) {
+    state.codexAccountEmail = account.email
+    if (rateLimits) state.codexRateLimits = rateLimits
+  }
+  recordCodexAuthObservation({
+    stackRoot: config.appRoot,
+    stackSessionId: sessionId,
+    authPlan: config.codexAuthPlan,
+    account,
+    rateLimits: rateLimits ?? state?.codexRateLimits,
+  })
+}
+
 async function refreshAgentContextFromThread(
   state: AppState,
   threadId: string,
   workspaceRoot: string,
   refresh?: () => void,
+  observeAuth?: (limits: CodexRateLimitsSnapshot) => void,
 ): Promise<void> {
   const [sessionContext, rateLimits, goalContext] = await Promise.all([
     readAgentContextFromSession(threadId),
@@ -3137,7 +3505,10 @@ async function refreshAgentContextFromThread(
       }
     }
   }
-  if (rateLimits) state.codexRateLimits = rateLimits
+  if (rateLimits) {
+    state.codexRateLimits = rateLimits
+    observeAuth?.(rateLimits)
+  }
   if (goalContext) state.goalContext = goalContext
   refresh?.()
 }
@@ -3146,13 +3517,14 @@ async function refreshAgentContextFromSession(
   options: StackAppOptions,
   state: AppState,
   refresh?: () => void,
+  observeAuth?: (limits: CodexRateLimitsSnapshot) => void,
 ): Promise<void> {
   state.monitorSnapshot = refreshMonitorSnapshot(options.config.appRoot, options.session.id)
   const threadId =
     options.session.codexThreadId ?? extractCodexThreadIdFromTurns(options.session.turns)
   if (threadId) {
     options.session.codexThreadId = threadId
-    await refreshAgentContextFromThread(state, threadId, options.session.workspaceRoot, refresh)
+    await refreshAgentContextFromThread(state, threadId, options.session.workspaceRoot, refresh, observeAuth)
     return
   }
   state.agentContext = emptyAgentContext(options.session.workspaceRoot)
@@ -3305,13 +3677,146 @@ function selectedHistoryText(options: StackAppOptions, state: AppState): string 
   ].join("\n")
 }
 
+async function routeGardenerInboxItems(
+  items: GardenerInboxItem[],
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: CodexAppServerSession },
+  renderer: CliRenderer,
+  refresh: () => void,
+  refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+): Promise<void> {
+  if (items.length === 0) return
+  for (const item of items) {
+    markGardenerInboxRouted(options.config.appRoot, options.session.id, item)
+  }
+  refreshMetaEvents()
+  state.gardenerInboxSelectedIndex = 0
+  appendStackBlock(
+    state.blocks,
+    items.length === 1 ? `gardener → worker` : `gardener routed ${items.length} to worker`,
+  )
+
+  if (state.status === "running" && codexSessionHandle.session) {
+    for (const item of items) {
+      codexSessionHandle.session.enqueue(item.message)
+      state.queuedMessages = [...state.queuedMessages, item.message]
+    }
+    refresh()
+    return
+  }
+
+  if (state.status === "running") {
+    refresh()
+    return
+  }
+
+  state.gardenerWorkerQueue = [...state.gardenerWorkerQueue, ...items.slice(1).map((item) => item.message)]
+  void submitPrompt(
+    items[0].message,
+    options,
+    state,
+    codexSessionHandle,
+    renderer,
+    refresh,
+    refreshHistory,
+    refreshMetaEvents,
+  )
+}
+
 async function handleHistoryKey(
   key: { name?: string },
   options: StackAppOptions,
   state: AppState,
   refresh: () => void,
   refreshHistory: () => Promise<void>,
+  refreshRemoteAccount: () => Promise<void>,
+  refreshRemoteUsage: () => Promise<void>,
+  refreshMetaEvents: () => void,
+  codexSessionHandle: { session?: CodexAppServerSession },
+  renderer: CliRenderer,
+  visibleRows: number,
 ): Promise<void> {
+  if (key.name === "p") {
+    toggleLeftPanelMode(state)
+    if (state.leftPanelMode === "bridge") {
+      state.focusMode = defaultLiveOpsFocus(state)
+    }
+    refresh()
+    return
+  }
+  if (state.leftPanelMode === "account") {
+    if (key.name === "r") {
+      await Promise.all([refreshRemoteAccount(), refreshRemoteUsage()])
+      refresh()
+      return
+    }
+    if (key.name === "j" || key.name === "down") {
+      scrollLeftPanel(options, state, visibleRows, "down")
+      refresh()
+      return
+    }
+    if (key.name === "k" || key.name === "up") {
+      scrollLeftPanel(options, state, visibleRows, "up")
+      refresh()
+      return
+    }
+    return
+  }
+  if (state.leftPanelMode === "gardener") {
+    const inbox = readGardenerInbox(options.config.appRoot, options.session.id)
+    state.gardenerInboxSelectedIndex = clampIndex(state.gardenerInboxSelectedIndex, inbox.length)
+    if (key.name === "j" || key.name === "down") {
+      state.gardenerInboxSelectedIndex = Math.min(inbox.length - 1, state.gardenerInboxSelectedIndex + 1)
+      scrollLeftPanel(options, state, visibleRows, "down")
+      refresh()
+      return
+    }
+    if (key.name === "k" || key.name === "up") {
+      state.gardenerInboxSelectedIndex = Math.max(0, state.gardenerInboxSelectedIndex - 1)
+      scrollLeftPanel(options, state, visibleRows, "up")
+      refresh()
+      return
+    }
+    if (key.name === "a") {
+      await routeGardenerInboxItems(
+        inbox,
+        options,
+        state,
+        codexSessionHandle,
+        renderer,
+        refresh,
+        refreshHistory,
+        refreshMetaEvents,
+      )
+      return
+    }
+    if (key.name === "return" || key.name === "enter") {
+      const item = inbox[state.gardenerInboxSelectedIndex]
+      if (item) {
+        await routeGardenerInboxItems(
+          [item],
+          options,
+          state,
+          codexSessionHandle,
+          renderer,
+          refresh,
+          refreshHistory,
+          refreshMetaEvents,
+        )
+      }
+      return
+    }
+    return
+  }
+  if (state.leftPanelMode === "bridge") {
+    if (key.name === "x") {
+      toggleLiveOpsMode(state)
+      refresh()
+    }
+    return
+  }
   if (state.history.length === 0) return
   if (key.name === "j" || key.name === "down") {
     moveSelectedHistory(state, 1)
@@ -4027,6 +4532,12 @@ function handleSubagentsKey(key: { name?: string }, config: StackConfig): void {
   setCodexSubagentsEnabled(config, !config.codexSubagentsEnabled)
 }
 
+function handleMonitorKey(key: { name?: string }, options: StackAppOptions, state: AppState): void {
+  if (!isCycleKey(key)) return
+  state.monitorSnapshot = setMonitorEnabled(options.config.appRoot, options.session.id, !isMonitorOn(state.monitorSnapshot))
+  appendStackBlock(state.blocks, `monitor ${monitorOnOffLabel(state.monitorSnapshot)}`)
+}
+
 async function handleEnvironmentKey(
   key: { name?: string },
   options: StackAppOptions,
@@ -4193,7 +4704,9 @@ async function loadSelectedSession(
     const loaded = await readSessionLog(summary.path)
     const session = mode === "resume" ? loaded : forkSession(options.session, loaded)
     applySession(options, state, session, mode === "resume" ? summary.path : undefined)
-    await refreshAgentContextFromSession(options, state, refresh)
+    await refreshAgentContextFromSession(options, state, refresh, (limits) => {
+      void observeCodexAuthState(options.config, options.session.id, limits, state)
+    })
     if (mode === "fork") {
       state.lastSessionLogPath = await writeSessionLog(options.session, options.config.sessionLogDir, {
         codexModel: options.config.codexModel,
@@ -4316,6 +4829,20 @@ async function submitPrompt(
         state.monitorSnapshot = snapshot
         refreshMetaEvents()
         refreshIfScrollStable()
+        const steerEvent = readThreadMetaEvents(options.config.appRoot, options.session.id)
+          .filter((event) => event.type === "monitor.steer")
+          .at(-1)
+        const steerMessage =
+          steerEvent && typeof steerEvent.payload.message === "string" ? steerEvent.payload.message.trim() : ""
+        if (steerMessage && codexSessionHandle.session) {
+          void codexSessionHandle.session.trySteer(steerMessage).then((steered) => {
+            if (steered) {
+              state.lastSteerHint = "monitor-steer"
+              appendStackBlock(state.blocks, "monitor steered primary (style/guidance)")
+              refreshIfScrollStable()
+            }
+          })
+        }
         return snapshot
       })
       .catch((error) => {
@@ -4335,10 +4862,19 @@ async function submitPrompt(
     refreshIfScrollStable,
     (threadId) => {
       options.session.codexThreadId = threadId
-      void refreshAgentContextFromThread(state, threadId, options.config.workspaceRoot, refreshIfScrollStable)
+      void refreshAgentContextFromThread(
+        state,
+        threadId,
+        options.config.workspaceRoot,
+        refreshIfScrollStable,
+        (limits) => {
+          void observeCodexAuthState(options.config, options.session.id, limits, state)
+        },
+      )
     },
     (rateLimits) => {
       state.codexRateLimits = rateLimits
+      void observeCodexAuthState(options.config, options.session.id, rateLimits, state)
       refreshIfScrollStable()
     },
     (line) => {
@@ -4419,6 +4955,19 @@ async function submitPrompt(
       agentContext: state.agentContext,
       goalContext: state.goalContext,
     })
+    const gardenerResult = runGardenerAfterTurn({
+      config: options.config,
+      session: options.session,
+      turn,
+      workerStatus: turn.exitCode === 0 ? "idle" : "error",
+      goalContext: state.goalContext,
+      workerQueueCount: state.queuedMessages.length,
+      codexAccountEmail: state.codexAccountEmail,
+    })
+    state.gardenerGardenPath = gardenerResult.gardenPath
+    if (gardenerResult.frictions.length > 0) {
+      appendStackBlock(state.blocks, `gardener: ${gardenerResult.frictions[0]}`)
+    }
     refreshMetaEvents()
 
     while (codexSessionHandle.session && codexSessionHandle.session.queueLength > 0) {
@@ -4442,6 +4991,49 @@ async function submitPrompt(
         agentContext: state.agentContext,
         goalContext: state.goalContext,
       })
+      const gardenerQueued = runGardenerAfterTurn({
+        config: options.config,
+        session: options.session,
+        turn,
+        workerStatus: turn.exitCode === 0 ? "idle" : "error",
+        goalContext: state.goalContext,
+        workerQueueCount: state.queuedMessages.length,
+        codexAccountEmail: state.codexAccountEmail,
+      })
+      state.gardenerGardenPath = gardenerQueued.gardenPath
+      refreshMetaEvents()
+    }
+
+    while (state.gardenerWorkerQueue.length > 0) {
+      const gardenerPrompt = state.gardenerWorkerQueue.shift()
+      if (!gardenerPrompt) break
+      appendUserBlock(state.blocks, `[gardener→worker] ${gardenerPrompt}`)
+      appendStackBlock(state.blocks, "running gardener-routed message")
+      refreshIfScrollStable()
+      turn = await runOneTurn(gardenerPrompt)
+      outputSink.flush()
+      turn.usage = state.lastUsage ?? readUsageFromStdout(turn.stdout)
+      if (turn.usage) state.lastUsage = turn.usage
+      options.session.turns.push(turn)
+      refreshSessionThroughput(state, options.session.turns)
+      await monitorQueue.catch(() => undefined)
+      state.monitorSnapshot = await runMonitorAfterTurn({
+        config: options.config,
+        session: options.session,
+        turn,
+        agentContext: state.agentContext,
+        goalContext: state.goalContext,
+      })
+      const gardenerFollowUp = runGardenerAfterTurn({
+        config: options.config,
+        session: options.session,
+        turn,
+        workerStatus: turn.exitCode === 0 ? "idle" : "error",
+        goalContext: state.goalContext,
+        workerQueueCount: state.queuedMessages.length,
+        codexAccountEmail: state.codexAccountEmail,
+      })
+      state.gardenerGardenPath = gardenerFollowUp.gardenPath
       refreshMetaEvents()
     }
 
@@ -4455,7 +5047,9 @@ async function submitPrompt(
       codexModel: options.config.codexModel,
       pricingRows: options.config.codexPricing,
     })
-    await refreshAgentContextFromSession(options, state, refreshIfScrollStable)
+    await refreshAgentContextFromSession(options, state, refreshIfScrollStable, (limits) => {
+      void observeCodexAuthState(options.config, options.session.id, limits, state)
+    })
     refreshMetaEvents()
     await refreshHistory()
   } catch (error) {

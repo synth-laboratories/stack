@@ -1,24 +1,44 @@
 # Stack guidance
 
-Searchable operator memory for this Stack app root. It is not a copy of all
-Jstack; it is a small local index of high-signal style, papercuts, decisions,
-and workflow pointers that Stack MCP can search.
+Searchable operator memory for this Stack app root. Stack is inspired by local
+operator-memory systems, but runtime guidance is Stack-owned and writes only
+under `.stack/`.
 
 ## Map
 
 | Path | Contents |
 | --- | --- |
-| `style/` | Synth Style pointers and Stack MCP/TUI norms |
+| `style/` | Layered style docs — see `style/README.md` (org/repo/personal/app) |
+| `style/repo/` | Committable repo-team style files (multiple `.md` OK) |
 | `records/mldp/` | Workspace learnings, mistakes, and desires |
-| `records/papercuts/` | Friction log with grep-stable `JSTACK_HEATMAP` lines |
-| `records/decisions/` | Local ADRs when a Jstack checkout is absent |
+| `records/papercuts/` | Friction log with grep-stable `STACK_MEMORY` lines |
+| `records/decisions/` | Local Stack ADRs |
 | `workflows/` | Optional prose; prefer `.stack/skills/` for executable procedures |
 
 ## Search
 
 - Stack MCP: `stack_search_guidance`
 - Local files: `.stack/guidance/`
-- Co-located Jstack: `Jstack/.jstack/`
+
+## Monitor-visible Context
+
+The monitor does not receive a raw dump of local notes. It can retrieve bounded,
+searchable guidance through the same guidance index used by Stack MCP.
+
+Stable manifest: [`monitor-visible-context.md`](monitor-visible-context.md).
+
+Indexed from Stack/workspace when present:
+
+- `backend/specifications/tanha/references/synthstyle.md` as org Synth Style.
+- `specifications/old/tanha/references/synthstyle.md` as a historical org
+  Synth Style copy when that checkout exists.
+- `.stack/guidance/records/mldp/*.md`, `records/papercuts/*.md`, and
+  `records/decisions/*.md` as local high-signal records.
+
+Not indexed by default: arbitrary daily notes, evidence packets, full product
+specs, lints, or secrets. Copy only the specific high-signal record into
+`.stack/guidance/records/` when a monitor, StackEval run, or rollout harness
+should see it.
 
 ## Events
 
@@ -38,8 +58,5 @@ per-thread JSONL events when a `thread_id` is supplied.
 
 ## Write
 
-- Org-wide bugs and papercuts stay in Jstack via `jsk papercut`.
-- Local Stack operator memory may be mirrored here when it should be visible to
-  Stack monitor, StackEval, or rollout harnesses.
-
-Spec: `Jstack/.jstack/product/specs/stack_guidance.md`.
+- Local Stack operator memory goes here when it should be visible to Stack
+  monitor, StackEval, or rollout harnesses.

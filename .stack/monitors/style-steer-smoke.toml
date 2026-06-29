@@ -1,0 +1,39 @@
+[monitor]
+id = "style-steer-smoke"
+label = "Style Steer Smoke"
+enabled = true
+mode = "observe_summarize_queue_steer"
+policy = "conservative"
+strictness = "aggressive"
+
+[focus]
+selection = "any"
+style = true
+goal_progress = false
+skills = false
+tool_use = true
+scope_control = true
+acceptance = false
+
+[model]
+provider = "openai"
+model = "gpt-5.4-mini"
+reasoning_effort = "medium"
+worker = "deterministic"
+
+[wake]
+max_wakes_per_primary_turn = 4
+on_turn_completed = true
+on_tool_completed = true
+on_tool_failed = true
+delta_events = 12
+cooldown_ms = 0
+
+[intervention]
+max_queued_items_per_thread = 4
+skill_context_push = "off"
+
+[skills]
+enabled = false
+allowed_skill_ids = []
+push_when_confident = false

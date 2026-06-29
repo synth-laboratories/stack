@@ -22,6 +22,7 @@ import {
   readStackGuidance,
   searchStackGuidance,
   type StackGuidanceScope,
+  type StackStyleLayer,
 } from "../codex/guidance.js"
 import {
   guidanceEventToJson,
@@ -31,6 +32,8 @@ import {
   type StackGuidanceImpact,
 } from "../codex/guidance-events.js"
 import { appendThreadMetaEvent, stackEventId } from "../thread-events.js"
+import { stackdExport, stackdThread, stackdThreads, stackdTrace } from "../client/stackd.js"
+import { projectLogDocumentToVictoriaLogs, queryStackLogs } from "../observability/victorialogs.js"
 import { readReadmeSmokeEvalLaunch, startReadmeSmokeEval, type StackEvalLaunch } from "../local/evals.js"
 import { readOptimizerSnapshot } from "../local/optimizers.js"
 import {
@@ -678,6 +681,98 @@ export class StackMcpServer {
     }
   }
 
+  async queryLogs(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const limit = optionalInteger(args, "limit") ?? 100
+    if (limit < 1 || limit > 500) throw new RpcError(-32602, "limit must be between 1 and 500")
+    const minutes = optionalInteger(args, "minutes") ?? 60
+    if (minutes < 1 || minutes > 10_080) throw new RpcError(-32602, "minutes must be between 1 and 10080")
+    const result = await queryStackLogs(config, {
+      slot: optionalString(args, "slot"),
+      query: optionalString(args, "query"),
+      eventDomain: optionalString(args, "event_domain"),
+      service: optionalString(args, "service"),
+      runId: optionalString(args, "run_id"),
+      threadId: optionalString(args, "thread_id"),
+      minutes,
+      limit,
+      timeoutSeconds: optionalInteger(args, "timeout_seconds") ?? 20,
+    })
+    return toJsonValue({
+      ...result,
+      hits: result.records.map((record) => ({
+        time: record._time ?? record.timestamp ?? null,
+        msg: record._msg ?? record.message ?? null,
+        fields: record,
+      })),
+    }) ?? null
+  }
+
+  async runWithLogs(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const command = requiredString(args, "command")
+    const argv = optionalStringArray(args, "args") ?? []
+    const cwd = resolve(config.workingDir, optionalString(args, "cwd") ?? ".")
+    const runId = optionalString(args, "run_id") ?? `harnesscmd_${Date.now()}`
+    const timeoutSeconds = clampNumber(optionalInteger(args, "timeout_seconds") ?? 300, 1, 3600)
+    const tailBytes = clampNumber(optionalInteger(args, "tail_bytes") ?? 4000, 0, 20000)
+    const startedAt = new Date().toISOString()
+    projectHarnessCommandEvent(config.appRoot, {
+      eventType: "command.start",
+      phase: "started",
+      runId,
+      command,
+      argv,
+      cwd,
+      startedAt,
+    })
+    const startedMs = Date.now()
+    const proc = Bun.spawn([command, ...argv], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+      env: process.env,
+    })
+    const timeout = setTimeout(() => proc.kill(), timeoutSeconds * 1000)
+    const [stdout, stderr, exitCode] = await Promise.all([
+      new Response(proc.stdout).text(),
+      new Response(proc.stderr).text(),
+      proc.exited,
+    ]).finally(() => clearTimeout(timeout))
+    const durationMs = Date.now() - startedMs
+    const completedAt = new Date().toISOString()
+    const timedOut = durationMs >= timeoutSeconds * 1000 && exitCode !== 0
+    projectHarnessCommandEvent(config.appRoot, {
+      eventType: exitCode === 0 ? "command.exit" : "command.failed",
+      phase: "completed",
+      runId,
+      command,
+      argv,
+      cwd,
+      startedAt,
+      completedAt,
+      durationMs,
+      exitCode,
+      timedOut,
+      stdoutTail: tailText(stdout, tailBytes),
+      stderrTail: tailText(stderr, tailBytes),
+    })
+    return toJsonValue({
+      ok: exitCode === 0,
+      run_id: runId,
+      service: "harness-cmd",
+      event_domain: "local_optimizer",
+      command,
+      args: argv,
+      cwd,
+      exit_code: exitCode,
+      duration_ms: durationMs,
+      timed_out: timedOut,
+      stdout_tail: tailText(stdout, tailBytes),
+      stderr_tail: tailText(stderr, tailBytes),
+    }) ?? null
+  }
+
   async startReadmeSmoke(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     this.evalLaunch = startReadmeSmokeEval(config, this.evalLaunch ?? readReadmeSmokeEvalLaunch(config), (snapshot) => {
@@ -765,11 +860,18 @@ export class StackMcpServer {
   async listGuidance(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const scope = optionalGuidanceScope(args)
+    const styleLayer = optionalStyleLayer(args)
     const limit = optionalInteger(args, "limit") ?? 100
     if (limit < 1 || limit > 500) throw new RpcError(-32602, "limit must be between 1 and 500")
-    const guidance = discoverStackGuidance(config.appRoot, { workspaceRoot: config.workspaceRoot, scope }).slice(0, limit)
+    const guidance = discoverStackGuidance(config.appRoot, {
+      workspaceRoot: config.workspaceRoot,
+      scope,
+      styleLayer,
+    }).slice(0, limit)
     return {
       count: guidance.length,
+      scope: scope ?? "all",
+      style_layer: styleLayer ?? "all",
       guidance: guidance.map(guidanceToJson),
     }
   }
@@ -778,6 +880,7 @@ export class StackMcpServer {
     const config = await this.config(args)
     const query = requiredString(args, "query")
     const scope = optionalGuidanceScope(args)
+    const styleLayer = optionalStyleLayer(args)
     const limit = optionalInteger(args, "limit") ?? 20
     const maxExcerptBytes = optionalInteger(args, "max_excerpt_bytes") ?? 600
     if (limit < 1 || limit > 100) throw new RpcError(-32602, "limit must be between 1 and 100")
@@ -787,6 +890,7 @@ export class StackMcpServer {
     const results = searchStackGuidance(config.appRoot, query, {
       workspaceRoot: config.workspaceRoot,
       scope,
+      styleLayer,
       limit,
       maxExcerptBytes,
     })
@@ -807,6 +911,7 @@ export class StackMcpServer {
         payload: {
           query,
           scope: scope ?? "all",
+          style_layer: styleLayer ?? "all",
           hit_ids: results.map((item) => item.guidanceId),
           result_count: results.length,
         },
@@ -820,6 +925,7 @@ export class StackMcpServer {
       payload: {
         query,
         scope: scope ?? "all",
+        style_layer: styleLayer ?? "all",
         hit_ids: results.map((item) => item.guidanceId),
         result_count: results.length,
         thread_event_id: eventId ?? null,
@@ -828,6 +934,7 @@ export class StackMcpServer {
     return {
       query,
       scope: scope ?? "all",
+      style_layer: styleLayer ?? "all",
       count: results.length,
       guidance_event: toJsonValue(guidanceEvent) ?? null,
       guidance: results.map((item) => ({
@@ -941,6 +1048,26 @@ export class StackMcpServer {
     }
   }
 
+  async listLocalThreads(_args: JsonObject): Promise<JsonValue> {
+    const threads = await stackdThreads()
+    return toJsonValue({ count: threads.length, threads }) ?? { count: 0, threads: [] }
+  }
+
+  async readLocalThread(args: JsonObject): Promise<JsonValue> {
+    const threadId = requiredString(args, "thread_id")
+    return toJsonValue({ thread: await stackdThread(threadId) }) ?? { thread: null }
+  }
+
+  async traceLocalThread(args: JsonObject): Promise<JsonValue> {
+    const threadId = requiredString(args, "thread_id")
+    return toJsonValue({ trace: await stackdTrace(threadId) }) ?? { trace: null }
+  }
+
+  async exportLocalThread(args: JsonObject): Promise<JsonValue> {
+    const threadId = requiredString(args, "thread_id")
+    return toJsonValue(await stackdExport(threadId)) ?? {}
+  }
+
   async pushSkillContext(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const event = pushSkillContext(config.appRoot, {
@@ -1003,6 +1130,41 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       description: "List recent live SMR runs in a concise Codex-friendly shape, including output/message/file counts when loaded.",
       inputSchema: objectSchema({ environment: environmentProperty() }),
       handler: (args) => server.listLiveSmrs(args),
+    },
+    {
+      name: "stack_query_logs",
+      description: "Query VictoriaLogs through stackd's native LogSQL client for agent-legible cloud, local optimizer, and meta-harness telemetry.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        slot: stringProperty("Local synth-dev slot id. Defaults to STACK_VL_SLOT or slot1."),
+        query: stringProperty("Optional LogSQL query expression. Defaults to * plus supplied field filters."),
+        event_domain: enumProperty(["cloud_sdk", "local_optimizer", "meta_harness"], "Optional event_domain filter."),
+        service: stringProperty("Optional service filter, e.g. gepa, stackeval, stackd, backend-api."),
+        run_id: stringProperty("Optional run/job id filter."),
+        thread_id: stringProperty("Optional Stack thread/session id filter."),
+        minutes: numberProperty("Lookback window in minutes. Defaults to 60, max 10080."),
+        limit: numberProperty("Maximum records to return. Defaults to 100, max 500."),
+        timeout_seconds: numberProperty("VictoriaLogs query timeout. Defaults to 20 seconds."),
+      }),
+      handler: (args) => server.queryLogs(args),
+    },
+    {
+      name: "stack_run_with_logs",
+      description: "Run a bounded local command and emit harness-cmd start/exit summaries to VictoriaLogs with event_domain=local_optimizer.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        command: { type: "string", description: "Executable to run without shell expansion." },
+        args: {
+          type: "array",
+          items: { type: "string" },
+          description: "Argument vector. Shell syntax is not interpreted.",
+        },
+        cwd: stringProperty("Working directory relative to Stack workingDir. Defaults to workingDir."),
+        run_id: stringProperty("Optional run correlation id. Defaults to harnesscmd_<timestamp>."),
+        timeout_seconds: numberProperty("Timeout in seconds. Defaults to 300, max 3600."),
+        tail_bytes: numberProperty("Bytes of stdout/stderr tail returned and logged. Defaults to 4000, max 20000."),
+      }),
+      handler: (args) => server.runWithLogs(args),
     },
     {
       name: "stack_get_run_artifact_status", // FRESH mcp/server.ts edit this turn for delta
@@ -1255,22 +1417,24 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_guidance_list",
-      description: "List Stack guidance from .stack/guidance plus selected Jstack/workspace guidance sources.",
+      description: "List Stack guidance from .stack/guidance plus workspace and personal guidance sources.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         scope: enumProperty(["style", "records", "workflows", "all"], "Optional guidance scope. Defaults to all."),
+        style_layer: enumProperty(["org", "repo", "personal", "app"], "Optional style layer filter. Defaults to all."),
         limit: numberProperty("Maximum guidance items to return. Defaults to 100, max 500."),
       }),
       handler: (args) => server.listGuidance(args),
     },
     {
       name: "stack_search_guidance",
-      description: "Search Stack guidance, Jstack Stack guidance spec, and Synth Style pointers by query.",
+      description: "Search Stack guidance, workspace style, and personal guidance by query.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
           query: stringProperty("Search terms."),
           scope: enumProperty(["style", "records", "workflows", "all"], "Optional guidance scope. Defaults to all."),
+          style_layer: enumProperty(["org", "repo", "personal", "app"], "Optional style layer filter. Defaults to all."),
           limit: numberProperty("Maximum guidance hits to return. Defaults to 20, max 100."),
           max_excerpt_bytes: numberProperty("Maximum excerpt bytes per hit. Defaults to 600, max 5000."),
           thread_id: stringProperty("Optional Stack thread/session id. When present, records a guidance.query meta event."),
@@ -1350,6 +1514,45 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         limit: numberProperty("Maximum events to return. Defaults to 50, max 500."),
       }),
       handler: (args) => server.listGuidanceEvents(args),
+    },
+    {
+      name: "stack_local_threads_list",
+      description: "List local Stack threads from stackd.",
+      inputSchema: objectSchema({}, []),
+      handler: (args) => server.listLocalThreads(args),
+    },
+    {
+      name: "stack_local_thread_read",
+      description: "Read one local Stack thread from stackd.",
+      inputSchema: objectSchema(
+        {
+          thread_id: stringProperty("Stack thread/session id."),
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.readLocalThread(args),
+    },
+    {
+      name: "stack_local_thread_trace",
+      description: "Return trace/observability summary for one local Stack thread from stackd.",
+      inputSchema: objectSchema(
+        {
+          thread_id: stringProperty("Stack thread/session id."),
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.traceLocalThread(args),
+    },
+    {
+      name: "stack_local_thread_export",
+      description: "Export one local Stack thread through stackd.",
+      inputSchema: objectSchema(
+        {
+          thread_id: stringProperty("Stack thread/session id."),
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.exportLocalThread(args),
     },
     {
       name: "stack_skills_push_context",
@@ -1482,6 +1685,13 @@ function optionalGuidanceScope(args: JsonObject): StackGuidanceScope | undefined
   throw new RpcError(-32602, "scope must be style, records, workflows, or all")
 }
 
+function optionalStyleLayer(args: JsonObject): StackStyleLayer | undefined {
+  const value = optionalString(args, "style_layer")
+  if (!value) return undefined
+  if (value === "org" || value === "repo" || value === "personal" || value === "app") return value
+  throw new RpcError(-32602, "style_layer must be org, repo, personal, or app")
+}
+
 function requiredGuidanceEventType(args: JsonObject, key: string): StackGuidanceEventType {
   const value = requiredString(args, key)
   const parsed = parseGuidanceEventType(value)
@@ -1566,6 +1776,57 @@ function bridgeNextActions(
 
 function actionResult(result: RemoteActionResult): JsonValue {
   return { ok: result.ok, status: result.status, message: result.message }
+}
+
+type HarnessCommandEvent = {
+  eventType: "command.start" | "command.exit" | "command.failed"
+  phase: "started" | "completed"
+  runId: string
+  command: string
+  argv: string[]
+  cwd: string
+  startedAt: string
+  completedAt?: string
+  durationMs?: number
+  exitCode?: number
+  timedOut?: boolean
+  stdoutTail?: string
+  stderrTail?: string
+}
+
+function projectHarnessCommandEvent(stackRoot: string, event: HarnessCommandEvent): void {
+  projectLogDocumentToVictoriaLogs(stackRoot, {
+    _time: event.completedAt ?? event.startedAt,
+    _msg: `harness-cmd ${event.phase} ${event.runId}`,
+    level: event.eventType === "command.exit" ? "info" : event.eventType === "command.start" ? "info" : "error",
+    logger: "stack.harness_cmd",
+    slot: process.env.STACK_VL_SLOT ?? "slot1",
+    service: "harness-cmd",
+    event_domain: "local_optimizer",
+    event_type: event.eventType,
+    phase: event.phase,
+    run_id: event.runId,
+    command: event.command,
+    argv_preview: event.argv.slice(0, 16).join(" "),
+    cwd: event.cwd,
+    started_at: event.startedAt,
+    ...(event.completedAt ? { completed_at: event.completedAt } : {}),
+    ...(event.durationMs !== undefined ? { duration_ms: event.durationMs } : {}),
+    ...(event.exitCode !== undefined ? { exit_code: event.exitCode } : {}),
+    ...(event.timedOut !== undefined ? { timed_out: event.timedOut } : {}),
+    ...(event.stdoutTail ? { stdout_tail: event.stdoutTail } : {}),
+    ...(event.stderrTail ? { stderr_tail: event.stderrTail } : {}),
+  })
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, Math.trunc(value)))
+}
+
+function tailText(value: string, bytes: number): string {
+  if (bytes <= 0) return ""
+  const encoded = Buffer.from(value)
+  return encoded.length <= bytes ? value : encoded.subarray(encoded.length - bytes).toString("utf8")
 }
 
 function readEnvironmentName(value: string): StackEnvironmentName {

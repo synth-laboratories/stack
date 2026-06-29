@@ -10,6 +10,11 @@ const DEFAULT_CODEX_AUTH_PLAN = "ChatGPT"
 const DEFAULT_OPTIMIZER_BIND = "127.0.0.1:8879"
 const DEFAULT_OPTIMIZER_WORKERS = 4
 const DEFAULT_ENVIRONMENT = "dev"
+const DEFAULT_VOICE_STT_PROVIDER = "groq"
+const DEFAULT_VOICE_STT_FALLBACK = "openai"
+const DEFAULT_VOICE_STT_MODEL_GROQ = "whisper-large-v3-turbo"
+const DEFAULT_VOICE_STT_MODEL_OPENAI = "gpt-4o-mini-transcribe"
+const DEFAULT_VOICE_LANGUAGE = "en"
 
 export const CODEX_MODEL_OPTIONS = ["gpt-5.4-mini", "gpt-5.5"] as const
 export const CODEX_REASONING_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh"] as const
@@ -33,6 +38,16 @@ export type StackAuthStatus = {
   source: "process" | "env-file" | "missing"
   envFile?: string
   message: string
+}
+
+export type StackVoiceConfig = {
+  enabled: boolean
+  sttProvider: "groq" | "openai"
+  sttFallback: "groq" | "openai"
+  sttModelGroq: string
+  sttModelOpenai: string
+  language: string
+  envFile?: string
 }
 
 export type StackConfig = {
@@ -72,6 +87,7 @@ export type StackConfig = {
   readmeSmokeInstance: string
   initialPromptFile?: string
   autoSubmitInitialPrompt: boolean
+  voice: StackVoiceConfig
 }
 
 type StackConfigFile = {
@@ -90,6 +106,15 @@ type StackConfigFile = {
     cachedInputPerMillion?: number
     outputPerMillion?: number
   }>
+  voice?: {
+    enabled?: boolean
+    stt_provider?: string
+    stt_fallback?: string
+    stt_model_groq?: string
+    stt_model_openai?: string
+    language?: string
+    env_file?: string
+  }
 }
 
 const loadedAuthEnvFiles = new Map<string, string>()
@@ -201,7 +226,42 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
       ? resolveConfigPath(appRoot, process.env.STACK_INITIAL_PROMPT_FILE)
       : undefined,
     autoSubmitInitialPrompt: process.env.STACK_AUTOSUBMIT === "1",
+    voice: readVoiceConfig(appRoot, fileConfig),
   }
+}
+
+function readVoiceConfig(appRoot: string, fileConfig: StackConfigFile): StackVoiceConfig {
+  const configured = fileConfig.voice ?? {}
+  const enabledOverride = process.env.STACK_VOICE_ENABLED?.trim().toLowerCase()
+  const enabled =
+    enabledOverride === "1" || enabledOverride === "true"
+      ? true
+      : enabledOverride === "0" || enabledOverride === "false"
+        ? false
+        : configured.enabled === true
+  const envFile = process.env.STACK_VOICE_ENV_FILE ?? configured.env_file
+  return {
+    enabled,
+    sttProvider: readVoiceProvider(
+      process.env.STACK_VOICE_STT_PROVIDER ?? configured.stt_provider,
+      DEFAULT_VOICE_STT_PROVIDER,
+    ),
+    sttFallback: readVoiceProvider(
+      process.env.STACK_VOICE_STT_FALLBACK ?? configured.stt_fallback,
+      DEFAULT_VOICE_STT_FALLBACK,
+    ),
+    sttModelGroq:
+      process.env.STACK_VOICE_STT_MODEL_GROQ ?? configured.stt_model_groq ?? DEFAULT_VOICE_STT_MODEL_GROQ,
+    sttModelOpenai:
+      process.env.STACK_VOICE_STT_MODEL_OPENAI ?? configured.stt_model_openai ?? DEFAULT_VOICE_STT_MODEL_OPENAI,
+    language: process.env.STACK_VOICE_STT_LANGUAGE ?? configured.language ?? DEFAULT_VOICE_LANGUAGE,
+    envFile: envFile ? resolveConfigPath(appRoot, envFile) : undefined,
+  }
+}
+
+function readVoiceProvider(value: string | undefined, fallback: "groq" | "openai"): "groq" | "openai" {
+  const normalized = value?.trim().toLowerCase()
+  return normalized === "openai" || normalized === "groq" ? normalized : fallback
 }
 
 function readConfigFile(appRoot: string): StackConfigFile {

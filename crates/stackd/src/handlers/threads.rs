@@ -1,5 +1,6 @@
 use crate::handlers::ApiError;
 use crate::server::AppState;
+use crate::victorialogs::append_thread_event_projected;
 use axum::extract::{Path, Query, State};
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::Json;
@@ -9,8 +10,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use stack_core::codex_path::resolve_for_session;
 use stack_core::events::{
-    append_thread_event, read_thread_events, read_thread_monitor_actor_states,
-    thread_monitor_actor_dir_path,
+    read_thread_events, read_thread_monitor_actor_states, thread_monitor_actor_dir_path,
 };
 use stack_core::session::{
     build_usage_summary, list_summaries, read_session_by_id, read_session_value_by_id,
@@ -135,7 +135,7 @@ pub async fn append_event(
     Json(event): Json<Value>,
 ) -> Result<Json<Value>, ApiError> {
     let event = normalize_ingested_event(&id, event)?;
-    let path = append_thread_event(&state.paths.stack_dir, &id, &event).await?;
+    let path = append_thread_event_projected(&state.paths.stack_dir, &id, &event).await?;
     Ok(Json(json!({
         "ok": true,
         "event": event,
@@ -357,7 +357,7 @@ async fn update_monitor_mode(
             "actor_state_path": actor_path.to_string_lossy(),
         }
     });
-    append_thread_event(&state.paths.stack_dir, id, &event).await?;
+    append_thread_event_projected(&state.paths.stack_dir, id, &event).await?;
     Ok(Json(json!({
         "ok": true,
         "event": event,

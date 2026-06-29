@@ -2,6 +2,7 @@ mod handlers;
 mod monitor_scheduler;
 mod openapi;
 mod server;
+mod victorialogs;
 
 use clap::{Parser, Subcommand};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};

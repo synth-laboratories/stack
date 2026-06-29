@@ -1,7 +1,8 @@
 use crate::server::AppState;
+use crate::victorialogs::append_thread_event_projected;
 use chrono::Utc;
 use serde_json::{json, Value};
-use stack_core::events::{append_thread_event, read_thread_events, thread_monitor_actor_dir_path};
+use stack_core::events::{read_thread_events, thread_monitor_actor_dir_path};
 use stack_core::session::list_summaries;
 use std::collections::HashSet;
 use std::sync::Arc;
@@ -19,6 +20,10 @@ struct MonitorRuntimeConfig {
     worker: String,
     max_wakes_per_primary_turn: u64,
     max_queued_items_per_thread: usize,
+    skill_context_push: String,
+    skills_enabled: bool,
+    allowed_skill_ids: Vec<String>,
+    push_when_confident: bool,
     on_turn_completed: bool,
     on_tool_completed: bool,
     on_tool_failed: bool,
@@ -126,7 +131,7 @@ async fn process_thread(
         }
         return Ok(());
     }
-    let triggered = triggered_event_ids(&events);
+    let triggered = triggered_event_ids(&events, &config.actor_id);
     let triggers: Vec<&Value> = pending
         .iter()
         .copied()
@@ -143,6 +148,7 @@ async fn process_thread(
         thread_id,
         actor_path,
         actor.as_ref(),
+        &events,
         pending,
         triggers,
         effective_strictness,
@@ -156,6 +162,7 @@ async fn run_monitor_pass(
     thread_id: &str,
     actor_path: std::path::PathBuf,
     actor: Option<&Value>,
+    all_events: &[Value],
     pending: Vec<&Value>,
     triggers: Vec<&Value>,
     strictness: String,
@@ -184,7 +191,7 @@ async fn run_monitor_pass(
         .filter_map(|event| event_id(event).map(str::to_string))
         .collect();
     let reason = wake_reason(triggers.first().copied());
-    append_thread_event(
+    append_thread_event_projected(
         &state.paths.stack_dir,
         thread_id,
         &json!({
@@ -207,7 +214,7 @@ async fn run_monitor_pass(
     .await?;
 
     let pass = run_scheduler_pass(config, actor, &pending, &wake_id, &reason, &strictness).await;
-    append_thread_event(
+    append_thread_event_projected(
         &state.paths.stack_dir,
         thread_id,
         &json!({
@@ -233,7 +240,7 @@ async fn run_monitor_pass(
     .await?;
 
     if let Some(reason) = &pass.fallback_reason {
-        append_thread_event(
+        append_thread_event_projected(
             &state.paths.stack_dir,
             thread_id,
             &json!({
@@ -256,7 +263,7 @@ async fn run_monitor_pass(
     }
 
     for item in &pass.queue_items {
-        append_thread_event(
+        append_thread_event_projected(
             &state.paths.stack_dir,
             thread_id,
             &json!({
@@ -272,7 +279,33 @@ async fn run_monitor_pass(
         .await?;
     }
 
-    append_thread_event(
+    let context_pushes = skill_context_pushes_for_pending(
+        state,
+        config,
+        all_events,
+        &pending,
+        &trigger_ids,
+        &wake_id,
+        &strictness,
+    );
+    for push in &context_pushes {
+        append_thread_event_projected(
+            &state.paths.stack_dir,
+            thread_id,
+            &json!({
+                "event_id": format!("monitor_skill_context_push_{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
+                "type": "monitor.skill_context_push",
+                "thread_id": thread_id,
+                "observed_at": now(),
+                "actor_id": config.actor_id,
+                "actor_role": "monitor",
+                "payload": push
+            }),
+        )
+        .await?;
+    }
+
+    append_thread_event_projected(
         &state.paths.stack_dir,
         thread_id,
         &json!({
@@ -315,13 +348,14 @@ async fn run_monitor_pass(
             last_severity: Some(&pass.severity),
             wake_delta: 1,
             queue_delta: pass.queue_items.len() as u64,
+            context_push_delta: context_pushes.len() as u64,
             last_completed_at: Some(&completed_at),
             ..ActorUpdate::default()
         },
     )
     .await?;
 
-    append_thread_event(
+    append_thread_event_projected(
         &state.paths.stack_dir,
         thread_id,
         &json!({
@@ -360,6 +394,7 @@ struct ActorUpdate<'a> {
     last_severity: Option<&'a str>,
     wake_delta: u64,
     queue_delta: u64,
+    context_push_delta: u64,
     last_started_at: Option<&'a str>,
     last_completed_at: Option<&'a str>,
 }
@@ -743,7 +778,8 @@ async fn write_actor_state(
     actor["context_push_counts"] = json!(actor
         .get("context_push_counts")
         .and_then(Value::as_u64)
-        .unwrap_or(0));
+        .unwrap_or(0)
+        + update.context_push_delta);
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
@@ -785,6 +821,19 @@ async fn read_monitor_config(state: &AppState) -> MonitorRuntimeConfig {
             .unwrap_or(6),
         max_queued_items_per_thread: toml_u64(&text, "intervention", "max_queued_items_per_thread")
             .unwrap_or(8) as usize,
+        skill_context_push: toml_string(&text, "intervention", "skill_context_push")
+            .unwrap_or_else(|| "queue_or_steer".to_string()),
+        skills_enabled: toml_bool(&text, "skills", "enabled").unwrap_or(true),
+        allowed_skill_ids: toml_string_array(&text, "skills", "allowed_skill_ids").unwrap_or_else(
+            || {
+                vec![
+                    "stack-agent-bridge".to_string(),
+                    "synth-via-stack".to_string(),
+                    "stackeval".to_string(),
+                ]
+            },
+        ),
+        push_when_confident: toml_bool(&text, "skills", "push_when_confident").unwrap_or(false),
         on_turn_completed: toml_bool(&text, "wake", "on_turn_completed").unwrap_or(true),
         on_tool_completed: toml_bool(&text, "wake", "on_tool_completed").unwrap_or(true),
         on_tool_failed: toml_bool(&text, "wake", "on_tool_failed").unwrap_or(true),
@@ -808,10 +857,13 @@ fn events_after_cursor<'a>(events: &'a [Value], last_event_id: Option<&str>) -> 
         .collect()
 }
 
-fn triggered_event_ids(events: &[Value]) -> HashSet<String> {
+fn triggered_event_ids(events: &[Value], actor_id: &str) -> HashSet<String> {
     let mut ids = HashSet::new();
     for event in events {
         if event_type(event) != Some("monitor.wake") {
+            continue;
+        }
+        if event.get("actor_id").and_then(Value::as_str) != Some(actor_id) {
             continue;
         }
         let Some(trigger_ids) = event
@@ -947,6 +999,157 @@ fn queue_items_for_pending(events: &[&Value], severity: &str, limit: usize) -> V
         .collect()
 }
 
+fn skill_context_pushes_for_pending(
+    state: &AppState,
+    config: &MonitorRuntimeConfig,
+    all_events: &[Value],
+    pending: &[&Value],
+    trigger_ids: &[String],
+    wake_id: &str,
+    strictness: &str,
+) -> Vec<Value> {
+    if !can_push_skill_context(config, strictness) || !likely_needs_stack_skill(pending) {
+        return Vec::new();
+    }
+    let Some(skill_id) = recommended_skill_for_pending(config, pending) else {
+        return Vec::new();
+    };
+    if has_used_skill(all_events, &skill_id) || has_pushed_skill(all_events, &skill_id) {
+        return Vec::new();
+    }
+    let source_path = skill_source_path(state, &skill_id);
+    let mut evidence_event_ids = trigger_ids.to_vec();
+    for event in pending {
+        if let Some(id) = event_id(event) {
+            evidence_event_ids.push(id.to_string());
+        }
+    }
+    evidence_event_ids.sort();
+    evidence_event_ids.dedup();
+    let reason = format!(
+        "Local StackEval/GEPA work is active and skill context for {skill_id} has not been loaded."
+    );
+    let message = format!(
+        "Monitor suggests reading skill {skill_id}.\nReason: {reason}\nEvidence events: {}.\nApply only the relevant runbook guidance before the next action.",
+        evidence_event_ids
+            .iter()
+            .take(5)
+            .cloned()
+            .collect::<Vec<String>>()
+            .join(", ")
+    );
+    vec![json!({
+        "wake_id": wake_id,
+        "target_actor_id": "primary_stackeval",
+        "skill_id": skill_id,
+        "source_path": source_path,
+        "reason": reason,
+        "evidence_event_ids": evidence_event_ids,
+        "message_id": format!("skillmsg_{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
+        "message": message,
+        "source": "stackd-scheduler"
+    })]
+}
+
+fn can_push_skill_context(config: &MonitorRuntimeConfig, strictness: &str) -> bool {
+    if !config.skills_enabled || matches!(strictness, "off" | "passive") {
+        return false;
+    }
+    let policy = config.skill_context_push.trim().to_ascii_lowercase();
+    if matches!(
+        policy.as_str(),
+        "" | "off" | "never" | "false" | "disabled"
+    ) {
+        return false;
+    }
+    policy == "queue_or_steer"
+        || policy == "always"
+        || config.push_when_confident
+        || strictness == "aggressive"
+}
+
+fn likely_needs_stack_skill(events: &[&Value]) -> bool {
+    let text = events
+        .iter()
+        .map(|event| event.to_string().to_ascii_lowercase())
+        .collect::<Vec<String>>()
+        .join("\n");
+    text.contains("stackeval") || text.contains("gepa") || text.contains("synth-optimizers")
+}
+
+fn recommended_skill_for_pending(
+    config: &MonitorRuntimeConfig,
+    pending: &[&Value],
+) -> Option<String> {
+    let text = pending
+        .iter()
+        .map(|event| event.to_string().to_ascii_lowercase())
+        .collect::<Vec<String>>()
+        .join("\n");
+    if (text.contains("stackeval") || text.contains("gepa") || text.contains("synth"))
+        && config
+            .allowed_skill_ids
+            .iter()
+            .any(|skill_id| skill_id == "synth-via-stack")
+    {
+        return Some("synth-via-stack".to_string());
+    }
+    config.allowed_skill_ids.first().cloned()
+}
+
+fn has_used_skill(events: &[Value], skill_id: &str) -> bool {
+    events.iter().any(|event| {
+        matches!(event_type(event), Some("skill.read" | "skill.used"))
+            && event
+                .get("payload")
+                .and_then(|payload| payload.get("skill_id"))
+                .and_then(Value::as_str)
+                == Some(skill_id)
+    })
+}
+
+fn has_pushed_skill(events: &[Value], skill_id: &str) -> bool {
+    events.iter().any(|event| {
+        event_type(event) == Some("monitor.skill_context_push")
+            && event
+                .get("payload")
+                .and_then(|payload| payload.get("skill_id"))
+                .and_then(Value::as_str)
+                == Some(skill_id)
+    })
+}
+
+fn skill_source_path(state: &AppState, skill_id: &str) -> String {
+    let candidates = [
+        state
+            .paths
+            .app_root
+            .join(".stack")
+            .join("skills")
+            .join(skill_id)
+            .join("SKILL.md"),
+        state
+            .paths
+            .app_root
+            .join(".codex")
+            .join("skills")
+            .join(skill_id)
+            .join("SKILL.md"),
+        state
+            .paths
+            .codex_home
+            .join("skills")
+            .join(skill_id)
+            .join("SKILL.md"),
+    ];
+    candidates
+        .iter()
+        .find(|path| path.is_file())
+        .unwrap_or(&candidates[0])
+        .to_string_lossy()
+        .to_string()
+}
+
 fn estimate_usage(events: &[&Value], summary: &str) -> (u64, u64) {
     let input_chars: usize = events.iter().map(|event| event.to_string().len()).sum();
     (
@@ -1010,6 +1213,22 @@ fn toml_bool(text: &str, section: &str, key: &str) -> Option<bool> {
 
 fn toml_u64(text: &str, section: &str, key: &str) -> Option<u64> {
     toml_value(text, section, key)?.parse::<u64>().ok()
+}
+
+fn toml_string_array(text: &str, section: &str, key: &str) -> Option<Vec<String>> {
+    let value = toml_value(text, section, key)?;
+    let trimmed = value.trim();
+    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
+        return None;
+    }
+    let items = trimmed
+        .trim_start_matches('[')
+        .trim_end_matches(']')
+        .split(',')
+        .map(|item| item.trim().trim_matches('"').to_string())
+        .filter(|item| !item.is_empty())
+        .collect::<Vec<String>>();
+    Some(items)
 }
 
 fn toml_value(text: &str, section: &str, key: &str) -> Option<String> {

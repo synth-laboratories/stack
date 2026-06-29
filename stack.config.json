@@ -1,6 +1,15 @@
 {
   "workingDir": "..",
   "defaultEnvironment": "dev",
+  "voice": {
+    "enabled": false,
+    "stt_provider": "groq",
+    "stt_fallback": "openai",
+    "stt_model_groq": "whisper-large-v3-turbo",
+    "stt_model_openai": "gpt-4o-mini-transcribe",
+    "language": "en",
+    "env_file": ".stack/voice.env"
+  },
   "environments": {
     "dev": {
       "label": "Dev",

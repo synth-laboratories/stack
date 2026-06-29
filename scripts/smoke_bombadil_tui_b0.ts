@@ -47,8 +47,13 @@ try {
   void bombadil.exited.then((code) => {
     bombadilExitCode = code
   })
+  const runRequest = fetch(`http://127.0.0.1:${port}/run`, { method: "POST" }).catch((error) => {
+    console.error(`Bombadil B0 runner could not trigger scenarios: ${String(error)}`)
+    return undefined
+  })
 
   const proof = await waitForPassingProof()
+  await runRequest
   await sleep(2500)
   if (bombadilExitCode !== undefined && bombadilExitCode !== 0) {
     throw new Error(`Bombadil exited before stable pass: ${bombadilExitCode}`)

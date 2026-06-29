@@ -3,7 +3,15 @@ import { dirname, join } from "node:path"
 import type { StackConfig } from "./config.js"
 import type { AgentContextSnapshot } from "./codex/agent-context.js"
 import type { CodexGoalSnapshot } from "./codex/goal-context.js"
+import {
+  buildStyleSteerFromGuidance,
+  detectSynthStyleViolations,
+  hasSteeredViolationRule,
+  severityForStyleViolation,
+  steerAllowedForStrictness,
+} from "./monitor/style-steer.js"
 import { pushSkillContext } from "./codex/skills.js"
+import { estimateUsageSpendUsd, formatEstimatedSpend } from "./codex/usage-cost.js"
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import {
@@ -56,6 +64,9 @@ export type StackMonitorSnapshot = {
   enabled: boolean
   actorId: string
   label: string
+  runtime: string
+  model: string
+  reasoningEffort: string
   strictness: MonitorStrictness
   status: "off" | "watching" | "idle" | "running" | "paused" | "summarized" | "queued" | "error"
   lastSummary?: string
@@ -68,6 +79,7 @@ export type StackMonitorSnapshot = {
   queuedCount: number
   skillReadCount: number
   contextPushCount: number
+  threadSpendUsd?: number
   focusResults: Partial<Record<MonitorFocusName, MonitorFocusStatus>>
   modeSource: "config" | "thread"
 }
@@ -191,6 +203,9 @@ export function emptyMonitorSnapshot(stackRoot: string): StackMonitorSnapshot {
     enabled: effective.enabled,
     actorId: monitorActorId(config),
     label: config.label,
+    runtime: config.model.worker,
+    model: config.model.model,
+    reasoningEffort: config.model.reasoningEffort,
     strictness: effective.strictness,
     status: effective.enabled ? "watching" : "off",
     lastSeverity: "none",
@@ -198,6 +213,7 @@ export function emptyMonitorSnapshot(stackRoot: string): StackMonitorSnapshot {
     queuedCount: 0,
     skillReadCount: 0,
     contextPushCount: 0,
+    threadSpendUsd: 0,
     focusResults: {},
     modeSource: effective.source,
   }
@@ -442,6 +458,70 @@ export async function runMonitorForNewEvents(input: {
     })
   }
 
+  let steerDelta = 0
+  const turnForSteer = input.turn ?? syntheticTurnFromEvents(input.session, candidate.pendingEvents)
+  const violations = detectSynthStyleViolations(turnForSteer)
+  const violation = violations.find((entry) => !hasSteeredViolationRule(priorEvents, entry.id))
+  if (violation) {
+    const severity = severityForStyleViolation(violation.id)
+    if (steerAllowedForStrictness(monitorConfig.strictness, severity)) {
+      const steer = buildStyleSteerFromGuidance({
+        stackRoot: input.config.appRoot,
+        workspaceRoot: input.config.workspaceRoot,
+        violation,
+      })
+      if (steer) {
+        appendThreadMetaEvent(input.config.appRoot, {
+          event_id: stackEventId("guidance_query"),
+          type: "guidance.query",
+          thread_id: threadId,
+          observed_at: new Date().toISOString(),
+          actor_id: actorId,
+          actor_role: "monitor",
+          payload: {
+            query: steer.query,
+            scope: "style",
+            hit_ids: [steer.guidanceId],
+            reason: "monitor_style_steer",
+            rule_id: violation.id,
+          },
+        })
+        appendThreadMetaEvent(input.config.appRoot, {
+          event_id: stackEventId("guidance_used"),
+          type: "guidance.used",
+          thread_id: threadId,
+          observed_at: new Date().toISOString(),
+          actor_id: actorId,
+          actor_role: "monitor",
+          payload: {
+            guidance_id: steer.guidanceId,
+            reason: "monitor_style_steer",
+            rule_id: violation.id,
+            excerpt: steer.excerpt,
+          },
+        })
+        appendThreadMetaEvent(input.config.appRoot, {
+          event_id: stackEventId("monitor_steer"),
+          type: "monitor.steer",
+          thread_id: threadId,
+          observed_at: new Date().toISOString(),
+          actor_id: actorId,
+          actor_role: "monitor",
+          payload: {
+            wake_id: wakeId,
+            rule_id: violation.id,
+            guidance_id: steer.guidanceId,
+            guidance_excerpt: steer.excerpt,
+            message: steer.message,
+            severity,
+            focus: "style",
+          },
+        })
+        steerDelta = 1
+      }
+    }
+  }
+
   const usage = pass.usage ?? estimateMonitorUsage(candidate.pendingEvents, pass.summary)
   appendThreadMetaEvent(input.config.appRoot, {
     event_id: stackEventId("monitor_usage"),
@@ -479,6 +559,7 @@ export async function runMonitorForNewEvents(input: {
     wakeDelta: 1,
     queueDelta: queueItems.length,
     contextPushDelta: contextPushes.length,
+    steerDelta,
   })
   writeMonitorActorState(input.config.appRoot, completedState)
   appendThreadMetaEvent(input.config.appRoot, {
@@ -516,14 +597,31 @@ export function monitorRailLines(snapshot: StackMonitorSnapshot, columns: number
       : snapshot.strictness === "aggressive"
         ? "aggr"
         : snapshot.strictness
-  const lines = ["monitor"]
+  const status =
+    snapshot.status === "watching"
+      ? "watch"
+      : snapshot.status === "summarized"
+        ? "summ"
+        : snapshot.status
+  const enabledLabel = snapshot.enabled && snapshot.status !== "paused" && snapshot.status !== "off"
+    ? "ON"
+    : snapshot.status === "paused"
+      ? "PAUSED"
+      : "OFF"
+  const lines = ["aux agents"]
   lines.push(
     truncate(
-      `${snapshot.status} · ${strictness} · wakes ${snapshot.wakeCount} · q ${snapshot.queuedCount}`,
+      `monitor ${enabledLabel} · ${status} · ${strictness} · w${snapshot.wakeCount} q${snapshot.queuedCount}`,
       width,
     ),
   )
-  lines.push(truncate(`mode ${snapshot.modeSource} · M cycles`, width))
+  if (!snapshot.enabled || snapshot.status === "off") {
+    lines.push(truncate(`runtime off · M cycles`, width))
+    return lines
+  }
+  lines.push(truncate(`runtime ${formatRuntime(snapshot.runtime)}`, width))
+  lines.push(truncate(`model ${snapshot.model} · effort ${formatEffort(snapshot.reasoningEffort)}`, width))
+  lines.push(truncate(`thread spend ${formatEstimatedSpend(snapshot.threadSpendUsd) ?? "~$0"} · M cycles`, width))
   if (snapshot.lastWakeReason || snapshot.lastSeverity !== "none") {
     lines.push(truncate(`last ${snapshot.lastWakeReason ?? "summary"} · ${snapshot.lastSeverity}`, width))
   }
@@ -541,11 +639,46 @@ export function monitorRailLines(snapshot: StackMonitorSnapshot, columns: number
   return lines
 }
 
+function formatRuntime(value: string): string {
+  if (value === "openai-responses" || value === "openai_responses") return "openai"
+  if (value === "deterministic-runtime" || value === "deterministic") return "det"
+  return value
+}
+
+function formatEffort(value: string): string {
+  if (value === "medium") return "med"
+  return value
+}
+
 export function cycleMonitorMode(stackRoot: string, threadId: string): StackMonitorSnapshot {
   const config = loadMonitorConfig(stackRoot)
   const events = readThreadMetaEvents(stackRoot, threadId)
   const current = effectiveMonitorState(config, events).strictness
   const next = nextStrictness(current)
+  return writeMonitorModeChange(stackRoot, threadId, config, current, next)
+}
+
+export function setMonitorEnabled(stackRoot: string, threadId: string, enabled: boolean): StackMonitorSnapshot {
+  const config = loadMonitorConfig(stackRoot)
+  const events = readThreadMetaEvents(stackRoot, threadId)
+  const current = effectiveMonitorState(config, events).strictness
+  const next = enabled
+    ? current === "off"
+      ? config.strictness === "off"
+        ? "conservative"
+        : config.strictness
+      : current
+    : "off"
+  return writeMonitorModeChange(stackRoot, threadId, config, current, next)
+}
+
+function writeMonitorModeChange(
+  stackRoot: string,
+  threadId: string,
+  config: StackMonitorConfig,
+  current: MonitorStrictness,
+  next: MonitorStrictness,
+): StackMonitorSnapshot {
   const actorId = monitorActorId(config)
   const type = current === "off" && next !== "off"
     ? "monitor.resumed"
@@ -1025,6 +1158,7 @@ function actorStateFromConfig(
     wakeDelta?: number
     queueDelta?: number
     contextPushDelta?: number
+    steerDelta?: number
     lastStartedAt?: string
     lastCompletedAt?: string
     lastErrorAt?: string
@@ -1049,7 +1183,7 @@ function actorStateFromConfig(
     last_severity: options.severity ?? previous?.last_severity,
     wake_counts: (previous?.wake_counts ?? 0) + (options.wakeDelta ?? 0),
     queue_counts: (previous?.queue_counts ?? 0) + (options.queueDelta ?? 0),
-    steer_counts: previous?.steer_counts ?? 0,
+    steer_counts: (previous?.steer_counts ?? 0) + (options.steerDelta ?? 0),
     skill_read_counts: previous?.skill_read_counts ?? 0,
     context_push_counts: (previous?.context_push_counts ?? 0) + (options.contextPushDelta ?? 0),
     last_started_at: options.lastStartedAt ?? previous?.last_started_at,
@@ -1124,6 +1258,17 @@ function runFocusChecks(
 
 function checkStyle(config: StackMonitorConfig, turn: StackCodexTurn): FocusCheck {
   if (!config.focus.style) return disabled("style")
+  const violations = detectSynthStyleViolations(turn)
+  if (violations.length > 0) {
+    const first = violations[0]!
+    return {
+      focus: "style",
+      status: "fail",
+      severity: severityForStyleViolation(first.id),
+      summary: first.summary,
+      evidence: `${first.id}: ${first.match}`,
+    }
+  }
   const text = `${turn.prompt}\n${turn.stdout}\n${turn.stderr}`.toLowerCase()
   if (text.includes("eslint") && (text.includes("error") || text.includes("failed"))) {
     return {
@@ -1326,11 +1471,15 @@ function snapshotFromEvents(
   const monitorEvents = events.filter((event) => event.actor_role === "monitor" || event.type.startsWith("monitor."))
   const summaries = events.filter((event) => event.type === "monitor.summary")
   const latestSummary = summaries.at(-1)
+  const usage = monitorUsageSummary(events, actorState?.model.model ?? config.model.model)
   const focus = asRecord(latestSummary?.payload.focus_results)
   return {
     enabled: effective.enabled,
     actorId: monitorActorId(config),
     label: config.label,
+    runtime: usage.runtime ?? actorState?.model.worker ?? config.model.worker,
+    model: actorState?.model.model ?? config.model.model,
+    reasoningEffort: actorState?.model.reasoning_effort ?? config.model.reasoningEffort,
     strictness: effective.strictness,
     status: monitorStatus(config, events, actorState),
     lastSummary: actorState?.rolling_summary ?? readString(latestSummary?.payload.summary),
@@ -1343,9 +1492,36 @@ function snapshotFromEvents(
     queuedCount: actorState?.queue_counts ?? events.filter((event) => event.type === "monitor.queued").length,
     skillReadCount: events.filter((event) => event.type === "skill.read").length,
     contextPushCount: events.filter((event) => event.type === "monitor.skill_context_push").length,
+    threadSpendUsd: usage.spendUsd,
     focusResults: focusResultsFromRecord(focus),
     modeSource: effective.source,
   }
+}
+
+function monitorUsageSummary(
+  events: StackThreadMetaEvent[],
+  model: string,
+): { runtime?: string; spendUsd: number } {
+  const usageEvents = events.filter((event) => event.type === "monitor.usage")
+  const totals = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+  }
+  let recordedSpendUsd = 0
+  let runtime: string | undefined
+  for (const event of usageEvents) {
+    runtime = readString(event.payload.source) ?? runtime
+    totals.inputTokens += readNumber(event.payload.input_tokens) ?? 0
+    totals.cachedInputTokens += readNumber(event.payload.cached_input_tokens) ?? 0
+    totals.outputTokens += readNumber(event.payload.output_tokens) ?? 0
+    totals.reasoningOutputTokens += readNumber(event.payload.reasoning_output_tokens) ?? 0
+    recordedSpendUsd += readNumber(event.payload.estimated_spend_usd) ?? 0
+  }
+  const estimatedSpendUsd = estimateUsageSpendUsd(totals, model)
+  const spendUsd = recordedSpendUsd > 0 ? recordedSpendUsd : estimatedSpendUsd ?? 0
+  return { runtime, spendUsd }
 }
 
 function monitorStatus(

@@ -62,6 +62,67 @@ pub async fn export_thread(
         write_json(export_dir.join("monitor_usage.json"), &json!(monitor_usage)).await?;
         files.push("monitor_usage.json");
     }
+    let monitor_events: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|event_type| event_type.starts_with("monitor."))
+        })
+        .cloned()
+        .collect();
+    if !monitor_events.is_empty() {
+        write_json(export_dir.join("monitor_events.json"), &json!(monitor_events)).await?;
+        files.push("monitor_events.json");
+    }
+    let guidance_events: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|event_type| event_type.starts_with("guidance."))
+        })
+        .cloned()
+        .collect();
+    if !guidance_events.is_empty() {
+        write_json(export_dir.join("guidance_events.json"), &json!(guidance_events)).await?;
+        files.push("guidance_events.json");
+    }
+    let voice_events: Vec<_> = events
+        .iter()
+        .filter(|event| {
+            event
+                .get("type")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|event_type| event_type.starts_with("voice."))
+        })
+        .cloned()
+        .collect();
+    if !voice_events.is_empty() {
+        write_json(export_dir.join("voice_events.json"), &json!(voice_events)).await?;
+        files.push("voice_events.json");
+    }
+    let voice_status_path = state.paths.stack_dir.join("voice").join("status.json");
+    if fs::copy(&voice_status_path, export_dir.join("voice_status.json"))
+        .await
+        .is_ok()
+    {
+        files.push("voice_status.json");
+    }
+    let garden_path = state
+        .paths
+        .stack_dir
+        .join("garden")
+        .join("threads")
+        .join(format!("{id}.md"));
+    if fs::copy(&garden_path, export_dir.join("garden.md"))
+        .await
+        .is_ok()
+    {
+        files.push("garden.md");
+    }
     let actors = read_thread_monitor_actor_states(&state.paths.stack_dir, &id).await?;
     if !actors.is_empty() {
         write_json(export_dir.join("actors.json"), &json!(actors)).await?;

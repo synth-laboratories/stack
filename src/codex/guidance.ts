@@ -1,8 +1,17 @@
 import { existsSync, readFileSync, readdirSync, type Dirent } from "node:fs"
-import { basename, dirname, join, relative, resolve } from "node:path"
+import { basename, join, relative } from "node:path"
+import {
+  orgStyleDirs,
+  orgSynthStyleFiles,
+  personalGuidanceRoot,
+  repoStyleDir,
+  workspaceStyleFile,
+  type StackStyleLayer,
+} from "./guidance-layers.js"
 
+export type { StackStyleLayer } from "./guidance-layers.js"
 export type StackGuidanceScope = "style" | "records" | "workflows" | "all"
-export type StackGuidanceOrigin = "stack" | "jstack" | "workspace"
+export type StackGuidanceOrigin = "stack" | "workspace" | "personal"
 
 export type StackGuidanceItem = {
   guidanceId: string
@@ -13,6 +22,7 @@ export type StackGuidanceItem = {
   relativePath: string
   scope: Exclude<StackGuidanceScope, "all">
   origin: StackGuidanceOrigin
+  styleLayer?: StackStyleLayer
 }
 
 export type StackGuidanceRead = {
@@ -27,19 +37,44 @@ export function stackGuidanceRoot(stackRoot: string): string {
 
 export function discoverStackGuidance(
   stackRoot: string,
-  options: { workspaceRoot?: string; scope?: StackGuidanceScope } = {},
+  options: { workspaceRoot?: string; scope?: StackGuidanceScope; styleLayer?: StackStyleLayer } = {},
 ): StackGuidanceItem[] {
   const items = new Map<string, StackGuidanceItem>()
+  const workspaceRoot = options.workspaceRoot ?? stackRoot
   const add = (item: StackGuidanceItem) => {
     if (!scopeMatches(item, options.scope)) return
+    if (!styleLayerMatches(item, options.styleLayer)) return
     if (!items.has(item.guidanceId)) items.set(item.guidanceId, item)
   }
 
   const localRoot = stackGuidanceRoot(stackRoot)
-  for (const path of findMarkdownFiles(localRoot)) add(guidanceFromPath(path, localRoot, "stack"))
+  for (const path of findMarkdownFiles(localRoot)) {
+    add(guidanceFromPath(path, localRoot, "stack", styleLayerForStackPath(path, localRoot, workspaceRoot)))
+  }
 
-  for (const path of jstackGuidanceSources(stackRoot, options.workspaceRoot)) {
-    if (existsSync(path)) add(guidanceFromExternalPath(path, options.workspaceRoot ?? dirname(stackRoot)))
+  for (const path of orgSynthStyleFiles(workspaceRoot)) {
+    if (existsSync(path)) add(guidanceFromPath(path, workspaceRoot, "workspace", "org"))
+  }
+  for (const root of orgStyleDirs(workspaceRoot)) {
+    for (const path of findMarkdownFiles(root)) {
+      add(guidanceFromPath(path, workspaceRoot, "workspace", "org"))
+    }
+  }
+
+  const personalRoot = personalGuidanceRoot()
+  for (const path of findMarkdownFiles(join(personalRoot, "style"))) {
+    add(guidanceFromPath(path, personalRoot, "personal", "personal"))
+  }
+  for (const path of findMarkdownFiles(join(personalRoot, "records"))) {
+    add(guidanceFromPath(path, personalRoot, "personal", undefined))
+  }
+
+  const repoStyle = workspaceStyleFile(workspaceRoot)
+  if (existsSync(repoStyle)) {
+    add(guidanceFromPath(repoStyle, workspaceRoot, "workspace", "repo"))
+  }
+  for (const path of findMarkdownFiles(repoStyleDir(workspaceRoot))) {
+    add(guidanceFromPath(path, workspaceRoot, "workspace", "repo"))
   }
 
   return [...items.values()].sort((left, right) => left.guidanceId.localeCompare(right.guidanceId))
@@ -70,11 +105,21 @@ export function readStackGuidance(
 export function searchStackGuidance(
   stackRoot: string,
   query: string,
-  options: { workspaceRoot?: string; scope?: StackGuidanceScope; limit?: number; maxExcerptBytes?: number } = {},
+  options: {
+    workspaceRoot?: string
+    scope?: StackGuidanceScope
+    styleLayer?: StackStyleLayer
+    limit?: number
+    maxExcerptBytes?: number
+  } = {},
 ): Array<StackGuidanceItem & { score: number; excerpt: string }> {
   const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
   const maxExcerptBytes = options.maxExcerptBytes ?? 600
-  const scored = discoverStackGuidance(stackRoot, { workspaceRoot: options.workspaceRoot, scope: options.scope })
+  const scored = discoverStackGuidance(stackRoot, {
+    workspaceRoot: options.workspaceRoot,
+    scope: options.scope,
+    styleLayer: options.styleLayer,
+  })
     .map((item) => scoreGuidanceItem(item, terms, maxExcerptBytes))
     .filter((entry) => entry.score > 0)
     .sort((left, right) => right.score - left.score || left.guidanceId.localeCompare(right.guidanceId))
@@ -91,12 +136,18 @@ export function guidanceToJson(item: StackGuidanceItem): Record<string, string> 
     relative_path: item.relativePath,
     scope: item.scope,
     origin: item.origin,
+    ...(item.styleLayer ? { style_layer: item.styleLayer } : {}),
   }
 }
 
-function guidanceFromPath(path: string, rootPath: string, origin: StackGuidanceOrigin): StackGuidanceItem {
+function guidanceFromPath(
+  path: string,
+  rootPath: string,
+  origin: StackGuidanceOrigin,
+  styleLayer?: StackStyleLayer,
+): StackGuidanceItem {
   const relativePath = relative(rootPath, path)
-  const guidanceId = stripMarkdownExtension(relativePath)
+  const guidanceId = guidanceIdFor(path, rootPath, origin, styleLayer)
   const { title, description } = readMarkdownTitle(path)
   return {
     guidanceId,
@@ -105,49 +156,10 @@ function guidanceFromPath(path: string, rootPath: string, origin: StackGuidanceO
     sourcePath: path,
     rootPath,
     relativePath,
-    scope: scopeFromRelativePath(relativePath),
+    scope: scopeFromRelativePath(relativePath, styleLayer),
     origin,
+    styleLayer,
   }
-}
-
-function guidanceFromExternalPath(path: string, workspaceRoot: string): StackGuidanceItem {
-  const normalized = path.replace(/\\/g, "/")
-  let guidanceId = `workspace/${stripMarkdownExtension(basename(path))}`
-  let scope: Exclude<StackGuidanceScope, "all"> = "style"
-  let origin: StackGuidanceOrigin = "workspace"
-  if (normalized.includes("/Jstack/.jstack/product/specs/stack_guidance.md")) {
-    guidanceId = "jstack/product/specs/stack_guidance"
-    scope = "workflows"
-    origin = "jstack"
-  } else if (normalized.endsWith("/specifications/tanha/references/synthstyle.md")) {
-    guidanceId = "style/synthstyle-source"
-  }
-  const { title, description } = readMarkdownTitle(path)
-  return {
-    guidanceId,
-    title: title ?? stripMarkdownExtension(basename(path)),
-    description: description ?? "",
-    sourcePath: path,
-    rootPath: workspaceRoot,
-    relativePath: relative(workspaceRoot, path),
-    scope,
-    origin,
-  }
-}
-
-function jstackGuidanceSources(stackRoot: string, workspaceRoot?: string): string[] {
-  const roots = unique([workspaceRoot, dirname(stackRoot), dirname(dirname(stackRoot))].filter(Boolean) as string[])
-  const paths: string[] = []
-  for (const root of roots) {
-    paths.push(join(root, "Jstack", ".jstack", "product", "specs", "stack_guidance.md"))
-    const activeSynthStyle = join(root, "backend", "specifications", "tanha", "references", "synthstyle.md")
-    paths.push(
-      existsSync(activeSynthStyle)
-        ? activeSynthStyle
-        : join(root, "specifications", "old", "tanha", "references", "synthstyle.md"),
-    )
-  }
-  return unique(paths.map((path) => resolve(path)))
 }
 
 function findMarkdownFiles(root: string): string[] {
@@ -191,6 +203,7 @@ function scoreGuidanceItem(
     item.relativePath,
     item.origin,
     item.scope,
+    item.styleLayer ?? "",
     content,
   ].join("\n").toLowerCase()
   const score = terms.length === 0
@@ -216,17 +229,54 @@ function readMarkdownTitle(path: string): { title?: string; description?: string
     const description = content
       .split(/\r?\n/)
       .map((line) => line.trim())
-      .find((line) => line && !line.startsWith("#") && !line.startsWith("---") && !line.startsWith("JSTACK_HEATMAP"))
+      .find((line) => line && !line.startsWith("#") && !line.startsWith("---") && !line.startsWith("STACK_MEMORY"))
     return { title, description }
   } catch {
     return {}
   }
 }
 
-function scopeFromRelativePath(relativePath: string): Exclude<StackGuidanceScope, "all"> {
-  const first = relativePath.split(/[\\/]/)[0]
+function scopeFromRelativePath(relativePath: string, styleLayer?: StackStyleLayer): Exclude<StackGuidanceScope, "all"> {
+  const normalized = relativePath.replace(/\\/g, "/")
+  if (styleLayer === "personal" && normalized.startsWith("records/")) return "records"
+  const first = normalized.split("/")[0]
   if (first === "style" || first === "records" || first === "workflows") return first
+  if (normalized === "STYLE.md") return "style"
   return "workflows"
+}
+
+function styleLayerForStackPath(path: string, localRoot: string, workspaceRoot: string): StackStyleLayer | undefined {
+  const relativePath = relative(localRoot, path).replace(/\\/g, "/")
+  if (relativePath.startsWith("style/repo/")) return "repo"
+  if (relativePath.startsWith("style/org/")) return "org"
+  if (relativePath.startsWith("style/")) return "app"
+  return undefined
+}
+
+function guidanceIdFor(
+  path: string,
+  rootPath: string,
+  origin: StackGuidanceOrigin,
+  styleLayer?: StackStyleLayer,
+): string {
+  const relativePath = relative(rootPath, path).replace(/\\/g, "/")
+  const base = stripMarkdownExtension(relativePath)
+  if (origin === "personal") return `personal/${base}`
+  if (styleLayer === "repo") {
+    if (relativePath === "STYLE.md") return "repo/STYLE"
+    const repoPrefix = ".stack/guidance/style/repo/"
+    if (relativePath.startsWith(repoPrefix)) {
+      return `repo/${stripMarkdownExtension(relativePath.slice(repoPrefix.length))}`
+    }
+    return `repo/${stripMarkdownExtension(basename(path))}`
+  }
+  if (styleLayer === "org") return `org/${base}`
+  if (styleLayer === "app") return `app/${base}`
+  return base
+}
+
+function styleLayerMatches(item: StackGuidanceItem, styleLayer: StackStyleLayer | undefined): boolean {
+  return !styleLayer || item.styleLayer === styleLayer
 }
 
 function scopeMatches(item: StackGuidanceItem, scope: StackGuidanceScope | undefined): boolean {
@@ -235,8 +285,4 @@ function scopeMatches(item: StackGuidanceItem, scope: StackGuidanceScope | undef
 
 function stripMarkdownExtension(path: string): string {
   return path.replace(/\\/g, "/").replace(/\.md$/i, "")
-}
-
-function unique(values: string[]): string[] {
-  return [...new Set(values)]
 }

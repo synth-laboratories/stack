@@ -12,22 +12,25 @@ type ScenarioName = "scroll" | "focus" | "crash_cleanup"
 
 const scenarios: Record<
   ScenarioName,
-  { expectScript: string; passMarker: string; failMarker: string }
+  { expectScript: string; passMarker: string; failMarker: string; timeoutMs: number }
 > = {
   scroll: {
     expectScript: "scripts/smoke_tui_scroll.expect",
     passMarker: "stack_tui_scroll_smoke_ok",
     failMarker: "stack_tui_scroll_smoke_failed",
+    timeoutMs: 130_000,
   },
   focus: {
     expectScript: "scripts/smoke_tui_focus.expect",
     passMarker: "stack_tui_focus_smoke_ok",
     failMarker: "stack_tui_focus_smoke_failed",
+    timeoutMs: 150_000,
   },
   crash_cleanup: {
     expectScript: "scripts/smoke_tui_crash_cleanup.expect",
     passMarker: "stack_tui_crash_cleanup_smoke_ok",
     failMarker: "stack_tui_crash_cleanup_smoke_failed",
+    timeoutMs: 90_000,
   },
 }
 
@@ -155,22 +158,31 @@ async function runExpectScenario(
     stdout: "pipe",
     stderr: "pipe",
   })
+  let timedOut = false
+  const timeout = setTimeout(() => {
+    timedOut = true
+    proc.kill("SIGTERM")
+    setTimeout(() => proc.kill("SIGKILL"), 1500).unref()
+  }, config.timeoutMs)
   const [stdout, stderr, exitCode] = await Promise.all([
     new Response(proc.stdout).text(),
     new Response(proc.stderr).text(),
     proc.exited,
-  ])
+  ]).finally(() => clearTimeout(timeout))
   const combined = `${stdout}\n${stderr}`
   const crashArtifacts = findTuiCrashArtifacts(combined)
-  const markerOk = exitCode === 0 && combined.includes(config.passMarker)
+  const markerOk = !timedOut && exitCode === 0 && combined.includes(config.passMarker)
   const ok = markerOk && crashArtifacts.length === 0
   return {
     name,
     ok,
     exitCode,
+    timedOut,
     passMarker: config.passMarker,
     message: ok
       ? config.passMarker
+      : timedOut
+        ? `${config.failMarker}: timeout`
       : crashArtifacts.length > 0
         ? `stack_tui_crash_artifact:${crashArtifacts[0]?.id ?? "unknown"}`
         : config.failMarker,

@@ -1,4 +1,4 @@
-use crate::handlers::{export, health, threads};
+use crate::handlers::{export, health, logs, threads};
 use crate::monitor_scheduler;
 use crate::openapi;
 use axum::{
@@ -46,6 +46,7 @@ fn router(state: Arc<AppState>) -> Router {
         )
         .route("/threads/:id/actors", get(threads::get_actors))
         .route("/events/stream", get(threads::stream_events))
+        .route("/logs/query", get(logs::query_logs_handler))
         .route(
             "/threads/:id/monitors/:monitor_id/pause",
             post(threads::pause_monitor),

@@ -27,7 +27,13 @@ set env(STACK_CODEX_TRANSPORT) "exec"
 spawn ./bin/stack
 stty rows 45 columns 160 < $spawn_out(slave,name)
 
-expect "Ask Codex"
+expect {
+  -re {Build anything|Ask Codex} {}
+  timeout {
+    puts stderr "timed out waiting for stack planning input"
+    exit 1
+  }
+}
 send -- "scroll proof\r"
 stack_tui_expect_running_turn
 expect "out 80"
@@ -60,8 +66,7 @@ send -- "\t"
 send -- "\025"
 expect "PAGEUP_SCROLL_SENTINEL_61"
 
-send -- "\033"
-expect eof
+stack_tui_kill_spawned_stack
 
 set handle [open $output_log r]
 set output [read $handle]

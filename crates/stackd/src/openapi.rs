@@ -73,6 +73,22 @@ pub async fn doc() -> Json<Value> {
                     "responses": { "200": { "description": "text/event-stream of Stack events" }, "400": { "description": "invalid thread id" } }
                 }
             },
+            "/logs/query": {
+                "get": {
+                    "summary": "Query VictoriaLogs via native stackd LogSQL client",
+                    "parameters": [
+                        { "name": "slot", "in": "query", "required": false },
+                        { "name": "query", "in": "query", "required": false },
+                        { "name": "event_domain", "in": "query", "required": false },
+                        { "name": "service", "in": "query", "required": false },
+                        { "name": "run_id", "in": "query", "required": false },
+                        { "name": "thread_id", "in": "query", "required": false },
+                        { "name": "minutes", "in": "query", "required": false },
+                        { "name": "limit", "in": "query", "required": false }
+                    ],
+                    "responses": { "200": { "description": "VictoriaLogs query result" }, "400": { "description": "invalid query parameter" } }
+                }
+            },
             "/threads/{stackSessionId}/actors": {
                 "get": {
                     "summary": "Return thread-scoped Stack actor checkpoint state",

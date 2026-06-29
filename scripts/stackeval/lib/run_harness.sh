@@ -31,6 +31,20 @@ run_harness() {
   python3 "${SCRIPT_DIR}/trace_stackd.py" ensure-session \
     --config-json "${config_json}" \
     --packet-dir "${packet_dir}" >/dev/null
+  if [[ "${STACKEVAL_MONITOR_SKILL_PUSH_PROBE:-0}" =~ ^(1|true|yes|on)$ ]]; then
+    python3 "${SCRIPT_DIR}/trace_stackd.py" event \
+      --config-json "${config_json}" \
+      --packet-dir "${packet_dir}" \
+      --type "agent.turn.completed" \
+      --actor-id "primary_stackeval" \
+      --actor-role "primary" \
+      --payload-json "{\"prompt\":\"Run StackEval banking77 local GEPA with synth-optimizers.\",\"summary\":\"Starting local StackEval GEPA coding run before loading Stack skills.\",\"tool\":\"stackeval.gepa\",\"requires_skill_context\":true}"
+    python3 "${SCRIPT_DIR}/trace_stackd.py" wait-monitor \
+      --config-json "${config_json}" \
+      --packet-dir "${packet_dir}" \
+      --timeout-seconds 45 \
+      --poll-seconds 1
+  fi
   python3 "${SCRIPT_DIR}/trace_stackd.py" record-skill \
     --config-json "${config_json}" \
     --packet-dir "${packet_dir}" \

@@ -3,12 +3,18 @@
 Stack is the operator control plane for Synth work. Prefer Stack MCP and
 backend-owner routes over direct storage access.
 
-JSTACK_HEATMAP|ts=2026-06-28T23:10:00Z|repo=stack|kind=learning|file=.stack/guidance/style/stack-norms.md|commit=379a3cc|severity=LOW|time_lost=unknown
+STACK_MEMORY|ts=2026-06-28T23:10:00Z|kind=learning|file=.stack/guidance/style/stack-norms.md|severity=LOW|source=legacy
 
 ## Boundaries
 
 - Use Stack MCP for live SMR, Factory, hosted optimizer, local optimizer, and
   StackEval operator work.
+- Do not use `git stash` to preserve work. Use explicit commits, patch files,
+  worktrees, or another operator-approved path.
+- Do not run destructive git cleanup such as `git reset --hard` unless the
+  operator explicitly requested that exact operation.
+- Keep requested implementation scope tight; do not perform opportunistic or
+  unrelated cleanup while landing a feature/refactor.
 - Do not recover by scraping Postgres, Redis, compatibility projections, or old
   persistence substrates across service boundaries.
 - Preview remote outputs before downloading when inspection is enough.

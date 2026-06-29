@@ -51,6 +51,17 @@ export type StackdExport = {
   export_dir: string
 }
 
+export type StackdLogQuery = {
+  ok: boolean
+  source: string
+  result: {
+    records?: unknown[]
+    query?: string
+    slot_id?: string
+    victorialogs_url?: string
+  }
+}
+
 export function stackdBaseUrl(): string {
   return process.env.STACK_API_URL?.trim() || DEFAULT_STACK_API_URL
 }
@@ -86,6 +97,17 @@ export async function stackdTrace(id: string, baseUrl = stackdBaseUrl()): Promis
 
 export async function stackdExport(id: string, baseUrl = stackdBaseUrl()): Promise<StackdExport> {
   return requestJson<StackdExport>(baseUrl, `/threads/${encodeURIComponent(id)}/export`)
+}
+
+export async function stackdLogsQuery(
+  query: Record<string, string | number | undefined>,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdLogQuery> {
+  const url = new URL("/logs/query", ensureTrailingSlash(baseUrl))
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined) url.searchParams.set(key, String(value))
+  }
+  return requestJson<StackdLogQuery>(baseUrl, `${url.pathname}${url.search}`)
 }
 
 async function requestJson<T>(baseUrl: string, path: string): Promise<T> {

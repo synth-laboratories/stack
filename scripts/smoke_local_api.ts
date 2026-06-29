@@ -1,6 +1,14 @@
 import { existsSync } from "node:fs"
 import { join } from "node:path"
-import { stackdBaseUrl, stackdExport, stackdHealth, stackdStatus, stackdTrace, stackdThreads } from "../src/client/stackd.js"
+import {
+  stackdBaseUrl,
+  stackdExport,
+  stackdHealth,
+  stackdLogsQuery,
+  stackdStatus,
+  stackdTrace,
+  stackdThreads,
+} from "../src/client/stackd.js"
 
 const baseUrl = stackdBaseUrl()
 
@@ -16,6 +24,11 @@ const status = await stackdStatus(baseUrl)
 assert(status.ok === true, "status did not return ok=true")
 assert(status.session_count === threads.length, "status session_count did not match /threads")
 console.log(`status ok: sessions=${status.session_count}`)
+
+const logs = await stackdLogsQuery({ query: "*", limit: 1, minutes: 60 }, baseUrl)
+assert(logs.ok === true, "/logs/query did not return ok=true")
+assert(Array.isArray(logs.result.records), "/logs/query missing records array")
+console.log(`logs ok: records=${logs.result.records.length}`)
 
 const newest = threads[0]
 if (!newest) {

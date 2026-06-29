@@ -164,7 +164,7 @@ Routes in L1: `/health`, `/threads`, `/threads/:id`,
 `/threads/:id/monitors/:monitorId/pause`,
 `/threads/:id/monitors/:monitorId/resume`,
 `/threads/:id/monitors/:monitorId/mode`, `/threads/:id/trace`,
-`/threads/:id/export`, and
+`/threads/:id/export`, `/logs/query`, and
 `/doc` (`/openapi.json`). Export writes
 `.stack/exports/<session-id>/<stamp>/` with `manifest.json`, redacted
 `session.json`, `metadata.json`, optional `codex.jsonl`, and optional
@@ -224,6 +224,21 @@ When the skills focus detects Stack/Synth work without a recorded skill use and
 `skill_context_push` is enabled, the monitor emits a visible
 `monitor.skill_context_push` message for the primary actor instead of silently
 mutating context.
+
+Style steering is guidance-backed. When a primary turn trips a Synth/Stack style
+rule such as `git stash`, destructive git cleanup, opportunistic cleanup,
+cross-authority storage scraping, or raw secret paste, the monitor searches the
+bounded Stack guidance index, records `guidance.query`, and emits at most one
+`monitor.steer` per rule with the selected `guidance_id` and excerpt. The same
+guidance index includes app/repo/personal style plus org Synth Style when that
+workspace source is present; see `.stack/guidance/monitor-visible-context.md`
+for the exact monitor-visible sources and exclusions.
+
+Monitor proof commands:
+
+- `bun run smoke:guidance:l2` proves guidance layers, including org style docs.
+- `bun run smoke:monitor:style-steer` proves `app/style/stack-norms` steering
+  and conservative tool-failure summary without steer.
 
 Model-worker overrides:
 
@@ -375,13 +390,35 @@ The server reads `stack.config.json` and supports both JSONL and
 - `stack_start_readme_smoke_eval`: launch the configured README-smoke SMR eval
 - `stack_readme_smoke_eval_status`: read the persisted launcher status,
   parsed verifier context, and bounded output tail
+- `stack_query_logs`: query VictoriaLogs through stackd's native LogSQL client for
+  Stack/GEPA/meta-harness telemetry. Defaults to `slot1`, `minutes=60`, and
+  `limit=100`; supports `event_domain`, `service`, `run_id`, and `thread_id`
+  filters. Stack projects thread meta events to VL with
+  `event_domain=meta_harness` when a slot VictoriaLogs endpoint is discoverable
+  or `VICTORIA_LOGS_WRITE_URL` is set. Disable projection with
+  `STACK_VL_META_PROJECT=0`; set `STACK_VL_SLOT=slot2` to target another local
+  slot. Validate the local path with `bun run smoke:observability`. Validate the
+  live local retention contract with `bun run smoke:observability:retention`;
+  it inspects the running VictoriaLogs container args, `/metrics` flags, and
+  `/victoria-logs-data` size without restarting the slot. For release gating,
+  use `bun run release-check:observability`; it runs the normal release metadata
+  checks plus the live retention smoke. Set
+  `STACK_OBSERVABILITY_EVIDENCE_DIR=<packet-dir>` to persist
+  `retention_smoke_result.json` beside the release packet. If the static
+  compose flags are present but the live slot container predates them, use
+  `bun run observability:apply-retention -- --execute --evidence-dir <packet-dir>`
+  after operator approval; the helper verifies slot activity, recreates only the
+  VictoriaLogs service through `synth-dev`, then reruns the observability gate.
+- `stack_run_with_logs`: run a bounded local command without shell expansion and
+  emit `harness-cmd` start/exit summaries to VictoriaLogs with
+  `event_domain=local_optimizer` and a `run_id`.
 - `stack_skills_list`: list first-class Stack skills from `.stack/skills/`
   plus bridged Codex/plugin skill roots
 - `stack_skills_read`: read a skill's `SKILL.md` content and metadata; pass
   `thread_id` to record a `skill.read` meta event for that thread
 - `stack_skills_search`: search skills by id, title, description, owner, and path
 - `stack_guidance_list`: list searchable Stack guidance from `.stack/guidance/`
-  plus selected Jstack/workspace sources such as Synth Style
+  plus configured workspace sources such as Synth Style
 - `stack_search_guidance`: search guidance by query and optional scope; pass
   `thread_id` to record a `guidance.query` meta event
 - `stack_guidance_read`: read a guidance item by id or path; pass `thread_id`

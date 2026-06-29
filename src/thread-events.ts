@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
+import { projectMetaEventToVictoriaLogs } from "./observability/victorialogs.js"
 
 export type StackThreadMetaEvent = {
   event_id: string
@@ -20,6 +21,7 @@ export function appendThreadMetaEvent(stackRoot: string, event: StackThreadMetaE
   const path = threadEventLogPath(stackRoot, event.thread_id)
   mkdirSync(dirname(path), { recursive: true })
   appendFileSync(path, `${JSON.stringify(event)}\n`)
+  projectMetaEventToVictoriaLogs(stackRoot, event)
   return path
 }
 

@@ -7,12 +7,14 @@ import type { HostedOptimizerRunSummary, HostedOptimizerSnapshot } from "../remo
 import type { RemoteProjectsPanelSnapshot, RemoteTagScopeSummary } from "../remote/research.js"
 import type { RemoteUsageSnapshot } from "../remote/usage.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
+import { isChatGptAuthPlan } from "../codex/account.js"
 import type { SubagentLog } from "./subagents.js"
 import { subagentDisplayName, subagentDurationSeconds, subagentStatusLabel } from "./subagents.js"
 import { stackTuiTheme as theme } from "./theme.js"
 
 export type OpsPanelAgentUsage = {
   codexAuthPlan: string
+  codexEmail?: string
   sessionSummary?: string
   codexBudget?: string
 }
@@ -224,9 +226,10 @@ function hostedSynthLines(
 
 function synthUsageHeader(account: RemoteAccountSnapshot, usage: RemoteUsageSnapshot): string {
   const accountStatus = account.status === "connected" ? "connected" : account.status
-  const key = account.keyHint ? ` · ${account.keyHint}` : ""
+  const identity = account.userEmail ?? account.keyHint
+  const identityLabel = identity ? ` · ${identity}` : ""
   const plan = formatPlanLabel(usage)
-  return `${accountStatus}${key}${plan ? ` · ${plan}` : ""}`
+  return `${accountStatus}${identityLabel}${plan ? ` · ${plan}` : ""}`
 }
 
 function formatPlanLabel(usage: RemoteUsageSnapshot): string | undefined {
@@ -276,6 +279,55 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
 
   if (lines.length === 0) lines.push("  (no billing data)")
   return lines
+}
+
+export function subscriptionPanelLines(
+  account: RemoteAccountSnapshot,
+  usage: RemoteUsageSnapshot,
+  agentUsage: OpsPanelAgentUsage,
+  environmentName: string,
+  codexAuthHistory?: string[],
+): string[] {
+  const lines = [`Synth · ${environmentName}`, synthUsageHeader(account, usage)]
+  if (account.userEmail) {
+    lines.push(`  email ${oneLine(account.userEmail, 52)}`)
+  }
+  if (account.orgName || account.orgId) {
+    const orgLabel = account.orgName ? oneLine(account.orgName, 28) : account.orgId?.slice(0, 12) ?? "-"
+    const orgSuffix = account.orgId && account.orgName ? ` (${account.orgId.slice(0, 8)})` : ""
+    lines.push(`  org ${orgLabel}${orgSuffix}`)
+  }
+  lines.push("", ...synthUsageBody(account, usage))
+  if (usage.usage7dUsd !== undefined && usage.usage7dUsd > 0) {
+    lines.push(`  usage 7d ${formatUsd(usage.usage7dUsd)}`)
+  }
+  const breakdown = usage.usageBreakdown?.byType ?? []
+  if (breakdown.length > 0) {
+    lines.push("", "Usage by type (7d)")
+    for (const row of breakdown) {
+      lines.push(`  ${row.label} ${formatUsd(row.costUsd)}`)
+    }
+  }
+  lines.push("", "Local agent")
+  if (agentUsage.codexEmail && isChatGptAuthPlan(agentUsage.codexAuthPlan)) {
+    lines.push(`  email ${oneLine(agentUsage.codexEmail, 52)}`)
+  }
+  lines.push(`  codex ${agentUsage.codexAuthPlan}${agentUsage.codexBudget ? ` · ${agentUsage.codexBudget}` : ""}`)
+  if (agentUsage.sessionSummary) lines.push(`  session ${oneLine(agentUsage.sessionSummary, 46)}`)
+  if (codexAuthHistory && codexAuthHistory.length > 0) {
+    lines.push("", ...codexAuthHistory)
+  }
+  return lines
+}
+
+export function subscriptionPanelLineCount(
+  account: RemoteAccountSnapshot,
+  usage: RemoteUsageSnapshot,
+  agentUsage: OpsPanelAgentUsage,
+  environmentName: string,
+  codexAuthHistory?: string[],
+): number {
+  return subscriptionPanelLines(account, usage, agentUsage, environmentName, codexAuthHistory).length
 }
 
 function formatAllowanceSummaryLines(
@@ -625,6 +677,7 @@ function isVisualMetaEvent(event: OpsPanelMetaEvent): boolean {
     event.type === "guidance.impact_judged" ||
     event.type === "monitor.skill_context_push" ||
     event.type === "monitor.wake" ||
+    event.type.startsWith("gardener.") ||
     isSkillFileReadEvent(event)
   )
 }
@@ -633,6 +686,10 @@ function metaEventLabel(event: OpsPanelMetaEvent): string {
   if (event.type === "skill.read" || isSkillFileReadEvent(event)) return "skill"
   if (event.type === "monitor.wake") return "monitor"
   if (event.type === "monitor.skill_context_push") return "push"
+  if (event.type === "gardener.queued") return "gardener"
+  if (event.type === "gardener.routed") return "route"
+  if (event.type === "gardener.garden_updated") return "garden"
+  if (event.type === "gardener.friction") return "friction"
   if (event.type === "guidance.query") return "search"
   if (event.type === "guidance.impact_judged") return "impact"
   if (event.type.startsWith("guidance.")) return "guide"
@@ -649,6 +706,8 @@ function metaEventSubject(event: OpsPanelMetaEvent): string {
     skillNameFromCommand(stringPayload(payload, "command")) ??
     stringPayload(payload, "wake_reason") ??
     stringPayload(payload, "reason") ??
+    stringPayload(payload, "summary") ??
+    stringPayload(payload, "message") ??
     event.event_id
   const suffix = metaEventSuffix(event)
   return oneLine(`${subject}${suffix}`, 34)

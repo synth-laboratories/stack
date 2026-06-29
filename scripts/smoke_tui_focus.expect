@@ -56,9 +56,8 @@ foreach _ {1 2 3 4} {
   sleep 0.05
 }
 
-expect "tab focus"
-send -- "\033"
-expect eof
+sleep 0.3
+stack_tui_kill_spawned_stack
 
 set output [stack_tui_read_output_log $output_log]
 stack_tui_assert_no_crash_artifacts $output

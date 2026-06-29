@@ -1,5 +1,6 @@
 pub mod export;
 pub mod health;
+pub mod logs;
 pub mod threads;
 
 use axum::http::StatusCode;

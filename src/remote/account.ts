@@ -15,6 +15,9 @@ export type RemoteAccountSnapshot = {
   status: RemoteAccountStatus
   checkedAt: string
   keyHint?: string
+  userEmail?: string
+  orgName?: string
+  orgId?: string
   message?: string
 }
 
@@ -53,29 +56,40 @@ export async function readRemoteAccountSnapshot(config: StackConfig): Promise<Re
   if (!hasAuth) return base
 
   try {
-    const response = await fetch(
-      `${config.environment.apiBaseUrl.replace(/\/+$/, "")}/smr/projects?limit=1`,
-      {
+    const [response, mePayload] = await Promise.all([
+      fetch(`${config.environment.apiBaseUrl.replace(/\/+$/, "")}/smr/projects?limit=1`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },
         signal: AbortSignal.timeout(2500),
-      },
-    )
+      }),
+      fetchMe(config, token),
+    ])
+    const me = asRecord(mePayload)
+    const identity = {
+      userEmail: readString(me?.user_email),
+      orgName: readString(me?.org_name),
+      orgId: readString(me?.org_id),
+    }
     if (response.status === 401 || response.status === 403) {
       return {
         ...base,
+        ...identity,
         status: "invalid-auth",
         checkedAt: new Date().toISOString(),
         message: `${config.environment.authEnv} rejected (${response.status}). Regenerate at ${SYNTH_KEYS_URL}`,
       }
     }
+    const emailLabel = identity.userEmail ?? keyHint
     return {
       ...base,
+      ...identity,
       status: response.ok ? "connected" : "offline",
       checkedAt: new Date().toISOString(),
       message: response.ok
-        ? `connected as ${keyHint ?? config.environment.authEnv}`
+        ? emailLabel
+          ? `connected as ${emailLabel}`
+          : `connected as ${keyHint ?? config.environment.authEnv}`
         : `api ${response.status} ${response.statusText}`,
     }
   } catch (error) {
@@ -90,4 +104,29 @@ export async function readRemoteAccountSnapshot(config: StackConfig): Promise<Re
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+async function fetchMe(config: StackConfig, token: string | undefined): Promise<unknown> {
+  if (!token) return undefined
+  try {
+    const response = await fetch(`${config.environment.apiBaseUrl.replace(/\/+$/, "")}/api/v1/me`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      signal: AbortSignal.timeout(2500),
+    })
+    if (!response.ok) return undefined
+    return await response.json()
+  } catch {
+    return undefined
+  }
+}
+
+function asRecord(value: unknown): Record<string, unknown> | undefined {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return undefined
+  return value as Record<string, unknown>
+}
+
+function readString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined
 }

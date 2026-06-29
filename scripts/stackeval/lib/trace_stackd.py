@@ -48,12 +48,89 @@ def require_stackd() -> bool:
     }
 
 
+def require_vl() -> bool:
+    return os.environ.get("STACKEVAL_REQUIRE_VL", "").lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def stackd_healthy(config: dict[str, Any]) -> bool:
     try:
         with urllib.request.urlopen(f"{api_url(config)}/health", timeout=2) as response:
             return 200 <= response.status < 300
     except Exception:
         return False
+
+
+def vl_slot() -> str:
+    return os.environ.get("STACK_VL_SLOT") or os.environ.get("STACKEVAL_VL_SLOT") or "slot1"
+
+
+def vl_write_url(config: dict[str, Any]) -> str | None:
+    explicit = os.environ.get("VICTORIA_LOGS_WRITE_URL") or os.environ.get("STACK_VICTORIA_LOGS_WRITE_URL")
+    if explicit and explicit.strip():
+        return explicit.strip()
+    paths = config.get("paths", {})
+    synth_dev_value = str(paths.get("synth_dev_root") or "").strip()
+    stack_value = str(paths.get("stack_root") or "").strip()
+    if synth_dev_value:
+        synth_dev = Path(synth_dev_value).expanduser()
+    elif stack_value:
+        synth_dev = Path(stack_value).expanduser().parent / "synth-dev"
+    else:
+        return None
+    slot_path = synth_dev / "config" / "slots" / f"{safe_segment(vl_slot())}.toml"
+    if not slot_path.is_file():
+        return None
+    match = re.search(r"^\s*victorialogs\s*=\s*(\d+)\s*$", slot_path.read_text(), re.MULTILINE)
+    if not match:
+        return None
+    return f"http://127.0.0.1:{match.group(1)}"
+
+
+def vl_insert_url(config: dict[str, Any]) -> str | None:
+    write_url = vl_write_url(config)
+    if not write_url:
+        return None
+    base = write_url.rstrip("/")
+    if "/insert/" in base:
+        if "?_stream_fields=" in base or "&_stream_fields=" in base:
+            return base
+        sep = "&" if "?" in base else "?"
+        return f"{base}{sep}_stream_fields=slot,service,event_domain"
+    return f"{base}/insert/jsonline?_stream_fields=slot,service,event_domain"
+
+
+def post_vl(config: dict[str, Any], document: dict[str, Any]) -> None:
+    if not str(document.get("event_domain") or "").strip():
+        message = "VictoriaLogs event missing event_domain"
+        if require_vl():
+            raise RuntimeError(message)
+        print(f"[stackeval] warning: {message}; VL event skipped", file=sys.stderr)
+        return
+    insert_url = vl_insert_url(config)
+    if not insert_url:
+        message = "VictoriaLogs write URL not configured"
+        if require_vl():
+            raise RuntimeError(message)
+        print(f"[stackeval] warning: {message}; VL event skipped", file=sys.stderr)
+        return
+    data = (json.dumps(document, separators=(",", ":")) + "\n").encode("utf-8")
+    headers = {"content-type": "application/stream+json"}
+    token = os.environ.get("VICTORIA_LOGS_WRITE_BEARER_TOKEN") or os.environ.get("STACK_VICTORIA_LOGS_WRITE_BEARER_TOKEN")
+    if token:
+        headers["authorization"] = f"Bearer {token}"
+    request = urllib.request.Request(insert_url, data=data, headers=headers, method="POST")
+    try:
+        with urllib.request.urlopen(request, timeout=2):
+            return
+    except Exception as error:
+        if require_vl():
+            raise RuntimeError(f"VictoriaLogs insert failed: {error}") from error
+        print(f"[stackeval] warning: VictoriaLogs insert failed: {error}", file=sys.stderr)
 
 
 def thread_id_for(config: dict[str, Any], packet_dir: Path) -> str:
@@ -135,7 +212,17 @@ def post_event(
             return json.loads(data) if data else None
     except urllib.error.HTTPError as error:
         detail = error.read().decode("utf-8", errors="replace")
-        raise RuntimeError(f"stackd event append failed: HTTP {error.code}: {detail}") from error
+        message = f"stackd event append failed: HTTP {error.code}: {detail}"
+        if require_stackd():
+            raise RuntimeError(message) from error
+        print(f"[stackeval] warning: {message}; trace event skipped", file=sys.stderr)
+        return None
+    except urllib.error.URLError as error:
+        message = f"stackd event append failed: {error}"
+        if require_stackd():
+            raise RuntimeError(message) from error
+        print(f"[stackeval] warning: {message}; trace event skipped", file=sys.stderr)
+        return None
 
 
 def read_trace(config: dict[str, Any], thread_id: str) -> dict[str, Any]:
@@ -234,11 +321,13 @@ def record_skill(args: argparse.Namespace) -> int:
 def harness_event(args: argparse.Namespace) -> int:
     config = load_config(args.config_json)
     packet_dir = Path(args.packet_dir)
+    run_id = stackeval_run_id(config, packet_dir)
     payload: dict[str, Any] = {
         "tool": "stackeval.gepa",
         "phase": args.phase,
         "command": "uv run --project <gepa_evals_project> synth-optimizers gepa run --config <gepa_config>",
         "gepa_config": args.gepa_config,
+        "run_id": run_id,
     }
     if args.exit_code is not None:
         payload["exit_code"] = args.exit_code
@@ -253,8 +342,43 @@ def harness_event(args: argparse.Namespace) -> int:
         "completed": "agent.tool.completed",
         "failed": "agent.tool.failed",
     }[args.phase]
+    post_vl(config, stackeval_vl_document(config, packet_dir, event_type, payload))
     post_event(config, packet_dir, event_type, "primary_stackeval", "primary", payload)
     return 0
+
+
+def stackeval_run_id(config: dict[str, Any], packet_dir: Path) -> str:
+    task = safe_segment(str(config["task"]["id"]))
+    return f"stackeval_{task}_{safe_segment(packet_dir.name)}"
+
+
+def stackeval_vl_document(
+    config: dict[str, Any],
+    packet_dir: Path,
+    event_type: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    level = "error" if event_type == "agent.tool.failed" or payload.get("exit_code") not in {None, 0} else "info"
+    return {
+        "_time": utc_now(),
+        "_msg": f"stackeval {payload.get('phase')} {payload.get('run_id')}",
+        "level": level,
+        "logger": "stackeval.harness",
+        "slot": vl_slot(),
+        "service": "stackeval",
+        "event_domain": "local_optimizer",
+        "event_type": event_type,
+        "phase": payload.get("phase"),
+        "run_id": payload.get("run_id"),
+        "thread_id": thread_id_for(config, packet_dir),
+        "stack_session_id": thread_id_for(config, packet_dir),
+        "task_id": config.get("task", {}).get("id"),
+        "preset": config.get("preset", {}).get("name"),
+        "gepa_config": payload.get("gepa_config"),
+        "exit_code": payload.get("exit_code"),
+        "stdout_log": payload.get("stdout_log"),
+        "stderr_log": payload.get("stderr_log"),
+    }
 
 
 def read_tail(path: str, limit: int = 4000) -> str:

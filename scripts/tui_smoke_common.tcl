@@ -15,6 +15,7 @@ proc stack_tui_smoke_env {repo_root smoke_dir} {
   unset -nocomplain env(SYNTH_API_KEY)
   unset -nocomplain env(SYNTH_STAGING_API_KEY)
   set env(STACK_CODEX_TRANSPORT) "exec"
+  set env(STACK_MONITOR_ENABLED) "0"
 }
 
 proc stack_tui_assert_no_crash_artifacts {output} {
