@@ -35,8 +35,8 @@ Indexed from Stack/workspace when present:
 - `.stack/guidance/records/mldp/*.md`, `records/papercuts/*.md`, and
   `records/decisions/*.md` as local high-signal records.
 
-Not indexed by default: arbitrary daily notes, evidence packets, full product
-specs, lints, or secrets. Copy only the specific high-signal record into
+Not indexed by default: arbitrary daily notes, external evidence packets, full
+product specs, lints, or secrets. Copy only the specific high-signal record into
 `.stack/guidance/records/` when a monitor, StackEval run, or rollout harness
 should see it.
 

@@ -1,10 +1,14 @@
 node_modules/
+__pycache__/
+*.py[cod]
 .stack/*
 !.stack/guidance/
 !.stack/guidance/**
 .stack/guidance/*.sqlite
 .stack/guidance/*.sqlite-shm
 .stack/guidance/*.sqlite-wal
+!.stack/stackeval/
+!.stack/stackeval/**
 !.stack/monitors/
 !.stack/monitors/*.toml
 .env

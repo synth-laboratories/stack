@@ -34,25 +34,27 @@ def deep_merge(base: dict, overlay: dict) -> dict:
     return out
 
 
-def jstack_path(root: Path, rel: str) -> Path:
+def config_path(root: Path, rel: str) -> Path:
     rel = rel.strip()
-    if rel.startswith(".jstack/"):
+    if rel.startswith(".stack/"):
         return root / rel
     return root / rel.lstrip("./")
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--jstack-root", required=True)
+    parser.add_argument("--stack-root", required=True)
     parser.add_argument("--task", required=True)
     parser.add_argument("--preset", default="")
     parser.add_argument("--field", default="")
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    jstack_root = Path(expand(args.jstack_root))
-    pipeline_path = jstack_root / ".jstack/product/stackeval/pipeline.toml"
-    task_path = jstack_root / ".jstack/product/stackeval/tasks" / f"{args.task}.toml"
+    stack_root = Path(expand(args.stack_root))
+    config_root = stack_root / ".stack/stackeval"
+    path_root = stack_root
+    pipeline_path = config_root / "pipeline.toml"
+    task_path = config_root / "tasks" / f"{args.task}.toml"
 
     if not pipeline_path.is_file():
         print(f"missing pipeline config: {pipeline_path}", file=sys.stderr)
@@ -75,6 +77,12 @@ def main() -> int:
     stack_api_url = os.environ.get("STACK_API_URL", "").strip()
     if stack_api_url:
         merged.setdefault("stack", {})["stack_api_url"] = stack_api_url
+    stack_root = os.environ.get("STACKEVAL_STACK_ROOT", "").strip()
+    if stack_root:
+        merged.setdefault("paths", {})["stack_root"] = stack_root
+    trace_root = os.environ.get("STACKEVAL_TRACE_ROOT", "").strip()
+    if trace_root:
+        merged.setdefault("paths", {})["trace_root"] = trace_root
 
     paths = merged.get("paths", {})
     for key, value in list(paths.items()):
@@ -84,10 +92,10 @@ def main() -> int:
     merged["resolved"] = {
         "task_id": task.get("task", {}).get("id", args.task),
         "preset": preset_name,
-        "prompt_file": jstack_root / ".jstack/product/stackeval/tasks" / task["task"]["prompt_file"],
-        "grader_prompt": jstack_path(jstack_root, str(merged["grader"]["prompt"])),
-        "reviewer_prompt": jstack_path(jstack_root, str(merged["reviewer"]["prompt"])),
-        "gepa_template": jstack_root / ".jstack/product/stackeval/templates" / task["harness"]["template"],
+        "prompt_file": config_root / "tasks" / task["task"]["prompt_file"],
+        "grader_prompt": config_path(path_root, str(merged["grader"]["prompt"])),
+        "reviewer_prompt": config_path(path_root, str(merged["reviewer"]["prompt"])),
+        "gepa_template": config_root / "templates" / task["harness"]["template"],
         "trace_root": Path(paths["trace_root"]) / merged["task"]["id"],
     }
 

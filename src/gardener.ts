@@ -1,4 +1,4 @@
-import { appendFileSync, existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import type { CodexGoalSnapshot } from "./codex/goal-context.js"
 import { codexAuthLedgerSummaryLines } from "./codex/auth-ledger.js"
@@ -288,17 +288,24 @@ function detectTurnFrictions(
 }
 
 function recordGardenerFriction(config: StackConfig, summary: string, file: string): void {
+  if (process.env.STACK_GARDENER_PAPERCUT_MIRROR === "0") return
   const ts = new Date().toISOString()
   const record = `STACK_MEMORY|ts=${ts}|kind=papercut|file=${file}|severity=LOW|source=gardener\n${summary}\n`
-  appendGuidancePapercutMirror(config.appRoot, record)
+  appendGuidancePapercutMirror(config.appRoot, record, { file, summary })
 }
 
-function appendGuidancePapercutMirror(stackRoot: string, block: string): void {
+function appendGuidancePapercutMirror(
+  stackRoot: string,
+  block: string,
+  dedupe: { file: string; summary: string },
+): void {
   const now = new Date()
   const month = `${now.getUTCFullYear()}-${String(now.getUTCMonth() + 1).padStart(2, "0")}`
   const path = join(stackRoot, ".stack", "guidance", "records", "papercuts", `${month}.md`)
   mkdirSync(dirname(path), { recursive: true })
   if (existsSync(path)) {
+    const existing = readFileSync(path, "utf8")
+    if (existing.includes(`file=${dedupe.file}|`) && existing.includes(`\n${dedupe.summary}\n`)) return
     appendFileSync(path, `\n\n${block.trim()}\n`)
   } else {
     writeFileSync(path, `${block.trim()}\n`)

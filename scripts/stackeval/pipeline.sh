@@ -85,11 +85,10 @@ done
 
 [[ -n "${TASK}" ]] || { usage; exit 1; }
 
-JSTACK_ROOT="$(resolve_jstack_root)"
 CONFIG_JSON="$(mktemp)"
 trap 'rm -f "${CONFIG_JSON}"' EXIT
 
-load_config_json "${TASK}" "${PRESET}" "${JSTACK_ROOT}" "${CONFIG_JSON}"
+load_config_json "${TASK}" "${PRESET}" "${STACK_ROOT}" "${CONFIG_JSON}"
 
 if [[ -z "${PRESET}" ]]; then
   PRESET="$(python3 -c "import json,sys; print(json.load(open(sys.argv[1]))['preset']['name'])" "${CONFIG_JSON}")"

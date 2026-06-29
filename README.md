@@ -18,7 +18,7 @@ Versioning and tap formulas are **prepared** (`version.json`, `packaging/homebre
 | --- | --- |
 | Private `git clone` + `make install` for teammates with repo access | `brew tap synth-laboratories/tap` + `brew install stack` |
 | **dev** channel on `main` (`make bump-dev`) | **stable** channel on tagged `vX.Y.Z` releases |
-| Internal Jstack product spec + ship packet | Public GitHub Release + tap push |
+| Stack-owned release notes + evidence packets | Public GitHub Release + tap push |
 
 Until the first public release: use **git clone** (below), not Homebrew. Stable channel
 in `version.json` (`release: 0.1.0`) is the intended first public version — not shipped
@@ -82,10 +82,6 @@ stack --version
 
 **After first public release:** git tags `vX.Y.Z`, GitHub Release notes from
 `CHANGELOG.md`, and Homebrew tap publish — see `docs/RELEASE.md`.
-
-**Jstack product context:** spec at `Jstack/.jstack/product/specs/stack.md`, roadmap at
-`Jstack/.jstack/product/roadmaps/stack.md`, release record at
-`Jstack/.jstack/records/products/stack/`.
 
 Then from any terminal:
 
@@ -157,6 +153,11 @@ bun run smoke:stackd
 `./bin/stack` auto-starts `stackd` when `/health` is unavailable, exports
 `STACK_API_URL` as `http://127.0.0.1:8792`, and continues without the sidecar if
 startup fails. Logs are written to `.stack/runtime/stackd.log`.
+
+The TUI threads rail and local-thread MCP tools read through stackd first, so
+the API is the normal source of truth for local thread lists, trace, and export.
+If stackd is unavailable, the TUI rail falls back to the local session files as a
+degraded offline path.
 
 Routes in L1: `/health`, `/threads`, `/threads/:id`,
 `/threads/:id/status`, `/threads/:id/events`, `/threads/:id/actors`,
@@ -236,7 +237,8 @@ for the exact monitor-visible sources and exclusions.
 
 Monitor proof commands:
 
-- `bun run smoke:guidance:l2` proves guidance layers, including org style docs.
+- `bun run smoke:guidance:l2` proves guidance layers and rejects external
+  guidance roots.
 - `bun run smoke:monitor:style-steer` proves `app/style/stack-norms` steering
   and conservative tool-failure summary without steer.
 
@@ -502,8 +504,8 @@ Codex grader + reviewer):
 ./bin/stackeval prepare banking77-local-gepa --preset smoke   # packet only
 ```
 
-Configs live in `../Jstack/.jstack/product/stackeval/` (`pipeline.toml`, `tasks/*.toml`).
-See `../Jstack/.jstack/product/stackeval/README.md` for stages and presets.
+StackEval runtime state and acceptance notes live under `.stack/evals/`; the
+pipeline implementation lives in `scripts/stackeval/`.
 During harness runs, StackEval creates a stackd session for the packet, records
 live `skill.read`/`skill.used` and `agent.tool.*` events, waits for monitor
 checkpoint evidence before export, and copies `/trace` plus the stackd export
@@ -511,12 +513,10 @@ bundle into the packet. Use `STACK_API_URL=<url>` to point the pipeline at an
 isolated stackd instance, and set `STACKEVAL_REQUIRE_STACKD=1` when trace capture
 is an acceptance requirement.
 
-Legacy interactive prep (`bun run stackeval:banking77-local-gepa:prepare`) writes a
-packet under
-`../Jstack/.jstack/evidence/stackeval/banking77-local-gepa/<stamp>/` with the
-starting prompt, metadata, preflight, operator pickup, acceptance, model policy,
-waste ledger, and release guard files. The task root also gets `latest.json`
-pointing at the newest packet.
+Legacy interactive prep (`bun run stackeval:banking77-local-gepa:prepare`) writes
+a Stack-owned packet with the starting prompt, metadata, preflight, operator
+pickup, acceptance, model policy, waste ledger, and release guard files. The task
+root also gets `latest.json` pointing at the newest packet.
 The default StackEval model is `gpt-5.5-low`; override only with
 `STACKEVAL_MODEL` and record why in the packet.
 

@@ -15,19 +15,6 @@ die() {
   exit 1
 }
 
-resolve_jstack_root() {
-  if [[ -n "${JSTACK_ROOT:-}" ]]; then
-    printf '%s' "$(cd "${JSTACK_ROOT}" && pwd)"
-    return 0
-  fi
-  local candidate="${STACK_ROOT}/../Jstack"
-  if [[ -d "${candidate}/.jstack" ]]; then
-    printf '%s' "$(cd "${candidate}" && pwd)"
-    return 0
-  fi
-  die "JSTACK_ROOT not set and default ${candidate} missing"
-}
-
 utc_stamp() {
   date -u +%Y%m%dT%H%M%SZ
 }
@@ -35,10 +22,10 @@ utc_stamp() {
 load_config_json() {
   local task="$1"
   local preset="$2"
-  local jstack_root="$3"
+  local stack_root="$3"
   local out="$4"
   python3 "${STACKEVAL_LIB_DIR}/config.py" \
-    --jstack-root "${jstack_root}" \
+    --stack-root "${stack_root}" \
     --task "${task}" \
     --preset "${preset}" \
     --json >"${out}"

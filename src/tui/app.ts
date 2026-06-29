@@ -177,6 +177,7 @@ import {
   type StackSessionUsageSummary,
   writeSessionLog,
 } from "../session.js"
+import { stackdThreads, type StackdThreadSummary } from "../client/stackd.js"
 import { readThreadMetaEvents, type StackThreadMetaEvent } from "../thread-events.js"
 import {
   appendStackBlock,
@@ -402,7 +403,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     inputBuffer: readInitialPrompt(options.config),
     toolLogs: [],
     subagentLogs: [],
-    history: await listSessionHistory(options.config.sessionLogDir, options.config.codexPricing),
+    history: await loadThreadHistory(options.config),
     optimizerSnapshot: localStackBoot.optimizer ?? optimizerSnapshot,
     optimizerCliAvailable,
     localBootstrapSnapshot: localStackBoot.bootstrap,
@@ -466,7 +467,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   }
 
   const refreshHistory = async () => {
-    state.history = await listSessionHistory(options.config.sessionLogDir, options.config.codexPricing)
+    state.history = await loadThreadHistory(options.config)
     state.selectedHistoryIndex = clampIndex(state.selectedHistoryIndex, state.history.length)
   }
 
@@ -2043,6 +2044,26 @@ function updateThreadsRailColumns(renderer: CliRenderer, state: AppState): void 
   state.threadsRailColumns = Math.max(24, Math.floor(renderer.terminalWidth * 0.24) - 4)
 }
 
+async function loadThreadHistory(config: StackConfig): Promise<StackSessionSummary[]> {
+  try {
+    return (await stackdThreads()).map(stackdThreadToSessionSummary)
+  } catch {
+    return await listSessionHistory(config.sessionLogDir, config.codexPricing)
+  }
+}
+
+function stackdThreadToSessionSummary(thread: StackdThreadSummary): StackSessionSummary {
+  return {
+    id: thread.id,
+    path: thread.path,
+    startedAt: thread.startedAt,
+    updatedAt: thread.updatedAt,
+    turnCount: thread.turnCount,
+    lastPrompt: thread.lastPrompt,
+    usageSummary: isSessionUsageSummary(thread.usageSummary) ? thread.usageSummary : undefined,
+  }
+}
+
 function threadUsageSummary(
   options: StackAppOptions,
   summary: StackSessionSummary,
@@ -2054,6 +2075,12 @@ function threadUsageSummary(
     )
   }
   return summary.usageSummary
+}
+
+function isSessionUsageSummary(value: unknown): value is StackSessionUsageSummary {
+  if (value === null || typeof value !== "object" || Array.isArray(value)) return false
+  const record = value as Record<string, unknown>
+  return typeof record.model === "string" && record.totals !== null && typeof record.totals === "object"
 }
 
 function handleThreadsMouseScroll(

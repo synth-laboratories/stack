@@ -252,11 +252,24 @@ def wait_monitor(args: argparse.Namespace) -> int:
         later = events[trigger_index + 1 :]
         has_checkpoint = any(event.get("type") == "monitor.checkpoint" for event in later)
         has_usage = any(event.get("type") == "monitor.usage" for event in later)
-        if has_checkpoint and has_usage:
+        has_required_push = True
+        if args.require_skill_push:
+            has_required_push = any(
+                event.get("type") == "monitor.skill_context_push"
+                and (event.get("payload") or {}).get("skill_id") == args.require_skill_push
+                for event in later
+            )
+        if has_checkpoint and has_usage and has_required_push:
             return 0
         time.sleep(args.poll_seconds)
 
-    message = f"monitor checkpoint not observed for {thread_id} within {args.timeout_seconds}s"
+    if args.require_skill_push:
+        message = (
+            f"monitor checkpoint with skill push {args.require_skill_push} not observed "
+            f"for {thread_id} within {args.timeout_seconds}s"
+        )
+    else:
+        message = f"monitor checkpoint not observed for {thread_id} within {args.timeout_seconds}s"
     if require_stackd():
         raise RuntimeError(message)
     print(f"[stackeval] warning: {message}", file=sys.stderr)
@@ -440,6 +453,7 @@ def main() -> int:
     wait.add_argument("--packet-dir", required=True)
     wait.add_argument("--timeout-seconds", type=float, default=45)
     wait.add_argument("--poll-seconds", type=float, default=1)
+    wait.add_argument("--require-skill-push")
 
     args = parser.parse_args()
     if args.command == "ensure-session":

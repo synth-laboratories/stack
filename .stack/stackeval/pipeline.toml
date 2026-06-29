@@ -1,0 +1,30 @@
+# StackEval pipeline defaults
+# Consumed by: stack/bin/stackeval -> scripts/stackeval/pipeline.sh
+
+[paths]
+stack_root = "~/Documents/GitHub/stack"
+workspace_root = "~/Documents/GitHub"
+gepa_evals_project = "~/Documents/GitHub/synth-cookbooks-public/cookbooks/optimizers/gepa/evals"
+gepa_cookbook_root = "~/Documents/GitHub/synth-cookbooks-public/cookbooks/optimizers/gepa"
+synth_ai_env = "~/Documents/GitHub/synth-ai/.env"
+trace_root = "~/Documents/GitHub/stack/.stack/evidence/stackeval"
+
+[pipeline]
+default_preset = "smoke"
+stages = ["prepare", "preflight", "harness", "harvest", "export", "grade", "review", "finalize"]
+
+[stack]
+default_model = "gpt-5.5-low"
+autosubmit = true
+stack_api_url = "http://127.0.0.1:8792"
+
+[grader]
+model = "gpt-5.3-codex-spark"
+prompt = ".stack/stackeval/grader_prompt.md"
+skip_git_repo_check = true
+
+[reviewer]
+enabled = true
+model = "gpt-5.3-codex-spark"
+prompt = ".stack/stackeval/reviewer_prompt.md"
+skip_git_repo_check = true

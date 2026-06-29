@@ -15,6 +15,7 @@ import { readThreadMetaEvents } from "../src/thread-events.js"
 import type { StackCodexTurn, StackLocalSession } from "../src/session.js"
 
 const appRoot = resolve(import.meta.dir, "..")
+process.env.STACK_GARDENER_PAPERCUT_MIRROR = "0"
 const config = await loadConfig(appRoot)
 const stamp = new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15) + "Z"
 const threadId = process.env.STACK_GARDENER_SMOKE_THREAD_ID ?? `gardener-v1-${randomUUID()}`

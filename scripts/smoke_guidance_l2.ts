@@ -17,12 +17,19 @@ const all = discoverStackGuidance(appRoot, { workspaceRoot })
 const appItems = all.filter((item) => item.styleLayer === "app")
 const orgItems = all.filter((item) => item.styleLayer === "org")
 const orgSynthStyle = all.find((item) => item.styleLayer === "org" && item.guidanceId.includes("synthstyle"))
+const externalMemoryItems = all.filter(
+  (item) =>
+    item.sourcePath.includes("/Jstack/.jstack/") ||
+    item.sourcePath.includes("\\Jstack\\.jstack\\") ||
+    item.sourcePath.includes("/.jstack/"),
+)
 const mldpLearning = all.find((item) => item.guidanceId.includes("mldp/learnings") || item.relativePath.includes("mldp/learnings"))
 const papercutHit = searchStackGuidance(appRoot, "banking77-policy-api-key-env", { workspaceRoot, limit: 5 })
 
 if (appItems.length === 0) failures.push("no app-layer style items discovered")
 if (orgItems.length === 0) failures.push("no org-layer style items discovered")
 if (!orgSynthStyle) failures.push("org synthstyle source not indexed")
+if (externalMemoryItems.length > 0) failures.push("external memory sources must not be indexed")
 if (!mldpLearning) failures.push("records/mldp/learnings.md not indexed")
 if (papercutHit.length === 0 || papercutHit[0]?.score === 0) {
   failures.push("papercut id banking77-policy-api-key-env not searchable")
@@ -63,6 +70,7 @@ const summary = {
   app_layer_count: appItems.length,
   org_layer_count: orgItems.length,
   org_synthstyle_id: orgSynthStyle?.guidanceId ?? null,
+  external_memory_count: externalMemoryItems.length,
   mldp_learning_id: mldpLearning?.guidanceId ?? null,
   papercut_top_hit: papercutHit[0]?.guidanceId ?? null,
   mcp_search_count: mcpSearch.count ?? 0,

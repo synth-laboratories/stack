@@ -16,9 +16,9 @@ receive a raw dump of external memory trees.
 | `.stack/guidance/style/repo/*.md` | `style` | `repo` | Repo-local style conventions. |
 | `STYLE.md` | `style` | `repo` | Workspace root style file when present. |
 | `~/.stack/guidance/style/*.md` | `style` | `personal` | Operator personal style guidance; override root with `STACK_PERSONAL_GUIDANCE_DIR`. |
-| `.stack/guidance/records/mldp/*.md` | `records` | none | Curated learnings, mistakes, and desires copied for monitor/StackEval visibility. |
-| `.stack/guidance/records/papercuts/*.md` | `records` | none | Curated friction records. |
-| `.stack/guidance/records/decisions/*.md` | `records` | none | Local Stack ADRs and decisions. |
+| `.stack/guidance/records/mldp/*.md` | `records` | none | Curated learnings, mistakes, and desires copied for monitor/StackEval visibility; raw external MLDP ledgers are not indexed directly. |
+| `.stack/guidance/records/papercuts/*.md` | `records` | none | Curated friction records; raw external papercut ledgers are not indexed directly. |
+| `.stack/guidance/records/decisions/*.md` | `records` | none | Local Stack ADRs and curated decisions; raw external decision ledgers are not indexed directly. |
 | `.stack/guidance/workflows/*.md` | `workflows` | none | Optional local workflow prose when present. |
 
 ## Excluded By Default

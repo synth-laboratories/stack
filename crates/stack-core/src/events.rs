@@ -1,6 +1,6 @@
 use serde_json::Value;
 use std::path::{Path, PathBuf};
-use tokio::fs;
+use tokio::{fs, io::AsyncWriteExt};
 
 #[derive(Debug, thiserror::Error)]
 pub enum EventLogError {
@@ -59,14 +59,13 @@ pub async fn append_thread_event(
         fs::create_dir_all(parent).await?;
     }
     let line = serde_json::to_string(event)?;
-    let mut text = match fs::read_to_string(&path).await {
-        Ok(text) => text,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(error) => return Err(error.into()),
-    };
-    text.push_str(&line);
-    text.push('\n');
-    fs::write(&path, text).await?;
+    let mut file = fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .await?;
+    file.write_all(line.as_bytes()).await?;
+    file.write_all(b"\n").await?;
     Ok(path)
 }
 

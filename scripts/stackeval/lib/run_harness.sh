@@ -43,7 +43,8 @@ run_harness() {
       --config-json "${config_json}" \
       --packet-dir "${packet_dir}" \
       --timeout-seconds 45 \
-      --poll-seconds 1
+      --poll-seconds 1 \
+      --require-skill-push "synth-via-stack"
   fi
   python3 "${SCRIPT_DIR}/trace_stackd.py" record-skill \
     --config-json "${config_json}" \

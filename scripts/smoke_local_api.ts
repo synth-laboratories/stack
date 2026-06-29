@@ -16,12 +16,15 @@ const health = await stackdHealth(baseUrl)
 assert(health.ok === true, "health did not return ok=true")
 console.log(`health ok: ${health.stackd_version} (${health.session_log_dir})`)
 
-const threads = await stackdThreads(baseUrl)
+let threads = await stackdThreads(baseUrl)
 assert(Array.isArray(threads), "/threads did not return an array")
 console.log(`threads: ${threads.length}`)
 
 const status = await stackdStatus(baseUrl)
 assert(status.ok === true, "status did not return ok=true")
+if (status.session_count !== threads.length) {
+  threads = await stackdThreads(baseUrl)
+}
 assert(status.session_count === threads.length, "status session_count did not match /threads")
 console.log(`status ok: sessions=${status.session_count}`)
 

@@ -55,7 +55,6 @@ def main() -> int:
             "default_model", config["stack"]["default_model"]
         ),
         "stack_commit": git_rev(config["paths"].get("stack_root")),
-        "jstack_commit": git_rev(config["paths"].get("jstack_root")),
         "packet_dir": str(packet),
         "config_snapshot": config,
     }
