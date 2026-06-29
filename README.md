@@ -496,6 +496,10 @@ Prepare the first human dogfood packet (interactive TUI):
 bun run stackeval:banking77-local-gepa
 ```
 
+**StackEval task catalog:** one registered id, **`banking77-local-gepa`** (Banking77 +
+local GEPA). Presets `smoke`, `dev`, and `gate` are variants of that id, not
+separate tasks. Stack-owned task configs live under `.stack/stackeval/`.
+
 For the **full TOML + shell pipeline** (pinned GEPA harness, harvest, stackd export,
 Codex grader + reviewer):
 
