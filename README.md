@@ -508,6 +508,22 @@ Codex grader + reviewer):
 ./bin/stackeval prepare banking77-local-gepa --preset smoke   # packet only
 ```
 
+**Agent-driven TUI harness (StackEval programmatic replay v0):** tmux + stackd
+receipts + pane capture for Codex (ncode-style). Prepares a packet, starts
+`stack-stackeval` tmux session, and writes `harness/OPERATOR.md`:
+
+```bash
+./bin/stackeval harness prepare banking77-local-gepa --preset smoke
+export STACKEVAL_PACKET="<packet-from-output>"
+
+./bin/stackeval harness status --capture-pane -o "${STACKEVAL_PACKET}/harness.debug.json"
+./bin/stackeval harness capture -o "${STACKEVAL_PACKET}/harness.capture.json"
+./bin/stackeval harness export-thread --packet-dir "${STACKEVAL_PACKET}" -o "${STACKEVAL_PACKET}/harness.export.json"
+
+# after operator/agent work, resume automated pipeline from harvest:
+./bin/stackeval run banking77-local-gepa --preset smoke --packet-dir "${STACKEVAL_PACKET}" --from-stage harvest
+```
+
 StackEval runtime state and acceptance notes live under `.stack/evals/`; the
 pipeline implementation lives in `scripts/stackeval/`.
 During harness runs, StackEval creates a stackd session for the packet, records

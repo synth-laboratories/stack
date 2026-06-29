@@ -58,6 +58,7 @@
     "stackeval:banking77-local-gepa:prepare": "bun run scripts/stackeval_banking77_local_gepa.ts --prepare-only",
     "stackeval:run": "./bin/stackeval run banking77-local-gepa",
     "stackeval:run:prepare": "./bin/stackeval prepare banking77-local-gepa",
+    "stackeval:harness": "./bin/stackeval harness prepare banking77-local-gepa --preset smoke",
     "sync-version": "bun run scripts/sync_version.ts",
     "bump-dev": "bun run scripts/bump_dev.ts"
   },

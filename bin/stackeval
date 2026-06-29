@@ -16,6 +16,10 @@ case "${1:-}" in
     shift
     exec "${ROOT}/scripts/stackeval/pipeline.sh" run "$@" --prepare-only
     ;;
+  harness)
+    shift
+    exec "${ROOT}/scripts/stackeval/tmux_harness.sh" "$@"
+    ;;
   *)
     exec "${ROOT}/scripts/stackeval/pipeline.sh" run "$@"
     ;;
