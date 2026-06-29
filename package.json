@@ -1,6 +1,6 @@
 {
   "name": "@synth-laboratories/stack",
-  "version": "0.2.0-dev.20260626.2",
+  "version": "0.2.0-dev.20260629.1",
   "description": "Synth operator cockpit — OpenTUI, Codex agent pane, and Stack MCP for local and hosted research ops.",
   "private": true,
   "type": "module",
