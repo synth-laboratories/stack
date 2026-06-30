@@ -1,0 +1,78 @@
+[monitor]
+id = "handoff-preempt-gamebench"
+label = "GameBench handoff preempt"
+enabled = true
+mode = "observe_summarize_queue_steer"
+policy = "conservative"
+strictness = "conservative"
+
+[focus]
+selection = "any"
+goal_progress = true
+acceptance = true
+tool_use = true
+style = false
+skills = false
+scope_control = true
+
+[model]
+provider = "openai"
+model = "gpt-5.4-mini"
+reasoning_effort = "medium"
+worker = "auto"
+
+[prompt]
+system_file = ".stack/monitors/progress-narrator.system.md"
+
+[wake]
+max_wakes_per_primary_turn = 6
+on_turn_completed = true
+on_tool_completed = true
+on_tool_failed = true
+delta_events = 10
+weight_threshold = 8
+cooldown_ms = 15000
+turn_cooldown_ms = 15000
+batch_cooldown_ms = 60000
+max_delay_ms = 120000
+policy_script = "scripts/monitor_wake_policy.py"
+monty_python_bin = "python3"
+
+[intervention]
+max_queued_items_per_thread = 0
+skill_context_push = "off"
+
+[skills]
+enabled = false
+
+[tools]
+allow = ["guidance.search", "handoff.preempt"]
+deny = ["codex.interrupt", "monitor.steer", "monitor.queue", "skills.push_context"]
+
+[handoff_preempt]
+enabled = true
+wake_on_context_pressure = true
+context_token_threshold = 100000
+context_fraction_threshold = 0.75
+turn_threshold = 8
+idle_before_preempt_ms = 0
+min_turns_before_preempt = 8
+max_preempts_per_segment = 1
+cooldown_ms = 300000
+require_meta_thread = true
+successor_role = "same"
+successor_role_name = ""
+successor_model = ""
+successor_reasoning_effort = "medium"
+auto_seal = true
+auto_approve = true
+auto_continue = true
+pause_worker_before_seal = false
+segment_policy_file = ".stack/meta-threads/segment-policy.toml"
+
+[permissions]
+queue = false
+steer = false
+skill_push = false
+pause_worker = false
+block_before_action = false

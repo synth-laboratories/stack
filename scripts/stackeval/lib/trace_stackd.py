@@ -225,6 +225,62 @@ def post_event(
         return None
 
 
+def post_runtime_lever_event(
+    config: dict[str, Any],
+    packet_dir: Path,
+    event_type: str,
+    subject_id: str,
+    payload: dict[str, Any],
+) -> dict[str, Any] | None:
+    thread_id = ensure_session(config, packet_dir)
+    if not stackd_healthy(config):
+        message = f"stackd not healthy at {api_url(config)}"
+        if require_stackd():
+            raise RuntimeError(message)
+        print(f"[stackeval] warning: {message}; runtime event skipped", file=sys.stderr)
+        return None
+
+    body = json.dumps(
+        {
+            "event_type": event_type,
+            "source": "lever.stackeval",
+            "subject": {
+                "kind": "stackeval_gepa_run",
+                "id": subject_id,
+            },
+            "correlation": {
+                "stack_session_id": thread_id,
+                "stackeval_packet_id": packet_dir.name,
+                "run_id": subject_id,
+            },
+            "payload": payload,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        f"{api_url(config)}/runtime/events",
+        data=body,
+        headers={"content-type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=10) as response:
+            data = response.read().decode("utf-8")
+            return json.loads(data) if data else None
+    except urllib.error.HTTPError as error:
+        detail = error.read().decode("utf-8", errors="replace")
+        message = f"stackd runtime event append failed: HTTP {error.code}: {detail}"
+        if require_stackd():
+            raise RuntimeError(message) from error
+        print(f"[stackeval] warning: {message}; runtime event skipped", file=sys.stderr)
+        return None
+    except urllib.error.URLError as error:
+        message = f"stackd runtime event append failed: {error}"
+        if require_stackd():
+            raise RuntimeError(message) from error
+        print(f"[stackeval] warning: {message}; runtime event skipped", file=sys.stderr)
+        return None
+
+
 def read_trace(config: dict[str, Any], thread_id: str) -> dict[str, Any]:
     with urllib.request.urlopen(f"{api_url(config)}/threads/{thread_id}/trace", timeout=10) as response:
         return json.loads(response.read().decode("utf-8"))
@@ -355,8 +411,14 @@ def harness_event(args: argparse.Namespace) -> int:
         "completed": "agent.tool.completed",
         "failed": "agent.tool.failed",
     }[args.phase]
+    runtime_event_type = {
+        "started": "lever.stackeval.gepa.started",
+        "completed": "lever.stackeval.gepa.completed",
+        "failed": "lever.stackeval.gepa.failed",
+    }[args.phase]
     post_vl(config, stackeval_vl_document(config, packet_dir, event_type, payload))
     post_event(config, packet_dir, event_type, "primary_stackeval", "primary", payload)
+    post_runtime_lever_event(config, packet_dir, runtime_event_type, run_id, payload)
     return 0
 
 

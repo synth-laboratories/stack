@@ -45,6 +45,25 @@ export_stackd() {
   mkdir -p "${packet_dir}/stack-session"
   cp -R "${export_dir}/." "${packet_dir}/stack-session/stackd-export/" 2>/dev/null || true
   curl -fsS "${api_url}/threads/${session_id}/trace" >"${packet_dir}/codex/trace.json"
+  mkdir -p "${packet_dir}/stack-runtime"
+  if curl -fsS --max-time 5 "${api_url}/runtime/factory" >"${packet_dir}/stack-runtime/factory.json"; then
+    log "exported runtime factory snapshot"
+  else
+    rm -f "${packet_dir}/stack-runtime/factory.json"
+    log "runtime factory snapshot unavailable; continuing"
+  fi
+  if curl -fsS --max-time 5 "${api_url}/runtime/events?limit=1000" >"${packet_dir}/stack-runtime/events.json"; then
+    log "exported runtime events"
+  else
+    rm -f "${packet_dir}/stack-runtime/events.json"
+    log "runtime events unavailable; continuing"
+  fi
+  if curl -fsS --max-time 5 "${api_url}/status" >"${packet_dir}/stack-runtime/status.json"; then
+    log "exported runtime status projection"
+  else
+    rm -f "${packet_dir}/stack-runtime/status.json"
+    log "runtime status projection unavailable; continuing"
+  fi
   echo "${session_id}" >"${packet_dir}/codex/stack_session_id.txt"
   write_pipeline_state "${packet_dir}" "export" "ok" "${session_id}"
   log "exported to ${packet_dir}/stack-session/stackd-export"

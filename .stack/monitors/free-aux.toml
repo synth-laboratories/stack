@@ -1,0 +1,40 @@
+[monitor]
+id = "free-aux"
+label = "Monitor (Synth promo)"
+enabled = true
+strictness = "conservative"
+
+[model]
+provider = "synth_aux"
+model = "nemotron-3-ultra"
+reasoning_effort = "low"
+worker = "openai_responses"
+
+[permissions]
+skill_push = true
+queue = true
+steer = true
+
+[wake]
+max_wakes_per_primary_turn = 2
+on_turn_completed = true
+on_tool_completed = true
+on_tool_failed = true
+delta_events = 3
+cooldown_ms = 15000
+weight_threshold = 0.35
+turn_cooldown_ms = 30000
+batch_cooldown_ms = 45000
+max_delay_ms = 120000
+
+[focus]
+style = true
+goal_progress = true
+skills = true
+tool_use = true
+scope_control = true
+acceptance = true
+
+[skills]
+enabled = true
+push_when_confident = true

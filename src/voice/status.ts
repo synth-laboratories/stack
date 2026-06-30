@@ -165,6 +165,28 @@ export function voiceStatusLine(status: VoiceStatusSnapshot): string {
   return `Voice BLOCKED · ${status.message}`
 }
 
+export function voiceInputHintLine(input: {
+  status: VoiceStatusSnapshot
+  recording?: boolean
+  transcribing?: boolean
+  /** When true, voice submits to the active gardener Codex thread instead of the inbox queue. */
+  gardenerChat?: boolean
+}): string {
+  const target = input.gardenerChat ? "gardener" : "gardener inbox"
+  if (input.recording) return `Shift+V · recording… · release to transcribe · enter to send`
+  if (input.transcribing) return `Shift+V · transcribing…`
+  if (input.status.health === "OFF") {
+    return "Shift+V · voice off · enable in stack.config.json or STACK_VOICE_ENABLED=1"
+  }
+  if (input.status.health === "BLOCKED") {
+    return `Shift+V · voice blocked · ${input.status.message}`
+  }
+  const status = voiceStatusLine(input.status)
+  return input.gardenerChat
+    ? `Shift+V hold · release to transcribe · enter to send · ${status}`
+    : `Shift+V hold · release to transcribe → gardener · ${status}`
+}
+
 function ensureCheckAudio(path: string): void {
   if (existsSync(path)) return
   mkdirSync(dirname(path), { recursive: true })

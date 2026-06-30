@@ -1,0 +1,105 @@
+# StackEval task: Crafter local GEPA (Gemini 3.1 Flash Lite policy)
+
+[task]
+id = "crafter-local-gepa"
+title = "Crafter Local GEPA"
+description = "Local GEPA ReAct prompt optimization on Crafter with gemini-3.1-flash-lite policy + Stack trace"
+default_model = "gpt-5.5-low"
+prompt_file = "crafter-local-gepa.prompt.txt"
+spec_md = "crafter-local-gepa.md"
+
+[pipeline]
+modes = ["harness", "stack", "harness_then_stack"]
+default_mode = "harness"
+
+[presets.smoke]
+description = "2 train / 1 heldout seed, 1 gen — proves Crafter container + Gemini policy + local GEPA plumbing"
+mode = "harness"
+train_sample = 2
+test_sample = 1
+max_generations = 1
+proposals_per_generation = 1
+minibatch_size = 2
+max_train_rollouts = 8
+max_heldout_rollouts = 2
+max_total_rollouts = 12
+max_cost_usd = 3.0
+require_prompt_accepted = false
+require_heldout_lift = false
+min_task_outcome_score = 2
+min_stack_leverage_score = 2
+
+[presets.dev]
+description = "4/2 seeds, multiple generations — optimization signal on heldout mean reward"
+mode = "harness"
+train_sample = 4
+test_sample = 2
+max_generations = 3
+proposals_per_generation = 2
+minibatch_size = 4
+max_train_rollouts = 32
+max_heldout_rollouts = 8
+max_total_rollouts = 48
+max_cost_usd = 12.0
+require_prompt_accepted = true
+require_heldout_lift = false
+min_task_outcome_score = 3
+min_stack_leverage_score = 3
+
+[presets.gate]
+description = "6/3 seeds — accepted prompt + heldout lift required"
+mode = "harness"
+train_sample = 6
+test_sample = 3
+max_generations = 5
+proposals_per_generation = 3
+minibatch_size = 4
+max_train_rollouts = 64
+max_heldout_rollouts = 12
+max_total_rollouts = 88
+max_cost_usd = 25.0
+require_prompt_accepted = true
+require_heldout_lift = true
+min_task_outcome_score = 4
+min_stack_leverage_score = 4
+
+[harness]
+template = "gepa-crafter-smoke.toml.template"
+policy_model = "gemini-3.1-flash-lite"
+policy_provider = "openai"
+policy_api_key_env = "GEMINI_API_KEY"
+policy_base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+proposer_model = "gpt-5.4-mini"
+proposer_reasoning_effort = "medium"
+proposer_timeout_seconds = 900
+container_startup_timeout_seconds = 120
+container_port_base = 28900
+seed = 0
+train_seed_start = 11
+heldout_seed_start = 101
+crafter_max_turns = 12
+crafter_min_batch = 1
+crafter_max_batch = 5
+rollout_async_timeout_seconds = 300
+gepa_pipeline_mode = "async_pipelined"
+max_in_flight_candidates = 1
+rollout_workers = 4
+rollout_workers_max = 8
+seed_prompt = "You are controlling a Crafter survival agent. Each turn you see a compact text observation (player stats, inventory, local map). Respond ONLY with a single <tool_call> block of the form: <tool_call>{\"name\":\"crafter_interact\",\"arguments\":{\"actions_list\":[\"move_right\",\"do\"]}}</tool_call>. Use 1-5 valid actions per call. Prioritize collecting wood, placing a table, crafting tools, then collecting stone/coal/iron. Avoid lava."
+command = "uv run --project {{gepa_evals_project}} synth-optimizers gepa run --config {{gepa_config_path}}"
+env = { CRAFTER_POLICY_API_KEY_ENV = "GEMINI_API_KEY" }
+
+[acceptance]
+score_label = "Heldout mean episode reward"
+score_unit = "reward"
+gates = [
+  "SE-CRF-1-HARNESS",
+  "SE-CRF-2-RUN",
+  "SE-CRF-3-SCORE",
+  "SE-CRF-4-ARTIFACTS",
+  "SE-CRF-5-TRACE",
+  "SE-CRF-6-LEVERAGE",
+]
+
+[stack_session]
+enabled = false

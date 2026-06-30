@@ -127,6 +127,10 @@ def main() -> int:
     if heldout is None and isinstance(best_from_manifest, dict):
         heldout = best_from_manifest.get("heldout_accuracy") or best_from_manifest.get("heldout_reward")
 
+    heldout_reward = None
+    if reward_info.get("classification_accuracy") is None and heldout is not None:
+        heldout_reward = heldout
+
     candidates = registry.get("candidates") or []
     if not isinstance(candidates, list):
         candidates = []
@@ -171,6 +175,7 @@ def main() -> int:
         "manifest_path": str(manifest_path),
         "result": {
             "heldout_accuracy": heldout,
+            "heldout_reward": heldout_reward,
             "heldout_accuracy_percent": round(float(heldout) * 100, 2) if heldout is not None else None,
             "terminal_status": terminal,
             "prompt_accepted": prompt_accepted,

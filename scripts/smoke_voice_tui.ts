@@ -32,10 +32,11 @@ if (!voiceStatusLine(enabled).startsWith(`Voice ${enabled.health}`)) {
 const appSource = readFileSync(join(appRoot, "src", "tui", "app.ts"), "utf8")
 for (const needle of [
   'keyInput.on("keyrelease"',
-  "isVoiceHoldKey",
+  "handleVoiceKey",
+  "isVoiceKeyCandidate",
+  "isGardenerSession",
   "startVoiceHoldToGardener",
   "finishVoiceHoldToGardener",
-  "transcribeAndEnqueueGardenerVoice",
 ]) {
   if (!appSource.includes(needle)) failures.push(`TUI source missing ${needle}`)
 }

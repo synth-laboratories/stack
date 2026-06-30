@@ -4,11 +4,21 @@ Use these tools through the Stack MCP server when available.
 
 ## Overview
 
-- `stack_status`: concise Codex-facing bridge status. Use first.
+- `stack_status`: concise Codex-facing bridge status. Use first; remote/hosted summaries are runtime-first with direct API fallback.
+- `stack_runtime_status`: stackd runtime factory snapshot and recent sensor events.
 - `stack_live_status`: full live-ops payload. Use when the concise status is not enough.
-- `stack_list_live_smrs`: recent remote SMR runs with output/message/file counts.
-- `stack_list_factories`: remote Research Factories with project/run routing hints.
-- `stack_list_hosted_optimizer_runs`: hosted optimizer runs with artifact/event hints.
+- `stack_list_remote_projects`: Synth projects with associated live/recent SMR runs and linked Factory/cloud badges; runtime-first with direct API fallback, supports `tick`.
+- `stack_prepare_cloud_promotion_packet`: local-to-cloud promotion packet from StackEval + runtime state; no mutation.
+- `stack_launch_cloud_promotion`: create a cloud launch from a promotion packet; dry-run by default and requires explicit confirm to mutate.
+- `stack_get_cloud_launch`: inspect one Managed Research cloud launch.
+- `stack_terminate_cloud_launch`: terminate one Managed Research cloud launch.
+- `stack_list_live_smrs`: recent remote SMR runs; runtime-first with direct API fallback for output/message/file counts, supports `tick`.
+- `stack_inspect_live_run`: one SMR run with WorkProducts, artifacts, runtime messages, file mounts, and hosted artifact status.
+- `stack_list_run_interactions`: pending/filtered run questions and approvals.
+- `stack_respond_run_question`: answer one run question.
+- `stack_decide_run_approval`: approve or deny one run approval.
+- `stack_list_factories`: remote Research Factories with project/run routing hints; runtime-first with direct API fallback, supports `tick`.
+- `stack_list_hosted_optimizer_runs`: hosted optimizer runs; runtime-first with direct API fallback for artifact/event hints, supports `tick`.
 
 ## README-Smoke
 
@@ -18,9 +28,16 @@ Use these tools through the Stack MCP server when available.
 
 ## Remote SMR
 
+- `stack_prepare_cloud_promotion_packet`: build the cloud-promotion receipt from active local evidence and runtime state.
+- `stack_launch_cloud_promotion`: dry-run or explicitly confirmed `/smr/v1/launches` creation.
+- `stack_get_cloud_launch`: read `/smr/v1/launches/{run_id}`.
+- `stack_terminate_cloud_launch`: terminate `/smr/v1/launches/{run_id}`.
 - `stack_message_live_run`: send an operator message to a run.
 - `stack_control_live_run`: pause, resume, or stop a run.
 - `stack_upload_run_file`: upload a local file to a run.
+- `stack_list_run_interactions`: list human questions and approvals for a run.
+- `stack_respond_run_question`: respond to a pending run question.
+- `stack_decide_run_approval`: approve or deny a pending run approval.
 - `stack_preview_run_output`: preview a WorkProduct or artifact.
 - `stack_download_run_output`: save a WorkProduct or artifact.
 

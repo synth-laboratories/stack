@@ -1,11 +1,14 @@
 ---
 name: stack-agent-bridge
-description: Use when Codex operates the Stack cockpit or Stack MCP bridge for Synth live ops — local/remote mode, auth checks, README-smoke SMR evals, live SMRs or Factories, hosted optimizer runs, WorkProduct preview/download, or explaining Stack TUI status. Pair with synth-via-stack for optimizer and container workflows.
+description: Use when Codex operates the Stack cockpit or Stack MCP bridge for Synth hosted live ops on usesynth.ai — dev/staging/prod env, auth checks, README-smoke SMR evals, live SMRs or Factories, hosted optimizer runs, WorkProduct preview/download. Load synth-stack-productivity first for OSS+hosted map; pair with synth-via-stack for optimizer/container workflows.
 ---
 
 # Stack Agent Bridge
 
-Use Stack as the control plane between Codex and Synth live operations. Prefer the Stack MCP tools over direct backend calls whenever they are available.
+**Hosted Synth stack** control plane: `api.usesynth.ai`, SMR, Factory, hosted optimizers,
+WorkProducts. Load **`synth-stack-productivity`** first for the full OSS + hosted map.
+
+Use Stack MCP tools over direct backend calls whenever available.
 
 ## First Move
 

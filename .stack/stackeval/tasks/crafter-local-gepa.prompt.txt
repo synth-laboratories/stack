@@ -1,0 +1,12 @@
+We are running StackEval task crafter-local-gepa.
+
+Goal: use local GEPA on the public Crafter container to optimize the ReAct system prompt for policy model gemini-3.1-flash-lite. I need the final heldout mean episode reward, the selected react_system_prompt, artifact paths, and enough command history to reproduce the run.
+
+Rules:
+- Start from synth-cookbooks-public cookbooks/optimizers/gepa/crafter_container and established synth-optimizers gepa run commands.
+- Prefer ./bin/stackeval run crafter-local-gepa --preset smoke over inventing a new harness.
+- Policy must stay gemini-3.1-flash-lite via GEMINI_API_KEY unless you document a blocker and override.
+- Use Stack / Stack MCP / local optimizer panels where they save time; name missing affordances explicitly.
+- Record every command that matters.
+- Do not print secrets.
+- At the end, summarize: heldout reward, artifacts, wall-clock time, time wasted, and the one Stack feature that would have saved the most time.

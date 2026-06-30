@@ -7,6 +7,10 @@ const DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
 const DEFAULT_CODEX_REASONING_EFFORT = "medium"
 const DEFAULT_CODEX_PROVIDER = "OpenAI"
 const DEFAULT_CODEX_AUTH_PLAN = "ChatGPT"
+const DEFAULT_CURSOR_MODEL = "composer-2.5"
+const DEFAULT_CURSOR_PROVIDER = "Cursor"
+const DEFAULT_CURSOR_AUTH_PLAN = "Cursor"
+const DEFAULT_HARNESS = "codex"
 const DEFAULT_OPTIMIZER_BIND = "127.0.0.1:8879"
 const DEFAULT_OPTIMIZER_WORKERS = 4
 const DEFAULT_ENVIRONMENT = "dev"
@@ -17,8 +21,12 @@ const DEFAULT_VOICE_STT_MODEL_OPENAI = "gpt-4o-mini-transcribe"
 const DEFAULT_VOICE_LANGUAGE = "en"
 
 export const CODEX_MODEL_OPTIONS = ["gpt-5.4-mini", "gpt-5.5"] as const
+export const CURSOR_MODEL_OPTIONS = ["composer-2.5", "auto"] as const
 export const CODEX_REASONING_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh"] as const
 export const STACK_ENVIRONMENT_OPTIONS = ["dev", "staging", "prod"] as const
+export const STACK_HARNESS_OPTIONS = ["codex", "cursor"] as const
+
+export type StackHarnessKind = (typeof STACK_HARNESS_OPTIONS)[number]
 
 export type StackEnvironmentName = (typeof STACK_ENVIRONMENT_OPTIONS)[number]
 
@@ -52,6 +60,7 @@ export type StackVoiceConfig = {
 
 export type StackConfig = {
   appRoot: string
+  stackDataRoot: string
   workspaceRoot: string
   workingDir: string
   synthDevRoot: string
@@ -64,6 +73,11 @@ export type StackConfig = {
   codexReasoningEffort: string
   codexProvider: string
   codexAuthPlan: string
+  harness: StackHarnessKind
+  cursorCommand: string
+  cursorModel: string
+  cursorProvider: string
+  cursorAuthPlan: string
   codexSubagentsEnabled: boolean
   codexSubagentModel: string
   codexSubagentReasoningEffort: string
@@ -166,9 +180,26 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
   const codexSubagentsEnabled = readBooleanEnv(process.env.STACK_CODEX_SUBAGENTS, true)
   const codexSubagentModel = process.env.STACK_CODEX_SUBAGENT_MODEL ?? "gpt-5.4-mini"
   const codexSubagentReasoningEffort = process.env.STACK_CODEX_SUBAGENT_REASONING_EFFORT ?? "medium"
+  const harness = normalizeOption(
+    process.env.STACK_HARNESS,
+    STACK_HARNESS_OPTIONS,
+    DEFAULT_HARNESS,
+    "STACK_HARNESS",
+  )
+  const cursorModel = normalizeOption(
+    process.env.STACK_CURSOR_MODEL,
+    CURSOR_MODEL_OPTIONS,
+    DEFAULT_CURSOR_MODEL,
+    "STACK_CURSOR_MODEL",
+  )
+
+  const stackDataHome = existsSync(join(workingDir, ".stack")) ? workingDir : appRoot
+  const sessionLogDir = process.env.STACK_SESSION_DIR ?? join(stackDataHome, ".stack", "sessions")
+  const stackDataRoot = stackDataRootFromSessionDir(sessionLogDir) ?? stackDataHome
 
   return {
     appRoot,
+    stackDataRoot,
     synthDevRoot,
     workspaceRoot: workingDir,
     workingDir,
@@ -189,6 +220,11 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     codexReasoningEffort,
     codexProvider: process.env.STACK_CODEX_PROVIDER ?? DEFAULT_CODEX_PROVIDER,
     codexAuthPlan: process.env.STACK_CODEX_AUTH_PLAN ?? DEFAULT_CODEX_AUTH_PLAN,
+    harness,
+    cursorCommand: process.env.STACK_CURSOR_COMMAND ?? "cursor",
+    cursorModel,
+    cursorProvider: process.env.STACK_CURSOR_PROVIDER ?? DEFAULT_CURSOR_PROVIDER,
+    cursorAuthPlan: process.env.STACK_CURSOR_AUTH_PLAN ?? DEFAULT_CURSOR_AUTH_PLAN,
     codexSubagentsEnabled,
     codexSubagentModel,
     codexSubagentReasoningEffort,
@@ -197,7 +233,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     codexArgsLocked: Boolean(process.env.STACK_CODEX_ARGS),
     stackMcpEnabled,
     stackMcpCommand,
-    sessionLogDir: process.env.STACK_SESSION_DIR ?? join(appRoot, ".stack", "sessions"),
+    sessionLogDir,
     optimizerCommand: process.env.STACK_OPTIMIZER_COMMAND ?? "synth-optimizers",
     optimizerBind,
     optimizerWorkers: readPositiveInteger(process.env.STACK_OPTIMIZER_WORKERS, DEFAULT_OPTIMIZER_WORKERS),
@@ -315,6 +351,10 @@ export function setCodexModel(config: StackConfig, model: string): void {
   refreshCodexArgs(config)
 }
 
+export function setCursorModel(config: StackConfig, model: string): void {
+  config.cursorModel = model
+}
+
 export function setCodexReasoningEffort(config: StackConfig, reasoningEffort: string): void {
   config.codexReasoningEffort = reasoningEffort
   refreshCodexArgs(config)
@@ -363,7 +403,7 @@ export function environmentAuthStatus(environment: StackEnvironmentConfig): Stac
   }
 }
 
-function loadEnvironmentAuth(environment: StackEnvironmentConfig): void {
+export function loadEnvironmentAuth(environment: StackEnvironmentConfig): void {
   if (process.env[environment.authEnv] || !environment.authEnvFile) return
   const value = readEnvFileValue(environment.authEnvFile, environment.authEnv)
   if (!value) return
@@ -371,7 +411,33 @@ function loadEnvironmentAuth(environment: StackEnvironmentConfig): void {
   loadedAuthEnvFiles.set(environment.authEnv, environment.authEnvFile)
 }
 
-function refreshCodexArgs(config: StackConfig): void {
+export function isCursorHarness(config: Pick<StackConfig, "harness">): boolean {
+  return config.harness === "cursor"
+}
+
+export function harnessModel(config: StackConfig): string {
+  return isCursorHarness(config) ? config.cursorModel : config.codexModel
+}
+
+export function harnessAuthPlan(config: StackConfig): string {
+  return isCursorHarness(config) ? config.cursorAuthPlan : config.codexAuthPlan
+}
+
+export function setStackHarness(config: StackConfig, harness: StackHarnessKind): void {
+  if (!STACK_HARNESS_OPTIONS.includes(harness)) return
+  config.harness = harness
+}
+
+export function harnessSessionCommand(config: StackConfig): string {
+  if (isCursorHarness(config)) {
+    return `${config.cursorCommand} agent acp`
+  }
+  return config.codexArgs.length > 0
+    ? `${config.codexCommand} ${config.codexArgs.join(" ")}`
+    : config.codexCommand
+}
+
+export function refreshCodexArgs(config: StackConfig): void {
   if (config.codexArgsLocked) return
   config.codexArgs = defaultCodexArgs(
     config.codexModel,
@@ -539,4 +605,29 @@ function readPositiveInteger(value: string | undefined, fallback: number): numbe
 function optimizerServiceUrl(bind: string): string {
   const normalized = bind.startsWith("http://") || bind.startsWith("https://") ? bind : `http://${bind}`
   return normalized.replace(/\/+$/, "")
+}
+
+export function stackDataRootFromSessionDir(sessionLogDir: string): string | undefined {
+  const normalized = sessionLogDir.replace(/\\/g, "/").replace(/\/+$/, "")
+  const suffix = "/.stack/sessions"
+  if (normalized.endsWith(suffix)) return normalized.slice(0, -suffix.length)
+  return undefined
+}
+
+export function sessionHistoryScanDirs(config: Pick<StackConfig, "appRoot" | "sessionLogDir">): string[] {
+  const dirs = [config.sessionLogDir]
+  const legacy = join(config.appRoot, ".stack", "sessions")
+  const normalize = (path: string) => path.replace(/\\/g, "/").replace(/\/+$/, "")
+  if (normalize(legacy) !== normalize(config.sessionLogDir) && existsSync(legacy)) {
+    dirs.push(legacy)
+  }
+  return dirs
+}
+
+export function stackDataRootFromSessionPath(sessionPath: string): string | undefined {
+  const normalized = sessionPath.replace(/\\/g, "/")
+  const marker = "/.stack/sessions/"
+  const index = normalized.lastIndexOf(marker)
+  if (index >= 0) return normalized.slice(0, index)
+  return undefined
 }

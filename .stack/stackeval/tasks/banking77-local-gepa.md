@@ -8,5 +8,5 @@ Acceptance gates:
 - SE-B77-2-RUN: The harness completes or records a clear failed-run packet.
 - SE-B77-3-SCORE: Harvest captures final score and candidate metadata.
 - SE-B77-4-ARTIFACTS: Packet includes logs, rendered config, run metadata, and harvest output.
-- SE-B77-5-TRACE: stackd trace/export evidence is present when required.
+- SE-B77-5-TRACE: stackd thread export and runtime factory/event evidence are present when required.
 - SE-B77-6-LEVERAGE: Grader/reviewer can judge how Stack helped the operator.

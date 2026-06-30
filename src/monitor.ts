@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import type { StackConfig } from "./config.js"
+import { loadEnvironmentAuth } from "./config.js"
 import type { AgentContextSnapshot } from "./codex/agent-context.js"
 import type { CodexGoalSnapshot } from "./codex/goal-context.js"
 import {
@@ -10,10 +11,27 @@ import {
   severityForStyleViolation,
   steerAllowedForStrictness,
 } from "./monitor/style-steer.js"
-import { pushSkillContext } from "./codex/skills.js"
+import { suggestSkillToThread } from "./skill-suggest.js"
 import { estimateUsageSpendUsd, formatEstimatedSpend } from "./codex/usage-cost.js"
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
+import {
+  parseThreadNameFromAgentResponse,
+  sanitizeThreadDisplayName,
+  setThreadDisplayName,
+} from "./thread-display-name.js"
+import {
+  actorToolAllowed,
+  mergeActorModel,
+  mergeActorPrompt,
+  mergeActorTools,
+  parseTomlLike,
+  readBoolean,
+  readNumber,
+  readString,
+  readStringArray,
+  resolveActorPrompt,
+} from "./actor-config.js"
 import {
   appendThreadMetaEvent,
   readThreadMetaEvents,
@@ -25,6 +43,28 @@ export type MonitorStrictness = "off" | "passive" | "conservative" | "aggressive
 export type MonitorFocusName = "style" | "goal_progress" | "skills" | "tool_use" | "scope_control" | "acceptance"
 export type MonitorFocusStatus = "pass" | "warn" | "fail" | "disabled"
 export type MonitorSeverity = "none" | "low" | "medium" | "high"
+
+export type StackMonitorHandoffPreemptConfig = {
+  enabled: boolean
+  wakeOnContextPressure: boolean
+  contextTokenThreshold: number
+  contextFractionThreshold: number
+  turnThreshold: number
+  idleBeforePreemptMs: number
+  minTurnsBeforePreempt: number
+  maxPreemptsPerSegment: number
+  cooldownMs: number
+  requireMetaThread: boolean
+  successorRole: string
+  successorRoleName: string
+  successorModel: string
+  successorReasoningEffort: string
+  autoSeal: boolean
+  autoApprove: boolean
+  autoContinue: boolean
+  pauseWorkerBeforeSeal: boolean
+  segmentPolicyFile: string
+}
 
 export type StackMonitorConfig = {
   id: string
@@ -41,6 +81,10 @@ export type StackMonitorConfig = {
     reasoningEffort: string
     worker: "auto" | "deterministic" | "openai_responses"
   }
+  prompt: {
+    system?: string
+    systemFile?: string
+  }
   wake: {
     maxWakesPerPrimaryTurn: number
     onTurnCompleted: boolean
@@ -48,6 +92,12 @@ export type StackMonitorConfig = {
     onToolFailed: boolean
     deltaEvents: number
     cooldownMs: number
+    weightThreshold: number
+    turnCooldownMs: number
+    batchCooldownMs: number
+    maxDelayMs: number
+    policyScript: string
+    montyPythonBin: string
   }
   intervention: {
     maxQueuedItemsPerThread: number
@@ -58,6 +108,18 @@ export type StackMonitorConfig = {
     allowedSkillIds: string[]
     pushWhenConfident: boolean
   }
+  tools: {
+    allow: string[]
+    deny: string[]
+  }
+  permissions: {
+    queue: boolean
+    steer: boolean
+    skillPush: boolean
+    pauseWorker: boolean
+    blockBeforeAction: boolean
+  }
+  handoffPreempt: StackMonitorHandoffPreemptConfig
 }
 
 export type StackMonitorSnapshot = {
@@ -155,13 +217,22 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
     reasoningEffort: "medium",
     worker: "auto",
   },
+  prompt: {
+    systemFile: ".stack/monitors/default.system.md",
+  },
   wake: {
     maxWakesPerPrimaryTurn: 6,
     onTurnCompleted: true,
     onToolCompleted: true,
     onToolFailed: true,
     deltaEvents: 12,
-    cooldownMs: 250,
+    cooldownMs: 15_000,
+    weightThreshold: 8,
+    turnCooldownMs: 15_000,
+    batchCooldownMs: 60_000,
+    maxDelayMs: 120_000,
+    policyScript: "scripts/monitor_wake_policy.py",
+    montyPythonBin: "python3",
   },
   intervention: {
     maxQueuedItemsPerThread: 8,
@@ -169,16 +240,54 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
   },
   skills: {
     enabled: true,
-    allowedSkillIds: ["stack-agent-bridge", "synth-via-stack", "stackeval"],
+    allowedSkillIds: ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack", "stackeval"],
     pushWhenConfident: false,
+  },
+  tools: {
+    allow: ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer"],
+    deny: ["codex.interrupt"],
+  },
+  permissions: {
+    queue: true,
+    steer: true,
+    skillPush: true,
+    pauseWorker: false,
+    blockBeforeAction: false,
+  },
+  handoffPreempt: {
+    enabled: false,
+    wakeOnContextPressure: true,
+    contextTokenThreshold: 100_000,
+    contextFractionThreshold: 0.75,
+    turnThreshold: 0,
+    idleBeforePreemptMs: 0,
+    minTurnsBeforePreempt: 6,
+    maxPreemptsPerSegment: 1,
+    cooldownMs: 300_000,
+    requireMetaThread: true,
+    successorRole: "same",
+    successorRoleName: "",
+    successorModel: "",
+    successorReasoningEffort: "",
+    autoSeal: true,
+    autoApprove: false,
+    autoContinue: false,
+    pauseWorkerBeforeSeal: true,
+    segmentPolicyFile: ".stack/meta-threads/segment-policy.toml",
   },
 }
 
 export function ensureDefaultMonitorConfig(stackRoot: string): string {
-  const path = join(stackRoot, ".stack", "monitors", "default.toml")
-  if (existsSync(path)) return path
-  mkdirSync(dirname(path), { recursive: true })
-  writeFileSync(path, `${defaultMonitorToml()}\n`, "utf8")
+  const dir = join(stackRoot, ".stack", "monitors")
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, "default.toml")
+  if (!existsSync(path)) {
+    writeFileSync(path, `${defaultMonitorToml()}\n`, "utf8")
+  }
+  const promptPath = join(dir, "default.system.md")
+  if (!existsSync(promptPath)) {
+    writeFileSync(promptPath, `${defaultMonitorBuiltinPrompt()}\n`, "utf8")
+  }
   return path
 }
 
@@ -226,6 +335,56 @@ export function refreshMonitorSnapshot(stackRoot: string, threadId: string): Sta
   return snapshotFromEvents(config, events, readMonitorActorState(stackRoot, threadId, actorId))
 }
 
+export function isExplicitMonitorPrefix(prompt: string): boolean {
+  return /^\/m(?:\s|$)/.test(prompt.trim())
+}
+
+export function stripMonitorMessagePrefix(prompt: string): string {
+  return prompt.trim().replace(/^\/m\s*/, "").trim()
+}
+
+export function appendMonitorOperatorMessage(
+  stackRoot: string,
+  threadId: string,
+  message: string,
+): StackThreadMetaEvent {
+  const config = loadMonitorConfig(stackRoot)
+  const event: StackThreadMetaEvent = {
+    event_id: stackEventId("monitor_operator"),
+    type: "monitor.operator_message",
+    thread_id: threadId,
+    observed_at: new Date().toISOString(),
+    actor_id: "operator",
+    actor_role: "primary",
+    payload: {
+      message,
+      source: "operator",
+      monitor_actor_id: monitorActorId(config),
+    },
+  }
+  appendThreadMetaEvent(stackRoot, event)
+  return event
+}
+
+export async function runMonitorAfterOperatorMessage(input: {
+  config: StackConfig
+  session: StackLocalSession
+  message: string
+  agentContext: AgentContextSnapshot
+  goalContext: CodexGoalSnapshot
+}): Promise<{ event: StackThreadMetaEvent; snapshot: StackMonitorSnapshot }> {
+  const event = appendMonitorOperatorMessage(input.config.appRoot, input.session.id, input.message)
+  const snapshot = await runMonitorForNewEvents({
+    config: input.config,
+    session: input.session,
+    agentContext: input.agentContext,
+    goalContext: input.goalContext,
+    wakeReason: "operator_message",
+    triggerEventIds: [event.event_id],
+  })
+  return { event, snapshot }
+}
+
 export async function runMonitorAfterTurn(input: {
   config: StackConfig
   session: StackLocalSession
@@ -237,6 +396,8 @@ export async function runMonitorAfterTurn(input: {
     stackRoot: input.config.appRoot,
     threadId: input.session.id,
     actorId: "primary_codex",
+    metaThreadId: input.session.metaThreadId,
+    segmentId: input.session.segmentId,
     turn: input.turn,
   })
   return await runMonitorForNewEvents({
@@ -294,6 +455,15 @@ export async function runMonitorForNewEvents(input: {
 
   const observedAt = new Date().toISOString()
   const wakeId = stackEventId("monitor_wake")
+  const handoffPreempt = evaluateHandoffPreempt({
+    config: monitorConfig,
+    session: input.session,
+    events: priorEvents,
+    pendingEvents: candidate.pendingEvents,
+    triggerEventIds: candidate.triggerEventIds,
+    wakeReason: candidate.reason,
+    observedAt,
+  })
   const runningState = actorStateFromConfig(monitorConfig, threadId, {
     previous: actorState,
     state: "running",
@@ -316,8 +486,25 @@ export async function runMonitorForNewEvents(input: {
       strictness: monitorConfig.strictness,
       focus_selection: monitorConfig.focusSelection,
       last_event_id_before: actorState?.last_event_id ?? null,
+      handoff_preempt: handoffPreempt?.wakePayload ?? null,
     },
   })
+  if (handoffPreempt) {
+    appendThreadMetaEvent(input.config.appRoot, {
+      event_id: stackEventId(`monitor_handoff_preempt_${handoffPreempt.status}`),
+      type: `monitor.handoff_preempt.${handoffPreempt.status}`,
+      thread_id: threadId,
+      observed_at: observedAt,
+      actor_id: actorId,
+      actor_role: "monitor",
+      meta_thread_id: input.session.metaThreadId,
+      segment_id: input.session.segmentId,
+      payload: {
+        ...handoffPreempt.eventPayload,
+        wake_id: wakeId,
+      },
+    })
+  }
 
   let pass: MonitorPassResult
   try {
@@ -328,6 +515,8 @@ export async function runMonitorForNewEvents(input: {
       goalContext: input.goalContext,
     })
     pass = await runMonitorPass({
+      stackConfig: input.config,
+      stackRoot: input.config.stackDataRoot,
       config: monitorConfig,
       actorState: runningState,
       threadId,
@@ -381,6 +570,8 @@ export async function runMonitorForNewEvents(input: {
       strictness: monitorConfig.strictness,
       severity: pass.severity,
       summary: pass.summary,
+      operator_update: pass.operatorUpdate ?? null,
+      goal_snapshot: goalSnapshotFromContext(input.goalContext),
       focus_results: focusResults(pass.checks),
       source: pass.source,
       model_thread_id: pass.monitorThreadId ?? null,
@@ -390,6 +581,24 @@ export async function runMonitorForNewEvents(input: {
       })),
     },
   })
+
+  const suggestedThreadName =
+    pass.threadName ??
+    parseThreadNameFromAgentResponse(pass.summary)
+  if (suggestedThreadName) {
+    await setThreadDisplayName({
+      stackRoot: input.config.appRoot,
+      sessionLogDir: input.config.sessionLogDir,
+      threadId,
+      displayName: suggestedThreadName,
+      namedBy: "monitor",
+      codexModel: input.config.codexModel,
+      pricingRows: input.config.codexPricing,
+    })
+    if (input.session.id === threadId) {
+      input.session.displayName = suggestedThreadName
+    }
+  }
 
   if (pass.fallbackReason) {
     appendThreadMetaEvent(input.config.appRoot, {
@@ -408,7 +617,9 @@ export async function runMonitorForNewEvents(input: {
     })
   }
 
-  const queueItems = pass.queueItems
+  const queueItems = monitorConfig.permissions.queue && actorToolAllowed(monitorConfig.tools, "monitor.queue")
+    ? pass.queueItems
+    : []
   for (const item of queueItems.slice(0, monitorConfig.intervention.maxQueuedItemsPerThread)) {
     appendThreadMetaEvent(input.config.appRoot, {
       event_id: stackEventId("monitor_queued"),
@@ -420,41 +631,29 @@ export async function runMonitorForNewEvents(input: {
       payload: item,
     })
   }
-  const contextPushes = skillContextPushDecisions({
-    config: monitorConfig,
-    pass,
-    priorEvents,
-    pendingEvents: candidate.pendingEvents,
-    triggerEventIds: candidate.triggerEventIds,
-    turn: input.turn ?? syntheticTurnFromEvents(input.session, candidate.pendingEvents),
-  })
+  const contextPushes = monitorConfig.permissions.skillPush
+    && (actorToolAllowed(monitorConfig.tools, "skills.push_context") || actorToolAllowed(monitorConfig.tools, "skills.suggest"))
+    ? skillContextPushDecisions({
+      config: monitorConfig,
+      pass,
+      priorEvents,
+      pendingEvents: candidate.pendingEvents,
+      triggerEventIds: candidate.triggerEventIds,
+      turn: input.turn ?? syntheticTurnFromEvents(input.session, candidate.pendingEvents),
+    })
+    : []
   for (const decision of contextPushes) {
-    const push = pushSkillContext(input.config.appRoot, {
+    suggestSkillToThread({
+      stackRoot: input.config.appRoot,
       threadId,
-      monitorActorId: actorId,
-      targetActorId: "primary_codex",
+      actorId,
+      actorRole: "monitor",
+      eventType: "monitor.skill_context_push",
       skillId: decision.skillId,
       reason: decision.reason,
       evidenceEventIds: decision.evidenceEventIds,
       message: decision.message,
       workspaceRoot: input.config.workspaceRoot,
-    })
-    appendThreadMetaEvent(input.config.appRoot, {
-      event_id: push.eventId,
-      type: "monitor.skill_context_push",
-      thread_id: push.threadId,
-      observed_at: push.createdAt,
-      actor_id: push.monitorActorId,
-      actor_role: "monitor",
-      payload: {
-        target_actor_id: push.targetActorId,
-        skill_id: push.skillId,
-        source_path: push.sourcePath,
-        reason: push.reason,
-        evidence_event_ids: push.evidenceEventIds,
-        message_id: push.messageId,
-        message: push.message,
-      },
     })
   }
 
@@ -462,7 +661,7 @@ export async function runMonitorForNewEvents(input: {
   const turnForSteer = input.turn ?? syntheticTurnFromEvents(input.session, candidate.pendingEvents)
   const violations = detectSynthStyleViolations(turnForSteer)
   const violation = violations.find((entry) => !hasSteeredViolationRule(priorEvents, entry.id))
-  if (violation) {
+  if (violation && monitorConfig.permissions.steer && actorToolAllowed(monitorConfig.tools, "monitor.steer")) {
     const severity = severityForStyleViolation(violation.id)
     if (steerAllowedForStrictness(monitorConfig.strictness, severity)) {
       const steer = buildStyleSteerFromGuidance({
@@ -714,6 +913,12 @@ type WakeCandidate = {
   pendingEvents: StackThreadMetaEvent[]
 }
 
+type HandoffPreemptEvaluation = {
+  status: "eligible" | "skipped"
+  wakePayload: Record<string, unknown>
+  eventPayload: Record<string, unknown>
+}
+
 function nextWakeCandidate(input: {
   config: StackMonitorConfig
   actorState?: StackMonitorActorRuntimeState
@@ -721,6 +926,17 @@ function nextWakeCandidate(input: {
   wakeReason?: string
   triggerEventIds?: string[]
 }): WakeCandidate | undefined {
+  if (input.wakeReason === "operator_message" && input.triggerEventIds?.length) {
+    const operatorEvents = input.events.filter((event) => input.triggerEventIds?.includes(event.event_id))
+    if (operatorEvents.length > 0) {
+      return {
+        reason: "operator_message",
+        triggerEventIds: input.triggerEventIds,
+        pendingEvents: operatorEvents,
+      }
+    }
+  }
+
   const pendingEvents = processableEventsAfterCursor(input.events, input.actorState?.last_event_id)
   if (pendingEvents.length === 0) return undefined
 
@@ -749,6 +965,161 @@ function nextWakeCandidate(input: {
   }
 
   return undefined
+}
+
+function evaluateHandoffPreempt(input: {
+  config: StackMonitorConfig
+  session: StackLocalSession
+  events: StackThreadMetaEvent[]
+  pendingEvents: StackThreadMetaEvent[]
+  triggerEventIds: string[]
+  wakeReason: string
+  observedAt: string
+}): HandoffPreemptEvaluation | undefined {
+  const policy = input.config.handoffPreempt
+  if (!policy.enabled) return undefined
+
+  const turnCount = segmentTurnCount(input.session, input.events)
+  const tokenEstimate = segmentInputTokenEstimate(input.session, input.events)
+  const triggers = handoffPreemptTriggers(policy, turnCount, tokenEstimate)
+  if (triggers.length === 0) return undefined
+
+  const trigger = triggers[0]!
+  const toolAllowed = actorToolAllowed(input.config.tools, "handoff.preempt")
+  const preemptsThisSegment = handoffPreemptAttemptCount(input.events, input.session.segmentId)
+  const latestAttempt = latestHandoffPreemptAttempt(input.events, input.session.segmentId)
+  const cooldownRemainingMs = latestAttempt
+    ? remainingCooldownMs(latestAttempt.observed_at, input.observedAt, policy.cooldownMs)
+    : 0
+  const missingMetaThread = policy.requireMetaThread && (!input.session.metaThreadId || !input.session.segmentId)
+
+  let status: HandoffPreemptEvaluation["status"] = "eligible"
+  let reason = trigger
+  if (!toolAllowed) {
+    status = "skipped"
+    reason = "tool_denied"
+  } else if (missingMetaThread) {
+    status = "skipped"
+    reason = "missing_meta_thread"
+  } else if (turnCount < policy.minTurnsBeforePreempt) {
+    status = "skipped"
+    reason = "min_turns"
+  } else if (preemptsThisSegment >= policy.maxPreemptsPerSegment) {
+    status = "skipped"
+    reason = "max_preempts_per_segment"
+  } else if (cooldownRemainingMs > 0) {
+    status = "skipped"
+    reason = "cooldown"
+  }
+
+  const payload = {
+    status,
+    reason,
+    trigger,
+    triggers,
+    thread_id: input.session.id,
+    meta_thread_id: input.session.metaThreadId ?? null,
+    segment_id: input.session.segmentId ?? null,
+    segment_role: input.session.segmentRole ?? null,
+    harness: input.session.harness ?? "codex",
+    token_estimate: tokenEstimate,
+    context_token_threshold: policy.contextTokenThreshold,
+    context_fraction_threshold: policy.contextFractionThreshold,
+    context_fraction: null,
+    turn_count: turnCount,
+    turn_threshold: policy.turnThreshold,
+    min_turns_before_preempt: policy.minTurnsBeforePreempt,
+    preempts_this_segment: preemptsThisSegment,
+    max_preempts_per_segment: policy.maxPreemptsPerSegment,
+    cooldown_ms: policy.cooldownMs,
+    cooldown_remaining_ms: cooldownRemainingMs,
+    tool_allowed: toolAllowed,
+    require_meta_thread: policy.requireMetaThread,
+    successor_role: policy.successorRole,
+    successor_role_name: policy.successorRoleName || null,
+    successor_model: policy.successorModel || null,
+    successor_reasoning_effort: policy.successorReasoningEffort || null,
+    auto_seal: policy.autoSeal,
+    auto_approve: policy.autoApprove,
+    auto_continue: policy.autoContinue,
+    pause_worker_before_seal: policy.pauseWorkerBeforeSeal,
+    segment_policy_file: policy.segmentPolicyFile,
+    wake_reason: input.wakeReason,
+    trigger_event_ids: input.triggerEventIds,
+    pending_event_count: input.pendingEvents.length,
+    observe_only: true,
+  }
+
+  return {
+    status,
+    wakePayload: payload,
+    eventPayload: payload,
+  }
+}
+
+function handoffPreemptTriggers(
+  policy: StackMonitorHandoffPreemptConfig,
+  turnCount: number,
+  tokenEstimate: number,
+): string[] {
+  const triggers: string[] = []
+  if (
+    policy.wakeOnContextPressure &&
+    policy.contextTokenThreshold > 0 &&
+    tokenEstimate >= policy.contextTokenThreshold
+  ) {
+    triggers.push("context_pressure")
+  }
+  if (policy.turnThreshold > 0 && turnCount >= policy.turnThreshold) {
+    triggers.push("turn_threshold")
+  }
+  return triggers
+}
+
+function segmentTurnCount(session: StackLocalSession, events: StackThreadMetaEvent[]): number {
+  const completedTurnEvents = events.filter((event) =>
+    event.type === "agent.turn.completed" &&
+    (!session.segmentId || event.segment_id === session.segmentId || readString(event.payload.segment_id) === session.segmentId)
+  ).length
+  return Math.max(session.turns.length, completedTurnEvents)
+}
+
+function segmentInputTokenEstimate(session: StackLocalSession, events: StackThreadMetaEvent[]): number {
+  const sessionTokens = session.usageSummary?.totals.inputTokens ?? 0
+  let eventTokens = 0
+  for (const event of events) {
+    if (event.type !== "agent.usage") continue
+    if (session.segmentId && event.segment_id && event.segment_id !== session.segmentId) continue
+    eventTokens += readNumber(event.payload.input_tokens) ?? 0
+  }
+  return Math.max(sessionTokens, eventTokens)
+}
+
+function handoffPreemptAttemptCount(events: StackThreadMetaEvent[], segmentId: string | undefined): number {
+  return events.filter((event) =>
+    (event.type === "monitor.handoff_preempt.requested" || event.type === "monitor.handoff_preempt.completed") &&
+    (!segmentId || event.segment_id === segmentId || readString(event.payload.segment_id) === segmentId)
+  ).length
+}
+
+function latestHandoffPreemptAttempt(
+  events: StackThreadMetaEvent[],
+  segmentId: string | undefined,
+): StackThreadMetaEvent | undefined {
+  return events
+    .filter((event) =>
+      event.type.startsWith("monitor.handoff_preempt.") &&
+      (!segmentId || event.segment_id === segmentId || readString(event.payload.segment_id) === segmentId)
+    )
+    .at(-1)
+}
+
+function remainingCooldownMs(previousObservedAt: string, observedAt: string, cooldownMs: number): number {
+  if (cooldownMs <= 0) return 0
+  const previous = Date.parse(previousObservedAt)
+  const current = Date.parse(observedAt)
+  if (!Number.isFinite(previous) || !Number.isFinite(current)) return 0
+  return Math.max(0, cooldownMs - (current - previous))
 }
 
 function processableEventsAfterCursor(events: StackThreadMetaEvent[], lastEventId: string | undefined): StackThreadMetaEvent[] {
@@ -820,12 +1191,21 @@ type MonitorPassResult = {
   checks: FocusCheck[]
   severity: MonitorSeverity
   summary: string
+  threadName?: string
   queueItems: Record<string, unknown>[]
   checkpointSummary?: string
-  source: "deterministic-runtime" | "openai-responses"
+  operatorUpdate?: MonitorOperatorUpdate
+  source: "deterministic-runtime" | "openai-responses" | "synth-aux"
   monitorThreadId?: string
   usage?: MonitorUsageEstimate
   fallbackReason?: string
+}
+
+export type MonitorOperatorUpdate = {
+  working_on?: string
+  struggling_with?: string
+  progress_note?: string
+  goal_status?: string
 }
 
 type MonitorUsageEstimate = {
@@ -837,6 +1217,8 @@ type MonitorUsageEstimate = {
 }
 
 async function runMonitorPass(input: {
+  stackConfig: StackConfig
+  stackRoot: string
   config: StackMonitorConfig
   actorState: StackMonitorActorRuntimeState
   threadId: string
@@ -849,20 +1231,22 @@ async function runMonitorPass(input: {
   goalContext: CodexGoalSnapshot
   checks: FocusCheck[]
 }): Promise<MonitorPassResult> {
-  const deterministic = deterministicMonitorPass(input.config, input.checks)
-  if (!shouldUseOpenAiResponses(input.config)) return deterministic
-  const apiKey = process.env.OPENAI_API_KEY?.trim()
-  if (!apiKey) {
+  const deterministic = deterministicMonitorPass(input.config, input.checks, {
+    goalContext: input.goalContext,
+    pendingEvents: input.pendingEvents,
+    turn: input.turn,
+    wakeReason: input.wakeReason,
+  })
+  if (!shouldUseModelWorker(input.config)) return deterministic
+  const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
+  if (!inference) {
     return {
       ...deterministic,
-      fallbackReason: input.config.model.worker === "openai_responses"
-        ? "OPENAI_API_KEY missing"
-        : undefined,
+      fallbackReason: monitorInferenceFallbackReason(input.config, input.stackConfig),
     }
   }
   try {
-    const model = await runOpenAiResponsesMonitorPass(input, deterministic, apiKey)
-    return model
+    return await runResponsesMonitorPass(input, deterministic, inference)
   } catch (error) {
     return {
       ...deterministic,
@@ -871,31 +1255,105 @@ async function runMonitorPass(input: {
   }
 }
 
-function deterministicMonitorPass(config: StackMonitorConfig, checks: FocusCheck[]): MonitorPassResult {
+function normalizeMonitorProvider(provider: string | undefined): "openai" | "synth_aux" {
+  const normalized = (provider ?? "openai").trim().toLowerCase().replace(/-/g, "_")
+  return normalized === "synth_aux" ? "synth_aux" : "openai"
+}
+
+type MonitorInferenceEndpoint = {
+  url: string
+  apiKey: string
+  headers: Record<string, string>
+  source: "openai-responses" | "synth-aux"
+}
+
+function resolveMonitorInferenceEndpoint(
+  config: StackMonitorConfig,
+  stackConfig: StackConfig,
+): MonitorInferenceEndpoint | null {
+  const provider = normalizeMonitorProvider(config.model.provider)
+  if (provider === "synth_aux") {
+    if (process.env.STACK_AUX_INFERENCE !== "1") return null
+    loadEnvironmentAuth(stackConfig.environment)
+    const apiKey = process.env[stackConfig.environment.authEnv]?.trim()
+    if (!apiKey) return null
+    const base = stackConfig.environment.apiBaseUrl.replace(/\/+$/, "")
+    return {
+      url: `${base}/api/v1/stack-aux/openai/v1/responses`,
+      apiKey,
+      headers: { "X-Stack-Actor-Role": "monitor" },
+      source: "synth-aux",
+    }
+  }
+  const apiKey = process.env.OPENAI_API_KEY?.trim()
+  if (!apiKey) return null
+  return {
+    url: "https://api.openai.com/v1/responses",
+    apiKey,
+    headers: {},
+    source: "openai-responses",
+  }
+}
+
+function monitorInferenceFallbackReason(
+  config: StackMonitorConfig,
+  stackConfig: StackConfig,
+): string | undefined {
+  const worker = process.env.STACK_MONITOR_MODEL_WORKER?.trim() || config.model.worker
+  if (worker !== "openai_responses") return undefined
+  if (normalizeMonitorProvider(config.model.provider) === "synth_aux") {
+    if (process.env.STACK_AUX_INFERENCE !== "1") return "STACK_AUX_INFERENCE not enabled"
+    loadEnvironmentAuth(stackConfig.environment)
+    if (!process.env[stackConfig.environment.authEnv]?.trim()) {
+      return `${stackConfig.environment.authEnv} missing`
+    }
+    return "stack-aux inference unavailable"
+  }
+  return "OPENAI_API_KEY missing"
+}
+
+function deterministicMonitorPass(
+  config: StackMonitorConfig,
+  checks: FocusCheck[],
+  context?: {
+    goalContext: CodexGoalSnapshot
+    pendingEvents: StackThreadMetaEvent[]
+    turn: StackCodexTurn
+    wakeReason: string
+  },
+): MonitorPassResult {
   const severity = combineSeverity(config, checks)
-  const summary = summarizeChecks(checks, severity)
+  const operatorUpdate = context ? buildDeterministicOperatorUpdate(config, checks, context) : undefined
+  const summary = operatorUpdate
+    ? formatOperatorSummary(operatorUpdate, severity)
+    : summarizeChecks(checks, severity)
   return {
     checks,
     severity,
     summary,
+    operatorUpdate,
     queueItems: queueItemsFor(config, checks),
-    checkpointSummary: summary,
+    checkpointSummary: operatorUpdate?.progress_note ?? summary,
     source: "deterministic-runtime",
   }
 }
 
-function shouldUseOpenAiResponses(config: StackMonitorConfig): boolean {
+function shouldUseModelWorker(config: StackMonitorConfig): boolean {
   const override = process.env.STACK_MONITOR_MODEL_WORKER?.trim()
   const worker = override === "deterministic" || override === "openai_responses" || override === "auto"
     ? override
     : config.model.worker
   if (worker === "deterministic") return false
   if (worker === "openai_responses") return true
+  if (normalizeMonitorProvider(config.model.provider) === "synth_aux") {
+    return process.env.STACK_AUX_INFERENCE === "1"
+  }
   return Boolean(process.env.OPENAI_API_KEY?.trim())
 }
 
-async function runOpenAiResponsesMonitorPass(
+async function runResponsesMonitorPass(
   input: {
+    stackRoot: string
     config: StackMonitorConfig
     actorState: StackMonitorActorRuntimeState
     threadId: string
@@ -909,13 +1367,14 @@ async function runOpenAiResponsesMonitorPass(
     checks: FocusCheck[]
   },
   deterministic: MonitorPassResult,
-  apiKey: string,
+  inference: MonitorInferenceEndpoint,
 ): Promise<MonitorPassResult> {
-  const response = await fetch("https://api.openai.com/v1/responses", {
+  const response = await fetch(inference.url, {
     method: "POST",
     headers: {
-      "authorization": `Bearer ${apiKey}`,
+      "authorization": `Bearer ${inference.apiKey}`,
       "content-type": "application/json",
+      ...inference.headers,
     },
     body: JSON.stringify({
       model: input.config.model.model,
@@ -926,7 +1385,7 @@ async function runOpenAiResponsesMonitorPass(
           role: "developer",
           content: [{
             type: "input_text",
-            text: monitorDeveloperPrompt(),
+            text: resolveMonitorDeveloperPrompt(input.stackRoot, input.config),
           }],
         },
         {
@@ -941,18 +1400,22 @@ async function runOpenAiResponsesMonitorPass(
   })
   const payload = await response.json().catch(() => undefined) as unknown
   if (!response.ok) {
-    throw new Error(`OpenAI monitor pass failed ${response.status}: ${truncate(JSON.stringify(payload ?? {}), 300)}`)
+    const label = inference.source === "synth-aux" ? "stack-aux" : "OpenAI"
+    throw new Error(`${label} monitor pass failed ${response.status}: ${truncate(JSON.stringify(payload ?? {}), 300)}`)
   }
-  const parsed = parseOpenAiMonitorResult(payload, deterministic)
+  const parsed = parseResponsesMonitorResult(payload, deterministic, inference.source)
   return {
     ...parsed,
-    source: "openai-responses",
     monitorThreadId: readString(asRecord(payload)?.id) ?? input.actorState.monitor_thread_id,
     usage: readOpenAiUsage(payload) ?? deterministic.usage,
   }
 }
 
-function monitorDeveloperPrompt(): string {
+function resolveMonitorDeveloperPrompt(stackRoot: string, config: StackMonitorConfig): string {
+  return resolveActorPrompt(stackRoot, config.prompt, defaultMonitorBuiltinPrompt())
+}
+
+function defaultMonitorBuiltinPrompt(): string {
   return [
     "You are the Stack monitor actor watching a primary coding agent.",
     "Behave like calibrated human oversight: sparse, concrete, and non-spammy.",
@@ -961,6 +1424,7 @@ function monitorDeveloperPrompt(): string {
     "Return only a JSON object with this shape:",
     "{",
     '  "summary": "short operator-facing summary",',
+    '  "thread_name": "optional short thread title when operator asks to name the thread (max 48 chars)",',
     '  "severity": "none|low|medium|high",',
     '  "focus_results": {"style":"pass|warn|fail|disabled","goal_progress":"pass|warn|fail|disabled","skills":"pass|warn|fail|disabled","tool_use":"pass|warn|fail|disabled","scope_control":"pass|warn|fail|disabled","acceptance":"pass|warn|fail|disabled"},',
     '  "queue_items": [{"severity":"low|medium|high","focus":"style|goal_progress|skills|tool_use|scope_control|acceptance","summary":"...","evidence":"..."}],',
@@ -1021,11 +1485,15 @@ function monitorUserPayload(
   }
 }
 
-function parseOpenAiMonitorResult(payload: unknown, deterministic: MonitorPassResult): MonitorPassResult {
+function parseResponsesMonitorResult(
+  payload: unknown,
+  deterministic: MonitorPassResult,
+  source: "openai-responses" | "synth-aux",
+): MonitorPassResult {
   const text = extractOpenAiOutputText(payload)
   const parsed = parseFirstJsonObject(text)
   if (!parsed) {
-    throw new Error("OpenAI monitor response did not contain JSON")
+    throw new Error("Monitor Responses payload did not contain JSON")
   }
   const focusRecord = asRecord(parsed.focus_results)
   const checks = deterministic.checks.map((check) => {
@@ -1037,14 +1505,18 @@ function parseOpenAiMonitorResult(payload: unknown, deterministic: MonitorPassRe
     }
   })
   const severity = normalizeSeverity(readString(parsed.severity), deterministic.severity)
-  const summary = readString(parsed.summary) ?? deterministic.summary
+  const operatorUpdate = readOperatorUpdateFromRecord(asRecord(parsed.operator_update)) ?? deterministic.operatorUpdate
+  const summary = readString(parsed.summary) ?? (operatorUpdate ? formatOperatorSummary(operatorUpdate, severity) : deterministic.summary)
+  const threadName = sanitizeThreadDisplayName(readString(parsed.thread_name) ?? "")
   return {
     checks,
     severity,
     summary,
+    threadName: threadName ?? undefined,
+    operatorUpdate,
     queueItems: readQueueItems(parsed.queue_items) ?? deterministic.queueItems,
-    checkpointSummary: readString(parsed.checkpoint_summary) ?? summary,
-    source: "openai-responses",
+    checkpointSummary: readString(parsed.checkpoint_summary) ?? operatorUpdate?.progress_note ?? summary,
+    source,
   }
 }
 
@@ -1308,7 +1780,7 @@ function checkSkills(config: StackMonitorConfig, context: AgentContextSnapshot, 
       focus: "skills",
       status: "warn",
       severity: config.strictness === "aggressive" ? "medium" : "low",
-      summary: "turn appears to need Stack/Synth skills but no skill use was detected",
+      summary: "turn appears to need Stack/Synth skills but no skill use was detected (load oss-gepa or gepa)",
       evidence: "StackEval/GEPA/Synth keyword without used skill event",
     }
   }
@@ -1439,7 +1911,22 @@ function recommendedSkillForMonitorPush(
     ...events.map((event) => JSON.stringify(event.payload)),
   ].join("\n").toLowerCase()
   const allowed = config.skills.allowedSkillIds
-  if ((text.includes("stackeval") || text.includes("gepa") || text.includes("synth")) && allowed.includes("synth-via-stack")) {
+  if (allowed.includes("synth-stack-productivity") && (text.includes("usesynth") || text.includes("hosted") || text.includes("smr") || text.includes("factory"))) {
+    return "synth-stack-productivity"
+  }
+  if ((text.includes("hosted optimizer") || text.includes("hosted gepa") || text.includes("usesynth")) && allowed.includes("hosted-gepa")) {
+    return "hosted-gepa"
+  }
+  if ((text.includes("synth-ai") || text.includes("container") || text.includes("rollout")) && allowed.includes("synth-ai")) {
+    return "synth-ai"
+  }
+  if ((text.includes("gepa") || text.includes("synth-optimizers")) && allowed.includes("oss-gepa")) {
+    return "oss-gepa"
+  }
+  if (text.includes("gepa") && allowed.includes("gepa")) {
+    return "gepa"
+  }
+  if ((text.includes("stackeval") || text.includes("synth")) && allowed.includes("synth-via-stack")) {
     return "synth-via-stack"
   }
   if (allowed.includes("stack-agent-bridge")) return "stack-agent-bridge"
@@ -1460,6 +1947,90 @@ function summarizeChecks(checks: FocusCheck[], severity: MonitorSeverity): strin
   const actionable = checks.filter((check) => check.status === "warn" || check.status === "fail")
   if (actionable.length === 0 || severity === "none") return "No monitor action needed."
   return actionable.map((check) => `${check.focus}: ${check.summary}`).join(" · ")
+}
+
+function goalSnapshotFromContext(goal: CodexGoalSnapshot): Record<string, unknown> | null {
+  if (!goal.objective && !goal.status && goal.tokensUsed === undefined) return null
+  return {
+    objective: goal.objective ?? null,
+    status: goal.status ?? "active",
+    tokens_used: goal.tokensUsed ?? null,
+    token_budget: goal.tokenBudget ?? null,
+    source: goal.source,
+  }
+}
+
+function readOperatorUpdateFromRecord(record: Record<string, unknown> | undefined): MonitorOperatorUpdate | undefined {
+  if (!record) return undefined
+  const workingOn = readString(record.working_on)
+  const strugglingWith = readString(record.struggling_with)
+  const progressNote = readString(record.progress_note)
+  const goalStatus = readString(record.goal_status)
+  if (!workingOn && !strugglingWith && !progressNote && !goalStatus) return undefined
+  return {
+    working_on: workingOn,
+    struggling_with: strugglingWith,
+    progress_note: progressNote,
+    goal_status: goalStatus,
+  }
+}
+
+function buildDeterministicOperatorUpdate(
+  config: StackMonitorConfig,
+  checks: FocusCheck[],
+  context: {
+    goalContext: CodexGoalSnapshot
+    pendingEvents: StackThreadMetaEvent[]
+    turn: StackCodexTurn
+    wakeReason: string
+  },
+): MonitorOperatorUpdate | undefined {
+  if (!config.focus.goal_progress && !context.goalContext.objective) return undefined
+  const goalObjective = context.goalContext.objective?.trim()
+  const workingOn = goalObjective
+    ?? truncate(context.turn.prompt.replace(/\s+/g, " ").trim(), 160)
+    ?? "primary agent turn"
+  const actionable = checks.filter((check) => check.status === "warn" || check.status === "fail")
+  const toolFailure = context.pendingEvents.find((event) => event.type === "agent.tool.failed")
+  const toolCompleted = [...context.pendingEvents].reverse().find((event) => event.type === "agent.tool.completed")
+  const strugglingParts = actionable.map((check) => check.summary)
+  if (toolFailure) {
+    strugglingParts.push(readString(toolFailure.payload.message) ?? readString(toolFailure.payload.tool_name) ?? "tool failed")
+  }
+  const progressNote = describeMonitorProgress(context.wakeReason, toolCompleted, context.turn)
+  return {
+    working_on: workingOn,
+    struggling_with: strugglingParts.join(" · ") || undefined,
+    progress_note: progressNote,
+    goal_status: context.goalContext.status ?? (goalObjective ? "active" : "unknown"),
+  }
+}
+
+function describeMonitorProgress(
+  wakeReason: string,
+  toolEvent: StackThreadMetaEvent | undefined,
+  turn: StackCodexTurn,
+): string {
+  if (toolEvent) {
+    const toolName = readString(toolEvent.payload.tool_name) ?? "tool"
+    const command = readString(toolEvent.payload.command)
+    return command ? `Completed ${toolName}: ${truncate(command, 80)}` : `Completed ${toolName}`
+  }
+  if (wakeReason === "turn_completed") {
+    const tail = truncate(turn.stdout.replace(/\s+/g, " ").trim(), 100)
+    return tail ? `Turn finished — ${tail}` : "Turn finished"
+  }
+  if (wakeReason === "tool_failed") return "Tool failure in latest delta"
+  return wakeReason.replace(/_/g, " ")
+}
+
+function formatOperatorSummary(update: MonitorOperatorUpdate, severity: MonitorSeverity): string {
+  const parts: string[] = []
+  if (update.working_on) parts.push(`Working on: ${update.working_on}`)
+  if (update.progress_note) parts.push(update.progress_note)
+  if (update.struggling_with) parts.push(`Struggling: ${update.struggling_with}`)
+  if (parts.length === 0) return severity === "none" ? "Watching — no update yet." : "Monitor update"
+  return parts.join(" · ")
 }
 
 function snapshotFromEvents(
@@ -1583,12 +2154,8 @@ function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Rec
       scope_control: readBoolean(parsed.focus?.scope_control) ?? base.focus.scope_control,
       acceptance: readBoolean(parsed.focus?.acceptance) ?? base.focus.acceptance,
     },
-    model: {
-      provider: readString(parsed.model?.provider) ?? base.model.provider,
-      model: readString(parsed.model?.model) ?? base.model.model,
-      reasoningEffort: readString(parsed.model?.reasoning_effort) ?? base.model.reasoningEffort,
-      worker: normalizeModelWorker(readString(parsed.model?.worker), base.model.worker),
-    },
+    model: mergeActorModel(base.model, parsed),
+    prompt: mergeActorPrompt(base.prompt, parsed),
     wake: {
       maxWakesPerPrimaryTurn: readNumber(parsed.wake?.max_wakes_per_primary_turn) ?? base.wake.maxWakesPerPrimaryTurn,
       onTurnCompleted: readBoolean(parsed.wake?.on_turn_completed) ?? base.wake.onTurnCompleted,
@@ -1596,6 +2163,12 @@ function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Rec
       onToolFailed: readBoolean(parsed.wake?.on_tool_failed) ?? base.wake.onToolFailed,
       deltaEvents: readNumber(parsed.wake?.delta_events) ?? base.wake.deltaEvents,
       cooldownMs: readNumber(parsed.wake?.cooldown_ms) ?? base.wake.cooldownMs,
+      weightThreshold: readNumber(parsed.wake?.weight_threshold) ?? base.wake.weightThreshold,
+      turnCooldownMs: readNumber(parsed.wake?.turn_cooldown_ms) ?? base.wake.turnCooldownMs,
+      batchCooldownMs: readNumber(parsed.wake?.batch_cooldown_ms) ?? base.wake.batchCooldownMs,
+      maxDelayMs: readNumber(parsed.wake?.max_delay_ms) ?? base.wake.maxDelayMs,
+      policyScript: readString(parsed.wake?.policy_script) ?? base.wake.policyScript,
+      montyPythonBin: readString(parsed.wake?.monty_python_bin) ?? base.wake.montyPythonBin,
     },
     intervention: {
       maxQueuedItemsPerThread:
@@ -1607,50 +2180,48 @@ function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Rec
       allowedSkillIds: readStringArray(parsed.skills?.allowed_skill_ids) ?? base.skills.allowedSkillIds,
       pushWhenConfident: readBoolean(parsed.skills?.push_when_confident) ?? base.skills.pushWhenConfident,
     },
+    tools: mergeActorTools(base.tools, parsed),
+    permissions: {
+      queue: readBoolean(parsed.permissions?.queue) ?? base.permissions.queue,
+      steer: readBoolean(parsed.permissions?.steer) ?? base.permissions.steer,
+      skillPush: readBoolean(parsed.permissions?.skill_push) ?? base.permissions.skillPush,
+      pauseWorker: readBoolean(parsed.permissions?.pause_worker) ?? base.permissions.pauseWorker,
+      blockBeforeAction: readBoolean(parsed.permissions?.block_before_action) ?? base.permissions.blockBeforeAction,
+    },
+    handoffPreempt: {
+      enabled: readBoolean(parsed.handoff_preempt?.enabled) ?? base.handoffPreempt.enabled,
+      wakeOnContextPressure:
+        readBoolean(parsed.handoff_preempt?.wake_on_context_pressure) ?? base.handoffPreempt.wakeOnContextPressure,
+      contextTokenThreshold:
+        readNumber(parsed.handoff_preempt?.context_token_threshold) ?? base.handoffPreempt.contextTokenThreshold,
+      contextFractionThreshold:
+        readNumber(parsed.handoff_preempt?.context_fraction_threshold) ?? base.handoffPreempt.contextFractionThreshold,
+      turnThreshold: readNumber(parsed.handoff_preempt?.turn_threshold) ?? base.handoffPreempt.turnThreshold,
+      idleBeforePreemptMs:
+        readNumber(parsed.handoff_preempt?.idle_before_preempt_ms) ?? base.handoffPreempt.idleBeforePreemptMs,
+      minTurnsBeforePreempt:
+        readNumber(parsed.handoff_preempt?.min_turns_before_preempt) ?? base.handoffPreempt.minTurnsBeforePreempt,
+      maxPreemptsPerSegment:
+        readNumber(parsed.handoff_preempt?.max_preempts_per_segment) ?? base.handoffPreempt.maxPreemptsPerSegment,
+      cooldownMs: readNumber(parsed.handoff_preempt?.cooldown_ms) ?? base.handoffPreempt.cooldownMs,
+      requireMetaThread:
+        readBoolean(parsed.handoff_preempt?.require_meta_thread) ?? base.handoffPreempt.requireMetaThread,
+      successorRole: readString(parsed.handoff_preempt?.successor_role) ?? base.handoffPreempt.successorRole,
+      successorRoleName:
+        readString(parsed.handoff_preempt?.successor_role_name) ?? base.handoffPreempt.successorRoleName,
+      successorModel: readString(parsed.handoff_preempt?.successor_model) ?? base.handoffPreempt.successorModel,
+      successorReasoningEffort:
+        readString(parsed.handoff_preempt?.successor_reasoning_effort) ??
+        base.handoffPreempt.successorReasoningEffort,
+      autoSeal: readBoolean(parsed.handoff_preempt?.auto_seal) ?? base.handoffPreempt.autoSeal,
+      autoApprove: readBoolean(parsed.handoff_preempt?.auto_approve) ?? base.handoffPreempt.autoApprove,
+      autoContinue: readBoolean(parsed.handoff_preempt?.auto_continue) ?? base.handoffPreempt.autoContinue,
+      pauseWorkerBeforeSeal:
+        readBoolean(parsed.handoff_preempt?.pause_worker_before_seal) ?? base.handoffPreempt.pauseWorkerBeforeSeal,
+      segmentPolicyFile:
+        readString(parsed.handoff_preempt?.segment_policy_file) ?? base.handoffPreempt.segmentPolicyFile,
+    },
   }
-}
-
-function parseTomlLike(text: string): Record<string, Record<string, unknown>> {
-  const result: Record<string, Record<string, unknown>> = {}
-  let section = "monitor"
-  result[section] = {}
-  for (const rawLine of text.split(/\r?\n/)) {
-    const line = stripTomlComment(rawLine).trim()
-    if (!line) continue
-    const sectionMatch = /^\[([A-Za-z0-9_.-]+)]$/.exec(line)
-    if (sectionMatch?.[1]) {
-      section = sectionMatch[1]
-      result[section] ??= {}
-      continue
-    }
-    const match = /^([A-Za-z0-9_.-]+)\s*=\s*(.+)$/.exec(line)
-    if (!match?.[1] || match[2] === undefined) continue
-    result[section] ??= {}
-    result[section][match[1]] = parseTomlValue(match[2].trim())
-  }
-  return result
-}
-
-function parseTomlValue(raw: string): unknown {
-  if (raw === "true") return true
-  if (raw === "false") return false
-  if (/^-?\d+(\.\d+)?$/.test(raw)) return Number(raw)
-  if (raw.startsWith("[") && raw.endsWith("]")) {
-    const inner = raw.slice(1, -1).trim()
-    if (!inner) return []
-    return inner.split(",").map((part) => trimQuotes(part.trim()))
-  }
-  return trimQuotes(raw)
-}
-
-function stripTomlComment(line: string): string {
-  let quoted = false
-  for (let index = 0; index < line.length; index += 1) {
-    const char = line[index]
-    if (char === '"') quoted = !quoted
-    if (char === "#" && !quoted) return line.slice(0, index)
-  }
-  return line
 }
 
 function defaultMonitorToml(): string {
@@ -1678,13 +2249,22 @@ function defaultMonitorToml(): string {
     'reasoning_effort = "medium"',
     'worker = "auto"',
     "",
+    "[prompt]",
+    'system_file = ".stack/monitors/default.system.md"',
+    "",
     "[wake]",
     "max_wakes_per_primary_turn = 6",
     "on_turn_completed = true",
     "on_tool_completed = true",
     "on_tool_failed = true",
     "delta_events = 12",
-    "cooldown_ms = 250",
+    "weight_threshold = 8",
+    "cooldown_ms = 15000",
+    "turn_cooldown_ms = 15000",
+    "batch_cooldown_ms = 60000",
+    "max_delay_ms = 120000",
+    'policy_script = "scripts/monitor_wake_policy.py"',
+    'monty_python_bin = "python3"',
     "",
     "[intervention]",
     "max_queued_items_per_thread = 8",
@@ -1692,8 +2272,40 @@ function defaultMonitorToml(): string {
     "",
     "[skills]",
     "enabled = true",
-    'allowed_skill_ids = ["stack-agent-bridge", "synth-via-stack", "stackeval"]',
+    'allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack", "stackeval"]',
     "push_when_confident = false",
+    "",
+    "[tools]",
+    'allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer"]',
+    'deny = ["codex.interrupt"]',
+    "",
+    "[handoff_preempt]",
+    "enabled = false",
+    "wake_on_context_pressure = true",
+    "context_token_threshold = 100000",
+    "context_fraction_threshold = 0.75",
+    "turn_threshold = 0",
+    "idle_before_preempt_ms = 0",
+    "min_turns_before_preempt = 6",
+    "max_preempts_per_segment = 1",
+    "cooldown_ms = 300000",
+    "require_meta_thread = true",
+    'successor_role = "same"',
+    'successor_role_name = ""',
+    'successor_model = ""',
+    'successor_reasoning_effort = ""',
+    "auto_seal = true",
+    "auto_approve = false",
+    "auto_continue = false",
+    "pause_worker_before_seal = true",
+    'segment_policy_file = ".stack/meta-threads/segment-policy.toml"',
+    "",
+    "[permissions]",
+    "queue = true",
+    "steer = true",
+    "skill_push = true",
+    "pause_worker = false",
+    "block_before_action = false",
   ].join("\n")
 }
 
@@ -1730,14 +2342,6 @@ function normalizeStrictness(value: string | undefined, fallback: MonitorStrictn
 
 function normalizeSelection(value: string | undefined, fallback: "any" | "all"): "any" | "all" {
   return value === "any" || value === "all" ? value : fallback
-}
-
-function normalizeModelWorker(
-  value: string | undefined,
-  fallback: "auto" | "deterministic" | "openai_responses",
-): "auto" | "deterministic" | "openai_responses" {
-  if (value === "auto" || value === "deterministic" || value === "openai_responses") return value
-  return fallback
 }
 
 function normalizeSeverity(value: string | undefined, fallback: MonitorSeverity): MonitorSeverity {
@@ -1781,33 +2385,9 @@ function severityRank(severity: MonitorSeverity): number {
   }
 }
 
-function readString(value: unknown): string | undefined {
-  return typeof value === "string" && value.trim() ? value.trim() : undefined
-}
-
-function readBoolean(value: unknown): boolean | undefined {
-  return typeof value === "boolean" ? value : undefined
-}
-
-function readNumber(value: unknown): number | undefined {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined
-}
-
-function readStringArray(value: unknown): string[] | undefined {
-  if (!Array.isArray(value) || !value.every((item) => typeof item === "string")) return undefined
-  return value
-}
-
 function asRecord(value: unknown): Record<string, unknown> | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined
   return value as Record<string, unknown>
-}
-
-function trimQuotes(value: string): string {
-  if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
-    return value.slice(1, -1)
-  }
-  return value
 }
 
 function truncate(value: string, maxWidth: number): string {

@@ -2,6 +2,7 @@ import { readdir, readFile, stat } from "node:fs/promises"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { resolveCodexSessionPath } from "./agent-context.js"
+import { CodexAppServerClient, codexAppServerArgs } from "./app-server-client.js"
 
 export type CodexRateLimitWindow = {
   usedPercent: number
@@ -14,6 +15,7 @@ export type CodexRateLimitsSnapshot = {
   primary?: CodexRateLimitWindow
   secondary?: CodexRateLimitWindow
   rateLimitReached?: string
+  resetCreditsAvailable?: number
   observedAt: string
 }
 
@@ -55,7 +57,7 @@ export function parseRateLimitsFromCodexStdoutLine(line: string): CodexRateLimit
   } catch {
     return undefined
   }
-  return parseRateLimitsFromEvent(record)
+  return parseRateLimitsFromEvent(record) ?? parseRateLimitsFromStdoutRecord(record)
 }
 
 export function parseRateLimitsFromEvent(event: unknown): CodexRateLimitsSnapshot | undefined {
@@ -92,6 +94,43 @@ export async function readCodexRateLimitsFromSession(
   return parseRateLimitsFromSessionJsonl(await readFile(sessionPath, "utf8"))
 }
 
+export async function readCodexRateLimitsFromAppServer(
+  codexCommand: string,
+  codexArgs: readonly string[] = [],
+): Promise<CodexRateLimitsSnapshot | undefined> {
+  const client = await CodexAppServerClient.start({
+    launch: {
+      command: codexCommand,
+      args: codexAppServerArgs(codexArgs),
+      cwd: process.cwd(),
+    },
+    clientName: "stack",
+    clientTitle: "Stack",
+  })
+  try {
+    const result = await client.request("account/rateLimits/read", {}, 15_000)
+    return parseRateLimitsFromAppServerResult(result)
+  } finally {
+    await client.close()
+  }
+}
+
+export async function readCodexRateLimits(options: {
+  codexCommand: string
+  codexArgs?: readonly string[]
+}): Promise<CodexRateLimitsSnapshot | undefined> {
+  try {
+    const fromAppServer = await readCodexRateLimitsFromAppServer(
+      options.codexCommand,
+      options.codexArgs ?? [],
+    )
+    if (fromAppServer) return fromAppServer
+  } catch {
+    // Fall back to the latest Codex session JSONL snapshot.
+  }
+  return readLatestCodexRateLimits()
+}
+
 export async function readLatestCodexRateLimits(
   sessionsRoot = defaultCodexSessionsRoot(),
   maxFiles = 12,
@@ -121,44 +160,94 @@ export function formatAuthChipLabel(authPlan: string, limits?: CodexRateLimitsSn
 
 export function formatCodexBudgetSuffix(authPlan: string, limits?: CodexRateLimitsSnapshot): string | undefined {
   if (!limits || !isChatGptAuthPlan(authPlan)) return undefined
-  if (limits.rateLimitReached) return "limit reached"
 
   const parts: string[] = []
   if (limits.primary) parts.push(formatWindowBudget(limits.primary))
   if (limits.secondary) parts.push(formatWindowBudget(limits.secondary))
+  if (limits.resetCreditsAvailable !== undefined && limits.resetCreditsAvailable > 0) {
+    const noun = limits.resetCreditsAvailable === 1 ? "credit" : "credits"
+    parts.push(`${limits.resetCreditsAvailable} reset ${noun}`)
+  }
+  if (parts.length === 0 && limits.rateLimitReached) return "limit reached"
   return parts.length > 0 ? parts.join(" · ") : undefined
 }
 
-function parseRateLimitsPayload(payload: Record<string, unknown>): Omit<CodexRateLimitsSnapshot, "observedAt"> | undefined {
+function parseRateLimitsFromStdoutRecord(record: unknown): CodexRateLimitsSnapshot | undefined {
+  if (!record || typeof record !== "object") return undefined
+  const message = record as Record<string, unknown>
+  if (readString(message.type) !== "token_count") return undefined
+  const rateLimits = message.rate_limits ?? message.rateLimits
+  if (!rateLimits || typeof rateLimits !== "object") return undefined
+  const parsed = parseRateLimitsPayload(rateLimits as Record<string, unknown>, message)
+  if (!parsed) return undefined
+  return { ...parsed, observedAt: new Date().toISOString() }
+}
+
+export function parseRateLimitsFromAppServerResult(result: unknown): CodexRateLimitsSnapshot | undefined {
+  if (!result || typeof result !== "object") return undefined
+  const record = result as Record<string, unknown>
+  const rateLimits = record.rateLimits ?? record.rate_limits
+  if (!rateLimits || typeof rateLimits !== "object") return undefined
+  const parsed = parseRateLimitsPayload(rateLimits as Record<string, unknown>, record)
+  if (!parsed) return undefined
+  return { ...parsed, observedAt: new Date().toISOString() }
+}
+
+function parseRateLimitsPayload(
+  payload: Record<string, unknown>,
+  envelope?: Record<string, unknown>,
+): Omit<CodexRateLimitsSnapshot, "observedAt"> | undefined {
   const primary = readWindow(payload.primary)
   const secondary = readWindow(payload.secondary)
   if (!primary && !secondary) return undefined
   return {
-    planType: readString(payload.plan_type) ?? undefined,
+    planType: readString(payload.plan_type ?? payload.planType) ?? undefined,
     primary,
     secondary,
-    rateLimitReached: readString(payload.rate_limit_reached_type) ?? undefined,
+    rateLimitReached: readString(payload.rate_limit_reached_type ?? payload.rateLimitReachedType) ?? undefined,
+    resetCreditsAvailable: readResetCreditsAvailable(envelope),
   }
+}
+
+function readResetCreditsAvailable(envelope?: Record<string, unknown>): number | undefined {
+  if (!envelope) return undefined
+  const resetCredits = envelope.rateLimitResetCredits ?? envelope.rate_limit_reset_credits
+  if (!resetCredits || typeof resetCredits !== "object") return undefined
+  return readNumber((resetCredits as Record<string, unknown>).availableCount)
 }
 
 function readWindow(value: unknown): CodexRateLimitWindow | undefined {
   if (!value || typeof value !== "object") return undefined
   const record = value as Record<string, unknown>
-  const usedPercent = readNumber(record.used_percent)
-  const windowMinutes = readNumber(record.window_minutes)
+  const usedPercent = readNumber(record.used_percent ?? record.usedPercent)
+  const windowMinutes = readNumber(record.window_minutes ?? record.windowDurationMins)
   if (usedPercent === undefined || windowMinutes === undefined) return undefined
   return {
     usedPercent,
     windowMinutes,
-    resetsAt: readNumber(record.resets_at),
+    resetsAt: readNumber(record.resets_at ?? record.resetsAt),
   }
 }
 
 function formatWindowBudget(window: CodexRateLimitWindow): string {
   const label = windowLabel(window.windowMinutes)
   const remainingPercent = Math.max(0, Math.round(100 - window.usedPercent))
-  if (remainingPercent <= 0) return `${label} depleted`
-  return `${label} ${remainingPercent}% left`
+  const usage = remainingPercent <= 0 ? `${label} depleted` : `${label} ${remainingPercent}% left`
+  if (window.resetsAt === undefined) return usage
+  return `${usage} · reset ${formatRelativeReset(window.resetsAt)}`
+}
+
+export function formatRelativeReset(resetsAt: number, nowMs = Date.now()): string {
+  const seconds = Math.max(0, Math.floor(resetsAt - nowMs / 1000))
+  if (seconds < 60) return "soon"
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const remMinutes = minutes % 60
+  if (hours < 24) return remMinutes > 0 ? `${hours}h${remMinutes}m` : `${hours}h`
+  const days = Math.floor(hours / 24)
+  const remHours = hours % 24
+  return remHours > 0 ? `${days}d${remHours}h` : `${days}d`
 }
 
 function windowLabel(windowMinutes: number): string {

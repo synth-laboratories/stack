@@ -27,7 +27,13 @@ on_turn_completed = true
 on_tool_completed = true
 on_tool_failed = true
 delta_events = 12
+weight_threshold = 4
 cooldown_ms = 0
+turn_cooldown_ms = 0
+batch_cooldown_ms = 0
+max_delay_ms = 0
+policy_script = "scripts/monitor_wake_policy.py"
+monty_python_bin = "python3"
 
 [intervention]
 max_queued_items_per_thread = 4
@@ -37,3 +43,24 @@ skill_context_push = "off"
 enabled = false
 allowed_skill_ids = []
 push_when_confident = false
+
+[handoff_preempt]
+enabled = false
+wake_on_context_pressure = true
+context_token_threshold = 100000
+context_fraction_threshold = 0.75
+turn_threshold = 0
+idle_before_preempt_ms = 0
+min_turns_before_preempt = 6
+max_preempts_per_segment = 1
+cooldown_ms = 300000
+require_meta_thread = true
+successor_role = "same"
+successor_role_name = ""
+successor_model = ""
+successor_reasoning_effort = ""
+auto_seal = true
+auto_approve = false
+auto_continue = false
+pause_worker_before_seal = true
+segment_policy_file = ".stack/meta-threads/segment-policy.toml"

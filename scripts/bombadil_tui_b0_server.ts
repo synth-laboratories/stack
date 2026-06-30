@@ -34,7 +34,18 @@ const scenarios: Record<
   },
 }
 
-let active: Promise<Response> | undefined
+type ProofPayload = {
+  ok: boolean
+  message?: string
+  failedScenario?: string
+  scenario?: string
+  failureClass?: string
+  crashArtifacts?: Array<unknown>
+  results?: Array<Record<string, unknown>>
+}
+
+let active: Promise<ProofPayload> | undefined
+let latestProof: ProofPayload | undefined
 
 const server = Bun.serve({
   port,
@@ -43,17 +54,27 @@ const server = Bun.serve({
     const url = new URL(request.url)
     if (url.pathname === "/") return htmlResponse()
     if (url.pathname === "/health") return Response.json({ ok: true })
+    if (url.pathname === "/proof") return Response.json(latestProof ?? { ok: null, message: "STACK_B0_PENDING" })
     if (url.pathname === "/run" && request.method === "POST") {
-      active ??= runAllScenarios().finally(() => {
-        active = undefined
-      })
-      return await active
+      const proof = await startScenarios()
+      return Response.json(proof, { status: proof.ok ? 200 : 500 })
     }
     return new Response("not found", { status: 404 })
   },
 })
 
 console.log(`stack_bombadil_b0_server http://127.0.0.1:${server.port}`)
+
+setTimeout(() => {
+  void startScenarios().catch((error) => {
+    latestProof = {
+      ok: false,
+      failedScenario: "STACK_B0_FAIL",
+      failureClass: "server_run_error",
+      message: error instanceof Error ? error.message : String(error),
+    }
+  })
+}, 250)
 
 function htmlResponse(): Response {
   return new Response(
@@ -78,14 +99,18 @@ function htmlResponse(): Response {
           history.pushState({ probe: true }, "", probeUrl);
         });
       }
-      async function run() {
+      async function poll() {
         const status = document.getElementById("status");
         const details = document.getElementById("details");
         status.textContent = "STACK_B0_RUNNING";
         try {
-          const response = await fetch("/run", { method: "POST" });
+          const response = await fetch("/proof", { cache: "no-store" });
           const payload = await response.json();
           details.textContent = JSON.stringify(payload, null, 2);
+          if (payload.ok === null) {
+            setTimeout(poll, 1000);
+            return;
+          }
           if (!payload.ok) {
             status.textContent = payload.failedScenario ?? "STACK_B0_FAIL";
             return;
@@ -94,10 +119,11 @@ function htmlResponse(): Response {
         } catch (error) {
           status.textContent = "STACK_B0_FAIL";
           details.textContent = String(error && error.message ? error.message : error);
+          setTimeout(poll, 1000);
         }
       }
       keepBackInOrigin();
-      run();
+      poll();
     </script>
   </body>
 </html>`,
@@ -105,7 +131,14 @@ function htmlResponse(): Response {
   )
 }
 
-async function runAllScenarios(): Promise<Response> {
+async function startScenarios(): Promise<ProofPayload> {
+  active ??= runAllScenarios().finally(() => {
+    active = undefined
+  })
+  return await active
+}
+
+async function runAllScenarios(): Promise<ProofPayload> {
   const results: Array<Record<string, unknown>> = []
   const statusMarkers: Record<ScenarioName, string> = {
     scroll: "STACK_B0_SCROLL_PASS",
@@ -135,8 +168,9 @@ async function runAllScenarios(): Promise<Response> {
         crashArtifacts,
         results,
       }
+      latestProof = payload
       await writeFile(proofPath, JSON.stringify(payload, null, 2))
-      return Response.json(payload, { status: 500 })
+      return payload
     }
   }
 
@@ -145,8 +179,9 @@ async function runAllScenarios(): Promise<Response> {
     message: "stack_bombadil_b0_ok",
     scenarios: results,
   }
+  latestProof = payload
   await writeFile(proofPath, JSON.stringify(payload, null, 2))
-  return Response.json(payload)
+  return payload
 }
 
 async function runExpectScenario(

@@ -16,6 +16,13 @@ export function startVoiceRecording(stackRoot: string): VoiceRecordingHandle {
   const startedAtMs = Date.now()
   const startedAt = new Date(startedAtMs).toISOString()
   const child = spawn("rec", ["-q", "-r", "16000", "-c", "1", audioPath])
+  let spawnError: Error | undefined
+  child.on("error", (error) => {
+    spawnError = error instanceof Error ? error : new Error(String(error))
+  })
+  if (!child.pid) {
+    throw spawnError ?? new Error("voice recording failed: rec did not start (install sox: brew install sox)")
+  }
   let stderr = ""
   child.stderr.on("data", (chunk) => {
     stderr += String(chunk)
@@ -34,24 +41,48 @@ function stopRecording(
   stderr: string,
 ): Promise<{ audio: Buffer; audioPath: string; durationMs: number }> {
   return new Promise((resolve, reject) => {
-    const finish = () => {
-      if (!existsSync(audioPath)) {
-        reject(new Error(`voice recording failed: ${stderr.trim() || "no audio file written"}`))
-        return
-      }
-      const stat = statSync(audioPath)
-      if (stat.size <= 44) {
-        reject(new Error(`voice recording is empty: ${stderr.trim() || "no microphone input captured"}`))
-        return
-      }
-      resolve({
-        audio: readFileSync(audioPath),
-        audioPath,
-        durationMs: Date.now() - startedAtMs,
-      })
+    let settled = false
+    const settle = (fn: () => void) => {
+      if (settled) return
+      settled = true
+      fn()
     }
-    child.once("exit", finish)
-    child.once("error", reject)
+    const finish = () => {
+      void waitForRecordingFile(audioPath, 12, 40)
+        .then((stat) => {
+          resolve({
+            audio: readFileSync(audioPath),
+            audioPath,
+            durationMs: Date.now() - startedAtMs,
+          })
+        })
+        .catch((error) => {
+          reject(error instanceof Error ? error : new Error(String(error)))
+        })
+    }
+    child.once("exit", () => settle(finish))
+    child.once("error", (error) => settle(() => reject(error)))
     child.kill("SIGINT")
   })
+}
+
+async function waitForRecordingFile(
+  audioPath: string,
+  attempts: number,
+  delayMs: number,
+): Promise<{ size: number }> {
+  let lastError = "no audio file written"
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    if (existsSync(audioPath)) {
+      const stat = statSync(audioPath)
+      if (stat.size > 44) return stat
+      lastError = "no microphone input captured"
+    }
+    await sleep(delayMs)
+  }
+  throw new Error(`voice recording failed: ${lastError}`)
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms))
 }

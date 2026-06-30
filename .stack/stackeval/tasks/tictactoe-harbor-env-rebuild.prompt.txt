@@ -1,0 +1,2 @@
+StackEval task tictactoe-harbor-env-rebuild uses Harbor instruction.md adapted to absolute packet paths at prepare time.
+See scripts/stackeval_tictactoe_harbor_env_rebuild.ts and packet initial_prompt.txt after prepare.

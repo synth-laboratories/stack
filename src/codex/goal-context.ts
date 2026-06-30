@@ -5,11 +5,13 @@ export type CodexGoalSnapshot = {
   threadId?: string
   objective?: string
   status?: string
+  acceptanceCriteria?: string[]
+  blockers?: string[]
   tokensUsed?: number
   tokenBudget?: string
   tokensRemaining?: string
   timeUsedSeconds?: number
-  source: "none" | "tool" | "context"
+  source: "none" | "tool" | "context" | "meta_thread"
 }
 
 const GOAL_CONTEXT_MARKER = '<codex_internal_context source="goal">'
@@ -39,11 +41,13 @@ export function mergeGoalContext(current: CodexGoalSnapshot, incoming: CodexGoal
     threadId: incoming.threadId ?? current.threadId,
     objective: incoming.objective ?? current.objective,
     status: incoming.status ?? current.status,
+    acceptanceCriteria: incoming.acceptanceCriteria ?? current.acceptanceCriteria,
+    blockers: incoming.blockers ?? current.blockers,
     tokensUsed: incoming.tokensUsed ?? current.tokensUsed,
     tokenBudget: incoming.tokenBudget ?? current.tokenBudget,
     tokensRemaining: incoming.tokensRemaining ?? current.tokensRemaining,
     timeUsedSeconds: incoming.timeUsedSeconds ?? current.timeUsedSeconds,
-    source: incoming.source === "tool" ? "tool" : current.source === "tool" ? "tool" : incoming.source,
+    source: incoming.source === "meta_thread" ? "meta_thread" : incoming.source === "tool" ? "tool" : current.source === "tool" ? "tool" : incoming.source,
   }
 }
 
@@ -167,7 +171,14 @@ function parseGoalInteger(raw: string): number | undefined {
 }
 
 export function goalContextVisible(snapshot: CodexGoalSnapshot): boolean {
-  return Boolean(snapshot.objective || snapshot.status || snapshot.tokensUsed !== undefined || snapshot.threadId)
+  return Boolean(
+    snapshot.objective ||
+    snapshot.status ||
+    snapshot.tokensUsed !== undefined ||
+    snapshot.threadId ||
+    snapshot.acceptanceCriteria?.length ||
+    snapshot.blockers?.length,
+  )
 }
 
 export function goalContextStripLines(snapshot: CodexGoalSnapshot, columns: number): string[] {
@@ -189,6 +200,12 @@ export function goalContextStripLines(snapshot: CodexGoalSnapshot, columns: numb
 
   if (snapshot.objective) {
     lines.push(truncateGoalLine(snapshot.objective.replace(/\s+/g, " ").trim(), width))
+  }
+  if (snapshot.acceptanceCriteria?.length) {
+    lines.push(truncateGoalLine(`criteria ${snapshot.acceptanceCriteria.length}`, width))
+  }
+  if (snapshot.blockers?.length) {
+    lines.push(truncateGoalLine(`blockers ${snapshot.blockers.length}`, width))
   }
 
   return lines

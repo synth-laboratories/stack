@@ -40,11 +40,23 @@ def main() -> int:
 
     train_sample = int(preset["train_sample"])
     test_sample = int(preset["test_sample"])
-    train_ids = id_list("train", train_sample)
-    heldout_ids = id_list("test", test_sample)
 
     template_path = Path(merged["resolved"]["gepa_template"])
     template = template_path.read_text()
+    is_crafter = "crafter" in template_path.name.lower()
+
+    if is_crafter:
+        train_seed_start = int(harness.get("train_seed_start", 11))
+        heldout_seed_start = int(harness.get("heldout_seed_start", 101))
+        train_seeds = list(range(train_seed_start, train_seed_start + train_sample))
+        heldout_seeds = list(range(heldout_seed_start, heldout_seed_start + test_sample))
+        train_ids = [f"train:{seed}" for seed in train_seeds]
+        heldout_ids = [f"test:{seed}" for seed in heldout_seeds]
+    else:
+        train_seeds = []
+        heldout_seeds = []
+        train_ids = id_list("train", train_sample)
+        heldout_ids = id_list("test", test_sample)
 
     replacements = {
         "{{run_id}}": run_id,
@@ -75,11 +87,21 @@ def main() -> int:
         "{{max_generations}}": str(preset["max_generations"]),
         "{{proposals_per_generation}}": str(preset["proposals_per_generation"]),
         "{{minibatch_size}}": str(preset["minibatch_size"]),
-        "{{rollout_chunk_size}}": str(preset["rollout_chunk_size"]),
+        "{{rollout_chunk_size}}": str(preset.get("rollout_chunk_size", preset["minibatch_size"])),
         "{{max_train_rollouts}}": str(preset["max_train_rollouts"]),
         "{{max_heldout_rollouts}}": str(preset["max_heldout_rollouts"]),
         "{{max_total_rollouts}}": str(preset["max_total_rollouts"]),
         "{{max_cost_usd}}": str(preset["max_cost_usd"]),
+        "{{train_seeds_json}}": json.dumps(train_seeds),
+        "{{heldout_seeds_json}}": json.dumps(heldout_seeds),
+        "{{crafter_max_turns}}": str(harness.get("crafter_max_turns", 12)),
+        "{{crafter_min_batch}}": str(harness.get("crafter_min_batch", 1)),
+        "{{crafter_max_batch}}": str(harness.get("crafter_max_batch", 5)),
+        "{{rollout_async_timeout_seconds}}": str(harness.get("rollout_async_timeout_seconds", 300)),
+        "{{gepa_pipeline_mode}}": harness.get("gepa_pipeline_mode", "async_pipelined"),
+        "{{max_in_flight_candidates}}": str(harness.get("max_in_flight_candidates", 1)),
+        "{{rollout_workers}}": str(harness.get("rollout_workers", 4)),
+        "{{rollout_workers_max}}": str(harness.get("rollout_workers_max", 8)),
     }
 
     rendered = template

@@ -11,7 +11,7 @@ import {
 
 const stackRoot = join(import.meta.dir, "..")
 const expected = installedStackSkillNames(stackRoot)
-if (!expected.includes("stack-local-setup") || !expected.includes("synth-via-stack") || !expected.includes("stack-agent-bridge")) {
+if (!expected.includes("synth-stack-productivity") || !expected.includes("stack-local-setup") || !expected.includes("oss-gepa") || !expected.includes("synth-via-stack") || !expected.includes("stack-agent-bridge")) {
   console.error("bundled skills missing", expected)
   process.exit(1)
 }

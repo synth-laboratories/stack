@@ -77,6 +77,92 @@ export type RemoteRunFileUploadOptions = {
   metadata?: Record<string, unknown>
 }
 
+export type RemoteLaunchRequest = {
+  project_id?: string
+  task_id?: string
+  objective?: string
+  runbook?: string
+  metadata?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+export type RemoteLaunchTerminateRequest = {
+  reason?: string
+  [key: string]: unknown
+}
+
+export async function createRemoteLaunch(
+  config: StackConfig,
+  request: RemoteLaunchRequest,
+): Promise<RemoteActionResult> {
+  return postRemote(config, "/smr/v1/launches", request)
+}
+
+export async function getRemoteLaunch(
+  config: StackConfig,
+  runId: string,
+): Promise<RemoteActionResult> {
+  return getRemote(config, `/smr/v1/launches/${encodeURIComponent(runId)}`)
+}
+
+export async function terminateRemoteLaunch(
+  config: StackConfig,
+  runId: string,
+  request: RemoteLaunchTerminateRequest = {},
+): Promise<RemoteActionResult> {
+  return postRemote(config, `/smr/v1/launches/${encodeURIComponent(runId)}/terminate`, request)
+}
+
+export async function listRemoteRunQuestions(
+  config: StackConfig,
+  run: Pick<RemoteSmrRunSummary, "runId" | "projectId">,
+  statusFilter?: string,
+): Promise<RemoteActionResult> {
+  const basePath = run.projectId
+    ? `/smr/projects/${encodeURIComponent(run.projectId)}/runs/${encodeURIComponent(run.runId)}/questions`
+    : `/smr/runs/${encodeURIComponent(run.runId)}/questions`
+  const path = statusFilter ? `${basePath}?status_filter=${encodeURIComponent(statusFilter)}` : basePath
+  return getRemote(config, path)
+}
+
+export async function listRemoteRunApprovals(
+  config: StackConfig,
+  run: Pick<RemoteSmrRunSummary, "runId" | "projectId">,
+  statusFilter?: string,
+): Promise<RemoteActionResult> {
+  const basePath = run.projectId
+    ? `/smr/projects/${encodeURIComponent(run.projectId)}/runs/${encodeURIComponent(run.runId)}/approvals`
+    : `/smr/runs/${encodeURIComponent(run.runId)}/approvals`
+  const path = statusFilter ? `${basePath}?status_filter=${encodeURIComponent(statusFilter)}` : basePath
+  return getRemote(config, path)
+}
+
+export async function respondRemoteRunQuestion(
+  config: StackConfig,
+  run: Pick<RemoteSmrRunSummary, "runId" | "projectId">,
+  questionId: string,
+  responseText: string,
+): Promise<RemoteActionResult> {
+  const basePath = run.projectId
+    ? `/smr/projects/${encodeURIComponent(run.projectId)}/runs/${encodeURIComponent(run.runId)}/questions/${encodeURIComponent(questionId)}/respond`
+    : `/smr/runs/${encodeURIComponent(run.runId)}/questions/${encodeURIComponent(questionId)}/respond`
+  return postRemote(config, basePath, { response_text: responseText })
+}
+
+export async function decideRemoteRunApproval(
+  config: StackConfig,
+  run: Pick<RemoteSmrRunSummary, "runId" | "projectId">,
+  approvalId: string,
+  decision: "approve" | "deny",
+  comment?: string,
+): Promise<RemoteActionResult> {
+  const suffix = decision === "approve" ? "approve" : "deny"
+  const basePath = run.projectId
+    ? `/smr/projects/${encodeURIComponent(run.projectId)}/runs/${encodeURIComponent(run.runId)}/approvals/${encodeURIComponent(approvalId)}/${suffix}`
+    : `/smr/runs/${encodeURIComponent(run.runId)}/approvals/${encodeURIComponent(approvalId)}/${suffix}`
+  return postRemote(config, basePath, { comment })
+}
+
 export async function executeRemoteRunAction(
   config: StackConfig,
   run: RemoteSmrRunSummary,
@@ -403,6 +489,40 @@ async function postRemote(config: StackConfig, path: string, body?: Record<strin
   }
 }
 
+async function getRemote(config: StackConfig, path: string): Promise<RemoteActionResult> {
+  const token = process.env[config.environment.authEnv]
+  if (!token) {
+    return {
+      ok: false,
+      status: 0,
+      message: environmentAuthStatus(config.environment).message,
+    }
+  }
+
+  try {
+    const response = await fetch(`${config.environment.apiBaseUrl.replace(/\/+$/, "")}${path}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      signal: AbortSignal.timeout(5000),
+    })
+    const text = await response.text()
+    const data = payloadRecord(text)
+    return {
+      ok: response.ok,
+      status: response.status,
+      message: response.ok ? summarizePayload(text) || `${path} ok` : summarizePayload(text) || `${response.status} ${response.statusText}`,
+      ...(data ? { data } : { data: arrayPayloadRecord(text) }),
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      message: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
 async function downloadRemote(
   config: StackConfig,
   path: string,
@@ -587,6 +707,16 @@ function payloadRecord(text: string): Record<string, unknown> | undefined {
     return typeof payload === "object" && payload !== null && !Array.isArray(payload)
       ? (payload as Record<string, unknown>)
       : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function arrayPayloadRecord(text: string): Record<string, unknown> | undefined {
+  if (!text.trim()) return undefined
+  try {
+    const payload = JSON.parse(text) as unknown
+    return Array.isArray(payload) ? { items: payload } : undefined
   } catch {
     return undefined
   }

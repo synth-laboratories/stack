@@ -1,16 +1,19 @@
 ---
 name: stack-local-setup
-description: Use when a Stack user needs install, serve, prep, or Docker commands for local Synth — Stack itself, Codex/Claude skills, synth-ai, synth-optimizers, synth-dev slots, auth env files, and auto-start on launch. Load this skill before proposing first-time setup or copy-paste bootstrap commands.
+description: Use when a Stack user needs install, serve, prep, or Docker commands for local Synth research engineering — Stack itself, Codex/Claude skills (oss-gepa first), synth-ai, synth-optimizers, optimizers repo checkout, synth-dev slots, auth env files, and auto-start on launch. Load this skill before proposing first-time setup or copy-paste bootstrap commands.
 ---
 
 # Stack local setup
 
-Copy-paste commands for **Codex** and **Claude Code** operators. Stack auto-runs much of
-this on launch (dev environment); use this skill when the user needs manual recovery or
-a fresh machine.
+Copy-paste commands for **Codex** and **Claude Code** operators. Stack is built for
+**research engineering** (eval containers, OSS GEPA, StackEval) first; these commands
+also cover general dev bootstrap. Stack auto-runs much of this on launch (dev
+environment); use this skill when the user needs manual recovery or a fresh machine.
 
-Also load **`synth-via-stack`** (optimizer/container mental model) and
-**`stack-agent-bridge`** (live Stack MCP ops).
+Also load **`synth-stack-productivity`** (OSS + hosted map), **`oss-gepa`** (local GEPA +
+optimizers repo), **`synth-via-stack`** (optimizer/container mental model), and
+**`stack-agent-bridge`** (usesynth.ai MCP ops). When `../optimizers` exists, load **`gepa`**
+for full TOML/cookbook detail.
 
 ## One-shot install
 
@@ -25,8 +28,13 @@ brew install stack-dev
 # Source — active development (skills → ~/.codex/skills/ on install)
 make -C ~/Documents/GitHub/stack install
 
-# Python surfaces used by Stack panels
+# Python surfaces used by Stack panels (research engineering default path)
 pip install synth-optimizers synth-ai
+
+# Optional: full GEPA skill + dev_examples (private org repo)
+git clone git@github.com:synth-laboratories/optimizers.git ~/Documents/GitHub/optimizers
+# Stack auto-bridges optimizers/skills/gepa → .stack/skills/gepa on launch
+# Override: export STACK_SYNTH_OPTIMIZERS_ROOT=/path/to/optimizers
 
 # Auth (never print the value)
 # Default dev auth file from stack.config.json:
@@ -37,7 +45,7 @@ Claude Code skills (optional — same content as Codex):
 
 ```bash
 mkdir -p ~/.claude/skills
-for skill in stack-local-setup synth-via-stack stack-agent-bridge; do
+for skill in synth-stack-productivity stack-local-setup oss-gepa synth-via-stack stack-agent-bridge; do
   ln -sf ~/Documents/GitHub/stack/.codex/skills/"$skill" ~/.claude/skills/"$skill"
 done
 ```

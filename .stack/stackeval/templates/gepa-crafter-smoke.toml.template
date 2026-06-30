@@ -1,0 +1,89 @@
+# Rendered by stackeval harness stage — Crafter ReAct prompt optimization
+[run]
+run_id = "{{run_id}}"
+output_dir = "{{output_dir}}"
+seed = {{seed}}
+
+[container]
+url = "http://127.0.0.1:{{container_port}}"
+command = [
+  "/usr/bin/env",
+  "CRAFTER_POLICY_MODEL={{policy_model}}",
+  "CRAFTER_POLICY_API_KEY_ENV={{policy_api_key_env}}",
+  "CRAFTER_POLICY_BASE_URL={{policy_base_url}}",
+  "CRAFTER_MAX_TURNS={{crafter_max_turns}}",
+  "CRAFTER_MIN_BATCH={{crafter_min_batch}}",
+  "CRAFTER_MAX_BATCH={{crafter_max_batch}}",
+  "uv", "run", "--project", "crafter_container",
+  "python", "crafter_container/synth_service_app.py",
+  "--host", "127.0.0.1", "--port", "{{container_port}}",
+]
+cwd = "{{gepa_cookbook_root}}"
+startup_timeout_seconds = {{container_startup_timeout_seconds}}
+
+[taskset]
+train_split = "train"
+heldout_split = "test"
+train_ids = {{train_ids_json}}
+heldout_ids = {{heldout_ids_json}}
+
+[candidate]
+target_modules = ["react_system_prompt"]
+
+[seed_candidate]
+react_system_prompt = "{{seed_prompt}}"
+
+[policy]
+provider = "{{policy_provider}}"
+model = "{{policy_model}}"
+api_key_env = "{{policy_api_key_env}}"
+base_url = "{{policy_base_url}}"
+
+[proposer]
+backend = "codex_app_server"
+execution_mode = "local_process"
+timeout_seconds = {{proposer_timeout_seconds}}
+model = "{{proposer_model}}"
+reasoning_effort = "{{proposer_reasoning_effort}}"
+auth_mode = "chatgpt"
+copy_host_auth = true
+codex_home = "{{codex_home}}"
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[gepa]
+max_generations = {{max_generations}}
+proposals_per_generation = {{proposals_per_generation}}
+minibatch_size = {{minibatch_size}}
+max_train_rollouts = {{max_train_rollouts}}
+max_heldout_rollouts = {{max_heldout_rollouts}}
+max_total_rollouts = {{max_total_rollouts}}
+max_cost_usd = {{max_cost_usd}}
+rollout_async_timeout_seconds = {{rollout_async_timeout_seconds}}
+
+[gepa.task_pools]
+pareto = {{train_ids_json}}
+minibatch = {{train_ids_json}}
+reflection = {{train_ids_json}}
+heldout = {{heldout_ids_json}}
+
+[gepa.pipeline]
+mode = "{{gepa_pipeline_mode}}"
+max_in_flight_candidates = {{max_in_flight_candidates}}
+
+[gepa.pipeline.workers]
+rollout = {{rollout_workers}}
+
+[gepa.pipeline.adaptive_rollout_concurrency]
+enabled = true
+initial = {{rollout_workers}}
+min = 1
+max = {{rollout_workers_max}}
+increase_step = 2
+decrease_step = 2
+increase_after_successes = 10
+
+[cache]
+mode = "off"
+path = ""
+namespace = ""

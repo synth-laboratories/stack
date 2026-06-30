@@ -1,0 +1,43 @@
+# StackEval task: TicTacToe Harbor env rebuild
+
+[task]
+id = "tictactoe-harbor-env-rebuild"
+title = "TicTacToe Harbor env rebuild"
+description = "Stack rebuilds Harbor tictactoe_singleplayer_gold candidate tree from specs; host spectrum verify"
+default_model = "gpt-5.4-mini-medium"
+prompt_file = "tictactoe-harbor-env-rebuild.prompt.txt"
+spec_md = "tictactoe-harbor-env-rebuild.md"
+
+[pipeline]
+modes = ["stack"]
+default_mode = "stack"
+
+[presets.smoke]
+description = "Cleanroom packet + Stack session + Harbor spectrum verify"
+mode = "stack"
+require_harbor_reward = false
+min_harbor_reward = 0.0
+
+[presets.gate]
+description = "Harbor spectrum reward 1.0 required"
+mode = "stack"
+require_harbor_reward = true
+min_harbor_reward = 1.0
+
+[stack_session]
+enabled = true
+prepare_script = "scripts/stackeval_tictactoe_harbor_env_rebuild.ts"
+verify_script = "scripts/stackeval/tictactoe_harbor_verify.sh"
+
+[acceptance]
+gates = [
+  "SE-TTT-HARBOR-1-WORKSPACE",
+  "SE-TTT-HARBOR-2-SERVICE",
+  "SE-TTT-HARBOR-3-SPECTRUM",
+  "SE-TTT-HARBOR-4-TRACE",
+  "SE-TTT-HARBOR-5-LANE",
+]
+
+[paths]
+harbor_bundle = "../gamebench/adapters/harbor/bundles/tictactoe_singleplayer_gold"
+gamebench_task_lane = "../gamebench/tasks/tictactoe-singleplayer"

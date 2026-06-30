@@ -42,25 +42,89 @@ def main() -> int:
         meta["status"] = "pipeline_complete"
         meta["finished_at"] = utc_now()
         meta_path.write_text(json.dumps(meta, indent=2) + "\n")
-    update_acceptance(packet)
+    update_acceptance(packet, config)
     update_waste(packet)
     return 0
 
 
-def update_acceptance(packet: Path) -> None:
+def score_present(harvest: dict | None) -> bool:
+    if not harvest:
+        return False
+    result = harvest.get("result")
+    if not isinstance(result, dict):
+        return False
+    if result.get("heldout_accuracy") is not None:
+        return True
+    if result.get("heldout_accuracy_percent") is not None:
+        return True
+    return result.get("heldout_reward") is not None
+
+
+def gate_rows(
+    gate_ids: list[str],
+    packet: Path,
+    harvest: dict | None,
+    grade: dict | None,
+    review: dict | None,
+    export_manifest: Path,
+) -> list[tuple[str, bool, str]]:
+    checks: dict[str, tuple[bool, str]] = {}
+    for gate_id in gate_ids:
+        if gate_id.endswith("-HARNESS") or "-HARNESS" in gate_id:
+            checks[gate_id] = (
+                (packet / "gepa_config.toml").is_file() and (packet / "harness.json").is_file(),
+                "gepa_config.toml; harness.json",
+            )
+        elif gate_id.endswith("-RUN") or "-RUN" in gate_id:
+            checks[gate_id] = (
+                nested(harvest, "result", "terminal_status") == "completed",
+                "harvest.json terminal_status=completed",
+            )
+        elif gate_id.endswith("-SCORE") or "-SCORE" in gate_id:
+            checks[gate_id] = (score_present(harvest), "harvest.json heldout score")
+        elif gate_id.endswith("-ARTIFACTS") or "-ARTIFACTS" in gate_id:
+            checks[gate_id] = (
+                bool(nested(harvest, "artifacts", "manifest")),
+                "harvest.json artifacts.manifest",
+            )
+        elif gate_id.endswith("-TRACE") or "-TRACE" in gate_id:
+            runtime_files = [
+                packet / "stack-runtime" / "factory.json",
+                packet / "stack-runtime" / "events.json",
+                packet / "stack-runtime" / "status.json",
+            ]
+            trace_files = [export_manifest, *runtime_files]
+            checks[gate_id] = (
+                all(path.is_file() for path in trace_files),
+                "stack-session/stackd-export/manifest.json; stack-runtime/factory.json; stack-runtime/events.json; stack-runtime/status.json",
+            )
+        elif gate_id.endswith("-LEVERAGE") or "-LEVERAGE" in gate_id:
+            checks[gate_id] = (grade is not None and review is not None, "grade.json; review.json")
+        else:
+            checks[gate_id] = (False, "unknown gate kind")
+    return [(gate_id, checks[gate_id][0], checks[gate_id][1]) for gate_id in gate_ids]
+
+
+def update_acceptance(packet: Path, config: dict | None = None) -> None:
     acc_path = packet / "acceptance.md"
     harvest = load_json(packet / "harvest.json")
     grade = load_json(packet / "grade.json")
     review = load_json(packet / "review.json")
     export_manifest = packet / "stack-session" / "stackd-export" / "manifest.json"
-    gates = [
-        ("SE-B77-1-HARNESS", (packet / "gepa_config.toml").is_file() and (packet / "harness.json").is_file(), "gepa_config.toml; harness.json"),
-        ("SE-B77-2-RUN", nested(harvest, "result", "terminal_status") == "completed", "harvest.json terminal_status=completed"),
-        ("SE-B77-3-SCORE", nested(harvest, "result", "heldout_accuracy_percent") is not None, "harvest.json heldout_accuracy_percent"),
-        ("SE-B77-4-ARTIFACTS", bool(nested(harvest, "artifacts", "manifest")), "harvest.json artifacts.manifest"),
-        ("SE-B77-5-TRACE", export_manifest.is_file(), "stack-session/stackd-export/manifest.json"),
-        ("SE-B77-6-LEVERAGE", grade is not None and review is not None, "grade.json; review.json"),
-    ]
+    acceptance = (config or {}).get("acceptance") or {}
+    gate_ids = acceptance.get("gates")
+    if not isinstance(gate_ids, list) or not gate_ids:
+        gate_ids = [
+            "SE-B77-1-HARNESS",
+            "SE-B77-2-RUN",
+            "SE-B77-3-SCORE",
+            "SE-B77-4-ARTIFACTS",
+            "SE-B77-5-TRACE",
+            "SE-B77-6-LEVERAGE",
+        ]
+    score_label = acceptance.get("score_label", "Heldout accuracy")
+    score_unit = acceptance.get("score_unit", "accuracy_percent")
+    gates = gate_rows(gate_ids, packet, harvest, grade, review, export_manifest)
     lines = [
         "# Acceptance Checklist",
         "",
@@ -70,12 +134,19 @@ def update_acceptance(packet: Path) -> None:
     for gate, ok, evidence in gates:
         lines.append(f"| {gate} | {'pass' if ok else 'fail'} | {evidence} |")
     if harvest:
+        score_value = nested(harvest, "result", "heldout_accuracy")
+        if score_value is None:
+            score_value = nested(harvest, "result", "heldout_reward")
+        if score_unit == "accuracy_percent":
+            score_display = f"{nested(harvest, 'result', 'heldout_accuracy_percent') or 'n/a'}%"
+        else:
+            score_display = str(score_value if score_value is not None else "n/a")
         lines.extend([
             "",
             "## Pipeline Harvest Verdict",
             "",
             f"- Terminal status: **{nested(harvest, 'status') or 'unknown'}**",
-            f"- Heldout accuracy: **{nested(harvest, 'result', 'heldout_accuracy_percent') or 'n/a'}%**",
+            f"- {score_label}: **{score_display}**",
             f"- Prompt accepted: **{nested(harvest, 'result', 'prompt_accepted')}** ({nested(harvest, 'result', 'acceptance_reason') or 'n/a'})",
             f"- Preset gates: prompt_ok={nested(harvest, 'preset_gates', 'prompt_accepted_ok')} heldout_lift_ok={nested(harvest, 'preset_gates', 'heldout_lift_ok')}",
         ])

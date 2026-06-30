@@ -83,6 +83,7 @@ export function stackVersionLabel(appRoot?: string): string {
 
 const KNOWN_HARNESS_NAMES: Record<string, string> = {
   codex: "Codex",
+  cursor: "Cursor",
   opencode: "OpenCode",
 }
 

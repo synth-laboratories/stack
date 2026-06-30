@@ -2,8 +2,9 @@
 
 import {
   formatAuthChipLabel,
+  parseRateLimitsFromAppServerResult,
   parseRateLimitsFromSessionJsonl,
-  readLatestCodexRateLimits,
+  readCodexRateLimits,
 } from "../src/codex/rate-limits.ts"
 
 const fixture = [
@@ -34,14 +35,35 @@ if (!parsed.secondary || parsed.secondary.usedPercent !== 32 || parsed.secondary
 }
 
 const label = formatAuthChipLabel("ChatGPT", parsed)
-for (const required of ["ChatGPT", "5h", "91% left", "weekly", "68% left"]) {
+for (const required of ["ChatGPT", "5h", "91% left", "reset", "weekly", "68% left", "reset"]) {
   if (!label.includes(required)) {
     console.error(`auth chip label missing ${required}: ${label}`)
     process.exit(1)
   }
 }
 
-const latest = await readLatestCodexRateLimits()
+const appServerFixture = {
+  rateLimits: {
+    limitId: "codex",
+    primary: { usedPercent: 100, windowDurationMins: 300, resetsAt: 1782713833 },
+    secondary: { usedPercent: 16, windowDurationMins: 10080, resetsAt: 1783300633 },
+    planType: "pro",
+    rateLimitReachedType: "rate_limit_reached",
+  },
+  rateLimitResetCredits: { availableCount: 2 },
+}
+const appServerParsed = parseRateLimitsFromAppServerResult(appServerFixture)
+if (!appServerParsed?.resetCreditsAvailable || appServerParsed.resetCreditsAvailable !== 2) {
+  console.error("app-server rate limit parse failed for reset credits")
+  process.exit(1)
+}
+const appServerLabel = formatAuthChipLabel("ChatGPT", appServerParsed)
+if (!appServerLabel.includes("2 reset credits")) {
+  console.error(`app-server label missing reset credits: ${appServerLabel}`)
+  process.exit(1)
+}
+
+const latest = await readCodexRateLimits({ codexCommand: "codex" })
 if (!latest?.primary || !latest.secondary) {
   console.error("expected live codex rate limits from recent sessions")
   process.exit(1)

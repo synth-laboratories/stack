@@ -13,6 +13,7 @@ import {
 } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, relative, resolve } from "node:path"
+import { syncOptimizersGepaSkill } from "./research-skills.js"
 
 export type StackSkillOrigin = "stack" | "codex" | "plugin"
 export type StackSkillActor = "primary" | "monitor" | "both"
@@ -109,6 +110,7 @@ export function syncBundledStackSkills(stackRoot: string): string[] {
 }
 
 export function ensureStackSkills(stackRoot: string, codexHome = defaultCodexHome()): string[] {
+  syncOptimizersGepaSkill(stackRoot)
   const synced = syncBundledStackSkills(stackRoot)
   const consolidatedRoot = stackSkillsRoot(stackRoot)
   if (!existsSync(consolidatedRoot)) return []

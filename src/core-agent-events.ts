@@ -22,6 +22,8 @@ export type CoreAgentEventRecorderInput = {
   stackRoot: string
   threadId: string
   actorId?: string
+  metaThreadId?: string
+  segmentId?: string
 }
 
 export function recordCoreAgentEventsFromCodexLine(
@@ -42,7 +44,13 @@ export function recordCoreAgentEventsFromCodexLine(
       observed_at: new Date().toISOString(),
       actor_id: input.actorId ?? "primary_codex",
       actor_role: "primary",
-      payload: event.payload,
+      meta_thread_id: input.metaThreadId,
+      segment_id: input.segmentId,
+      payload: {
+        ...event.payload,
+        meta_thread_id: input.metaThreadId ?? null,
+        segment_id: input.segmentId ?? null,
+      },
     }
     appendThreadMetaEvent(input.stackRoot, fullEvent)
     appended.push(fullEvent)
@@ -54,6 +62,8 @@ export function recordCoreAgentTurnCompleted(input: {
   stackRoot: string
   threadId: string
   actorId?: string
+  metaThreadId?: string
+  segmentId?: string
   turn: StackCodexTurn
 }): StackThreadMetaEvent | undefined {
   return appendThreadMetaEventOnce(input.stackRoot, {
@@ -63,8 +73,12 @@ export function recordCoreAgentTurnCompleted(input: {
     observed_at: input.turn.finishedAt ?? new Date().toISOString(),
     actor_id: input.actorId ?? "primary_codex",
     actor_role: "primary",
+    meta_thread_id: input.metaThreadId,
+    segment_id: input.segmentId,
     payload: {
       stack_turn_id: input.turn.id,
+      meta_thread_id: input.metaThreadId ?? null,
+      segment_id: input.segmentId ?? null,
       started_at: input.turn.startedAt,
       finished_at: input.turn.finishedAt,
       exit_code: input.turn.exitCode ?? null,

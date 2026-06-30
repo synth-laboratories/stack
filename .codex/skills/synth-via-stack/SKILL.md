@@ -1,16 +1,18 @@
 ---
 name: synth-via-stack
-description: Use when helping a Stack user work with Synth — local GEPA via synth-optimizers, hosted optimizer jobs, eval containers through synth-ai SDK/CLI, container health/info/rollout contracts, or graduating from local proof to hosted optimization. Load this skill at the start of Stack agent turns and before proposing optimizer, container, or synth-ai workflows.
+description: Use when helping a Stack user work with Synth research engineering — local OSS GEPA via synth-optimizers, StackEval, hosted optimizer jobs, eval containers through synth-ai SDK/CLI, container health/info/rollout contracts, or graduating from local proof to hosted optimization. Load oss-gepa for install/checkout; load gepa from optimizers repo for TOML/cookbook depth. Load at the start of Stack agent turns before proposing optimizer, container, or synth-ai workflows.
 ---
 
 # Synth via Stack
 
-Stack is the operator cockpit; **synth-ai** is the SDK/CLI for containers and API access;
-**synth-optimizers** is the local OSS optimizer service; **hosted optimizers** run the same
+Stack is a **research engineering cockpit** first (eval + optimize + receipt), usable
+for general engineering too. **synth-ai** is the SDK/CLI for containers and API access;
+**synth-optimizers** is the local OSS GEPA service; **hosted optimizers** run the same
 search on Synth infrastructure.
 
-Read **`stack-agent-bridge`** when the task is live Stack TUI/MCP operations (SMR, Factory,
-hosted job lists, previews, downloads).
+Load **`synth-stack-productivity`** first (OSS + hosted map). Load **`oss-gepa`** before
+first local GEPA work. Load **`gepa`** when the optimizers sibling checkout is present.
+Read **`stack-agent-bridge`** for usesynth.ai MCP live ops.
 
 ## Mental model
 
@@ -154,5 +156,6 @@ Environment comes from Stack's dev/staging/prod selector (`stack.config.json`).
 
 Bundled skills live in `<stack-repo>/.codex/skills/`. Stack symlinks them into
 `~/.codex/skills/` on install and first launch so Codex injects them into agent context.
-Required pair for Stack operators: **`stack-local-setup`**, **`synth-via-stack`**, and
-**`stack-agent-bridge`**.
+Required skills: **`synth-stack-productivity`**, **`stack-local-setup`**, **`oss-gepa`**,
+**`synth-via-stack`**, **`stack-agent-bridge`**, plus **`gepa`** when the optimizers repo
+checkout is present.

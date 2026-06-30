@@ -1,0 +1,59 @@
+[monitor]
+id = "progress-narrator"
+label = "Progress narrator"
+enabled = true
+mode = "observe_summarize_queue_steer"
+policy = "conservative"
+strictness = "passive"
+
+[focus]
+selection = "any"
+goal_progress = true
+acceptance = true
+tool_use = true
+style = false
+skills = false
+scope_control = false
+
+[model]
+provider = "openai"
+model = "gpt-5.4-mini"
+reasoning_effort = "medium"
+worker = "auto"
+
+[prompt]
+system_file = ".stack/monitors/progress-narrator.system.md"
+
+[wake]
+max_wakes_per_primary_turn = 8
+on_turn_completed = true
+on_tool_completed = true
+on_tool_failed = true
+delta_events = 8
+cooldown_ms = 10000
+turn_cooldown_ms = 10000
+batch_cooldown_ms = 45000
+max_delay_ms = 90000
+policy_script = "scripts/monitor_wake_policy.py"
+monty_python_bin = "python3"
+
+[intervention]
+max_queued_items_per_thread = 0
+skill_context_push = "off"
+
+[skills]
+enabled = false
+
+[tools]
+allow = ["guidance.search"]
+deny = ["codex.interrupt", "monitor.steer", "monitor.queue", "skills.push_context"]
+
+[permissions]
+queue = false
+steer = false
+skill_push = false
+pause_worker = false
+block_before_action = false
+
+[handoff_preempt]
+enabled = false

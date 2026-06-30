@@ -17,6 +17,7 @@ import type { StackCodexTurn, StackLocalSession } from "../src/session.js"
 const appRoot = resolve(import.meta.dir, "..")
 process.env.STACK_GARDENER_PAPERCUT_MIRROR = "0"
 const config = await loadConfig(appRoot)
+const stackRoot = config.stackDataRoot
 const stamp = new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15) + "Z"
 const threadId = process.env.STACK_GARDENER_SMOKE_THREAD_ID ?? `gardener-v1-${randomUUID()}`
 const proofDir =
@@ -26,13 +27,13 @@ const failures: string[] = []
 mkdirSync(proofDir, { recursive: true })
 
 const inboxMessage = "Run the artifacts proof through gardener inbox routing."
-const item = enqueueGardenerInbox(config.appRoot, threadId, inboxMessage, { source: "typed" })
+const item = enqueueGardenerInbox(stackRoot, threadId, inboxMessage, { source: "typed" })
 
-const afterQueue = readThreadMetaEvents(config.appRoot, threadId)
+const afterQueue = readThreadMetaEvents(stackRoot, threadId)
 const queued = afterQueue.find((event) => event.type === "gardener.queued")
 if (!queued) failures.push("missing gardener.queued")
 if (queued?.payload.inbox_id !== item.id) failures.push("gardener.queued inbox_id mismatch")
-if (readGardenerInbox(config.appRoot, threadId).length !== 1) {
+if (readGardenerInbox(stackRoot, threadId).length !== 1) {
   failures.push("expected 1 pending inbox item after enqueue")
 }
 
@@ -47,21 +48,21 @@ const afterTurn = runGardenerAfterTurn({
   workerQueueCount: 0,
 })
 
-const gardenPath = gardenerThreadDocPath(config.appRoot, threadId)
+const gardenPath = gardenerThreadDocPath(stackRoot, threadId)
 if (!existsSync(gardenPath)) failures.push(`missing garden doc: ${gardenPath}`)
 if (!afterTurn.gardenPath) failures.push("runGardenerAfterTurn did not return gardenPath")
 if (afterTurn.frictions.length === 0) failures.push("expected friction on failed turn")
-if (!afterQueue.concat(readThreadMetaEvents(config.appRoot, threadId)).some((e) => e.type === "gardener.garden_updated")) {
+if (!afterQueue.concat(readThreadMetaEvents(stackRoot, threadId)).some((e) => e.type === "gardener.garden_updated")) {
   failures.push("missing gardener.garden_updated")
 }
-if (!readThreadMetaEvents(config.appRoot, threadId).some((e) => e.type === "gardener.friction")) {
+if (!readThreadMetaEvents(stackRoot, threadId).some((e) => e.type === "gardener.friction")) {
   failures.push("missing gardener.friction")
 }
 
-markGardenerInboxRouted(config.appRoot, threadId, item)
-const pendingAfterRoute = readGardenerInbox(config.appRoot, threadId)
+markGardenerInboxRouted(stackRoot, threadId, item)
+const pendingAfterRoute = readGardenerInbox(stackRoot, threadId)
 if (pendingAfterRoute.length !== 0) failures.push("inbox still pending after route")
-if (!readThreadMetaEvents(config.appRoot, threadId).some((e) => e.type === "gardener.routed")) {
+if (!readThreadMetaEvents(stackRoot, threadId).some((e) => e.type === "gardener.routed")) {
   failures.push("missing gardener.routed")
 }
 
@@ -72,7 +73,7 @@ const summary = {
   inbox_item_id: item.id,
   garden_path: gardenPath,
   frictions: afterTurn.frictions,
-  event_log: join(config.appRoot, ".stack", "events", "threads", `${threadId}.jsonl`),
+  event_log: join(stackRoot, ".stack", "events", "threads", `${threadId}.jsonl`),
   failures,
 }
 

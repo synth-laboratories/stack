@@ -94,6 +94,11 @@ export type RemoteFactorySummary = {
   pausedOrWaiting?: number
   latestRunId?: string
   latestWorkProductId?: string
+  runtimeState?: string
+  runtimeEnabled?: boolean
+  hasCloudDevEnv?: boolean
+  cloudDevLabel?: string
+  isRunning?: boolean
 }
 
 export type RemoteResearchSnapshot = {
@@ -178,10 +183,13 @@ export async function readRemoteProjectsPanelSnapshot(config: StackConfig): Prom
           readProjectExperimentsLast7Days(config, project.projectId),
         ])
         const runs = readRuns(runsPayload).slice(0, RUNS_PER_PROJECT)
-        const linkedFactories = (factoriesByProject.get(project.projectId) ?? [])
-          .slice()
-          .sort((left, right) => factoryRecency(right) - factoryRecency(left))
-          .slice(0, FACTORIES_PER_PROJECT)
+        const linkedFactories = await Promise.all(
+          (factoriesByProject.get(project.projectId) ?? [])
+            .slice()
+            .sort((left, right) => factoryRecency(right) - factoryRecency(left))
+            .slice(0, FACTORIES_PER_PROJECT)
+            .map((factory) => readFactoryStatus(config, factory)),
+        )
         return {
           ...project,
           ...experiments7d,
@@ -476,10 +484,24 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
     const activeProjectIds = activeFactoryProjectIds(linkedProjects, projects)
     const hasProjectMetadata = linkedProjects.length > 0 || projects.length > 0
     const latestRunProjectId = readString(asRecord(latestRuns[0])?.project_id)
+    const factoryRecord = asRecord(payload.factory)
+    const runtime = asRecord(payload.runtime)
+    const activeEfforts = readNumber(asRecord(payload.efforts_by_status)?.active)
+    const factoryStatus = readString(factoryRecord?.status) ?? factory.status
+    const runtimeState = readString(runtime?.state)
+    const runtimeEnabled = readBoolean(runtime?.enabled)
+    const cloudDev = readFactoryCloudDevEnv(payload)
+    const isRunning = factoryIsRunning({
+      factoryStatus,
+      runtimeState,
+      runtimeEnabled,
+      activeEfforts,
+    })
     return {
       ...factory,
+      status: factoryStatus ?? factory.status,
       nextWakeAt: readString(payload.next_wake_at) ?? factory.nextWakeAt,
-      activeEfforts: readNumber(asRecord(payload.efforts_by_status)?.active),
+      activeEfforts,
       pausedOrWaiting: asArray(payload.paused_or_waiting).length,
       canonicalProjectId: activeProjectIds[0] ?? factory.canonicalProjectId,
       latestProjectId:
@@ -488,10 +510,111 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
           : factory.latestProjectId,
       latestRunId: readString(asRecord(latestRuns[0])?.run_id) ?? factory.latestRunId,
       latestWorkProductId: readString(asRecord(latestWorkProducts[0])?.work_product_id) ?? factory.latestWorkProductId,
+      runtimeState,
+      runtimeEnabled,
+      hasCloudDevEnv: cloudDev.hasCloudDevEnv,
+      cloudDevLabel: cloudDev.label,
+      isRunning,
     }
   } catch {
     return factory
   }
+}
+
+const LOCAL_FACTORY_HOST_KINDS = new Set(["local", "docker", "local-dockerized", "local_dockerized"])
+
+function factoryIsRunning(input: {
+  factoryStatus?: string
+  runtimeState?: string
+  runtimeEnabled?: boolean
+  activeEfforts?: number
+}): boolean {
+  if (input.factoryStatus !== "active") return false
+  if (input.runtimeEnabled === false) return false
+  if ((input.activeEfforts ?? 0) > 0) return true
+  const state = (input.runtimeState ?? "").toLowerCase()
+  return state === "due" || state === "scheduled"
+}
+
+function readFactoryCloudDevEnv(payload: Record<string, unknown>): { hasCloudDevEnv: boolean; label?: string } {
+  const workspace = asRecord(payload.workspace)
+  const sources: unknown[] = [
+    workspace,
+    workspace?.workspace_context,
+    workspace?.default_launch_profile,
+    workspace?.resource_bindings,
+    workspace?.resource_bindings_by_project,
+    asRecord(payload.factory)?.metadata,
+  ]
+  for (const link of asArray(workspace?.projects)) {
+    const projectLink = asRecord(link)
+    sources.push(projectLink?.default_launch_profile, projectLink?.resource_bindings, projectLink?.metadata)
+  }
+  for (const link of asArray(payload.linked_projects)) {
+    const projectLink = asRecord(link)
+    sources.push(projectLink?.default_launch_profile, projectLink?.resource_bindings, projectLink?.metadata)
+  }
+
+  let hostKind: string | undefined
+  let cloudSlot: string | undefined
+  let substrateKind: string | undefined
+  for (const source of sources) {
+    hostKind = hostKind ?? findHostKind(source)
+    cloudSlot = cloudSlot ?? findCloudSlotId(source)
+    substrateKind = substrateKind ?? findSubstrateKind(source)
+  }
+
+  if (cloudSlot) {
+    return { hasCloudDevEnv: true, label: shortCloudLabel(cloudSlot) }
+  }
+  if (substrateKind && !LOCAL_FACTORY_HOST_KINDS.has(substrateKind.toLowerCase())) {
+    return { hasCloudDevEnv: true, label: shortCloudLabel(substrateKind) }
+  }
+  if (hostKind && !LOCAL_FACTORY_HOST_KINDS.has(hostKind.toLowerCase())) {
+    return { hasCloudDevEnv: true, label: shortCloudLabel(hostKind) }
+  }
+  return { hasCloudDevEnv: false }
+}
+
+function findHostKind(value: unknown): string | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+  const direct = readString(record.host_kind) ?? readString(record.hostKind)
+  if (direct) return direct
+  for (const nestedKey of ["launch_profile", "launch_request", "workspace_profile", "smoke_targets", "execution"]) {
+    const nested = asRecord(record[nestedKey])
+    const nestedHost = readString(nested?.host_kind) ?? readString(nested?.hostKind)
+    if (nestedHost) return nestedHost
+  }
+  return undefined
+}
+
+function findCloudSlotId(value: unknown): string | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+  return (
+    readString(record.cloud_slot_id) ??
+    readString(record.cloud_slot) ??
+    readString(asRecord(record.substrate)?.cloud_slot_id) ??
+    readString(asRecord(record.environment_spec)?.cloud_slot_id)
+  )
+}
+
+function findSubstrateKind(value: unknown): string | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+  return readString(asRecord(record.substrate)?.kind) ?? readString(record.substrate_kind)
+}
+
+function shortCloudLabel(value: string): string {
+  const normalized = value.replace(/\s+/g, "_").trim().toLowerCase()
+  if (normalized.includes("railway")) return "railway"
+  if (normalized.includes("daytona")) return "daytona"
+  if (normalized.includes("exe_dev") || normalized.includes("exedev")) return "exe.dev"
+  if (normalized.includes("modal")) return "modal"
+  if (normalized.startsWith("cloud-") || normalized.startsWith("cloud_")) return normalized.slice(0, 12)
+  const trimmed = value.replace(/\s+/g, " ").trim()
+  return trimmed.length <= 10 ? trimmed : `${trimmed.slice(0, 9)}…`
 }
 
 function activeFactoryProjectIds(linkedProjects: unknown[], projects: unknown[]): string[] {

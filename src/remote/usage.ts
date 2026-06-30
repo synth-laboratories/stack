@@ -28,6 +28,22 @@ export type RemoteUsageBreakdown = {
   byActor: RemoteUsageBreakdownRow[]
 }
 
+export type RemoteStackAuxBudget = {
+  provider: string
+  tier: string
+  model?: string
+  synthWide: RemoteStackAuxBudgetWindow
+  orgDaily: RemoteStackAuxBudgetWindow & {
+    resetsInSeconds?: number
+  }
+}
+
+export type RemoteStackAuxBudgetWindow = {
+  capUsd: number
+  spentUsd: number
+  remainingUsd: number
+}
+
 export type RemoteUsageSnapshot = {
   status: RemoteUsageStatus
   environmentName: string
@@ -47,6 +63,7 @@ export type RemoteUsageSnapshot = {
   spend30dUsd?: number
   usage7dUsd?: number
   usageBreakdown?: RemoteUsageBreakdown
+  stackAuxBudget?: RemoteStackAuxBudget
 }
 
 export function emptyRemoteUsageSnapshot(
@@ -74,11 +91,12 @@ export async function readRemoteUsageSnapshot(config: StackConfig): Promise<Remo
   if (!auth.hasAuth) return base
 
   try {
-    const [planPayload, overviewPayload] = await Promise.all([
+    const [planPayload, overviewPayload, stackAuxPayload] = await Promise.all([
       getJson(config, "/smr/billing/plan"),
       fetchUsageOverviewPayload(config),
+      fetchStackAuxUsagePayload(config),
     ])
-    return parseUsageSnapshot(config, planPayload, overviewPayload)
+    return parseUsageSnapshot(config, planPayload, overviewPayload, stackAuxPayload)
   } catch (error) {
     return {
       ...base,
@@ -93,6 +111,7 @@ function parseUsageSnapshot(
   config: StackConfig,
   planPayload: unknown,
   overviewPayload: unknown,
+  stackAuxPayload: unknown,
 ): RemoteUsageSnapshot {
   const plan = asRecord(planPayload)
   const wallet = asRecord(plan?.wallet)
@@ -129,6 +148,7 @@ function parseUsageSnapshot(
       readNumber(usageSummary?.total_cost_usd) ??
       readNumber(usageSummary?.total_charged_usd),
     usageBreakdown: usageSummary ? readUsageBreakdown(usageSummary, 7) : undefined,
+    stackAuxBudget: readStackAuxBudget(stackAuxPayload),
   }
 }
 
@@ -297,6 +317,14 @@ async function fetchUsageOverviewPayload(config: StackConfig): Promise<unknown |
     return await getJson(config, "/api/v1/usage/overview?days=7&include_projects=true")
   } catch {
     return await buildProjectUsageOverviewFallback(config)
+  }
+}
+
+async function fetchStackAuxUsagePayload(config: StackConfig): Promise<unknown | undefined> {
+  try {
+    return await getJson(config, "/api/v1/stack-aux/usage")
+  } catch {
+    return undefined
   }
 }
 
@@ -485,6 +513,40 @@ function usdMapToOverviewBreakdown(
     }
   }
   return out
+}
+
+function readStackAuxBudget(payload: unknown): RemoteStackAuxBudget | undefined {
+  const record = asRecord(payload)
+  if (!record) return undefined
+  const synthWide = readStackAuxBudgetWindow(record.synth_wide)
+  const orgDaily = readStackAuxBudgetWindow(record.org_daily)
+  if (!synthWide || !orgDaily) return undefined
+  return {
+    provider: readString(record.provider) ?? "synth",
+    tier: readString(record.tier) ?? "free_aux",
+    model: readString(record.model),
+    synthWide,
+    orgDaily: {
+      ...orgDaily,
+      resetsInSeconds: readNumber(asRecord(record.org_daily)?.resets_in_seconds),
+    },
+  }
+}
+
+function readStackAuxBudgetWindow(value: unknown): RemoteStackAuxBudgetWindow | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+  const capCents = readNumber(record.cap_cents)
+  const spentCents = readNumber(record.spent_cents)
+  const remainingCents = readNumber(record.remaining_cents)
+  if (capCents === undefined || spentCents === undefined || remainingCents === undefined) {
+    return undefined
+  }
+  return {
+    capUsd: capCents / 100,
+    spentUsd: spentCents / 100,
+    remainingUsd: remainingCents / 100,
+  }
 }
 
 async function getJson(config: StackConfig, path: string): Promise<unknown> {

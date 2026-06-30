@@ -2,6 +2,7 @@ import { spawn, spawnSync } from "node:child_process"
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import type { StackConfig } from "../config.js"
+import { stackdRuntimeAppendEvent } from "../client/stackd.js"
 
 export type OptimizerServiceStatus = "running" | "stopped" | "starting" | "error"
 
@@ -122,16 +123,18 @@ export async function startOptimizerService(config: StackConfig): Promise<Optimi
     args.push("--workers", String(config.optimizerWorkers))
   }
 
+  let child
   try {
-    const child = spawn(config.optimizerCommand, args, {
+    child = spawn(config.optimizerCommand, args, {
       cwd: config.workspaceRoot,
       detached: true,
       stdio: ["ignore", logFd, logFd],
     })
-    child.unref()
-    writeFileSync(config.optimizerPidPath, `${child.pid ?? ""}\n`, "utf8")
   } catch (error) {
     closeSync(logFd)
+    await recordOptimizerLeverEvent(config, "lever.local_gepa.service.start_failed", {
+      error: errorMessage(error),
+    })
     return {
       ...current,
       status: "error",
@@ -140,8 +143,31 @@ export async function startOptimizerService(config: StackConfig): Promise<Optimi
     }
   }
 
+  const spawnError = await immediateSpawnError(child)
+  if (spawnError) {
+    closeSync(logFd)
+    await recordOptimizerLeverEvent(config, "lever.local_gepa.service.start_failed", {
+      error: errorMessage(spawnError),
+    })
+    return {
+      ...current,
+      status: "error",
+      message: `failed to start ${config.optimizerCommand}: ${errorMessage(spawnError)}`,
+      checkedAt: new Date().toISOString(),
+    }
+  }
+
+  child.unref()
+  writeFileSync(config.optimizerPidPath, `${child.pid ?? ""}\n`, "utf8")
+
   closeSync(logFd)
-  return waitForOptimizerService(config)
+  const snapshot = await waitForOptimizerService(config)
+  await recordOptimizerLeverEvent(config, "lever.local_gepa.service.start_requested", {
+    pid: snapshot.pid ?? null,
+    status: snapshot.status,
+    message: snapshot.message ?? null,
+  })
+  return snapshot
 }
 
 async function waitForOptimizerService(config: StackConfig): Promise<OptimizerSnapshot> {
@@ -197,6 +223,49 @@ function serviceSupportsWorkers(command: string): boolean {
     timeout: 2500,
   })
   return `${result.stdout ?? ""}\n${result.stderr ?? ""}`.includes("--workers")
+}
+
+function immediateSpawnError(child: ReturnType<typeof spawn>): Promise<Error | undefined> {
+  return new Promise((resolve) => {
+    let settled = false
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const finish = (error?: Error) => {
+      if (settled) return
+      settled = true
+      if (timer) clearTimeout(timer)
+      child.off("error", onError)
+      child.off("spawn", onSpawn)
+      resolve(error)
+    }
+    const onError = (error: Error) => finish(error)
+    const onSpawn = () => finish()
+    child.once("error", onError)
+    child.once("spawn", onSpawn)
+    timer = setTimeout(() => finish(), 50)
+  })
+}
+
+async function recordOptimizerLeverEvent(
+  config: StackConfig,
+  eventType: "lever.local_gepa.service.start_requested" | "lever.local_gepa.service.start_failed",
+  payload: Record<string, unknown>,
+): Promise<void> {
+  await stackdRuntimeAppendEvent({
+    event_type: eventType,
+    source: "lever.local_gepa",
+    subject: {
+      kind: "local_gepa_service",
+      id: config.optimizerServiceUrl,
+    },
+    payload: {
+      service_url: config.optimizerServiceUrl,
+      bind: config.optimizerBind,
+      command: config.optimizerCommand,
+      db_path: config.optimizerDbPath,
+      log_path: config.optimizerLogPath,
+      ...payload,
+    },
+  }).catch(() => undefined)
 }
 
 function readRuns(value: unknown): OptimizerRunSummary[] {

@@ -1,11 +1,14 @@
 #!/usr/bin/env bun
 
-import { hydrateCodexPricing, loadConfig } from "./config.js"
+import { hydrateCodexPricing, harnessSessionCommand, loadConfig } from "./config.js"
 import { ensureStackCodexSkills } from "./codex/install-skills.js"
+import { runLocalDemo } from "./demo.js"
+import { runDoctor } from "./doctor.js"
 import { detectWorkspace } from "./local/workspace.js"
 import { createSession } from "./session.js"
 import { runStackApp } from "./tui/app.js"
 import { resetTerminalAfterTui } from "./tui/terminal-cleanup.js"
+import { runUpdate } from "./update.js"
 import { runVoiceCheck, voiceStatusLine, writeVoiceStatus, resolveVoiceStatus } from "./voice/status.js"
 import { printStackVersion, stackAppRoot, wantsVersionFlag } from "./version.js"
 
@@ -16,6 +19,15 @@ if (wantsVersionFlag(process.argv)) {
 
 try {
   const config = await loadConfig(stackAppRoot())
+  if (process.argv[2] === "doctor") {
+    process.exit(await runDoctor(config, process.argv.slice(3)))
+  }
+  if (process.argv[2] === "demo") {
+    process.exit(await runLocalDemo(config, process.argv.slice(3)))
+  }
+  if (process.argv[2] === "update") {
+    process.exit(await runUpdate(config, process.argv.slice(3)))
+  }
   if (process.argv[2] === "voice" && process.argv[3] === "check") {
     const threadArgIndex = process.argv.indexOf("--thread-id")
     const threadId = threadArgIndex >= 0 ? process.argv[threadArgIndex + 1] : undefined
@@ -34,7 +46,7 @@ try {
   ensureStackCodexSkills(config.appRoot)
   await hydrateCodexPricing(config)
   const workspace = await detectWorkspace(config.workingDir)
-  const session = createSession(config.workspaceRoot, `${config.codexCommand} ${config.codexArgs.join(" ")}`)
+  const session = createSession(config.workspaceRoot, harnessSessionCommand(config))
 
   await runStackApp({ config, workspace, session })
 } catch (error) {

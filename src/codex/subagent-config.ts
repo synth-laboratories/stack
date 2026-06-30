@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
-import type { StackConfig } from "../config.js"
+import { isCursorHarness, type StackConfig } from "../config.js"
 
 const STACK_AGENT_PROFILES = [
   {
@@ -33,6 +33,7 @@ const STACK_AGENT_PROFILES = [
 ]
 
 export function syncStackSubagentAgentFiles(config: StackConfig): void {
+  if (isCursorHarness(config)) return
   const agentsDir = join(config.appRoot, ".codex", "agents")
   mkdirSync(agentsDir, { recursive: true })
   for (const profile of STACK_AGENT_PROFILES) {
