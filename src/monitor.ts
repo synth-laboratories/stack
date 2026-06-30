@@ -559,102 +559,79 @@ async function runMonitorSidecarChatReply(input: {
   context: SidecarChatContext
   deterministic: SidecarChatReplyResult
 }): Promise<SidecarChatReplyResult> {
-  let codexSidecarFallbackReason: string | undefined
   if (shouldUseCodexSidecar(input.config)) {
-    try {
-      const codex = await runMonitorCodexSidecarChatTurn({
-        stackConfig: input.stackConfig,
-        monitorConfig: input.config,
-        threadId: input.requestEvent.thread_id,
-        actorId: monitorActorId(input.config),
-        codexThreadId: input.actorState?.monitor_codex_thread_id,
-        question: input.question,
-        requestEventId: input.requestEvent.event_id,
-        goalContext: input.goalContext,
-        sidecarContext: serializableSidecarChatContext(input.context),
-        deterministicAnswer: input.deterministic.answer,
-      })
-      const answer = codex.assistantText?.trim() || input.deterministic.answer
-      return {
-        ...input.deterministic,
-        answer,
-        source: "codex-app-server",
-        monitorCodexThreadId: codex.codexThreadId,
-      }
-    } catch (error) {
-      codexSidecarFallbackReason = error instanceof Error ? error.message : String(error)
-      if (resolvedMonitorWorker(input.config) === "codex_app_server") {
-        return {
-          ...input.deterministic,
-          fallbackReason: codexSidecarFallbackReason,
-        }
-      }
-    }
-  }
-  if (!shouldUseModelWorker(input.config)) {
-    return {
-      ...input.deterministic,
-      fallbackReason: codexSidecarFallbackReason,
-    }
-  }
-  const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
-  if (!inference) {
-    return {
-      ...input.deterministic,
-      fallbackReason: codexSidecarFallbackReason ?? monitorInferenceFallbackReason(input.config, input.stackConfig),
-    }
-  }
-  try {
-    const response = await fetch(inference.url, {
-      method: "POST",
-      headers: {
-        "authorization": `Bearer ${inference.apiKey}`,
-        "content-type": "application/json",
-        ...inference.headers,
-      },
-      body: JSON.stringify({
-        model: input.config.model.model,
-        reasoning: { effort: input.config.model.reasoningEffort },
-        input: [
-          {
-            role: "developer",
-            content: [{
-              type: "input_text",
-              text: resolveSidecarChatDeveloperPrompt(input.stackRoot, input.config),
-            }],
-          },
-          {
-            role: "user",
-            content: [{
-              type: "input_text",
-              text: JSON.stringify(sidecarChatUserPayload(input), null, 2),
-            }],
-          },
-        ],
-      }),
+    const codex = await runMonitorCodexSidecarChatTurn({
+      stackConfig: input.stackConfig,
+      monitorConfig: input.config,
+      threadId: input.requestEvent.thread_id,
+      actorId: monitorActorId(input.config),
+      codexThreadId: input.actorState?.monitor_codex_thread_id,
+      question: input.question,
+      requestEventId: input.requestEvent.event_id,
+      goalContext: input.goalContext,
+      sidecarContext: serializableSidecarChatContext(input.context),
     })
-    const payload = await response.json().catch(() => undefined) as unknown
-    if (!response.ok) {
-      const label = inference.source === "synth-aux" ? "stack-aux" : "OpenAI"
-      throw new Error(`${label} sidecar chat failed ${response.status}: ${truncate(JSON.stringify(payload ?? {}), 300)}`)
+    const answer = codex.assistantText?.trim()
+    if (!answer) {
+      throw new Error("Codex sidecar chat completed without an assistant message")
     }
-    const parsed = parseFirstJsonObject(extractOpenAiOutputText(payload))
-    const answer = readString(parsed?.answer)
-    if (!answer) throw new Error("Sidecar chat response did not contain answer")
-    const citedEventIds = readStringArray(parsed?.cited_event_ids) ?? []
-    const criteriaRefs = readNumberArray(parsed?.criteria_refs)
     return {
       answer,
-      citedEventIds: citedEventIds.length > 0 ? citedEventIds : input.deterministic.citedEventIds,
-      criteriaRefs: criteriaRefs.length > 0 ? criteriaRefs : input.deterministic.criteriaRefs,
-      operatorUpdate: readOperatorUpdateFromRecord(asRecord(parsed?.operator_update)) ?? input.deterministic.operatorUpdate,
-      source: inference.source,
+      citedEventIds: [input.requestEvent.event_id],
+      criteriaRefs: [],
+      source: "codex-app-server",
+      monitorCodexThreadId: codex.codexThreadId,
     }
-  } catch (error) {
-    return {
-      ...input.deterministic,
-      fallbackReason: error instanceof Error ? error.message : String(error),
-    }
+  }
+  if (!shouldUseModelWorker(input.config)) return input.deterministic
+  const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
+  if (!inference) {
+    throw new Error(monitorInferenceFallbackReason(input.config, input.stackConfig))
+  }
+  const response = await fetch(inference.url, {
+    method: "POST",
+    headers: {
+      "authorization": `Bearer ${inference.apiKey}`,
+      "content-type": "application/json",
+      ...inference.headers,
+    },
+    body: JSON.stringify({
+      model: input.config.model.model,
+      reasoning: { effort: input.config.model.reasoningEffort },
+      input: [
+        {
+          role: "developer",
+          content: [{
+            type: "input_text",
+            text: resolveSidecarChatDeveloperPrompt(input.stackRoot, input.config),
+          }],
+        },
+        {
+          role: "user",
+          content: [{
+            type: "input_text",
+            text: JSON.stringify(sidecarChatUserPayload(input), null, 2),
+          }],
+        },
+      ],
+    }),
+  })
+  const payload = await response.json().catch(() => undefined) as unknown
+  if (!response.ok) {
+    const label = inference.source === "synth-aux" ? "stack-aux" : "OpenAI"
+    throw new Error(`${label} sidecar chat failed ${response.status}: ${truncate(JSON.stringify(payload ?? {}), 300)}`)
+  }
+  const parsed = parseFirstJsonObject(extractOpenAiOutputText(payload))
+  const answer = readString(parsed?.answer)
+  if (!answer) throw new Error("Sidecar chat response did not contain answer")
+  const citedEventIds = readStringArray(parsed?.cited_event_ids) ?? []
+  const criteriaRefs = readNumberArray(parsed?.criteria_refs)
+  return {
+    answer,
+    citedEventIds,
+    criteriaRefs,
+    operatorUpdate: readOperatorUpdateFromRecord(asRecord(parsed?.operator_update)),
+    source: inference.source,
   }
 }
 
@@ -1725,63 +1702,40 @@ async function runMonitorPass(input: {
     wakeReason: input.wakeReason,
     priorWakeCount: input.actorState.wake_counts,
   })
-  let codexSidecarFallbackReason: string | undefined
   if (shouldUseCodexSidecar(input.config)) {
-    try {
-      const codex = await runMonitorCodexSidecarTurn({
-        stackConfig: input.stackConfig,
-        monitorConfig: input.config,
-        threadId: input.threadId,
-        actorId: input.actorState.monitor_actor_id,
-        codexThreadId: input.actorState.monitor_codex_thread_id,
-        wakeId: input.wakeId,
-        wakeReason: input.wakeReason,
-        triggerEventIds: input.triggerEventIds,
-        priorEvents: input.priorEvents,
-        pendingEvents: input.pendingEvents,
-        goalContext: input.goalContext,
-        deterministicSummary: deterministic.summary,
-      })
-      const summary = codex.assistantText?.trim() || deterministic.summary
-      return {
-        ...deterministic,
-        summary,
-        checkpointSummary: summary,
-        source: "codex-app-server",
-        monitorCodexThreadId: codex.codexThreadId,
-        usage: codexUsageEstimate(codex.usage, summary),
-      }
-    } catch (error) {
-      codexSidecarFallbackReason = error instanceof Error ? error.message : String(error)
-      if (resolvedMonitorWorker(input.config) === "codex_app_server") {
-        return {
-          ...deterministic,
-          fallbackReason: codexSidecarFallbackReason,
-        }
-      }
+    const codex = await runMonitorCodexSidecarTurn({
+      stackConfig: input.stackConfig,
+      monitorConfig: input.config,
+      threadId: input.threadId,
+      actorId: input.actorState.monitor_actor_id,
+      codexThreadId: input.actorState.monitor_codex_thread_id,
+      wakeId: input.wakeId,
+      wakeReason: input.wakeReason,
+      triggerEventIds: input.triggerEventIds,
+      priorEvents: input.priorEvents,
+      pendingEvents: input.pendingEvents,
+      goalContext: input.goalContext,
+      deterministicSummary: deterministic.summary,
+    })
+    const summary = codex.assistantText?.trim()
+    if (!summary) {
+      throw new Error("Codex sidecar monitor completed without an assistant message")
     }
-  }
-  if (!shouldUseModelWorker(input.config)) {
     return {
       ...deterministic,
-      fallbackReason: codexSidecarFallbackReason,
+      summary,
+      checkpointSummary: summary,
+      source: "codex-app-server",
+      monitorCodexThreadId: codex.codexThreadId,
+      usage: codexUsageEstimate(codex.usage, summary),
     }
   }
+  if (!shouldUseModelWorker(input.config)) return deterministic
   const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
   if (!inference) {
-    return {
-      ...deterministic,
-      fallbackReason: codexSidecarFallbackReason ?? monitorInferenceFallbackReason(input.config, input.stackConfig),
-    }
+    throw new Error(monitorInferenceFallbackReason(input.config, input.stackConfig))
   }
-  try {
-    return await runResponsesMonitorPass(input, deterministic, inference)
-  } catch (error) {
-    return {
-      ...deterministic,
-      fallbackReason: error instanceof Error ? error.message : String(error),
-    }
-  }
+  return await runResponsesMonitorPass(input, deterministic, inference)
 }
 
 function normalizeMonitorProvider(provider: string | undefined): "openai" | "synth_aux" {

@@ -318,6 +318,7 @@ import {
   type RightPanelMode,
 } from "./ops-panel.js"
 import {
+  goalSidecarThreadLineCount,
   monitorEventStreamLineCount,
 } from "./monitor-thread.js"
 import { activeGoalModeSnapshot, isGoalMode } from "./goal-mode.js"
@@ -443,6 +444,8 @@ type AppState = {
   goalPanelSelectedIndex: number
   goalShutterWorkerPeek: boolean
   goalShutterSidecarView: "thread" | "events"
+  goalShutterSidecarThreadScrollOffset: number
+  goalShutterSidecarThreadScrollPinned: boolean
   goalShutterScrollOffset: number
   goalShutterScrollPinned: boolean
   goalMonitorAutoEnabledObjective?: string
@@ -790,6 +793,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     goalPanelSelectedIndex: 0,
     goalShutterWorkerPeek: false,
     goalShutterSidecarView: "thread",
+    goalShutterSidecarThreadScrollOffset: 0,
+    goalShutterSidecarThreadScrollPinned: true,
     goalShutterScrollOffset: 0,
     goalShutterScrollPinned: true,
     toolLogs: [],
@@ -1896,6 +1901,9 @@ function createView(
         state.focusMode === "monitor",
       )
     : []
+  const sidecarTranscript = showGoalShutter
+    ? readMonitorSidecarTranscript(options.config.appRoot, options.session.id, state.monitorSnapshot.actorId)
+    : undefined
   const goalStreamRows = showGoalShutter
     ? goalShutterStreamVisibleRows(
         transcriptViewport.lines,
@@ -1910,6 +1918,13 @@ function createView(
     : 0
   if (showGoalShutter) {
     tailGoalShutterScroll(state, workerMetaEvents, transcriptViewport.columns, goalStreamRows)
+    tailGoalSidecarThreadScroll(
+      state,
+      sidecarTranscript?.turns,
+      workerMetaEvents,
+      Math.max(20, transcriptViewport.columns - 4),
+      Math.max(3, goalStreamRows),
+    )
   }
   const opsPanelInput = buildOpsPanelInput(options, state)
   const focusCenterProjects = panelFocusHandlers(state, "projects", refresh)
@@ -1936,9 +1951,6 @@ function createView(
         onSelectProgressTab: () => returnToGoalShutter(state, refresh),
       }
     : undefined
-  const sidecarTranscript = showGoalShutter
-    ? readMonitorSidecarTranscript(options.config.appRoot, options.session.id, state.monitorSnapshot.actorId)
-    : undefined
   const agentChildren = [
     agentPanelIdsCopyIcon(renderer, options, state, refresh),
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
@@ -1953,6 +1965,7 @@ function createView(
             visibleRows: transcriptViewport.lines,
             streamRows: goalStreamRows,
             scrollOffset: state.goalShutterScrollOffset,
+            sidecarThreadScrollOffset: state.goalShutterSidecarThreadScrollOffset,
             metaThreadId: options.session.metaThreadId,
             sidecarMenuElements,
             onFocusSidecar: () => focusGoalSidecarChat(options, state, refresh),
@@ -2226,6 +2239,16 @@ function createView(
                   workerMetaEvents,
                   transcriptViewport.columns,
                   goalStreamRows,
+                  refresh,
+                )
+              } else if (state.goalShutterSidecarView === "thread" && (direction === "up" || direction === "down")) {
+                handleGoalSidecarThreadMouseScroll(
+                  direction,
+                  state,
+                  sidecarTranscript?.turns,
+                  workerMetaEvents,
+                  Math.max(20, transcriptViewport.columns - 4),
+                  Math.max(3, goalStreamRows),
                   refresh,
                 )
               }
@@ -2999,10 +3022,33 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
   state.threadGoalStatus = next
 }
 
+/**
+ * Authoritative goal-ownership invariant, enforced every render before any isGoalMode read:
+ *  - A meta goal belongs to the metathread named by `manifest.id`; show it only when the foreground
+ *    thread is in that metathread (`manifest.id === session.metaThreadId`).
+ *  - A meta-sourced goalContext is valid only while that owning manifest is in play.
+ * Anything that fails its ownership check is dropped, so a meta goal can never leak onto another
+ * thread regardless of which writer last touched the state. Codex (tool/context) goals are the
+ * thread's own and are scoped by clearing on session swap (see applySession), then reloaded.
+ */
+function reconcileGoalOwnership(options: StackAppOptions, state: AppState): void {
+  const sessionMetaThreadId = options.session.metaThreadId
+  const ownsManifest = !!state.metaThreadManifest && state.metaThreadManifest.id === sessionMetaThreadId
+  if (state.metaThreadManifest && !ownsManifest) {
+    state.metaThreadManifest = undefined
+  }
+  if (state.goalContext.source === "meta_thread" && !ownsManifest) {
+    state.goalContext = emptyGoalContext()
+  }
+}
+
 function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
+  reconcileGoalOwnership(options, state)
   if (!isGoalMode(state)) {
     state.goalShutterWorkerPeek = false
     state.goalShutterSidecarView = "thread"
+    state.goalShutterSidecarThreadScrollOffset = 0
+    state.goalShutterSidecarThreadScrollPinned = true
     state.goalShutterScrollOffset = 0
     state.goalShutterScrollPinned = true
     state.goalMonitorAutoEnabledObjective = undefined
@@ -3038,6 +3084,7 @@ function focusGoalSidecarChat(
   }
   state.goalShutterWorkerPeek = false
   state.goalShutterSidecarView = "thread"
+  state.goalShutterSidecarThreadScrollPinned = true
   state.talkToMonitor = true
   state.monitorPanelMode = "chat"
   state.monitorWorkerTargetId = options.session.id
@@ -3058,6 +3105,7 @@ function returnToGoalShutter(state: AppState, refresh: () => void): boolean {
   if (!isGoalMode(state) || !state.goalShutterWorkerPeek) return false
   state.goalShutterWorkerPeek = false
   state.goalShutterSidecarView = "thread"
+  state.goalShutterSidecarThreadScrollPinned = true
   state.focusMode = "monitor"
   refresh()
   return true
@@ -5273,6 +5321,40 @@ function tailGoalShutterScroll(
   const maxOffset = Math.max(0, lineCount - streamRows)
   if (state.goalShutterScrollPinned) state.goalShutterScrollOffset = maxOffset
   else if (state.goalShutterScrollOffset > maxOffset) state.goalShutterScrollOffset = maxOffset
+}
+
+function tailGoalSidecarThreadScroll(
+  state: AppState,
+  turns: Parameters<typeof goalSidecarThreadLineCount>[0]["turns"],
+  events: StackThreadMetaEvent[],
+  columns: number,
+  visibleRows: number,
+): void {
+  const lineCount = goalSidecarThreadLineCount({ turns, events, columns })
+  const maxOffset = Math.max(0, lineCount - visibleRows)
+  if (state.goalShutterSidecarThreadScrollPinned) state.goalShutterSidecarThreadScrollOffset = maxOffset
+  else if (state.goalShutterSidecarThreadScrollOffset > maxOffset) state.goalShutterSidecarThreadScrollOffset = maxOffset
+}
+
+function handleGoalSidecarThreadMouseScroll(
+  direction: "up" | "down",
+  state: AppState,
+  turns: Parameters<typeof goalSidecarThreadLineCount>[0]["turns"],
+  events: StackThreadMetaEvent[],
+  columns: number,
+  visibleRows: number,
+  refresh: () => void,
+): void {
+  const lineCount = goalSidecarThreadLineCount({ turns, events, columns })
+  const maxOffset = Math.max(0, lineCount - visibleRows)
+  if (direction === "up") {
+    state.goalShutterSidecarThreadScrollPinned = false
+    state.goalShutterSidecarThreadScrollOffset = Math.max(0, state.goalShutterSidecarThreadScrollOffset - 3)
+  } else {
+    state.goalShutterSidecarThreadScrollOffset = Math.min(maxOffset, state.goalShutterSidecarThreadScrollOffset + 3)
+    state.goalShutterSidecarThreadScrollPinned = state.goalShutterSidecarThreadScrollOffset >= maxOffset
+  }
+  refresh()
 }
 
 function handleGoalShutterMouseScroll(
@@ -7792,6 +7874,7 @@ async function activateWorkerSessionForGardener(
   try {
     const loaded = await readSessionLog(summary.path)
     applySession(options, state, loaded, summary.path)
+    await refreshMetaThreadGoal(options, state)
     await openHarnessSession(options, state, codexSessionHandle, options.session.codexThreadId)
     await refreshAgentContextFromSession(options, state, refresh, (limits) => {
       void observeCodexAuthState(options.config, options.session.id, limits, state)
@@ -9669,6 +9752,7 @@ async function loadSelectedSession(
         refreshMetaEvents,
       )
     } else {
+      await refreshMetaThreadGoal(options, state)
       await refreshAgentContextFromSession(options, state, refresh, (limits) => {
         void observeCodexAuthState(options.config, options.session.id, limits, state)
       })
@@ -9717,10 +9801,14 @@ function applyGoalUiAfterSessionResume(
   if (!isGoalMode(state)) {
     state.goalShutterWorkerPeek = false
     state.goalShutterSidecarView = "thread"
+    state.goalShutterSidecarThreadScrollOffset = 0
+    state.goalShutterSidecarThreadScrollPinned = true
     return
   }
   state.goalShutterWorkerPeek = checkpoint?.goalShutterWorkerPeek ?? false
   state.goalShutterSidecarView = checkpoint?.goalShutterSidecarView ?? "thread"
+  state.goalShutterSidecarThreadScrollOffset = 0
+  state.goalShutterSidecarThreadScrollPinned = true
   state.goalShutterScrollOffset = 0
   state.goalShutterScrollPinned = true
   state.talkToMonitor = true
@@ -9915,9 +10003,15 @@ function applySession(
   state.liveThinkingText = undefined
   state.liveThinkingId = undefined
   state.turnStartedAt = undefined
+  // Goal state belongs to a specific thread/metathread; swapping the foreground session must not
+  // carry the previous thread's goal across. Callers reload this session's own goal afterward.
+  state.goalContext = emptyGoalContext()
+  state.metaThreadManifest = undefined
   state.focusMode = "agent"
   state.goalShutterWorkerPeek = false
   state.goalShutterSidecarView = "thread"
+  state.goalShutterSidecarThreadScrollOffset = 0
+  state.goalShutterSidecarThreadScrollPinned = true
   state.goalShutterScrollOffset = 0
   state.goalShutterScrollPinned = true
   state.agentViewEnabled = false

@@ -100,13 +100,6 @@ const GOAL_SHUTTER_SIDECAR_CHAT_TYPES = new Set([
   "monitor.chat.reply",
 ])
 
-const GOAL_SHUTTER_SIDECAR_THREAD_TYPES = new Set([
-  "monitor.operator_message",
-  "monitor.chat.request",
-  "monitor.chat.reply",
-  "monitor.summary",
-])
-
 type GoalSidecarThreadLine = {
   text: string
   kind: "ask" | "reply-label" | "reply-body" | "blank" | "empty"
@@ -123,78 +116,22 @@ function wrapPlain(text: string, width: number): string[] {
   return lines.length > 0 ? lines : [" "]
 }
 
-function goalSidecarThreadEventLines(event: StackThreadMetaEvent, width: number): GoalSidecarThreadLine[] {
-  const payload = event.payload
-  switch (event.type) {
-    case "monitor.operator_message":
-    case "monitor.chat.request": {
-      const message = readString(payload.message) ?? "(empty)"
-      return wrapPlain(`› ${message}`, width).map((text) => ({ text, kind: "ask" }))
-    }
-    case "monitor.chat.reply": {
-      const answer = readString(payload.answer) ?? "(empty reply)"
-      return wrapPlain(`sidecar · ${answer}`, width).map((text, index) => ({
-        text,
-        kind: index === 0 ? "reply-label" : "reply-body",
-      }))
-    }
-    case "monitor.summary": {
-      const summary = readString(payload.summary) ?? "(empty summary)"
-      const severity = readString(payload.severity)
-      const operatorUpdate = asRecord(payload.operator_update)
-      const lines = [
-        severity && severity !== "none" ? `sidecar · ${severity} · ${summary}` : `sidecar · ${summary}`,
-      ]
-      const progress = readString(operatorUpdate?.progress_note)
-      const workingOn = readString(operatorUpdate?.working_on)
-      const struggling = readString(operatorUpdate?.struggling_with)
-      if (progress && !summary.includes(progress)) lines.push(`progress · ${progress}`)
-      if (workingOn && !summary.includes(workingOn)) lines.push(`goal · ${workingOn}`)
-      if (struggling) lines.push(`stuck · ${struggling}`)
-      return wrapPlain(lines.join("\n"), width).map((text, index) => ({
-        text,
-        kind: index === 0 ? "reply-label" : "reply-body",
-      }))
-    }
-    default:
-      return []
-  }
-}
-
-/** A proper sidecar transcript: operator asks plus Codex monitor utterances. */
-export function goalSidecarThreadLines(
-  events: StackThreadMetaEvent[],
-  columns: number,
-  visibleRows = 5,
-): GoalSidecarThreadLine[] {
-  const width = Math.max(16, columns - 2)
-  const sidecarEvents = monitorThreadEvents(events).filter((event) =>
-    GOAL_SHUTTER_SIDECAR_THREAD_TYPES.has(event.type),
-  )
-  if (sidecarEvents.length === 0) {
-    return [{ text: "(waiting for sidecar messages)", kind: "empty" }]
-  }
-  const lines: GoalSidecarThreadLine[] = []
-  for (const event of sidecarEvents) {
-    if (lines.length > 0) lines.push({ text: "", kind: "blank" })
-    lines.push(...goalSidecarThreadEventLines(event, width))
-  }
-  if (visibleRows <= 0) return []
-  return lines.slice(-visibleRows)
-}
-
 export function renderGoalSidecarThreadStyled(
   input: {
     turns?: readonly StackMonitorSidecarTurn[]
     events: StackThreadMetaEvent[]
     columns: number
     visibleRows?: number
+    scrollOffset?: number
   },
 ): StyledText {
   const visibleRows = input.visibleRows ?? 5
-  const lines = input.turns?.length
-    ? goalSidecarCodexThreadLines(input.turns, input.columns, visibleRows)
-    : goalSidecarThreadLines(input.events, input.columns, visibleRows)
+  const allLines = goalSidecarThreadRenderLines({
+    turns: input.turns,
+    events: input.events,
+    columns: input.columns,
+  })
+  const lines = sidecarThreadScrollWindow(allLines, input.scrollOffset ?? 0, visibleRows)
   const chunks: TextChunk[] = []
   for (const [index, line] of lines.entries()) {
     if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
@@ -203,10 +140,26 @@ export function renderGoalSidecarThreadStyled(
   return new StyledText(chunks)
 }
 
+export function goalSidecarThreadLineCount(input: {
+  turns?: readonly StackMonitorSidecarTurn[]
+  events: StackThreadMetaEvent[]
+  columns: number
+}): number {
+  return goalSidecarThreadRenderLines(input).length
+}
+
+function goalSidecarThreadRenderLines(input: {
+  turns?: readonly StackMonitorSidecarTurn[]
+  events: StackThreadMetaEvent[]
+  columns: number
+}): GoalSidecarThreadLine[] {
+  if (input.turns?.length) return goalSidecarCodexThreadLines(input.turns, input.columns)
+  return [{ text: "(waiting for sidecar Codex thread)", kind: "empty" }]
+}
+
 function goalSidecarCodexThreadLines(
   turns: readonly StackMonitorSidecarTurn[],
   columns: number,
-  visibleRows: number,
 ): GoalSidecarThreadLine[] {
   const width = Math.max(16, columns - 2)
   const lines: GoalSidecarThreadLine[] = []
@@ -225,8 +178,18 @@ function goalSidecarCodexThreadLines(
     }
   }
   if (lines.length === 0) return [{ text: "(waiting for sidecar messages)", kind: "empty" }]
+  return lines
+}
+
+function sidecarThreadScrollWindow(
+  lines: GoalSidecarThreadLine[],
+  scrollOffset: number,
+  visibleRows: number,
+): GoalSidecarThreadLine[] {
   if (visibleRows <= 0) return []
-  return lines.slice(-visibleRows)
+  const maxOffset = Math.max(0, lines.length - visibleRows)
+  const offset = Math.min(Math.max(0, scrollOffset), maxOffset)
+  return lines.slice(offset, offset + visibleRows)
 }
 
 function sidecarTurnOutputLines(stdout: string, width: number): GoalSidecarThreadLine[] {

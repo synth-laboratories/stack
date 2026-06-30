@@ -134,7 +134,6 @@ export async function runMonitorCodexSidecarChatTurn(input: {
   requestEventId: string
   goalContext: CodexGoalSnapshot
   sidecarContext: Record<string, unknown>
-  deterministicAnswer: string
 }): Promise<MonitorCodexSidecarRunResult> {
   return runMonitorCodexSidecarPrompt({
     stackConfig: input.stackConfig,
@@ -301,7 +300,6 @@ function monitorCodexChatPrompt(input: {
   requestEventId: string
   goalContext: CodexGoalSnapshot
   sidecarContext: Record<string, unknown>
-  deterministicAnswer: string
 }): string {
   return JSON.stringify(
     {
@@ -310,7 +308,6 @@ function monitorCodexChatPrompt(input: {
       operator_message: input.question,
       current_goal: input.goalContext,
       sidecar_context: input.sidecarContext,
-      deterministic_baseline_answer: input.deterministicAnswer,
       instruction:
         "Answer the operator in the persistent sidecar thread using the current goal and sidecar context. After answering, call stack_sidecar_pause_for_restart so the runtime can wake you again on the next event.",
     },

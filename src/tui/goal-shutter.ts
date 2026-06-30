@@ -30,6 +30,7 @@ export type GoalShutterRenderInput = {
   events: StackThreadMetaEvent[]
   sidecarTurns?: readonly StackMonitorSidecarTurn[]
   sidecarView: "thread" | "events"
+  sidecarThreadScrollOffset: number
   columns: number
   visibleRows: number
   streamRows?: number
@@ -311,6 +312,7 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
                 events: input.events,
                 columns: sidecarColumns,
                 visibleRows: sidecarThreadRows,
+                scrollOffset: input.sidecarThreadScrollOffset,
               },
             ),
             width: "100%",
