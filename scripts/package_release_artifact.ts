@@ -34,7 +34,7 @@ mkdirSync(join(payloadRoot, "bin"), { recursive: true })
 mkdirSync(appPayload, { recursive: true })
 mkdirSync(binaryPayload, { recursive: true })
 
-for (const path of ["src", "crates", "bin", "docs", "packaging"]) copyIfExists(path)
+for (const path of ["src", "crates", "bin", "docs", "packaging", "bundled", ".codex"]) copyIfExists(path)
 for (const path of [
   "package.json",
   "bun.lock",
@@ -60,18 +60,28 @@ if (stackdBundled) {
 writeLauncher("stack", [
   'APP_ROOT="$(cd "$STACK_LAUNCHER_DIR/../share/stack/app" && pwd)"',
   'export STACK_APP_ROOT="${STACK_APP_ROOT:-$APP_ROOT}"',
+  'export STACK_INSTALL_ROOT="${STACK_INSTALL_ROOT:-$APP_ROOT}"',
   'exec bun run "$STACK_APP_ROOT/src/main.ts" "$@"',
 ])
 writeLauncher("stack-mcp", [
   'APP_ROOT="$(cd "$STACK_LAUNCHER_DIR/../share/stack/app" && pwd)"',
   'export STACK_APP_ROOT="${STACK_APP_ROOT:-$APP_ROOT}"',
+  'export STACK_INSTALL_ROOT="${STACK_INSTALL_ROOT:-$APP_ROOT}"',
   'exec bun run "$STACK_APP_ROOT/src/mcp/server.ts" "$@"',
 ])
 writeLauncher(
   "stackd",
   stackdBundled
-    ? ['ROOT="$(cd "$STACK_LAUNCHER_DIR/../share/stack" && pwd)"', 'exec "$ROOT/bin/stackd" "$@"']
-    : ['APP_ROOT="$(cd "$STACK_LAUNCHER_DIR/../share/stack/app" && pwd)"', 'exec cargo run --manifest-path "$APP_ROOT/Cargo.toml" -p stackd -- "$@"'],
+    ? [
+        'ROOT="$(cd "$STACK_LAUNCHER_DIR/../share/stack" && pwd)"',
+        'export STACK_INSTALL_ROOT="${STACK_INSTALL_ROOT:-$ROOT/app}"',
+        'exec "$ROOT/bin/stackd" "$@"',
+      ]
+    : [
+        'APP_ROOT="$(cd "$STACK_LAUNCHER_DIR/../share/stack/app" && pwd)"',
+        'export STACK_INSTALL_ROOT="${STACK_INSTALL_ROOT:-$APP_ROOT}"',
+        'exec cargo run --manifest-path "$APP_ROOT/Cargo.toml" -p stackd -- "$@"',
+      ],
 )
 
 writeFileSync(join(payloadRoot, "share", "stack", "VERSION"), `${versionMeta.version}\n`)
@@ -119,6 +129,8 @@ const requiredEntries = [
   "./share/stack/VERSION",
   "./share/stack/app/package.json",
   "./share/stack/app/src/main.ts",
+  "./share/stack/app/bundled/monitors/default.toml",
+  "./share/stack/app/.codex/skills/oss-gepa/SKILL.md",
 ]
 const missingEntries = requiredEntries.filter((entry) => !archiveList.includes(entry))
 const publishable = missingEntries.length === 0 && legalFiles.length === 2 && stackdBundled
