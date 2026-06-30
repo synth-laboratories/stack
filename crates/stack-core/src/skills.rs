@@ -109,7 +109,7 @@ pub fn skills_registry_path(paths: &StackPaths) -> PathBuf {
 /// writes to the user's global `~/.codex` — that is Codex's own home, which
 /// Stack only reads (sessions).
 pub fn bundled_skills_dir(paths: &StackPaths) -> PathBuf {
-    paths.app_root.join(".codex").join("skills")
+    paths.install_root.join(".codex").join("skills")
 }
 
 pub fn ensure_skills_runtime(paths: &StackPaths) -> Result<Vec<SkillRecord>, SkillError> {
@@ -535,6 +535,7 @@ mod tests {
     fn temp_paths(root: &Path) -> StackPaths {
         StackPaths {
             app_root: root.to_path_buf(),
+            install_root: root.to_path_buf(),
             stack_global_dir: root.join(".stack-global"),
             stack_dir: root.join(".stack"),
             session_log_dir: root.join(".stack").join("sessions"),

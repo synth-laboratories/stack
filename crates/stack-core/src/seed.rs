@@ -8,7 +8,7 @@ pub fn bundled_defaults_root(app_root: &Path) -> PathBuf {
 }
 
 pub fn ensure_stack_defaults(paths: &StackPaths) -> std::io::Result<()> {
-    let bundled_root = bundled_defaults_root(&paths.app_root);
+    let bundled_root = bundled_defaults_root(&paths.install_root);
     if !bundled_root.is_dir() {
         return Ok(());
     }
@@ -39,4 +39,43 @@ fn copy_tree_if_missing(source: &Path, dest: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::env;
+
+    #[test]
+    fn seeds_from_install_root_when_workspace_has_no_bundled() {
+        // Regression for F3: an installed user runs `stack` from their own project,
+        // so app_root (workspace) has no bundled/. Defaults must seed from the
+        // install root regardless.
+        let base = env::temp_dir().join(format!("stack-seed-test-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        let install = base.join("install");
+        let workspace = base.join("workspace");
+        fs::create_dir_all(install.join("bundled").join("monitors")).unwrap();
+        fs::write(install.join("bundled").join("monitors").join("default.toml"), "x = 1\n").unwrap();
+        fs::create_dir_all(&workspace).unwrap();
+
+        let paths = StackPaths {
+            app_root: workspace.clone(),
+            install_root: install.clone(),
+            stack_global_dir: base.join("global"),
+            stack_dir: workspace.join(".stack"),
+            session_log_dir: workspace.join(".stack").join("sessions"),
+            export_dir: workspace.join(".stack").join("exports"),
+            runtime_status_path: workspace.join(".stack").join("runtime").join("status.json"),
+            codex_home: base.join("codex-home"),
+        };
+
+        ensure_stack_defaults(&paths).unwrap();
+
+        assert!(
+            workspace.join(".stack").join("monitors").join("default.toml").is_file(),
+            "defaults must seed from install_root even when the workspace has no bundled/"
+        );
+        let _ = fs::remove_dir_all(&base);
+    }
 }

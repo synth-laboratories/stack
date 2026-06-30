@@ -2,7 +2,10 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-for auth_env in "$SCRIPT_DIR/.env" "$SCRIPT_DIR/../synth-ai/.env"; do
+# Bundled assets (bundled/, .codex/skills) ship with the install, not the user's
+# workspace. Export the install root so stackd + bun resolve them regardless of cwd.
+export STACK_INSTALL_ROOT="$SCRIPT_DIR"
+for auth_env in "$SCRIPT_DIR/.env"; do
   if [[ -f "$auth_env" && -z "${SYNTH_API_KEY:-}" ]]; then
     set -a
     # shellcheck disable=SC1090
