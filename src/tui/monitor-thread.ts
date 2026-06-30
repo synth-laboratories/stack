@@ -99,6 +99,13 @@ const GOAL_SHUTTER_SIDECAR_CHAT_TYPES = new Set([
   "monitor.chat.reply",
 ])
 
+const GOAL_SHUTTER_SIDECAR_THREAD_TYPES = new Set([
+  "monitor.operator_message",
+  "monitor.chat.request",
+  "monitor.chat.reply",
+  "monitor.summary",
+])
+
 type GoalSidecarThreadLine = {
   text: string
   kind: "ask" | "reply-label" | "reply-body" | "blank" | "empty"
@@ -115,7 +122,7 @@ function wrapPlain(text: string, width: number): string[] {
   return lines.length > 0 ? lines : [" "]
 }
 
-function goalSidecarChatTurnLines(event: StackThreadMetaEvent, width: number): GoalSidecarThreadLine[] {
+function goalSidecarThreadEventLines(event: StackThreadMetaEvent, width: number): GoalSidecarThreadLine[] {
   const payload = event.payload
   switch (event.type) {
     case "monitor.operator_message":
@@ -125,7 +132,25 @@ function goalSidecarChatTurnLines(event: StackThreadMetaEvent, width: number): G
     }
     case "monitor.chat.reply": {
       const answer = readString(payload.answer) ?? "(empty reply)"
-      return wrapPlain(answer, width).map((text, index) => ({
+      return wrapPlain(`sidecar · ${answer}`, width).map((text, index) => ({
+        text,
+        kind: index === 0 ? "reply-label" : "reply-body",
+      }))
+    }
+    case "monitor.summary": {
+      const summary = readString(payload.summary) ?? "(empty summary)"
+      const severity = readString(payload.severity)
+      const operatorUpdate = asRecord(payload.operator_update)
+      const lines = [
+        severity && severity !== "none" ? `sidecar · ${severity} · ${summary}` : `sidecar · ${summary}`,
+      ]
+      const progress = readString(operatorUpdate?.progress_note)
+      const workingOn = readString(operatorUpdate?.working_on)
+      const struggling = readString(operatorUpdate?.struggling_with)
+      if (progress && !summary.includes(progress)) lines.push(`progress · ${progress}`)
+      if (workingOn && !summary.includes(workingOn)) lines.push(`goal · ${workingOn}`)
+      if (struggling) lines.push(`stuck · ${struggling}`)
+      return wrapPlain(lines.join("\n"), width).map((text, index) => ({
         text,
         kind: index === 0 ? "reply-label" : "reply-body",
       }))
@@ -135,33 +160,34 @@ function goalSidecarChatTurnLines(event: StackThreadMetaEvent, width: number): G
   }
 }
 
-/** A proper turn-by-turn thread (full wrapped text, blank line between turns) — not a one-line-per-event log. */
+/** A proper sidecar transcript: operator asks plus Codex monitor utterances. */
 export function goalSidecarThreadLines(
   events: StackThreadMetaEvent[],
   columns: number,
-  maxTurns = 5,
+  visibleRows = 5,
 ): GoalSidecarThreadLine[] {
   const width = Math.max(16, columns - 2)
-  const chatEvents = monitorThreadEvents(events).filter((event) =>
-    GOAL_SHUTTER_SIDECAR_CHAT_TYPES.has(event.type),
+  const sidecarEvents = monitorThreadEvents(events).filter((event) =>
+    GOAL_SHUTTER_SIDECAR_THREAD_TYPES.has(event.type),
   )
-  if (chatEvents.length === 0) {
-    return [{ text: "(no sidecar messages yet · type below to ask)", kind: "empty" }]
+  if (sidecarEvents.length === 0) {
+    return [{ text: "(waiting for sidecar messages)", kind: "empty" }]
   }
   const lines: GoalSidecarThreadLine[] = []
-  for (const event of chatEvents.slice(-maxTurns)) {
+  for (const event of sidecarEvents) {
     if (lines.length > 0) lines.push({ text: "", kind: "blank" })
-    lines.push(...goalSidecarChatTurnLines(event, width))
+    lines.push(...goalSidecarThreadEventLines(event, width))
   }
-  return lines
+  if (visibleRows <= 0) return []
+  return lines.slice(-visibleRows)
 }
 
 export function renderGoalSidecarThreadStyled(
   events: StackThreadMetaEvent[],
   columns: number,
-  maxTurns = 5,
+  visibleRows = 5,
 ): StyledText {
-  const lines = goalSidecarThreadLines(events, columns, maxTurns)
+  const lines = goalSidecarThreadLines(events, columns, visibleRows)
   const chunks: TextChunk[] = []
   for (const [index, line] of lines.entries()) {
     if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))

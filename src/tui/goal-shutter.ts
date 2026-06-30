@@ -323,24 +323,24 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
               : {}),
           }),
         ),
+        Text({
+          content: renderSidecarChatInputStyled(input.state),
+          bg: sidecarInputBackground(input.state),
+          width: "100%",
+          flexShrink: 0,
+          ...(input.onFocusSidecar
+            ? {
+                onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
+                  event.preventDefault?.()
+                  event.stopPropagation?.()
+                  input.onFocusSidecar?.()
+                },
+              }
+            : {}),
+        }),
+        ...(input.sidecarMenuElements ?? []),
       ),
     ),
-    Text({
-      content: renderSidecarChatInputStyled(input.state),
-      bg: sidecarInputBackground(input.state),
-      width: "100%",
-      flexShrink: 0,
-      ...(input.onFocusSidecar
-        ? {
-            onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
-              event.preventDefault?.()
-              event.stopPropagation?.()
-              input.onFocusSidecar?.()
-            },
-          }
-        : {}),
-    }),
-    ...(input.sidecarMenuElements ?? []),
     ...(input.state.sidecarQueuedMessages?.length
       ? [renderSidecarQueuedMessages(input.state.sidecarQueuedMessages, input.columns)!]
       : []),
