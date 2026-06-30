@@ -1,4 +1,4 @@
-import { StyledText, dim, fg, type TextChunk } from "@opentui/core"
+import { StyledText, bold, dim, fg, type TextChunk } from "@opentui/core"
 import type { StackMonitorSnapshot } from "../monitor.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
 import { stackTuiTheme as theme } from "./theme.js"
@@ -93,12 +93,107 @@ export function monitorEventStreamLines(events: StackThreadMetaEvent[], columns:
   return threadEvents.map((event) => formatEventStreamLine(event, width, events))
 }
 
+const GOAL_SHUTTER_SIDECAR_CHAT_TYPES = new Set([
+  "monitor.operator_message",
+  "monitor.chat.request",
+  "monitor.chat.reply",
+])
+
+type GoalSidecarThreadLine = {
+  text: string
+  kind: "ask" | "reply-label" | "reply-body" | "blank" | "empty"
+}
+
+function wrapPlain(text: string, width: number): string[] {
+  const lines: string[] = []
+  for (const rawLine of text.split("\n")) {
+    const line = rawLine.length === 0 ? " " : rawLine
+    for (let index = 0; index < line.length; index += width) {
+      lines.push(line.slice(index, index + width))
+    }
+  }
+  return lines.length > 0 ? lines : [" "]
+}
+
+function goalSidecarChatTurnLines(event: StackThreadMetaEvent, width: number): GoalSidecarThreadLine[] {
+  const payload = event.payload
+  switch (event.type) {
+    case "monitor.operator_message":
+    case "monitor.chat.request": {
+      const message = readString(payload.message) ?? "(empty)"
+      return wrapPlain(`› ${message}`, width).map((text) => ({ text, kind: "ask" }))
+    }
+    case "monitor.chat.reply": {
+      const answer = readString(payload.answer) ?? "(empty reply)"
+      return wrapPlain(answer, width).map((text, index) => ({
+        text,
+        kind: index === 0 ? "reply-label" : "reply-body",
+      }))
+    }
+    default:
+      return []
+  }
+}
+
+/** A proper turn-by-turn thread (full wrapped text, blank line between turns) — not a one-line-per-event log. */
+export function goalSidecarThreadLines(
+  events: StackThreadMetaEvent[],
+  columns: number,
+  maxTurns = 5,
+): GoalSidecarThreadLine[] {
+  const width = Math.max(16, columns - 2)
+  const chatEvents = monitorThreadEvents(events).filter((event) =>
+    GOAL_SHUTTER_SIDECAR_CHAT_TYPES.has(event.type),
+  )
+  if (chatEvents.length === 0) {
+    return [{ text: "(no sidecar messages yet · type below to ask)", kind: "empty" }]
+  }
+  const lines: GoalSidecarThreadLine[] = []
+  for (const event of chatEvents.slice(-maxTurns)) {
+    if (lines.length > 0) lines.push({ text: "", kind: "blank" })
+    lines.push(...goalSidecarChatTurnLines(event, width))
+  }
+  return lines
+}
+
+export function renderGoalSidecarThreadStyled(
+  events: StackThreadMetaEvent[],
+  columns: number,
+  maxTurns = 5,
+): StyledText {
+  const lines = goalSidecarThreadLines(events, columns, maxTurns)
+  const chunks: TextChunk[] = []
+  for (const [index, line] of lines.entries()) {
+    if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
+    chunks.push(...styledSidecarThreadLine(line))
+  }
+  return new StyledText(chunks)
+}
+
+function styledSidecarThreadLine(line: GoalSidecarThreadLine): TextChunk[] {
+  switch (line.kind) {
+    case "ask":
+      return [bold(fg(theme.transcript.userLabel)(line.text))]
+    case "reply-label":
+      return [bold(fg(theme.transcript.agentLabel)(line.text))]
+    case "reply-body":
+      return [fg(theme.transcript.agentBody)(line.text)]
+    case "blank":
+      return [fg(theme.fgPrimary)(line.text)]
+    case "empty":
+      return [dim(fg(theme.fgMuted)(line.text))]
+  }
+}
+
 export function goalShutterStreamEvents(
   events: StackThreadMetaEvent[],
   agentViewEnabled = false,
 ): StackThreadMetaEvent[] {
-  if (agentViewEnabled) return monitorThreadEvents(events)
+  if (agentViewEnabled) {
+    return monitorThreadEvents(events).filter((event) => !GOAL_SHUTTER_SIDECAR_CHAT_TYPES.has(event.type))
+  }
   return events.filter((event) => {
+    if (GOAL_SHUTTER_SIDECAR_CHAT_TYPES.has(event.type)) return false
     if (GOAL_SHUTTER_EVENT_TYPES.has(event.type)) return true
     if (event.type === "agent.tool.failed" || event.type === "agent.error") return true
     if (event.type !== "agent.tool.completed") return false
@@ -271,15 +366,17 @@ function renderMonitorLinesStyled(
   scrollOffset: number,
   styleLine: (line: string) => TextChunk[],
 ): StyledText {
-  const window = scrollWindow(lines, scrollOffset, visibleRows)
+  const showScrollIndicator = visibleRows > 1 && lines.length > visibleRows
+  const contentRows = showScrollIndicator ? Math.max(1, visibleRows - 1) : visibleRows
+  const window = scrollWindow(lines, scrollOffset, contentRows)
   const chunks: TextChunk[] = []
   for (const [index, line] of window.entries()) {
     if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
     chunks.push(...styleLine(line))
   }
-  if (lines.length > window.length && scrollOffset > 0) {
+  if (showScrollIndicator && scrollOffset > 0) {
     chunks.unshift(dim(`↑ ${scrollOffset + window.length}/${lines.length}\n`))
-  } else if (lines.length > window.length) {
+  } else if (showScrollIndicator) {
     chunks.unshift(dim(`↓ ${window.length}/${lines.length}\n`))
   }
   return new StyledText(chunks)

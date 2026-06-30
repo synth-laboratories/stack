@@ -83,7 +83,10 @@ try {
     feedback,
   )
 
-  if (!handledSet) failures.push("set: /goal command was not handled")
+  if (!handledSet.handled) failures.push("set: /goal command was not handled")
+  if (handledSet.workerKickoffObjective !== objective) {
+    failures.push(`set: expected worker kickoff objective, got ${handledSet.workerKickoffObjective ?? "(none)"}`)
+  }
   if (!session.metaThreadId) failures.push("set: session.metaThreadId was not bound")
   if (messages.some((m) => m.startsWith("goal failed"))) {
     failures.push(`set: goal action failed: ${messages.join(" | ")}`)
@@ -99,7 +102,8 @@ try {
 
   messages.length = 0
   const handledPause = await runGoalSlashCommand("/goal pause", ctx, state, undefined, undefined, () => undefined, feedback)
-  if (!handledPause) failures.push("pause: /goal pause was not handled")
+  if (!handledPause.handled) failures.push("pause: /goal pause was not handled")
+  if (handledPause.workerKickoffObjective) failures.push("pause: unexpected worker kickoff")
   if (messages.some((m) => m.startsWith("goal failed"))) {
     failures.push(`pause: goal action failed: ${messages.join(" | ")}`)
   }

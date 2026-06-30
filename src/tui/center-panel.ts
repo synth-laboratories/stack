@@ -8,7 +8,7 @@ import type {
 } from "../remote/research.js"
 import type { StackSessionSummary, StackSessionUsageSummary } from "../session.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
-import { resolveThreadDisplayLabel } from "../thread-display-name.js"
+import { resolveThreadDisplayLabel, threadResumeToken } from "../thread-display-name.js"
 import { gardenerThreadEvents } from "./gardener-thread.js"
 import { monitorThreadEvents } from "./monitor-thread.js"
 import { stackTuiTheme as theme } from "./theme.js"
@@ -37,6 +37,7 @@ export type ActiveThreadsRenderInput = {
   gardenerThreadIds: ReadonlySet<string>
   liveTokensPerSecond?: string
   usageForSummary: (summary: StackSessionSummary) => StackSessionUsageSummary | undefined
+  threadGoalStatus?: ReadonlyMap<string, ThreadGoalStatus>
 }
 
 /** Gardener focus → gardener stream; worker/agent focus → monitor + actor stream. */
@@ -300,13 +301,13 @@ export function resolveActiveThreadIds(
   return ids
 }
 
-export function renderActiveThreadsStyled(input: ActiveThreadsRenderInput): StyledText {
+export function activeThreadsFocusHint(focusMode: string): string {
+  return focusMode === "history" ? "j/k select · enter resume" : "tab threads · p all · stack resume <id>"
+}
+
+export function renderActiveThreadRowsStyled(input: ActiveThreadsRenderInput): StyledText {
   const chunks: TextChunk[] = []
   const showAll = input.focusMode === "history"
-  const focusHint = showAll ? "j/k select · enter resume" : "tab threads · p all"
-  chunks.push(dim(fg(theme.fgMuted)(focusHint)))
-  chunks.push(fg(theme.fgPrimary)("\n"))
-
   const summaries = showAll
     ? input.history
     : input.history.filter((summary) => input.activeThreadIds.has(summary.id))
@@ -324,6 +325,24 @@ export function renderActiveThreadsStyled(input: ActiveThreadsRenderInput): Styl
   return new StyledText(chunks)
 }
 
+export function renderActiveThreadsStyled(input: ActiveThreadsRenderInput): StyledText {
+  const chunks: TextChunk[] = [
+    dim(fg(theme.fgMuted)(activeThreadsFocusHint(input.focusMode))),
+    fg(theme.fgPrimary)("\n"),
+  ]
+  const rows = renderActiveThreadRowsStyled(input)
+  return new StyledText([...chunks, ...(rows.chunks ?? [])])
+}
+
+export type ThreadGoalStatus = "active" | "paused" | "blocked" | "done"
+
+const THREAD_GOAL_STATUS_COLOR: Record<ThreadGoalStatus, string> = {
+  active: "#58a6ff",
+  done: "#3fb950",
+  paused: "#f7a41d",
+  blocked: "#fd6600",
+}
+
 type ActiveThreadRow =
   | { kind: "pager"; text: string }
   | {
@@ -331,8 +350,10 @@ type ActiveThreadRow =
       selected: boolean
       active: boolean
       gardener: boolean
+      goalStatus?: ThreadGoalStatus
       time: string
       prompt: string
+      resumeToken?: string
     }
 
 function activeThreadRowSpecs(
@@ -354,11 +375,13 @@ function activeThreadRowSpecs(
       selected: index === input.selectedHistoryIndex,
       active: input.activeThreadIds.has(summary.id),
       gardener: input.gardenerThreadIds.has(summary.id),
+      goalStatus: input.threadGoalStatus?.get(summary.id),
       time: formatRelativeTime(summary.updatedAt),
       prompt: resolveThreadDisplayLabel(summary, {
         isGardener: input.gardenerThreadIds.has(summary.id),
         maxLength: Math.max(12, input.columns - 14),
       }),
+      resumeToken: threadResumeToken(summary),
     })
   }
 
@@ -375,18 +398,24 @@ function styleActiveThreadRow(row: ActiveThreadRow): TextChunk[] {
 
   const cursor = row.selected ? "›" : " "
   const activeMarker = row.active ? "●" : "○"
+  const goalBadge = row.goalStatus ? [bold(fg(THREAD_GOAL_STATUS_COLOR[row.goalStatus])(" G"))] : []
+  const resumeSuffix = row.resumeToken ? [dim(fg(theme.fgMuted)(` · ${row.resumeToken}`))] : []
   if (row.selected) {
     return [
       bold(fg(theme.synth.orange)(`${cursor}${activeMarker} `)),
       fg(theme.synth.amber)(row.time.padStart(3)),
       ...(row.gardener ? [fg("#3fb950")(" gard")] : []),
+      ...goalBadge,
       fg(theme.fgPrimary)(` ${row.prompt}`),
+      ...resumeSuffix,
     ]
   }
   return [
     dim(fg(theme.fgMuted)(`${cursor}${activeMarker} ${row.time.padStart(3)}`)),
     ...(row.gardener ? [fg("#3fb950")(" gard")] : []),
+    ...goalBadge,
     fg(row.active ? theme.fgSecondary : theme.fgMuted)(` ${row.prompt}`),
+    ...resumeSuffix,
   ]
 }
 

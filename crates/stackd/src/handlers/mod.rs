@@ -1,3 +1,4 @@
+pub mod checkpoints;
 pub mod export;
 pub mod health;
 pub mod logs;

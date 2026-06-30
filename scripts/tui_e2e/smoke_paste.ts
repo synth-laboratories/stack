@@ -27,9 +27,9 @@ try {
   await waitForScreenText(term, marker, 8_000)
 
   term.press("Enter")
-  await waitForScreenText(term, "goal set", 10_000).catch(async () => {
-    if (!screenContains(term, "goal failed")) {
-      throw new Error("expected goal set or goal failed feedback after pasted /goal submit")
+  await waitForScreenText(term, "Worker running", 15_000).catch(async () => {
+    if (!screenContains(term, "goal set") && !screenContains(term, "goal failed")) {
+      throw new Error("expected worker kickoff after pasted /goal submit")
     }
   })
 

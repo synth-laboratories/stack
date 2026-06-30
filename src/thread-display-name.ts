@@ -1,5 +1,6 @@
 import { join } from "node:path"
 import { readSessionLog, writeSessionLog, type StackSessionSummary } from "./session.js"
+import { resumeTokenFromMetaThreadId } from "./resume-checkpoint.js"
 import { appendThreadMetaEvent, stackEventId } from "./thread-events.js"
 
 export const MAX_THREAD_DISPLAY_NAME = 48
@@ -56,6 +57,17 @@ export function resolveThreadDisplayLabel(
   if (summary?.lastPrompt?.trim()) return oneLine(summary.lastPrompt.trim(), maxLength)
   if (options?.fallbackId) return options.fallbackId.slice(0, 8)
   return "(empty)"
+}
+
+export function threadResumeToken(summary: StackSessionSummary | undefined): string | undefined {
+  if (!summary?.metaThreadId) return undefined
+  return resumeTokenFromMetaThreadId(summary.metaThreadId)
+}
+
+export function threadResumeHint(summary: StackSessionSummary | undefined): string | undefined {
+  const token = threadResumeToken(summary)
+  if (!token) return undefined
+  return `stack resume ${token}`
 }
 
 export async function setThreadDisplayName(input: {

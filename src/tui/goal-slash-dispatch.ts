@@ -11,6 +11,7 @@ import {
 } from "../codex/thread-goal.js"
 import { CursorAcpSession } from "../cursor/acp-session.js"
 import {
+  buildGoalWorkerKickoffPrompt,
   buildHarnessGoalContextBlock,
   harnessGoalPayloadFromManifest,
   type HarnessGoalNotifyPayload,
@@ -248,10 +249,18 @@ function recordGoalLifecycleEvent(
   })
 }
 
+/**
+ * Lift a goal registered directly on the underlying harness (native Codex
+ * thread/goal RPC, or a Cursor-side goal) into a Stack meta-thread so it's
+ * tracked the same way as a Stack-native `/goal set`. No-op if a meta-thread
+ * is already bound — the caller is responsible for syncing further field
+ * changes (objective/status edits) onto the existing meta-thread.
+ */
 async function ensureMetaThreadBound(
   ctx: GoalSlashRunContext,
   state: GoalSlashAppState,
   objective: string,
+  status = "active",
 ): Promise<void> {
   if (ctx.session.metaThreadId) return
   const title = objective.length > 80 ? `${objective.slice(0, 77)}...` : objective
@@ -262,7 +271,7 @@ async function ensureMetaThreadBound(
     model: harnessModel(ctx.config),
     reasoning_effort: ctx.config.codexReasoningEffort,
     harness: ctx.config.harness,
-    active_goal: { objective, status: "active", acceptance_criteria: [], blockers: [] },
+    active_goal: { objective, status, acceptance_criteria: [], blockers: [] },
   })
   ctx.session.metaThreadId = created.id
   ctx.session.segmentId = created.head_segment_id
@@ -441,6 +450,12 @@ export async function refreshGoalPanelState(
   ) {
     const goal = await harnessSession.threadGoalGet()
     applyThreadGoalToState(state, goal, false)
+    if (goal?.objective) {
+      // Codex may have registered this goal on its own mid-turn, with no
+      // /goal command ever run — lift it into a meta-thread the first time
+      // we observe it so it still gets Stack-side tracking.
+      await ensureMetaThreadBound(ctx, state, goal.objective, goal.status ?? "active")
+    }
   }
 }
 
@@ -463,6 +478,12 @@ async function runGoalSlashCommandInternal(
     const priorObjective = activeGoalObjective(state)
     const result = await runCodexGoalAction(codexSession, action)
     applyThreadGoalToState(state, result.goal, result.cleared)
+    if (result.goal?.objective) {
+      // Codex registered/updated this goal natively (thread/goal RPC) — lift
+      // it into a Stack meta-thread so it gets the same tracking as a
+      // Stack-native /goal set, instead of staying client-side only.
+      await ensureMetaThreadBound(ctx, state, result.goal.objective, result.goal.status ?? "active")
+    }
     if (ctx.session.metaThreadId) {
       if (action.action === "set") {
         await syncMetaThreadGoalFromObjective(ctx, state, action.objective)
@@ -517,6 +538,25 @@ async function runGoalSlashCommandInternal(
   return message
 }
 
+export type GoalSlashCommandResult = {
+  handled: boolean
+  workerKickoffObjective?: string
+}
+
+function workerKickoffObjectiveForAction(
+  action: GoalSlashAction,
+  state: GoalSlashAppState,
+): string | undefined {
+  if (action.action === "set") {
+    const objective = action.objective.trim()
+    return objective || undefined
+  }
+  if (action.action === "resume") {
+    return activeGoalObjective(state)?.trim() || undefined
+  }
+  return undefined
+}
+
 export async function runGoalSlashCommand(
   prompt: string,
   ctx: GoalSlashRunContext,
@@ -525,25 +565,28 @@ export async function runGoalSlashCommand(
   harnessSession: HarnessSession | undefined,
   refresh: GoalSlashRefresh,
   feedback: (message: string) => void,
-): Promise<boolean> {
+): Promise<GoalSlashCommandResult> {
   const trimmed = prompt.trim()
-  if (!trimmed.startsWith("/goal")) return false
+  if (!trimmed.startsWith("/goal")) return { handled: false }
   const args = trimmed.slice("/goal".length).trim()
   const action = parseGoalSlashArgs(args)
 
   if (action.action === "panel") {
-    return false
+    return { handled: false }
   }
 
   try {
     const message = await runGoalSlashCommandInternal(action, ctx, state, codexSession, harnessSession)
     feedback(message)
     refresh()
-    return true
+    return {
+      handled: true,
+      workerKickoffObjective: workerKickoffObjectiveForAction(action, state),
+    }
   } catch (error) {
     feedback(`goal failed: ${errorMessage(error)}`)
     refresh()
-    return true
+    return { handled: true }
   }
 }
 

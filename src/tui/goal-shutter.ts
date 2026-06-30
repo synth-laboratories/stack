@@ -5,12 +5,14 @@ import { parseCriterionEntry } from "../meta-thread-goal-criteria.js"
 import type { StackMonitorSnapshot } from "../monitor.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
 import { activeGoalModeSnapshot, type GoalModeState } from "./goal-mode.js"
+import { deriveMetaGoalName } from "../meta-goal.js"
 import {
   goalShutterStreamLineCount,
-  goalShutterStreamRows,
-  goalShutterStreamScrollWindow,
-  styleGoalShutterStreamLine,
+  renderGoalShutterStreamStyled,
+  renderGoalSidecarThreadStyled,
 } from "./monitor-thread.js"
+import { anchorTranscriptBox } from "./transcript-slot.js"
+import { sidecarAgentActive, sidecarInputStatusLine, type SidecarQueueUiState } from "./sidecar-queue.js"
 import { stackTuiTheme as theme } from "./theme.js"
 
 export type GoalShutterRenderInput = {
@@ -19,21 +21,180 @@ export type GoalShutterRenderInput = {
     monitorInputBuffer: string
     focusMode: string
     agentViewEnabled: boolean
+    status?: string
+    sidecarChatInFlight?: boolean
+    sidecarQueuedMessages?: readonly string[]
+    spinnerFrame?: number
   }
   events: StackThreadMetaEvent[]
   columns: number
   visibleRows: number
+  streamRows?: number
   scrollOffset: number
   metaThreadId?: string
   sidecarMenuElements?: ReturnType<typeof Text>[]
   onFocusSidecar?: () => void
   onPrefillSidecar?: (prompt: string) => void
+  onSelectChatTab?: () => void
+  onSelectProgressTab?: () => void
+}
+
+function goalTabChip(label: string, hint: string, active: boolean, onSelect: () => void): ReturnType<typeof Box> {
+  return Box(
+    {
+      flexDirection: "row",
+      flexShrink: 0,
+      padding: 1,
+      gap: 1,
+      onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        onSelect()
+      },
+    },
+    Text({
+      content: label,
+      fg: active ? theme.fgOnAccent : theme.synth.amber,
+      bg: active ? theme.bgChipActive : theme.bgSubtle,
+      flexShrink: 0,
+    }),
+    Text({
+      content: hint,
+      fg: theme.fgMuted,
+      flexShrink: 0,
+    }),
+  )
+}
+
+export function renderGoalPanelTabBar(input: {
+  active: "chat" | "progress"
+  onSelectChat: () => void
+  onSelectProgress: () => void
+}): ReturnType<typeof Box> {
+  return Box(
+    {
+      flexDirection: "row",
+      width: "100%",
+      flexShrink: 0,
+      gap: 1,
+      alignItems: "center",
+      onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+      },
+    },
+    Text({ content: "view", fg: theme.fgMuted, flexShrink: 0 }),
+    goalTabChip("chat", "1", input.active === "chat", input.onSelectChat),
+    goalTabChip("progress", "2", input.active === "progress", input.onSelectProgress),
+  )
+}
+
+export function renderGoalWorkerPeekPanel(input: {
+  active: "chat" | "progress"
+  onSelectChat: () => void
+  onSelectProgress: () => void
+  transcript: StyledText
+  objective?: string
+}): ReturnType<typeof Box> {
+  return Box(
+    {
+      flexDirection: "column",
+      flexGrow: 1,
+      minHeight: 0,
+      gap: 1,
+    },
+    ...(input.objective
+      ? [
+          Text({
+            content: `Goal · ${deriveMetaGoalName(input.objective)}`,
+            fg: theme.synth.amber,
+            width: "100%",
+            flexShrink: 0,
+          }),
+        ]
+      : []),
+    renderGoalPanelTabBar({
+      active: input.active,
+      onSelectChat: input.onSelectChat,
+      onSelectProgress: input.onSelectProgress,
+    }),
+    anchorTranscriptBox(input.transcript),
+  )
+}
+
+export const GOAL_SHUTTER_SIDECAR_THREAD_ROWS = 5
+
+export function goalWorkerPeekTranscriptRows(visibleRows: number, goalStripLines = 0): number {
+  const chromeRows = 2 + Math.max(0, goalStripLines) + 5 + 2
+  return Math.max(4, visibleRows - chromeRows)
+}
+
+export function goalShutterStreamVisibleRows(
+  visibleRows: number,
+  goalCardLineCount: number,
+  sidecarMenuRows = 0,
+): number {
+  const chromeRows =
+    3 + goalCardLineCount + 10 + GOAL_SHUTTER_SIDECAR_THREAD_ROWS + 2 + sidecarMenuRows
+  return Math.max(3, visibleRows - chromeRows)
+}
+
+export function goalShutterCardLineCount(
+  input: Pick<GoalShutterRenderInput, "state" | "events" | "columns" | "metaThreadId">,
+): number {
+  return goalCardLines({ ...input, visibleRows: 0, scrollOffset: 0 }).length
+}
+
+export function renderSidecarQueuedMessages(
+  messages: readonly string[],
+  columns: number,
+): ReturnType<typeof Box> | undefined {
+  if (messages.length === 0) return undefined
+  const width = Math.max(16, columns - 4)
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.synth.amber,
+      title: "queued",
+      flexDirection: "column",
+      padding: 1,
+      flexShrink: 0,
+      gap: 0,
+      width: "100%",
+    },
+    ...messages.map((message) =>
+      Text({
+        content: oneLine(`○ ${message}`, width),
+        fg: theme.fgSecondary,
+        width: "100%",
+        flexShrink: 0,
+      }),
+    ),
+    Text({
+      content: "sends when sidecar is free · ctrl+enter send now",
+      fg: theme.fgMuted,
+      width: "100%",
+      flexShrink: 0,
+    }),
+  )
 }
 
 export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typeof Box> {
   const goal = activeGoalModeSnapshot(input.state)
   const cardLines = goalCardLines(input)
-  const streamRows = Math.max(4, input.visibleRows - cardLines.length - 5)
+  const sidecarMenuRows = input.sidecarMenuElements?.length ? 1 : 0
+  const streamRows =
+    input.streamRows ??
+    goalShutterStreamVisibleRows(input.visibleRows, cardLines.length, sidecarMenuRows)
+  // Stream and thread now sit side by side (not stacked), so each gets a
+  // narrower slice of the panel width rather than the full column count.
+  const sidecarProgressInnerWidth = Math.max(24, input.columns - 4)
+  const sidecarThreadColumns = Math.max(16, Math.floor(sidecarProgressInnerWidth * 0.32) - 4)
+  const sidecarStreamColumns = Math.max(
+    20,
+    sidecarProgressInnerWidth - 1 - Math.floor(sidecarProgressInnerWidth * 0.32),
+  )
   const title = goal.objective
     ? `Goal · ${oneLine(goal.objective, Math.max(24, input.columns - 10))}`
     : "Goal shutter"
@@ -51,12 +212,22 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
       width: "100%",
       flexShrink: 0,
     }),
+    ...(input.onSelectChatTab && input.onSelectProgressTab
+      ? [
+          renderGoalPanelTabBar({
+            active: "progress",
+            onSelectChat: input.onSelectChatTab,
+            onSelectProgress: input.onSelectProgressTab,
+          }),
+        ]
+      : []),
     Box(
       {
         border: true,
         borderStyle: "single",
         borderColor: theme.borderInactive,
-        title: "Goal card",
+        titleColor: theme.synth.orange,
+        title: goal.objective ? `Goal · ${deriveMetaGoalName(goal.objective)}` : "Goal",
         flexDirection: "column",
         padding: 1,
         flexShrink: 0,
@@ -77,74 +248,105 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
         border: true,
         borderStyle: "single",
         borderColor: theme.borderInactive,
+        titleColor: theme.synth.orange,
         title: input.state.agentViewEnabled ? "Agent tape" : "Sidecar progress",
-        flexDirection: "column",
+        flexDirection: "row",
         padding: 1,
         flexGrow: 1,
         minHeight: 0,
         width: "100%",
-        gap: 0,
+        gap: 1,
+        overflow: "hidden",
       },
-      ...renderGoalShutterStreamPanel(input, streamRows),
+      Box(
+        {
+          flexDirection: "column",
+          flexGrow: 2,
+          flexShrink: 1,
+          minHeight: 0,
+          overflow: "hidden",
+        },
+        Text({
+          content: renderGoalShutterStreamStyled(
+            input.events,
+            input.state.monitorSnapshot,
+            sidecarStreamColumns,
+            streamRows,
+            input.scrollOffset,
+            input.state.agentViewEnabled,
+          ),
+          flexShrink: 0,
+          width: "100%",
+        }),
+      ),
+      Box(
+        {
+          border: true,
+          borderStyle: "single",
+          borderColor: theme.borderInactive,
+          titleColor: theme.synth.orange,
+          title: "Sidecar thread",
+          flexDirection: "column",
+          padding: 1,
+          flexGrow: 1,
+          flexShrink: 0,
+          minHeight: 0,
+          gap: 0,
+        },
+        Box(
+          {
+            flexDirection: "column",
+            flexGrow: 1,
+            flexShrink: 1,
+            minHeight: 0,
+            justifyContent: "flex-end",
+            overflow: "hidden",
+          },
+          Text({
+            content: renderGoalSidecarThreadStyled(
+              input.events,
+              sidecarThreadColumns,
+              GOAL_SHUTTER_SIDECAR_THREAD_ROWS,
+            ),
+            width: "100%",
+            flexShrink: 0,
+            ...(input.onFocusSidecar
+              ? {
+                  onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
+                    event.preventDefault?.()
+                    event.stopPropagation?.()
+                    input.onFocusSidecar?.()
+                  },
+                }
+              : {}),
+          }),
+        ),
+        Text({
+          content: renderSidecarChatInputStyled(input.state),
+          bg: sidecarInputBackground(input.state),
+          width: "100%",
+          flexShrink: 0,
+          ...(input.onFocusSidecar
+            ? {
+                onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
+                  event.preventDefault?.()
+                  event.stopPropagation?.()
+                  input.onFocusSidecar?.()
+                },
+              }
+            : {}),
+        }),
+        ...(input.sidecarMenuElements ?? []),
+      ),
     ),
+    ...(input.state.sidecarQueuedMessages?.length
+      ? [renderSidecarQueuedMessages(input.state.sidecarQueuedMessages, input.columns)!]
+      : []),
     Text({
-      content: renderSidecarChatInputStyled(input.state),
-      bg: sidecarInputBackground(input.state),
-      width: "100%",
-      flexShrink: 0,
-      ...(input.onFocusSidecar
-        ? {
-            onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
-              event.preventDefault?.()
-              event.stopPropagation?.()
-              input.onFocusSidecar?.()
-            },
-          }
-        : {}),
-    }),
-    ...(input.sidecarMenuElements ?? []),
-    Text({
-      content: "m sidecar · click stream · esc worker peek · g goal · a agent tape",
+      content: "1 chat · 2 progress · m sidecar · click stream · esc worker peek · g goal · a agent tape",
       fg: theme.fgMuted,
       width: "100%",
       flexShrink: 0,
-    }),
-  )
-}
-
-function renderGoalShutterStreamPanel(
-  input: GoalShutterRenderInput,
-  streamRows: number,
-): ReturnType<typeof Text>[] {
-  const rows = goalShutterStreamRows(
-    input.events,
-    input.state.monitorSnapshot,
-    input.columns,
-    input.state.agentViewEnabled,
-  )
-  const window = goalShutterStreamScrollWindow(rows, input.scrollOffset, streamRows)
-  if (window.length === 0) {
-    return [
-      Text({
-        content: new StyledText([dim(fg(theme.fgMuted)("(no sidecar events yet)"))]),
-        flexGrow: 1,
-      }),
-    ]
-  }
-  return window.map((row) =>
-    Text({
-      content: new StyledText(styleGoalShutterStreamLine(row.line)),
-      width: "100%",
-      flexShrink: 0,
-      ...(row.prefill && input.onPrefillSidecar
-        ? {
-            onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
-              event.preventDefault?.()
-              event.stopPropagation?.()
-              input.onPrefillSidecar?.(row.prefill!)
-            },
-          }
-        : {}),
     }),
   )
 }
@@ -158,34 +360,24 @@ export function goalShutterLineCount(
   return goalShutterStreamLineCount(events, columns, visibleRows, agentViewEnabled)
 }
 
-export function renderSidecarChatInputStyled(state: {
+export function renderSidecarChatInputStyled(state: SidecarQueueUiState & {
   monitorInputBuffer: string
-  monitorSnapshot: StackMonitorSnapshot
   focusMode: string
 }): StyledText {
   const preview = state.monitorInputBuffer.replace(/\n/g, " ↵ ")
-  if (state.monitorSnapshot.status === "running") {
-    const running = "Ask sidecar · reviewing"
-    if (preview) {
-      return new StyledText([
-        fg(theme.synth.amber)(`› ${running}`),
-        fg(theme.fgMuted)(" · "),
-        fg(theme.fgInput)(preview),
-        fg(theme.synth.gold)("_"),
-      ])
-    }
-    return new StyledText([fg(theme.synth.amber)(`› ${running}`)])
-  }
-  if (!preview) {
+  const statusLine = sidecarInputStatusLine(state)
+  if (preview) {
     return new StyledText([
       fg(theme.synth.amber)("› "),
-      dim(fg(theme.fgMuted)("Ask sidecar about this goal · enter sends to monitor")),
+      sidecarAgentActive(state) ? fg(theme.synth.amber)(statusLine) : dim(fg(theme.fgMuted)(statusLine)),
+      fg(theme.fgMuted)(" · "),
+      fg(theme.fgInput)(preview),
+      fg(theme.synth.gold)("_"),
     ])
   }
   return new StyledText([
     fg(theme.synth.amber)("› "),
-    fg(theme.fgInput)(preview),
-    fg(theme.synth.gold)("_"),
+    sidecarAgentActive(state) ? fg(theme.synth.amber)(statusLine) : dim(fg(theme.fgMuted)(statusLine)),
   ])
 }
 
@@ -210,10 +402,9 @@ function goalCardLines(input: GoalShutterRenderInput): string[] {
     ? criteria.pct
     : total > 0 ? Math.round((done / total) * 100) : 0
   const eta = formatEta(asRecord(session?.last_eta ?? operatorUpdate?.eta))
-  const source = goal.source === "manifest" ? "manifest" : goal.source === "codex" ? "codex" : "none"
   const lines = [
-    `status ${session?.status ?? goal.status ?? "active"} · source ${source} · criteria ${done}/${total}${total > 0 ? ` (${pct}%)` : ""}`,
-    goal.objective ? oneLine(goal.objective, Math.max(24, input.columns - 4)) : "no active goal",
+    `status ${session?.status ?? goal.status ?? "active"} · criteria ${done}/${total}${total > 0 ? ` (${pct}%)` : ""}`,
+    ...(goal.objective ? [] : ["no active goal"]),
   ]
 
   const spend = session?.spend

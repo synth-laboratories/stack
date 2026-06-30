@@ -33,6 +33,17 @@ export function buildHarnessGoalContextBlock(payload: HarnessGoalNotifyPayload):
   return lines.join("\n")
 }
 
+export function buildGoalWorkerKickoffPrompt(payload: HarnessGoalNotifyPayload): string {
+  const block = buildHarnessGoalContextBlock({ ...payload, action: "set" })
+  return `${block}\n\nBegin executing the active goal now. Plan your first steps and start work.`
+}
+
+export function goalKickoffTranscriptLabel(objective: string): string {
+  const trimmed = objective.trim()
+  if (!trimmed) return "goal kickoff"
+  return `goal kickoff · ${trimmed.length > 96 ? `${trimmed.slice(0, 93)}...` : trimmed}`
+}
+
 export function harnessGoalPayloadFromManifest(
   manifest: import("../client/stackd.js").StackdMetaThreadManifest | undefined,
   action: HarnessGoalNotifyPayload["action"],

@@ -51,7 +51,7 @@ const pausedState = {
     active_goal: { ...manifest.active_goal, status: "paused" },
   } as unknown as StackdMetaThreadManifest,
 }
-if (isGoalMode(pausedState)) failures.push("paused goal should exit goal mode shutter")
+if (!isGoalMode(pausedState)) failures.push("paused goal should stay in goal mode shutter")
 
 const clearedState = {
   goalContext: emptyGoalContext(),

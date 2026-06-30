@@ -71,6 +71,7 @@ export type StackSessionSummary = {
   lastPrompt?: string
   displayName?: string
   usageSummary?: StackSessionUsageSummary
+  metaThreadId?: string
 }
 
 export function createSession(workspaceRoot: string, codexCommand: string): StackLocalSession {
@@ -124,6 +125,7 @@ export async function listSessionHistory(
             lastPrompt: lastTurn?.prompt,
             displayName: session.displayName,
             usageSummary,
+            metaThreadId: session.metaThreadId,
           }
         } catch {
           return undefined
@@ -184,6 +186,7 @@ export function currentSessionSummary(
     usageSummary:
       session.usageSummary ??
       (model ? buildSessionUsageSummary(session.turns, model, pricingRows) : undefined),
+    metaThreadId: session.metaThreadId,
   }
 }
 

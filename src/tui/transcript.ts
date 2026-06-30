@@ -70,6 +70,8 @@ export type TranscriptRenderOptions = {
   harnessCommand?: string
   /** Override agent block speaker label (gardener/monitor side panes). */
   agentSpeakerLabel?: string
+  /** Show the "{Harness} · {version}" header before each agent block. Off by default to cut repeat noise. */
+  showAgentSpeakerLabel?: boolean
 }
 
 export type CodexLineResult = {
@@ -338,21 +340,8 @@ function blocksToAnnotatedLines(
 ): AnnotatedTranscriptLine[] {
   const lines: AnnotatedTranscriptLine[] = []
   for (const block of blocks) {
+    if (block.kind === "thinking") continue
     lines.push(...blockToAnnotatedLines(block, toolLogs, subagentLogs, columns, options))
-  }
-  const hasLiveThinkingBlock =
-    options.running && blocks.some((block) => block.kind === "thinking" && block.live)
-  if (options.running && options.liveThinkingText && !hasLiveThinkingBlock) {
-    lines.push(
-      ...annotatePlainLines(
-        "thinking",
-        wrapLine(`⎿ thinking ▸ ${spinner(options.spinnerFrame)} ${cleanThinkingText(options.liveThinkingText)}`, columns),
-        columns,
-        options,
-        { kind: "thinking", expanded: false, inlineOnly: true },
-      ),
-    )
-    lines.push({ kind: "thinking", part: "blank", text: "" })
   }
   return lines.length > 0 ? lines : [{ kind: "meta", part: "meta", text: " " }]
 }
@@ -471,7 +460,7 @@ function blockToLines(
     case "user":
       return sectionLines("›", ` ${block.text}`, columns, true)
     case "thinking":
-      return renderThinkingBlock(block, columns, expanded, options)
+      return []
     case "tool": {
       const tool = toolLogs.find((entry) => entry.id === block.toolId)
       if (!tool) return sectionLines("tool", "…", columns)
@@ -487,6 +476,9 @@ function blockToLines(
     case "subagent_group":
       return renderSubagentGroupBlock(block, subagentLogs, columns, expanded, options)
     case "agent":
+      if (!options.showAgentSpeakerLabel) {
+        return [...wrapLine(indent(block.text), columns), ""]
+      }
       return sectionLines(
         options.agentSpeakerLabel ?? harnessSpeakerLabel(undefined, options.harnessCommand),
         indent(block.text),

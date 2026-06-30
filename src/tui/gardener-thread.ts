@@ -97,7 +97,7 @@ export function gardenerLiveStatusLine(running: boolean, spinnerFrame: number, c
   const width = Math.max(16, columns - 2)
   const frames = ["|", "/", "-", "\\"]
   const spinner = frames[spinnerFrame % frames.length] ?? "|"
-  return oneLine(`◆ Gardener ▸ ${spinner} thinking…`, width)
+  return oneLine(`◆ Gardener ▸ ${spinner}`, width)
 }
 
 export function renderGardenerLiveStatusStyled(
@@ -202,17 +202,6 @@ function buildLiveActivityLines(live: GardenerLiveActivity, columns: number): Ga
   const width = Math.max(20, columns - 2)
   const spinner = ["|", "/", "-", "\\"][live.spinnerFrame % 4] ?? "|"
   const lines: GardenerChatLine[] = []
-
-  const thinkingBlock = [...live.blocks].reverse().find((block) => block.kind === "thinking")
-  const thinkingText = live.thinking ?? (thinkingBlock?.kind === "thinking" ? thinkingBlock.text : undefined)
-  if (thinkingText && thinkingText !== "…") {
-    lines.push({
-      kind: "activity",
-      text: oneLine(`◆ thinking ${spinner} ${cleanThinkingPreview(thinkingText)}`, width),
-    })
-  } else if (live.running) {
-    lines.push({ kind: "activity", text: `◆ thinking ${spinner} …` })
-  }
 
   const liveToolGroup = [...live.blocks].reverse().find((block) => block.kind === "tool_group" && block.live)
   if (liveToolGroup?.kind === "tool_group") {

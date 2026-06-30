@@ -14,6 +14,8 @@ if (backend) {
 const scripts: Record<string, string> = {
   boot: "scripts/tui_e2e/smoke_boot.ts",
   paste: "scripts/tui_e2e/smoke_paste.ts",
+  layout: "scripts/tui_e2e/smoke_goal_shutter_layout.ts",
+  resume: "scripts/tui_e2e/smoke_goal_resume.ts",
 }
 
 const script = scripts[suite]

@@ -24,8 +24,13 @@ export function resetTerminalAfterTui(): void {
 
 export type StackAppShutdown = {
   register: (cleanup: () => void) => void
-  run: (exitCode?: number) => never
+  setShellMessage: (message: string) => void
+  run: (exitCode?: number) => void
 }
+
+let pendingShellMessage: string | undefined
+
+const TERMINAL_REPLY_DRAIN_MS = 160
 
 export function createStackAppShutdown(): StackAppShutdown {
   let finished = false
@@ -35,7 +40,10 @@ export function createStackAppShutdown(): StackAppShutdown {
     register(cleanup) {
       cleanups.push(cleanup)
     },
-    run(exitCode = 0): never {
+    setShellMessage(message) {
+      pendingShellMessage = message.trim() || undefined
+    },
+    run(exitCode = 0): void {
       if (finished) process.exit(exitCode)
       finished = true
 
@@ -46,9 +54,70 @@ export function createStackAppShutdown(): StackAppShutdown {
           // Preserve later cleanup steps even when one handler throws.
         }
       }
+      const finishExit = () => {
+        stopTerminalInputDrain()
+        resetTerminalAfterTui()
+        if (pendingShellMessage) {
+          try {
+            process.stdout.write(`\n${pendingShellMessage}\n\n`)
+          } catch {
+            // ignore
+          }
+          pendingShellMessage = undefined
+        }
+        process.exit(exitCode)
+      }
+
       resetTerminalAfterTui()
-      process.exit(exitCode)
+      if (!startTerminalInputDrain()) {
+        finishExit()
+        return
+      }
+      setTimeout(finishExit, TERMINAL_REPLY_DRAIN_MS)
     },
+  }
+}
+
+function startTerminalInputDrain(): boolean {
+  if (!process.stdin.isTTY) return false
+  try {
+    process.stdin.setRawMode?.(true)
+    process.stdin.resume()
+    process.stdin.on("data", swallowTerminalInput)
+    drainReadableInput()
+    return true
+  } catch {
+    stopTerminalInputDrain()
+    return false
+  }
+}
+
+function stopTerminalInputDrain(): void {
+  try {
+    process.stdin.off("data", swallowTerminalInput)
+  } catch {
+    // ignore
+  }
+  drainReadableInput()
+  try {
+    process.stdin.setRawMode?.(false)
+  } catch {
+    // ignore
+  }
+}
+
+function swallowTerminalInput(_chunk: Buffer): void {
+  // Ghostty and other terminals can answer feature/color queries just after
+  // Stack leaves the alternate screen. Keep those replies out of the shell.
+}
+
+function drainReadableInput(): void {
+  try {
+    while (process.stdin.read() !== null) {
+      // drain
+    }
+  } catch {
+    // ignore
   }
 }
 

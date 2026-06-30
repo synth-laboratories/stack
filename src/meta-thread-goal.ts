@@ -25,7 +25,7 @@ export async function readMetaThreadManifest(
       // fall through to disk read
     }
   }
-  const path = join(stackDataRoot, "meta-threads", metaThreadId, "manifest.json")
+  const path = join(stackDataRoot, ".stack", "meta-threads", metaThreadId, "manifest.json")
   try {
     const text = await readFile(path, "utf8")
     return JSON.parse(text) as StackdMetaThreadManifest

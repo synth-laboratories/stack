@@ -27,7 +27,7 @@ import {
 import { stackTuiLayout } from "./layout.js"
 import { stackTuiTheme as theme } from "./theme.js"
 import { randomUUID } from "node:crypto"
-import { readFileSync } from "node:fs"
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { basename, relative, resolve, join } from "node:path"
 import {
@@ -136,7 +136,6 @@ import {
 import {
   emptyMonitorSnapshot,
   cycleMonitorMode,
-  loadMonitorConfig,
   monitorRailLines,
   refreshMonitorSnapshot,
   runMonitorAfterTurn,
@@ -169,6 +168,7 @@ import {
 } from "../cursor/account.js"
 import {
   createStackAppShutdown,
+  type StackAppShutdown,
   registerFatalProcessHandlers,
   registerRendererShutdown,
 } from "./terminal-cleanup.js"
@@ -253,6 +253,16 @@ import {
   writeSessionLog,
 } from "../session.js"
 import {
+  resumeCommandFromCheckpoint,
+  writeResumeCheckpointSync,
+  type StackResumeCheckpoint,
+} from "../resume-checkpoint.js"
+import {
+  enrichResumeCheckpoint,
+  harnessBackendSessionId,
+  resumeHarnessSession,
+} from "../checkpoint-state.js"
+import {
   stackdRuntimeAppendEvent,
   stackdRuntimeFactory,
   stackdThreads,
@@ -263,6 +273,7 @@ import {
 import { readThreadMetaEvents, type StackThreadMetaEvent } from "../thread-events.js"
 import {
   resolveThreadDisplayLabel,
+  sanitizeThreadDisplayName,
   tryApplyThreadNameFromAgentResponse,
   tryApplyThreadNameFromOperatorMessage,
 } from "../thread-display-name.js"
@@ -280,6 +291,7 @@ import {
   type TranscriptRenderOptions,
   type TranscriptViewport,
 } from "./transcript.js"
+import { anchorTranscriptBox } from "./transcript-slot.js"
 import type { SubagentLog } from "./subagents.js"
 import { upsertSubagentLog } from "./subagents.js"
 import {
@@ -308,7 +320,8 @@ import {
   monitorEventStreamLineCount,
 } from "./monitor-thread.js"
 import { activeGoalModeSnapshot, isGoalMode } from "./goal-mode.js"
-import { goalShutterLineCount, renderGoalShutter } from "./goal-shutter.js"
+import { goalShutterLineCount, renderGoalPanelTabBar, renderGoalShutter, renderGoalWorkerPeekPanel, goalShutterCardLineCount, goalShutterStreamVisibleRows, goalWorkerPeekTranscriptRows } from "./goal-shutter.js"
+import { sidecarAgentActive, sidecarInputStatusLine } from "./sidecar-queue.js"
 import {
   consumeBracketedPasteSequences,
   ENABLE_BRACKETED_PASTE,
@@ -332,6 +345,7 @@ import {
   type SlashDispatchHooks,
 } from "./slash-commands.js"
 import { runGoalSlashCommand, runGoalPanelAction, refreshGoalPanelState } from "./goal-slash-dispatch.js"
+import { buildGoalWorkerKickoffPrompt, goalKickoffTranscriptLabel, harnessGoalPayloadFromManifest } from "../harness/goal-notify.js"
 import { navigateGoalPanelSelection, openGoalPanel, renderGoalPanel } from "./goal-panel.js"
 import {
   blocksFromGardenerChatEvents,
@@ -346,12 +360,14 @@ import {
   type GardenerThreadContext,
 } from "./gardener-thread.js"
 import {
+  activeThreadsFocusHint,
   coreEventStreamLineCount,
   renderActiveProjectsStyled,
-  renderActiveThreadsStyled,
+  renderActiveThreadRowsStyled,
   renderCoreEventStreamStyled,
   resolveActiveThreadIds,
   resolveCoreEventStreamContext,
+  type ThreadGoalStatus,
 } from "./center-panel.js"
 
 type FocusMode =
@@ -385,6 +401,8 @@ export type StackAppOptions = {
   config: StackConfig
   workspace: WorkspaceInfo
   session: StackLocalSession
+  resumeCheckpoint?: StackResumeCheckpoint
+  resumeManifest?: StackdMetaThreadManifest
 }
 
 type AppState = {
@@ -414,6 +432,9 @@ type AppState = {
   blocks: TranscriptBlock[]
   inputBuffer: string
   monitorInputBuffer: string
+  sidecarQueuedMessages: string[]
+  sidecarChatInFlight: boolean
+  sidecarDispatchRef: { current: Promise<void> }
   gardenerInputBuffer: string
   slashMenuIndex: number
   goalPanelSelectedIndex: number
@@ -421,11 +442,11 @@ type AppState = {
   goalShutterScrollOffset: number
   goalShutterScrollPinned: boolean
   goalMonitorAutoEnabledObjective?: string
-  goalModeProfileHintObjective?: string
   pasteAccumulator?: string
   toolLogs: ToolLog[]
   subagentLogs: SubagentLog[]
   history: StackSessionSummary[]
+  threadGoalStatus: Map<string, ThreadGoalStatus>
   lastSessionLogPath?: string
   optimizerSnapshot: OptimizerSnapshot
   selectedOptimizerRunIndex: number
@@ -755,6 +776,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     blocks: [],
     inputBuffer: readInitialPrompt(options.config),
     monitorInputBuffer: "",
+    sidecarQueuedMessages: [],
+    sidecarChatInFlight: false,
+    sidecarDispatchRef: { current: Promise.resolve() },
     gardenerInputBuffer: "",
     slashMenuIndex: 0,
     goalPanelSelectedIndex: 0,
@@ -764,6 +788,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     toolLogs: [],
     subagentLogs: [],
     history,
+    threadGoalStatus: new Map(),
     optimizerSnapshot: localStackBoot.optimizer ?? optimizerSnapshot,
     optimizerCliAvailable,
     localBootstrapSnapshot: localStackBoot.bootstrap,
@@ -833,6 +858,24 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     monitorSnapshot: refreshMonitorSnapshot(options.config.stackDataRoot, options.session.id),
     metaEvents: readThreadMetaEvents(options.config.stackDataRoot, options.session.id),
   }
+  if (options.resumeManifest) {
+    state.metaThreadManifest = options.resumeManifest
+    state.goalContext = mergeMetaThreadGoalContext(state.goalContext, options.resumeManifest)
+  }
+  if (options.session.turns.length > 0) {
+    const rendered = renderTurns(options.session.turns)
+    state.blocks = rendered.blocks
+    state.toolLogs = rendered.tools
+    state.subagentLogs = rendered.subagents
+    state.selectedToolIndex = clampIndex(rendered.tools.length - 1, rendered.tools.length)
+    state.lastUsage = options.session.turns.at(-1)?.usage ?? rendered.usage
+    refreshSessionThroughput(state, options.session.turns)
+  }
+  if (options.resumeCheckpoint || options.session.metaThreadId) {
+    applyGoalUiAfterSessionResume(state, options.resumeCheckpoint, options.session)
+    syncGoalModeDefaults(options, state)
+    syncSessionDisplayNameFromGoal(options, state)
+  }
   syncGardenerLeftPanel(state)
   syncMonitorRightPanel(state)
   state.rightPanelOpsVisible = !isMonitorOn(state.monitorSnapshot)
@@ -890,6 +933,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     const currentIndex = state.history.findIndex((summary) => summary.id === options.session.id)
     if (currentIndex >= 0 && selectedIndex < 0) state.selectedHistoryIndex = currentIndex
     await refreshGardenerMaintenance(options, state, "idle")
+    await refreshThreadGoalStatus(options, state)
   }
 
   const refreshMetaEvents = () => {
@@ -1055,6 +1099,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     await refreshAfterEnvironmentChange(next)
   }
 
+  let sidecarDispatchTail: Promise<void> = Promise.resolve()
+  state.sidecarDispatchRef = { current: sidecarDispatchTail }
+
   const submitFromCurrentInput = (key?: StackKeyEvent, forceQueue = false): boolean => {
     if (!view || state.focusMode !== "agent") return false
     const prompt = resolveSlashSubmitPrompt(state.inputBuffer.trim(), state.slashMenuIndex)
@@ -1067,7 +1114,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         options,
         state,
         codexSessionHandle,
+        renderer,
         remount,
+        refreshHistory,
+        refreshMetaEvents,
         () => {
           state.inputBuffer = ""
           state.slashMenuIndex = 0
@@ -1102,7 +1152,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     return true
   }
 
-  const submitFromMonitorInput = (key?: StackKeyEvent): boolean => {
+  const submitFromMonitorInput = (key?: StackKeyEvent, hardSend = false): boolean => {
     if (!view || state.focusMode !== "monitor") return false
     const prompt = resolveSlashSubmitPrompt(state.monitorInputBuffer.trim(), state.slashMenuIndex)
     if (!prompt) return false
@@ -1114,7 +1164,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         options,
         state,
         codexSessionHandle,
+        renderer,
         remount,
+        refreshHistory,
+        refreshMetaEvents,
         () => {
           state.monitorInputBuffer = ""
           state.slashMenuIndex = 0
@@ -1144,7 +1197,15 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       state.slashMenuIndex = 0
       return true
     }
-    submitMonitorInputValue(prompt, options, state, remount, refreshHistory, refreshMetaEvents)
+    submitMonitorInputValue(
+      prompt,
+      options,
+      state,
+      remount,
+      refreshHistory,
+      refreshMetaEvents,
+      hardSend,
+    )
     state.slashMenuIndex = 0
     return true
   }
@@ -1162,7 +1223,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         options,
         state,
         codexSessionHandle,
+        renderer,
         remount,
+        refreshHistory,
+        refreshMetaEvents,
         () => {
           state.gardenerInputBuffer = ""
           state.slashMenuIndex = 0
@@ -1254,6 +1318,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     renderer.keyInput.on("paste", onPaste)
   }
 
+  const shutdown = createStackAppShutdown()
+  const exitStack = () => shutdown.run(0)
+
   view = mountView(renderer, options, state, undefined)
   remount = () => {
     view = mountView(renderer, options, state, view)
@@ -1261,8 +1328,29 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
   void refreshGardenerMaintenance(options, state, "manual").finally(remount)
 
-  const shutdown = createStackAppShutdown()
-  const exitStack = () => shutdown.run(0)
+  void (async () => {
+    try {
+      if (options.resumeCheckpoint || options.session.metaThreadId) {
+        await restoreWorkerSessionAfterResume(
+          options,
+          state,
+          codexSessionHandle,
+          options.resumeCheckpoint,
+          remount,
+          refreshHistory,
+          refreshMetaEvents,
+        )
+      } else {
+        await refreshAgentContextFromSession(options, state, remount, (limits) => {
+          void observeCodexAuthState(options.config, options.session.id, limits, state)
+        })
+        syncGoalModeDefaults(options, state)
+      }
+      remount()
+    } catch {
+      remount()
+    }
+  })()
 
   if (options.config.autoSubmitInitialPrompt && state.inputBuffer.trim()) {
     setTimeout(() => {
@@ -1308,6 +1396,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   } catch {
     // Best-effort; paste still works for inline multi-line chunks when supported.
   }
+  shutdown.register(() => {
+    persistSessionOnExit(options, state, codexSessionHandle, shutdown)
+  })
   shutdown.register(() => {
     try {
       process.stdout.write("\x1b[?2004l")
@@ -1372,6 +1463,14 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         remount()
         return
       }
+      if (key.name === "1") {
+        focusGoalWorkerPeek(state, remount)
+        return
+      }
+      if (key.name === "2") {
+        returnToGoalShutter(state, remount)
+        return
+      }
     }
 
     if (key.name === "tab") {
@@ -1388,6 +1487,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
     if (isEnterKey(key) && key.ctrl && state.focusMode === "agent") {
       submitFromCurrentInput(key, true)
+      return
+    }
+
+    if (isEnterKey(key) && key.ctrl && state.focusMode === "monitor") {
+      submitFromMonitorInput(key, true)
       return
     }
 
@@ -1662,6 +1766,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       codexSessionHandle,
       refreshHistory,
       refreshMetaEvents,
+      exitStack,
     )
     renderer.root.add(nextView.root)
     nextView.root.requestRender()
@@ -1678,10 +1783,29 @@ function createView(
   codexSessionHandle: { session?: HarnessSession },
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
+  exitStack: () => void,
 ): MountedView {
   syncGoalModeDefaults(options, state)
   const switcher = switcherPanel(options, state, refresh, applyStackEnvironmentFromUi)
-  const transcriptViewport = transcriptViewportMetrics(renderer, state)
+  const goalModeActive = isGoalMode(state)
+  const showGoalShutter = goalModeActive && !state.goalShutterWorkerPeek
+  const baseTranscriptViewport = transcriptViewportMetrics(renderer, state)
+  const goalStripLines =
+    state.metaThreadManifest?.active_goal?.objective?.trim() ||
+    state.goalContext.objective?.trim()
+      ? 1
+      : 0
+  const transcriptViewport =
+    goalModeActive && !showGoalShutter
+      ? {
+          ...baseTranscriptViewport,
+          lines: goalWorkerPeekTranscriptRows(baseTranscriptViewport.lines, goalStripLines),
+          pageLines: Math.max(
+            3,
+            Math.floor(goalWorkerPeekTranscriptRows(baseTranscriptViewport.lines, goalStripLines) * 0.8),
+          ),
+        }
+      : baseTranscriptViewport
   state.planningColumns = transcriptViewport.columns
   updateThreadsRailColumns(renderer, state)
   const threadRows = centerActiveThreadRows(renderer)
@@ -1694,8 +1818,6 @@ function createView(
   const activeThreadIds = resolveActiveThreadIds(options.session.id, state.gardenerWorkerTargetId)
   const gardenerEvents = readThreadMetaEvents(options.config.stackDataRoot, state.gardenerThreadId)
   const workerMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
-  const goalModeActive = isGoalMode(state)
-  const showGoalShutter = goalModeActive && !state.goalShutterWorkerPeek
   const gardenerChatBlocks = buildGardenerChatBlocks(state, gardenerEvents)
   const gardenerTranscriptOptions = gardenerTranscriptRenderOptions(
     transcriptRenderOptions(state),
@@ -1729,7 +1851,8 @@ function createView(
   const monitorWatchLive = monitorTargetId === options.session.id
   const monitorRows = monitorThreadVisibleRows(renderer, state)
   const rightColumns = monitorPanelColumns(renderer, state)
-  const workerActive = monitorWatchLive && monitorWorkerActive(state)
+  const workerActive =
+    monitorWatchLive && monitorWorkerActive(state) && !monitorWatchSuppressedByGoalChat(state)
   const monitorChatBlocks = blocksFromMonitorChatEvents(monitorTargetMetaEvents)
   const monitorTranscriptOptions = monitorTranscriptRenderOptions(
     transcriptRenderOptions(state),
@@ -1747,8 +1870,29 @@ function createView(
     )
     tailMonitorWatchScroll(state, rightColumns, monitorChatSplit.watchRows)
   }
+  const sidecarMenuElements = showGoalShutter
+    ? slashMenuElements(
+        state.monitorInputBuffer,
+        state.slashMenuIndex,
+        buildSlashCommandContext(options, state),
+        transcriptViewport.columns,
+        state.focusMode === "monitor",
+      )
+    : []
+  const goalStreamRows = showGoalShutter
+    ? goalShutterStreamVisibleRows(
+        transcriptViewport.lines,
+        goalShutterCardLineCount({
+          state,
+          events: workerMetaEvents,
+          columns: transcriptViewport.columns,
+          metaThreadId: options.session.metaThreadId,
+        }),
+        sidecarMenuElements.length > 0 ? 1 : 0,
+      )
+    : 0
   if (showGoalShutter) {
-    tailGoalShutterScroll(state, workerMetaEvents, transcriptViewport.columns, transcriptViewport.lines)
+    tailGoalShutterScroll(state, workerMetaEvents, transcriptViewport.columns, goalStreamRows)
   }
   const opsPanelInput = buildOpsPanelInput(options, state)
   const focusCenterProjects = panelFocusHandlers(state, "projects", refresh)
@@ -1769,16 +1913,14 @@ function createView(
       state.rightPanelOpsVisible || !isMonitorOn(state.monitorSnapshot) ? "ops" : "monitor"
     refresh()
   }
-  const sidecarMenuElements = showGoalShutter
-    ? slashMenuElements(
-        state.monitorInputBuffer,
-        state.slashMenuIndex,
-        buildSlashCommandContext(options, state),
-        transcriptViewport.columns,
-        state.focusMode === "monitor",
-      )
-    : []
+  const goalPanelTabHandlers = goalModeActive
+    ? {
+        onSelectChatTab: () => focusGoalWorkerPeek(state, refresh),
+        onSelectProgressTab: () => returnToGoalShutter(state, refresh),
+      }
+    : undefined
   const agentChildren = [
+    agentPanelIdsCopyIcon(renderer, options, state, refresh),
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
     ...(showGoalShutter
       ? [
@@ -1787,6 +1929,7 @@ function createView(
             events: workerMetaEvents,
             columns: transcriptViewport.columns,
             visibleRows: transcriptViewport.lines,
+            streamRows: goalStreamRows,
             scrollOffset: state.goalShutterScrollOffset,
             metaThreadId: options.session.metaThreadId,
             sidecarMenuElements,
@@ -1795,9 +1938,24 @@ function createView(
               state.monitorInputBuffer = prompt
               focusGoalSidecarChat(options, state, refresh)
             },
+            ...goalPanelTabHandlers,
           }),
         ]
-      : [transcriptPane(renderTranscriptPanel(state, transcriptViewport))]),
+      : [
+          ...(goalPanelTabHandlers
+            ? [
+                renderGoalWorkerPeekPanel({
+                  active: "chat",
+                  onSelectChat: goalPanelTabHandlers.onSelectChatTab,
+                  onSelectProgress: goalPanelTabHandlers.onSelectProgressTab,
+                  transcript: renderTranscriptPanel(state, transcriptViewport),
+                  objective:
+                    state.metaThreadManifest?.active_goal?.objective?.trim() ||
+                    state.goalContext.objective?.trim(),
+                }),
+              ]
+            : [transcriptPane(renderTranscriptPanel(state, transcriptViewport))]),
+        ]),
     ...(state.focusMode === "goal" ? [renderGoalPanel(state)] : []),
     ...(switcher ? [switcher] : []),
     ...(showGoalShutter ? [] : [agentControlRow(options, state, transcriptViewport.columns, refresh)]),
@@ -1813,7 +1971,7 @@ function createView(
       padding: stackTuiLayout.rootPadding,
       gap: stackTuiLayout.rootGap,
     },
-    globalConnectionBar(options, state, refresh, applyStackEnvironmentFromUi, codexSessionHandle, renderer.terminalWidth),
+    globalConnectionBar(options, state, refresh, applyStackEnvironmentFromUi, codexSessionHandle, renderer.terminalWidth, exitStack),
     Box(
       {
         flexDirection: "row",
@@ -1930,8 +2088,19 @@ function createView(
               handleCenterThreadsMouseScroll(event, state, refresh)
             },
           },
+          Box(
+            { flexDirection: "row", width: "100%", flexShrink: 0, gap: 1 },
+            Text({
+              content: activeThreadsFocusHint(state.focusMode),
+              fg: theme.fgMuted,
+              flexGrow: 1,
+            }),
+            controlChip("+ new", true, () => {
+              void startNewThread(options, state, codexSessionHandle, refresh, refreshHistory, refreshMetaEvents)
+            }),
+          ),
           Text({
-            content: renderActiveThreadsStyled({
+            content: renderActiveThreadRowsStyled({
               focusMode: state.focusMode,
               history: state.history,
               activeThreadIds,
@@ -1942,6 +2111,7 @@ function createView(
               gardenerThreadIds: new Set([state.gardenerThreadId]),
               liveTokensPerSecond: formatAverageTokensPerSecond(displayTokensPerSecond(state)),
               usageForSummary: (summary) => threadUsageSummary(options, summary),
+              threadGoalStatus: state.threadGoalStatus,
             }),
           }),
         ),
@@ -2009,6 +2179,19 @@ function createView(
             event.stopPropagation()
             state.lastAgentScrollAt = Date.now()
             const direction = event.scroll?.direction
+            if (showGoalShutter) {
+              if (direction === "up" || direction === "down") {
+                handleGoalShutterMouseScroll(
+                  direction,
+                  state,
+                  workerMetaEvents,
+                  transcriptViewport.columns,
+                  goalStreamRows,
+                  refresh,
+                )
+              }
+              return
+            }
             if (direction === "up") {
               scrollAgentTranscript(state, 3, transcriptViewport, "up")
             } else if (direction === "down") {
@@ -2447,18 +2630,25 @@ function buildSlashCommandContext(options: StackAppOptions, state: AppState): Sl
 }
 
 function activeInputBuffer(state: AppState): string {
+  if (goalWorkerChatFocused(state)) return state.inputBuffer
   if (state.focusMode === "gardener") return state.gardenerInputBuffer
   if (state.focusMode === "monitor") return state.monitorInputBuffer
   return state.inputBuffer
 }
 
 function setActiveInputBuffer(state: AppState, value: string): void {
-  if (state.focusMode === "gardener") state.gardenerInputBuffer = value
+  if (goalWorkerChatFocused(state)) state.inputBuffer = value
+  else if (state.focusMode === "gardener") state.gardenerInputBuffer = value
   else if (state.focusMode === "monitor") state.monitorInputBuffer = value
   else state.inputBuffer = value
 }
 
+function goalWorkerChatFocused(state: AppState): boolean {
+  return isGoalMode(state) && state.goalShutterWorkerPeek && state.focusMode === "agent"
+}
+
 function focusedInputEditing(state: AppState): boolean {
+  if (goalWorkerChatFocused(state)) return true
   return activeInputBuffer(state).length > 0
 }
 
@@ -2652,19 +2842,7 @@ function controlLabel(content: string): ReturnType<typeof Text> {
 
 /** Bottom-anchor transcript text so short turns sit above the input, not below a flex gap. */
 function transcriptPane(content: StyledText, flexGrow = 1): ReturnType<typeof Box> {
-  return Box(
-    {
-      flexDirection: "column",
-      flexGrow,
-      flexShrink: 1,
-      justifyContent: "flex-end",
-      minHeight: 0,
-    },
-    Text({
-      content,
-      flexShrink: 0,
-    }),
-  )
+  return anchorTranscriptBox(content, flexGrow)
 }
 
 function controlChip(content: string, active: boolean, onSelect?: () => void): ReturnType<typeof Text> {
@@ -2697,13 +2875,54 @@ function focusControlChip(
   })
 }
 
+function normalizeThreadGoalStatus(status: string | undefined): ThreadGoalStatus | undefined {
+  switch (status?.trim().toLowerCase()) {
+    case "paused":
+      return "paused"
+    case "blocked":
+      return "blocked"
+    case "done":
+      return "done"
+    case "cleared":
+      return undefined
+    default:
+      return "active"
+  }
+}
+
+async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState): Promise<void> {
+  const metaThreadIds = new Set(
+    state.history.map((summary) => summary.metaThreadId).filter((id): id is string => Boolean(id)),
+  )
+  if (metaThreadIds.size === 0) {
+    if (state.threadGoalStatus.size > 0) state.threadGoalStatus = new Map()
+    return
+  }
+  const manifests = new Map(
+    await Promise.all(
+      [...metaThreadIds].map(
+        async (metaThreadId) =>
+          [metaThreadId, await readMetaThreadManifest(options.config.stackDataRoot, metaThreadId)] as const,
+      ),
+    ),
+  )
+  const next = new Map<string, ThreadGoalStatus>()
+  for (const summary of state.history) {
+    if (!summary.metaThreadId) continue
+    const goal = manifests.get(summary.metaThreadId)?.active_goal
+    if (!goal?.objective?.trim()) continue
+    const status = normalizeThreadGoalStatus(goal.status)
+    if (status) next.set(summary.id, status)
+  }
+  state.threadGoalStatus = next
+}
+
 function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
   if (!isGoalMode(state)) {
     state.goalShutterWorkerPeek = false
     state.goalShutterScrollOffset = 0
     state.goalShutterScrollPinned = true
     state.goalMonitorAutoEnabledObjective = undefined
-    state.goalModeProfileHintObjective = undefined
     return
   }
   const objective = activeGoalModeSnapshot(state).objective ?? ""
@@ -2713,16 +2932,6 @@ function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
       syncMonitorRightPanel(state)
     }
     state.goalMonitorAutoEnabledObjective = objective
-  }
-  if (state.goalModeProfileHintObjective !== objective) {
-    const monitorConfig = loadMonitorConfig(options.config.stackDataRoot)
-    if (monitorConfig.id !== "progress-narrator") {
-      appendStackBlock(
-        state.blocks,
-        "goal mode · tip: STACK_MONITOR_PROFILE=progress-narrator for sidecar narration",
-      )
-    }
-    state.goalModeProfileHintObjective = objective
   }
   if (
     !state.goalShutterWorkerPeek &&
@@ -2830,6 +3039,7 @@ function submitMonitorInputValue(
   refresh: () => void,
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
+  hardSend = false,
 ): void {
   state.monitorInputBuffer = ""
   const trimmed = prompt.trim()
@@ -2844,7 +3054,37 @@ function submitMonitorInputValue(
     return
   }
   state.talkToMonitor = true
-  void submitMonitorOperatorMessage(trimmed, options, state, refresh, refreshHistory, refreshMetaEvents)
+  const dispatchRef = state.sidecarDispatchRef
+  if (hardSend) {
+    dispatchRef.current = dispatchRef.current
+      .then(() =>
+        executeSidecarOperatorMessage(trimmed, options, state, refresh, refreshHistory, refreshMetaEvents),
+      )
+      .catch((error) => {
+        appendStackBlock(state.blocks, `sidecar message failed: ${errorMessage(error)}`)
+        refresh()
+      })
+    refresh()
+    scheduleSidecarIdleDrain(options, state, refresh, refreshHistory, refreshMetaEvents, dispatchRef)
+    return
+  }
+  if (sidecarAgentActive(state)) {
+    state.sidecarQueuedMessages = [...state.sidecarQueuedMessages, trimmed]
+    refresh()
+    return
+  }
+  dispatchRef.current = dispatchRef.current
+    .then(() =>
+      executeSidecarOperatorMessage(trimmed, options, state, refresh, refreshHistory, refreshMetaEvents),
+    )
+    .then(() => {
+      scheduleSidecarIdleDrain(options, state, refresh, refreshHistory, refreshMetaEvents, dispatchRef)
+    })
+    .catch((error) => {
+      appendStackBlock(state.blocks, `sidecar message failed: ${errorMessage(error)}`)
+      refresh()
+    })
+  refresh()
 }
 
 function toggleMonitorEnabled(
@@ -3170,7 +3410,7 @@ function gardenerInputBackground(state: AppState): string {
 function renderGardenerInputStyled(state: AppState): StyledText {
   const preview = state.gardenerInputBuffer.replace(/\n/g, " ↵ ")
   if (state.gardenerChatRunning) {
-    const runningLine = `› Thinking ${runningSpinner(state)}`
+    const runningLine = `› ${runningSpinner(state)}`
     if (preview) {
       return new StyledText([
         fg(theme.synth.amber)(runningLine),
@@ -3302,7 +3542,7 @@ function submitMonitorOperatorMessage(
   refresh: () => void,
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
-): void {
+): Promise<void> {
   appendStackBlock(state.blocks, `monitor ← ${oneLine(message, 72)}`)
   refresh()
   const threadId = resolveMonitorWorkerTargetId(options, state)
@@ -3322,7 +3562,7 @@ function submitMonitorOperatorMessage(
       refresh()
     }
   })()
-  void runMonitorAfterOperatorMessage({
+  return runMonitorAfterOperatorMessage({
     config: options.config,
     session: options.session,
     message,
@@ -3344,12 +3584,63 @@ function submitMonitorOperatorMessage(
     })
 }
 
+function scheduleSidecarIdleDrain(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+  dispatchRef: { current: Promise<void> },
+): void {
+  dispatchRef.current = dispatchRef.current
+    .then(async () => {
+      while (state.sidecarQueuedMessages.length > 0 && !sidecarAgentActive(state)) {
+        const next = state.sidecarQueuedMessages.shift()
+        if (!next) break
+        await executeSidecarOperatorMessage(next, options, state, refresh, refreshHistory, refreshMetaEvents)
+      }
+    })
+    .catch((error) => {
+      appendStackBlock(state.blocks, `sidecar queue failed: ${errorMessage(error)}`)
+      refresh()
+    })
+}
+
+async function executeSidecarOperatorMessage(
+  message: string,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+): Promise<void> {
+  state.sidecarChatInFlight = true
+  refresh()
+  try {
+    await submitMonitorOperatorMessage(message, options, state, refresh, refreshHistory, refreshMetaEvents)
+  } finally {
+    state.sidecarChatInFlight = false
+    refresh()
+    scheduleSidecarIdleDrain(
+      options,
+      state,
+      refresh,
+      refreshHistory,
+      refreshMetaEvents,
+      state.sidecarDispatchRef,
+    )
+  }
+}
+
 function submitGoalSlashIfNeeded(
   prompt: string,
   options: StackAppOptions,
   state: AppState,
   codexSessionHandle: { session?: HarnessSession },
+  renderer: CliRenderer,
   refresh: () => void,
+  refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
   clearBuffers: () => void,
 ): boolean {
   const lines = splitSubmitLines(prompt)
@@ -3364,17 +3655,90 @@ function submitGoalSlashIfNeeded(
   const ctx = { config: options.config, session: options.session }
   const feedback = (message: string) => appendStackBlock(state.blocks, message)
 
-  for (const line of lines) {
-    const args = line.slice("/goal".length).trim()
-    if (!args) {
-      state.focusMode = "goal"
-      openGoalPanel(state)
-      void refreshGoalPanelState(ctx, state, codexSessionHandle.session).finally(refresh)
-      continue
+  void (async () => {
+    let kickoffObjective: string | undefined
+    for (const line of lines) {
+      const args = line.slice("/goal".length).trim()
+      if (!args) {
+        state.focusMode = "goal"
+        openGoalPanel(state)
+        void refreshGoalPanelState(ctx, state, codexSessionHandle.session).finally(refresh)
+        continue
+      }
+      const result = await runGoalSlashCommand(
+        line,
+        ctx,
+        state,
+        codexSession,
+        codexSessionHandle.session,
+        refresh,
+        feedback,
+      )
+      if (result.workerKickoffObjective) {
+        kickoffObjective = result.workerKickoffObjective
+      }
     }
-    void runGoalSlashCommand(line, ctx, state, codexSession, codexSessionHandle.session, refresh, feedback)
-  }
+    if (kickoffObjective && !isGardenerSession(options, state)) {
+      kickWorkerForGoalObjective(
+        kickoffObjective,
+        options,
+        state,
+        codexSessionHandle,
+        renderer,
+        refresh,
+        refreshHistory,
+        refreshMetaEvents,
+      )
+    }
+  })()
   return true
+}
+
+function kickWorkerForGoalObjective(
+  objective: string,
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: HarnessSession },
+  renderer: CliRenderer,
+  refresh: () => void,
+  refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+): void {
+  const payload =
+    harnessGoalPayloadFromManifest(state.metaThreadManifest, "set") ??
+    ({ action: "set", objective, status: "active" } as const)
+  const kickoff = buildGoalWorkerKickoffPrompt({ ...payload, objective, action: "set" })
+  const transcriptLabel = goalKickoffTranscriptLabel(objective)
+  if (state.status === "running") {
+    appendUserBlock(state.blocks, transcriptLabel)
+    const codexSession = codexSessionHandle.session
+    if (codexSession) {
+      void codexSession.trySteer(kickoff).then((steered) => {
+        if (steered) {
+          state.lastSteerHint = "goal-steer"
+          refresh()
+          return
+        }
+        codexSession.enqueue(kickoff)
+        state.queuedMessages = [...state.queuedMessages, kickoff]
+        state.lastSteerHint = `queued (${state.queuedMessages.length})`
+        refresh()
+      })
+    }
+    return
+  }
+  focusGoalSidecarChat(options, state, refresh)
+  void submitPrompt(
+    kickoff,
+    options,
+    state,
+    codexSessionHandle,
+    renderer,
+    refresh,
+    refreshHistory,
+    refreshMetaEvents,
+    { transcriptPrompt: transcriptLabel },
+  )
 }
 
 function handleGoalPanelKey(
@@ -4511,6 +4875,32 @@ function agentPanelTitle(options: StackAppOptions, state: AppState): string {
   return roleChatPanelTitle(workerPanelThreadLabel(options, state), activeActorTarget(options, state))
 }
 
+function agentPanelIdsText(options: StackAppOptions): string {
+  const ids = [`thread:${options.session.id}`]
+  if (options.session.metaThreadId) ids.push(`mt:${options.session.metaThreadId}`)
+  return ids.join(" ")
+}
+
+function agentPanelIdsCopyIcon(
+  renderer: CliRenderer,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): ReturnType<typeof Text> {
+  return Text({
+    content: "⧉",
+    fg: theme.fgMuted,
+    flexShrink: 0,
+    onMouseDown(event: PanelMouseEvent) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      renderer.copyToClipboardOSC52(agentPanelIdsText(options))
+      appendStackBlock(state.blocks, `copied · ${agentPanelIdsText(options)}`)
+      refresh()
+    },
+  })
+}
+
 function gardenerPanelTitle(options: StackAppOptions, state: AppState): string {
   const summary = state.history.find((entry) => entry.id === state.gardenerThreadId)
   return roleChatPanelTitle(
@@ -4547,6 +4937,7 @@ function globalConnectionBar(
   applyStackEnvironmentFromUi: (environmentName: StackEnvironmentName) => Promise<void>,
   codexSessionHandle: { session?: HarnessSession },
   columns: number,
+  exitStack: () => void,
 ): ReturnType<typeof Box> {
   const config = options.config
   const environmentName = options.config.environmentName
@@ -4624,6 +5015,7 @@ function globalConnectionBar(
         flexShrink: 0,
         alignItems: "flex-end",
       },
+      exitButtonChip(exitStack),
       Text({
         content: oneLine(`stack ${stackVersion(config.appRoot)}`, Math.max(18, Math.min(40, columns - 24))),
         fg: theme.fgMuted,
@@ -4644,6 +5036,20 @@ function globalConnectionBar(
       ),
     ),
   )
+}
+
+function exitButtonChip(exitStack: () => void): ReturnType<typeof Text> {
+  return Text({
+    content: " exit ",
+    fg: theme.fgOnAccent,
+    bg: theme.synth.red,
+    flexShrink: 0,
+    onMouseDown(event: PanelMouseEvent) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      exitStack()
+    },
+  })
 }
 
 function environmentChip(
@@ -4762,12 +5168,32 @@ function tailGoalShutterScroll(
   state: AppState,
   events: StackThreadMetaEvent[],
   columns: number,
-  visibleRows: number,
+  streamRows: number,
 ): void {
-  const lineCount = goalShutterLineCount(events, columns, visibleRows, state.agentViewEnabled)
-  const maxOffset = Math.max(0, lineCount - visibleRows)
+  const lineCount = goalShutterLineCount(events, columns, streamRows, state.agentViewEnabled)
+  const maxOffset = Math.max(0, lineCount - streamRows)
   if (state.goalShutterScrollPinned) state.goalShutterScrollOffset = maxOffset
   else if (state.goalShutterScrollOffset > maxOffset) state.goalShutterScrollOffset = maxOffset
+}
+
+function handleGoalShutterMouseScroll(
+  direction: "up" | "down",
+  state: AppState,
+  events: StackThreadMetaEvent[],
+  columns: number,
+  streamRows: number,
+  refresh: () => void,
+): void {
+  const lineCount = goalShutterLineCount(events, columns, streamRows, state.agentViewEnabled)
+  const maxOffset = Math.max(0, lineCount - streamRows)
+  if (direction === "up") {
+    state.goalShutterScrollOffset = Math.max(0, state.goalShutterScrollOffset - 3)
+    state.goalShutterScrollPinned = state.goalShutterScrollOffset === 0
+  } else {
+    state.goalShutterScrollPinned = false
+    state.goalShutterScrollOffset = Math.min(maxOffset, state.goalShutterScrollOffset + 3)
+  }
+  refresh()
 }
 
 function handleCoreEventScroll(
@@ -5161,6 +5587,13 @@ function monitorWorkerActive(state: AppState): boolean {
       block.kind === "tool" ||
       block.kind === "tool_group",
   )
+}
+
+// The goal-mode "chat" tab already mirrors the live worker transcript in the
+// main panel; showing the monitor panel's own live-watch mirror at the same
+// time duplicates the exact same content on screen twice.
+function monitorWatchSuppressedByGoalChat(state: AppState): boolean {
+  return isGoalMode(state) && state.goalShutterWorkerPeek
 }
 
 function monitorChatRowSplit(
@@ -5638,6 +6071,7 @@ function transcriptRenderOptions(state: AppState): TranscriptRenderOptions {
     running: state.status === "running",
     spinnerFrame: state.spinnerFrame,
     harnessCommand: state.harnessCommand,
+    showAgentSpeakerLabel: state.showDetails,
   }
 }
 
@@ -5703,8 +6137,31 @@ function monitorInputBackground(state: AppState): string {
 
 function renderMonitorInputStyled(state: AppState): StyledText {
   const preview = state.monitorInputBuffer.replace(/\n/g, " ↵ ")
+  const sidecarUi = {
+    monitorSnapshot: state.monitorSnapshot,
+    sidecarChatInFlight: state.sidecarChatInFlight,
+    sidecarQueuedMessages: state.sidecarQueuedMessages,
+    spinnerFrame: state.spinnerFrame,
+    status: state.status,
+  }
+  if (isGoalMode(state)) {
+    const statusLine = sidecarInputStatusLine(sidecarUi)
+    if (preview) {
+      return new StyledText([
+        fg(theme.synth.amber)("› "),
+        sidecarAgentActive(sidecarUi) ? fg(theme.synth.amber)(statusLine) : dim(fg(theme.fgMuted)(statusLine)),
+        fg(theme.fgMuted)(" · "),
+        fg(theme.fgInput)(preview),
+        fg(theme.synth.gold)("_"),
+      ])
+    }
+    return new StyledText([
+      fg(theme.synth.amber)("› "),
+      sidecarAgentActive(sidecarUi) ? fg(theme.synth.amber)(statusLine) : dim(fg(theme.fgMuted)(statusLine)),
+    ])
+  }
   if (state.monitorSnapshot.status === "running") {
-    const runningLine = `› Thinking ${runningSpinner(state)}`
+    const runningLine = `› ${runningSpinner(state)}`
     if (preview) {
       return new StyledText([
         fg(theme.synth.amber)(runningLine),
@@ -5733,9 +6190,10 @@ function renderAgentInputStyled(options: StackAppOptions, state: AppState): Styl
     const queueSuffix =
       state.queuedMessages.length > 0 ? ` · ${state.queuedMessages.length} queued` : ""
     const steerSuffix = state.lastSteerHint ? ` · ${state.lastSteerHint}` : ""
+    // This row is just a busy indicator; transcript blocks/tool calls carry detail.
     const runningLine = throughput
-      ? `› Thinking ${runningSpinner(state)} · ${throughput}${queueSuffix}${steerSuffix}`
-      : `› Thinking ${runningSpinner(state)}${queueSuffix}${steerSuffix}`
+      ? `› ${runningSpinner(state)} · ${throughput}${queueSuffix}${steerSuffix}`
+      : `› ${runningSpinner(state)}${queueSuffix}${steerSuffix}`
     if (preview) {
       return new StyledText([
         fg(theme.synth.amber)(runningLine),
@@ -6724,13 +7182,29 @@ function historyWindowStart(state: AppState, visibleRows = SESSION_HISTORY_VISIB
   return Math.max(0, Math.min(state.history.length - visibleRows, state.selectedHistoryIndex - middleOffset))
 }
 
-function transcriptViewportMetrics(renderer: CliRenderer, state: AppState): TranscriptViewport {
-  const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 12 : 10))
+function transcriptViewportMetrics(renderer: CliRenderer, state: AppState, extraReservedRows = 0): TranscriptViewport {
+  const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 12 : 10) - extraReservedRows)
   const widthShare = state.railsVisible ? 0.5 : 0.72
   const columns = Math.max(40, Math.floor(renderer.terminalWidth * widthShare) - 8)
   return {
     lines,
     columns,
+    pageLines: Math.max(3, Math.floor(lines * 0.8)),
+  }
+}
+
+function agentTranscriptViewport(renderer: CliRenderer, state: AppState): TranscriptViewport {
+  const base = transcriptViewportMetrics(renderer, state)
+  if (!isGoalMode(state) || !state.goalShutterWorkerPeek) return base
+  const goalStripLines =
+    state.metaThreadManifest?.active_goal?.objective?.trim() ||
+    state.goalContext.objective?.trim()
+      ? 1
+      : 0
+  const lines = goalWorkerPeekTranscriptRows(base.lines, goalStripLines)
+  return {
+    ...base,
+    lines,
     pageLines: Math.max(3, Math.floor(lines * 0.8)),
   }
 }
@@ -6755,7 +7229,7 @@ function scrollAgentTranscript(
 }
 
 function handleAgentScrollKey(key: { name?: string; ctrl?: boolean }, state: AppState, renderer?: CliRenderer): boolean {
-  const viewport = renderer ? transcriptViewportMetrics(renderer, state) : undefined
+  const viewport = renderer ? agentTranscriptViewport(renderer, state) : undefined
   if (key.name === "pageup" || (key.ctrl && key.name === "u")) {
     state.lastAgentScrollAt = Date.now()
     scrollAgentTranscript(state, viewport?.pageLines ?? 10, viewport, "up")
@@ -8354,7 +8828,7 @@ function handleMonitorKey(
   if (state.monitorInputBuffer.length > 0) return false
   const columns = monitorPanelColumns(renderer, state)
   const rows = monitorThreadVisibleRows(renderer, state)
-  const workerActive = monitorWorkerActive(state)
+  const workerActive = monitorWorkerActive(state) && !monitorWatchSuppressedByGoalChat(state)
   const chatSplit = monitorChatRowSplit(rows, workerActive)
   if (chatSplit.watchRows > 0) {
     if (key.name === "j" || key.name === "down") {
@@ -8415,7 +8889,7 @@ function handleMonitorScrollKey(
   if (key.name !== "j" && key.name !== "k" && key.name !== "down" && key.name !== "up") return false
   const columns = monitorPanelColumns(renderer, state)
   const rows = monitorThreadVisibleRows(renderer, state)
-  const workerActive = monitorWorkerActive(state)
+  const workerActive = monitorWorkerActive(state) && !monitorWatchSuppressedByGoalChat(state)
   const chatSplit = monitorChatRowSplit(rows, workerActive)
   if (chatSplit.watchRows > 0) {
     scrollMonitorWatchPane(key.name === "j" || key.name === "down" ? "down" : "up", state, columns, chatSplit.watchRows, () => {})
@@ -8758,6 +9232,8 @@ async function startNewThread(
   state.monitorSnapshot = refreshMonitorSnapshot(options.config.stackDataRoot, session.id)
   state.agentContext = emptyAgentContext(session.workspaceRoot)
   state.goalContext = emptyGoalContext()
+  state.metaThreadManifest = undefined
+  state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, session.id)
   state.queuedMessages = []
   state.gardenerWorkerQueue = []
   state.inputBuffer = readInitialPrompt(options.config)
@@ -9055,13 +9531,20 @@ async function loadSelectedSession(
     const session = mode === "resume" ? loaded : forkSession(options.session, loaded)
     applySession(options, state, session, mode === "resume" ? summary.path : undefined)
     if (mode === "resume") {
-      await openHarnessSession(options, state, codexSessionHandle, options.session.codexThreadId)
-      state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
-      refreshMetaEvents()
+      await restoreWorkerSessionAfterResume(
+        options,
+        state,
+        codexSessionHandle,
+        undefined,
+        refresh,
+        refreshHistory,
+        refreshMetaEvents,
+      )
+    } else {
+      await refreshAgentContextFromSession(options, state, refresh, (limits) => {
+        void observeCodexAuthState(options.config, options.session.id, limits, state)
+      })
     }
-    await refreshAgentContextFromSession(options, state, refresh, (limits) => {
-      void observeCodexAuthState(options.config, options.session.id, limits, state)
-    })
     if (mode === "fork") {
       state.lastSessionLogPath = await writeSessionLog(options.session, options.config.sessionLogDir, {
         codexModel: harnessModel(options.config),
@@ -9082,6 +9565,172 @@ function forkSession(current: StackLocalSession, loaded: StackLocalSession): Sta
     id: randomUUID(),
     startedAt: new Date().toISOString(),
     turns: loaded.turns.map((turn) => ({ ...turn, selectedPaths: [...turn.selectedPaths] })),
+  }
+}
+
+function restoreHarnessFromSession(options: StackAppOptions, state: AppState): void {
+  const harness = options.session.harness ?? (options.session.codexCommand.includes("cursor") ? "cursor" : "codex")
+  setStackHarness(options.config, harness)
+  if (harness === "cursor") {
+    state.codexTransport = "acp"
+  } else {
+    state.codexTransport = options.session.codexCommand.includes("app-server")
+      ? "app-server"
+      : resolveCodexTransport()
+  }
+  state.harnessCommand = harnessSessionCommand(options.config)
+}
+
+function applyGoalUiAfterSessionResume(
+  state: AppState,
+  checkpoint?: StackResumeCheckpoint,
+  session?: StackLocalSession,
+): void {
+  if (!isGoalMode(state)) {
+    state.goalShutterWorkerPeek = false
+    return
+  }
+  state.goalShutterWorkerPeek = checkpoint?.goalShutterWorkerPeek ?? false
+  state.goalShutterScrollOffset = 0
+  state.goalShutterScrollPinned = true
+  state.talkToMonitor = true
+  state.monitorPanelMode = "chat"
+  if (checkpoint?.focusMode === "agent" || checkpoint?.focusMode === "monitor" || checkpoint?.focusMode === "goal") {
+    state.focusMode = checkpoint.focusMode
+  } else {
+    state.focusMode = state.goalShutterWorkerPeek ? "agent" : "monitor"
+  }
+  if (session && session.turns.length > 0) {
+    state.goalShutterWorkerPeek = true
+    state.focusMode = "agent"
+    state.talkToMonitor = false
+  }
+}
+
+async function restoreWorkerSessionAfterResume(
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: HarnessSession },
+  checkpoint: StackResumeCheckpoint | undefined,
+  refresh: () => void,
+  refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+): Promise<void> {
+  if (checkpoint?.codexThreadId && !options.session.codexThreadId) {
+    options.session.codexThreadId = checkpoint.codexThreadId
+  }
+  if (checkpoint?.metaThreadId && !options.session.metaThreadId) {
+    options.session.metaThreadId = checkpoint.metaThreadId
+  }
+  if (checkpoint?.harness) {
+    options.session.harness = checkpoint.harness
+  }
+  if (checkpoint?.codexTransport) {
+    state.codexTransport = checkpoint.codexTransport
+  }
+  if (options.resumeManifest) {
+    state.metaThreadManifest = options.resumeManifest
+    state.goalContext = mergeMetaThreadGoalContext(state.goalContext, options.resumeManifest)
+  }
+  restoreHarnessFromSession(options, state)
+  const backendSessionId =
+    harnessBackendSessionId(checkpoint) ?? options.session.codexThreadId
+  await openHarnessSession(options, state, codexSessionHandle, backendSessionId)
+  const harnessResume = await resumeHarnessSession(codexSessionHandle.session, checkpoint)
+  if (harnessResume.backendSessionId) {
+    options.session.codexThreadId = harnessResume.backendSessionId
+  }
+  if (checkpoint?.harnessResume) {
+    checkpoint.harnessResume = {
+      ...checkpoint.harnessResume,
+      backendSessionId: harnessResume.backendSessionId ?? checkpoint.harnessResume.backendSessionId,
+      resumePhase: harnessResume.resumePhase,
+    }
+  }
+  await refreshAgentContextFromSession(options, state, refresh, (limits) => {
+    void observeCodexAuthState(options.config, options.session.id, limits, state)
+  })
+  state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+  refreshMetaEvents()
+  state.monitorSnapshot = refreshMonitorSnapshot(options.config.stackDataRoot, options.session.id)
+  syncMonitorRightPanel(state)
+  await refreshThreadGoalStatus(options, state)
+  applyGoalUiAfterSessionResume(state, checkpoint, options.session)
+  syncGoalModeDefaults(options, state)
+  syncSessionDisplayNameFromGoal(options, state)
+  state.monitorWorkerTargetId = options.session.id
+  rememberGardenerWorkerTarget(state, options.session.id)
+  await refreshHistory()
+}
+
+function syncSessionDisplayNameFromGoal(options: StackAppOptions, state: AppState): void {
+  if (options.session.displayName?.trim()) return
+  const objective =
+    state.metaThreadManifest?.active_goal?.objective?.trim() ?? state.goalContext.objective?.trim()
+  if (!objective) return
+  const displayName = sanitizeThreadDisplayName(objective)
+  if (!displayName) return
+  options.session.displayName = displayName
+}
+
+function persistStackResumeCheckpoint(
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: HarnessSession },
+  shutdown?: StackAppShutdown,
+): void {
+  if (options.session.id === state.gardenerThreadId) return
+  const backendSessionId =
+    codexSessionHandle.session?.codexThreadId ?? options.session.codexThreadId
+  if (backendSessionId) options.session.codexThreadId = backendSessionId
+  const checkpoint = enrichResumeCheckpoint({
+    checkpoint: {
+      version: 1,
+      savedAt: new Date().toISOString(),
+      sessionId: options.session.id,
+      metaThreadId: options.session.metaThreadId,
+      segmentId: options.session.segmentId,
+      codexThreadId: backendSessionId,
+      harness: options.session.harness ?? (isCursorHarness(options.config) ? "cursor" : "codex"),
+      codexTransport: state.codexTransport,
+      goalShutterWorkerPeek: state.goalShutterWorkerPeek,
+      focusMode: state.focusMode,
+      displayName: options.session.displayName,
+    },
+    session: options.session,
+    manifest: state.metaThreadManifest,
+    transport: state.codexTransport,
+    backendSessionId,
+  })
+  writeResumeCheckpointSync(options.config.stackDataRoot, checkpoint)
+  const resumeCommand = resumeCommandFromCheckpoint(checkpoint)
+  shutdown?.setShellMessage(resumeCommand)
+}
+
+function persistSessionOnExit(
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: HarnessSession },
+  shutdown?: StackAppShutdown,
+): void {
+  try {
+    syncSessionDisplayNameFromGoal(options, state)
+    const payload = JSON.stringify(
+      {
+        ...options.session,
+        codexModel: options.session.codexModel ?? harnessModel(options.config),
+        usageSummary: options.session.usageSummary,
+      },
+      null,
+      2,
+    )
+    const path = join(options.config.sessionLogDir, `${options.session.id}.json`)
+    mkdirSync(options.config.sessionLogDir, { recursive: true })
+    writeFileSync(`${path}`, `${payload}\n`, "utf8")
+    state.lastSessionLogPath = path
+    persistStackResumeCheckpoint(options, state, codexSessionHandle, shutdown)
+  } catch {
+    // best-effort on exit
   }
 }
 
@@ -9120,6 +9769,13 @@ function applySession(
   state.liveThinkingId = undefined
   state.turnStartedAt = undefined
   state.focusMode = "agent"
+  state.goalShutterWorkerPeek = false
+  state.goalShutterScrollOffset = 0
+  state.goalShutterScrollPinned = true
+  state.agentViewEnabled = false
+  state.sidecarQueuedMessages = []
+  state.sidecarChatInFlight = false
+  state.sidecarDispatchRef = { current: Promise.resolve() }
   if (session.id === state.gardenerThreadId) {
     applyGardenerHarnessToConfig(options.config)
     state.talkToGardener = false
@@ -9166,6 +9822,7 @@ async function submitPrompt(
   refresh: () => void,
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
+  submitOpts?: { transcriptPrompt?: string },
 ): Promise<void> {
   state.status = "running"
   state.spinnerFrame = 0
@@ -9174,7 +9831,7 @@ async function submitPrompt(
   state.currentTurnStartedAt = new Date().toISOString()
   state.liveThinkingText = isCursorHarness(options.config) ? "starting Cursor" : "starting Codex"
   state.agentScrollOffset = 0
-  appendUserBlock(state.blocks, prompt)
+  appendUserBlock(state.blocks, submitOpts?.transcriptPrompt ?? prompt)
   options.session.codexCommand = isCursorHarness(options.config)
     ? `${options.config.cursorCommand} agent acp`
     : state.codexTransport === "app-server"
@@ -9207,6 +9864,14 @@ async function submitPrompt(
         state.monitorSnapshot = snapshot
         refreshMetaEvents()
         refreshIfScrollStable()
+        scheduleSidecarIdleDrain(
+          options,
+          state,
+          refresh,
+          refreshHistory,
+          refreshMetaEvents,
+          state.sidecarDispatchRef,
+        )
         const steerEvent = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
           .filter((event) => event.type === "monitor.steer")
           .at(-1)

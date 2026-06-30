@@ -610,6 +610,86 @@ export async function stackdUpdateMetaThreadGoal(
   )
 }
 
+export type StackdResumeCheckpoint = {
+  version: 1
+  schema?: string
+  savedAt: string
+  sessionId: string
+  metaThreadId?: string
+  segmentId?: string
+  codexThreadId?: string
+  harness?: string
+  codexTransport?: string
+  goalShutterWorkerPeek?: boolean
+  focusMode?: string
+  displayName?: string
+  harnessResume?: {
+    provider: string
+    backendSessionId?: string
+    transport: string
+    resumeMethod: string
+    resumePhase: string
+  }
+  metaThreadState?: {
+    phase: string
+    metaThreadId?: string
+    segmentId?: string
+    headThreadId?: string
+    goalStatus?: string
+    goalObjective?: string
+  }
+}
+
+export type StackdResumeBundle = {
+  checkpoint: StackdResumeCheckpoint
+  session: Record<string, unknown>
+  manifest?: StackdMetaThreadManifest
+  resumeToken: string
+  resumeCommand: string
+}
+
+export type StackdSaveCheckpointResponse = {
+  checkpoint: StackdResumeCheckpoint
+  resumeToken: string
+  resumeCommand: string
+  paths: {
+    latest: string
+    thread?: string
+    metaThread?: string
+  }
+}
+
+export async function stackdLatestCheckpoint(baseUrl = stackdBaseUrl()): Promise<StackdResumeCheckpoint> {
+  return requestJson<StackdResumeCheckpoint>(baseUrl, "/checkpoints/latest")
+}
+
+export async function stackdResolveCheckpoint(
+  query?: string,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdResumeBundle> {
+  const url = new URL("/checkpoints/resolve", ensureTrailingSlash(baseUrl))
+  if (query?.trim()) url.searchParams.set("q", query.trim())
+  return requestJson<StackdResumeBundle>(baseUrl, `${url.pathname}${url.search}`)
+}
+
+export async function stackdSaveCheckpoint(
+  checkpoint: StackdResumeCheckpoint,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdSaveCheckpointResponse> {
+  return requestJson<StackdSaveCheckpointResponse>(baseUrl, "/checkpoints", jsonPost(checkpoint))
+}
+
+export async function stackdThreadResume(threadId: string, baseUrl = stackdBaseUrl()): Promise<StackdResumeBundle> {
+  return requestJson<StackdResumeBundle>(baseUrl, `/threads/${encodeURIComponent(threadId)}/resume`)
+}
+
+export async function stackdMetaThreadResume(
+  metaThreadId: string,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdResumeBundle> {
+  return requestJson<StackdResumeBundle>(baseUrl, `/meta-threads/${encodeURIComponent(metaThreadId)}/resume`)
+}
+
 export async function stackdListSkills(baseUrl = stackdBaseUrl()): Promise<StackdSkillListResponse> {
   return requestJson<StackdSkillListResponse>(baseUrl, "/skills")
 }

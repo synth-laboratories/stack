@@ -136,6 +136,56 @@ pub async fn doc() -> Json<Value> {
                     "responses": { "200": { "description": "VictoriaLogs query result" }, "400": { "description": "invalid query parameter" } }
                 }
             },
+            "/threads/{stackSessionId}/resume": {
+                "get": {
+                    "summary": "Return a full resume bundle for a Stack thread session",
+                    "parameters": [{ "name": "stackSessionId", "in": "path", "required": true }],
+                    "responses": { "200": { "description": "checkpoint + session (+ manifest when bound)" }, "404": { "description": "missing session or checkpoint" } }
+                }
+            },
+            "/threads/{stackSessionId}/checkpoint": {
+                "put": {
+                    "summary": "Persist a thread-scoped resume checkpoint",
+                    "parameters": [{ "name": "stackSessionId", "in": "path", "required": true }],
+                    "requestBody": { "required": true, "description": "StackResumeCheckpoint payload" },
+                    "responses": { "200": { "description": "saved checkpoint with resume token/command" }, "400": { "description": "invalid checkpoint" }, "404": { "description": "missing session" } }
+                }
+            },
+            "/checkpoints/latest": {
+                "get": {
+                    "summary": "Return the latest workspace resume checkpoint",
+                    "responses": { "200": { "description": "StackResumeCheckpoint" }, "404": { "description": "no checkpoint saved yet" } }
+                }
+            },
+            "/checkpoints/resolve": {
+                "get": {
+                    "summary": "Resolve a resume token or id prefix into a full resume bundle",
+                    "parameters": [{ "name": "q", "in": "query", "required": false, "description": "resume token, session id prefix, or meta-thread id fragment; omit for latest" }],
+                    "responses": { "200": { "description": "ResumeBundle" }, "404": { "description": "checkpoint not found" } }
+                }
+            },
+            "/checkpoints": {
+                "post": {
+                    "summary": "Persist a resume checkpoint (latest + thread + meta-thread scopes)",
+                    "requestBody": { "required": true, "description": "StackResumeCheckpoint payload" },
+                    "responses": { "200": { "description": "SaveCheckpointResponse with resume token/command" }, "404": { "description": "missing session" } }
+                }
+            },
+            "/meta-threads/{metaThreadId}/resume": {
+                "get": {
+                    "summary": "Return a full resume bundle for a meta-thread head segment",
+                    "parameters": [{ "name": "metaThreadId", "in": "path", "required": true }],
+                    "responses": { "200": { "description": "checkpoint + head session + manifest" }, "404": { "description": "missing meta-thread" } }
+                }
+            },
+            "/meta-threads/{metaThreadId}/checkpoint": {
+                "put": {
+                    "summary": "Persist a meta-thread-scoped resume checkpoint",
+                    "parameters": [{ "name": "metaThreadId", "in": "path", "required": true }],
+                    "requestBody": { "required": true, "description": "StackResumeCheckpoint payload" },
+                    "responses": { "200": { "description": "saved checkpoint with resume token/command" }, "400": { "description": "invalid checkpoint" }, "404": { "description": "missing session" } }
+                }
+            },
             "/threads/{stackSessionId}/actors": {
                 "get": {
                     "summary": "Return thread-scoped Stack actor checkpoint state",

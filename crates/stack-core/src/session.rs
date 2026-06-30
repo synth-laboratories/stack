@@ -138,6 +138,17 @@ pub struct StackTraceTurn {
     pub finished_at: Option<String>,
 }
 
+pub async fn write_session(
+    session_log_dir: &Path,
+    session: &StackLocalSession,
+) -> Result<PathBuf, SessionError> {
+    fs::create_dir_all(session_log_dir).await?;
+    let path = session_path(session_log_dir, &session.id)?;
+    let text = serde_json::to_string_pretty(session)?;
+    fs::write(&path, format!("{text}\n")).await?;
+    Ok(path)
+}
+
 pub async fn read_session(path: &Path) -> Result<StackLocalSession, SessionError> {
     let text = fs::read_to_string(path).await?;
     Ok(serde_json::from_str(&text)?)

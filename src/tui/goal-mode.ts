@@ -53,5 +53,5 @@ export function isGoalMode(state: GoalModeState): boolean {
   const goal = activeGoalModeSnapshot(state)
   if (!goal.objective) return false
   const status = goal.status?.trim().toLowerCase()
-  return !status || status === "active" || status === "blocked"
+  return !status || status === "active" || status === "blocked" || status === "paused"
 }

@@ -23,7 +23,7 @@ export function renderThreadsRailStyled(input: ThreadsRailRenderInput): StyledTe
   const focusHint = input.focusMode === "history" ? "j/k select" : "tab threads"
   chunks.push(dim(fg(theme.fgMuted)(focusHint)))
   chunks.push(fg(theme.fgPrimary)("\n"))
-  chunks.push(dim(fg(theme.synth.amber)("n new · enter resume · f fork · p gardener")))
+  chunks.push(dim(fg(theme.synth.amber)("n new · enter resume · f fork · stack resume <id> · p gardener")))
   chunks.push(fg(theme.fgPrimary)("\n"))
   chunks.push(
     fg(input.gardenerTalkMode ? "#3fb950" : theme.fgMuted)(

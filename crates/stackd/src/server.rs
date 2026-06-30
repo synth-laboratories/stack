@@ -1,5 +1,5 @@
 use crate::handlers::{
-    export, health, logs, mcp, meta_threads, runtime, skills, telemetry, threads,
+    checkpoints, export, health, logs, mcp, meta_threads, runtime, skills, telemetry, threads,
 };
 use crate::mcp_sidecar::McpSidecar;
 use crate::monitor_scheduler;
@@ -133,12 +133,25 @@ fn router(state: Arc<AppState>) -> Router {
             post(threads::set_monitor_mode),
         )
         .route("/threads/:id/trace", get(threads::get_trace))
+        .route("/threads/:id/resume", get(checkpoints::get_thread_resume))
+        .route(
+            "/threads/:id/checkpoint",
+            axum::routing::put(checkpoints::save_thread_checkpoint),
+        )
         .route("/threads/:id/export", get(export::export_thread))
+        .route("/checkpoints/latest", get(checkpoints::get_latest_checkpoint))
+        .route("/checkpoints/resolve", get(checkpoints::resolve_checkpoint_handler))
+        .route("/checkpoints", axum::routing::post(checkpoints::save_checkpoint))
         .route(
             "/meta-threads",
             get(meta_threads::list_meta_threads).post(meta_threads::create_meta_thread),
         )
         .route("/meta-threads/:id", get(meta_threads::get_meta_thread))
+        .route("/meta-threads/:id/resume", get(checkpoints::get_meta_thread_resume))
+        .route(
+            "/meta-threads/:id/checkpoint",
+            axum::routing::put(checkpoints::save_meta_thread_checkpoint),
+        )
         .route("/meta-threads/:id/goal", patch(meta_threads::update_goal))
         .route(
             "/meta-threads/:id/handoffs/:handoff_id",

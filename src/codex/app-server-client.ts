@@ -56,6 +56,7 @@ export class CodexAppServerClient {
   private nextId = 1
   private stdinClosed = false
   private stdoutClosed = false
+  private readonly stderrLines: string[] = []
   private readonly pumpPromise: Promise<void>
   private readonly options: CodexAppServerClientOptions
 
@@ -86,6 +87,20 @@ export class CodexAppServerClient {
 
   get receivedMessages(): readonly JsonRpcMessage[] {
     return this.received
+  }
+
+  /** Last few lines the codex app-server process wrote to stderr — the actual
+   * reason for a crash when stdout closes unexpectedly. */
+  get lastStderr(): string {
+    return this.stderrLines.join("\n")
+  }
+
+  private crashDetail(): string {
+    const parts: string[] = []
+    if (this.proc.exitCode !== null) parts.push(`exit ${this.proc.exitCode}`)
+    if (this.proc.signalCode !== null) parts.push(`signal ${this.proc.signalCode}`)
+    if (this.stderrLines.length > 0) parts.push(this.lastStderr)
+    return parts.length > 0 ? ` (${parts.join(" · ")})` : ""
   }
 
   request(method: string, params: unknown, timeoutMs = 120_000): Promise<unknown> {
@@ -305,8 +320,13 @@ export class CodexAppServerClient {
     } finally {
       this.stdoutClosed = true
       reader.releaseLock()
+      // Closing stdout usually means the process just exited too; give it a
+      // brief moment to settle so exitCode/signalCode are populated for the
+      // error message below, without blocking indefinitely if it doesn't.
+      await Promise.race([this.proc.exited.catch(() => undefined), Bun.sleep(200)])
+      const error = new Error(`codex app-server stdout closed${this.crashDetail()}`)
       for (const pending of this.pending.values()) {
-        pending.reject(new Error("codex app-server stdout closed"))
+        pending.reject(error)
       }
       this.pending.clear()
       for (const waiter of this.incomingWaiters.splice(0)) {
@@ -320,10 +340,24 @@ export class CodexAppServerClient {
     if (!stderr || typeof stderr === "number") return
     const reader = stderr.getReader()
     const decoder = new TextDecoder()
+    let buffer = ""
     while (true) {
       const { value, done } = await reader.read()
       if (done) break
-      void decoder.decode(value, { stream: true })
+      buffer += decoder.decode(value, { stream: true })
+      while (true) {
+        const newlineIndex = buffer.indexOf("\n")
+        if (newlineIndex < 0) break
+        const line = buffer.slice(0, newlineIndex).trim()
+        buffer = buffer.slice(newlineIndex + 1)
+        if (!line) continue
+        this.stderrLines.push(line)
+        if (this.stderrLines.length > 20) this.stderrLines.shift()
+      }
+    }
+    if (buffer.trim()) {
+      this.stderrLines.push(buffer.trim())
+      if (this.stderrLines.length > 20) this.stderrLines.shift()
     }
     reader.releaseLock()
   }
@@ -366,7 +400,17 @@ export function codexAppServerArgs(codexArgs: readonly string[]): string[] {
       if (arg === "-o" || arg === "-C") index += 1
       continue
     }
-    if (arg === "-m" || arg === "-c" || arg === "--enable" || arg === "--disable") {
+    if (arg === "-m") {
+      // `codex app-server` has no -m/--model flag (only `codex exec` does) —
+      // it's set via -c model="<value>" instead, like any other config key.
+      const value = codexArgs[index + 1]
+      if (value) {
+        args.push("-c", `model=${JSON.stringify(value)}`)
+        index += 1
+      }
+      continue
+    }
+    if (arg === "-c" || arg === "--enable" || arg === "--disable") {
       const value = codexArgs[index + 1]
       if (value) {
         args.push(arg, value)
