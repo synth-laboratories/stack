@@ -134,6 +134,7 @@ import {
 import {
   emptyMonitorSnapshot,
   cycleMonitorMode,
+  loadMonitorConfig,
   monitorRailLines,
   refreshMonitorSnapshot,
   runMonitorAfterTurn,
@@ -304,6 +305,8 @@ import {
 import {
   monitorEventStreamLineCount,
 } from "./monitor-thread.js"
+import { activeGoalModeSnapshot, isGoalMode } from "./goal-mode.js"
+import { goalShutterLineCount, renderGoalShutter } from "./goal-shutter.js"
 import {
   completeSlashMenuSelection,
   dispatchSlashCommand,
@@ -404,6 +407,11 @@ type AppState = {
   gardenerInputBuffer: string
   slashMenuIndex: number
   goalPanelSelectedIndex: number
+  goalShutterWorkerPeek: boolean
+  goalShutterScrollOffset: number
+  goalShutterScrollPinned: boolean
+  goalMonitorAutoEnabledObjective?: string
+  goalModeProfileHintObjective?: string
   toolLogs: ToolLog[]
   subagentLogs: SubagentLog[]
   history: StackSessionSummary[]
@@ -739,6 +747,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     gardenerInputBuffer: "",
     slashMenuIndex: 0,
     goalPanelSelectedIndex: 0,
+    goalShutterWorkerPeek: false,
+    goalShutterScrollOffset: 0,
+    goalShutterScrollPinned: true,
     toolLogs: [],
     subagentLogs: [],
     history,
@@ -1308,6 +1319,25 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
     if (voiceKind === "press" && handleVoiceKey(key, "press", voiceKeyContext())) return
+    if (isGoalMode(state) && !focusedInputEditing(state)) {
+      if (key.name === "m") {
+        focusGoalSidecarChat(options, state, remount)
+        return
+      }
+      if (key.name === "g") {
+        state.goalShutterWorkerPeek = false
+        state.focusMode = "goal"
+        openGoalPanel(state)
+        remount()
+        return
+      }
+      if (key.name === "a") {
+        state.agentViewEnabled = !state.agentViewEnabled
+        remount()
+        return
+      }
+    }
+
     if (key.name === "tab") {
       applySidePanelFocus(state, nextFocusMode(state.focusMode, state.liveOpsMode, options.config))
       remount()
@@ -1339,13 +1369,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
     if (key.name === "escape") {
       if (state.focusMode === "goal") {
-        state.focusMode = "agent"
+        state.goalShutterWorkerPeek = false
+        state.focusMode = isGoalMode(state) ? "monitor" : "agent"
         remount()
-        return
-      }
-      if (state.status === "running" && codexSessionHandle.session) {
-        appendStackBlock(state.blocks, "interrupt requested")
-        void codexSessionHandle.session.interrupt().finally(remount)
         return
       }
       if (state.inputBuffer.length > 0) {
@@ -1361,6 +1387,17 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       if (state.gardenerInputBuffer.length > 0) {
         state.gardenerInputBuffer = ""
         remount()
+        return
+      }
+      if (isGoalMode(state)) {
+        if (returnToGoalShutter(state, remount)) return
+        focusGoalWorkerPeek(state, remount)
+        return
+      }
+      if (state.status === "running" && codexSessionHandle.session) {
+        appendStackBlock(state.blocks, "interrupt requested")
+        void codexSessionHandle.session.interrupt().finally(remount)
+        return
       }
       return
     }
@@ -1606,6 +1643,7 @@ function createView(
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
 ): MountedView {
+  syncGoalModeDefaults(options, state)
   const switcher = switcherPanel(options, state, refresh, applyStackEnvironmentFromUi)
   const transcriptViewport = transcriptViewportMetrics(renderer, state)
   state.planningColumns = transcriptViewport.columns
@@ -1620,6 +1658,8 @@ function createView(
   const activeThreadIds = resolveActiveThreadIds(options.session.id, state.gardenerWorkerTargetId)
   const gardenerEvents = readThreadMetaEvents(options.config.stackDataRoot, state.gardenerThreadId)
   const workerMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+  const goalModeActive = isGoalMode(state)
+  const showGoalShutter = goalModeActive && !state.goalShutterWorkerPeek
   const gardenerChatBlocks = buildGardenerChatBlocks(state, gardenerEvents)
   const gardenerTranscriptOptions = gardenerTranscriptRenderOptions(
     transcriptRenderOptions(state),
@@ -1671,6 +1711,9 @@ function createView(
     )
     tailMonitorWatchScroll(state, rightColumns, monitorChatSplit.watchRows)
   }
+  if (showGoalShutter) {
+    tailGoalShutterScroll(state, workerMetaEvents, transcriptViewport.columns, transcriptViewport.lines)
+  }
   const opsPanelInput = buildOpsPanelInput(options, state)
   const focusCenterProjects = panelFocusHandlers(state, "projects", refresh)
   const focusCenterThreads = panelFocusHandlers(state, "history", refresh)
@@ -1690,12 +1733,38 @@ function createView(
       state.rightPanelOpsVisible || !isMonitorOn(state.monitorSnapshot) ? "ops" : "monitor"
     refresh()
   }
+  const sidecarMenuElements = showGoalShutter
+    ? slashMenuElements(
+        state.monitorInputBuffer,
+        state.slashMenuIndex,
+        buildSlashCommandContext(options, state),
+        transcriptViewport.columns,
+        state.focusMode === "monitor",
+      )
+    : []
   const agentChildren = [
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
-    transcriptPane(renderTranscriptPanel(state, transcriptViewport)),
+    ...(showGoalShutter
+      ? [
+          renderGoalShutter({
+            state,
+            events: workerMetaEvents,
+            columns: transcriptViewport.columns,
+            visibleRows: transcriptViewport.lines,
+            scrollOffset: state.goalShutterScrollOffset,
+            metaThreadId: options.session.metaThreadId,
+            sidecarMenuElements,
+            onFocusSidecar: () => focusGoalSidecarChat(options, state, refresh),
+            onPrefillSidecar: (prompt) => {
+              state.monitorInputBuffer = prompt
+              focusGoalSidecarChat(options, state, refresh)
+            },
+          }),
+        ]
+      : [transcriptPane(renderTranscriptPanel(state, transcriptViewport))]),
     ...(state.focusMode === "goal" ? [renderGoalPanel(state)] : []),
     ...(switcher ? [switcher] : []),
-    agentControlRow(options, state, transcriptViewport.columns, refresh),
+    ...(showGoalShutter ? [] : [agentControlRow(options, state, transcriptViewport.columns, refresh)]),
   ]
 
   const root = Box(
@@ -1885,6 +1954,7 @@ function createView(
           borderColor:
             state.focusMode === "agent" ||
             state.focusMode === "goal" ||
+            (showGoalShutter && state.focusMode === "monitor") ||
             state.focusMode === "model" ||
             state.focusMode === "effort" ||
             state.focusMode === "environment" ||
@@ -2591,6 +2661,73 @@ function focusControlChip(
   })
 }
 
+function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
+  if (!isGoalMode(state)) {
+    state.goalShutterWorkerPeek = false
+    state.goalShutterScrollOffset = 0
+    state.goalShutterScrollPinned = true
+    state.goalMonitorAutoEnabledObjective = undefined
+    state.goalModeProfileHintObjective = undefined
+    return
+  }
+  const objective = activeGoalModeSnapshot(state).objective ?? ""
+  if (state.goalMonitorAutoEnabledObjective !== objective) {
+    if (!isMonitorOn(state.monitorSnapshot)) {
+      state.monitorSnapshot = setMonitorEnabled(options.config.stackDataRoot, options.session.id, true)
+      syncMonitorRightPanel(state)
+    }
+    state.goalMonitorAutoEnabledObjective = objective
+  }
+  if (state.goalModeProfileHintObjective !== objective) {
+    const monitorConfig = loadMonitorConfig(options.config.stackDataRoot)
+    if (monitorConfig.id !== "progress-narrator") {
+      appendStackBlock(
+        state.blocks,
+        "goal mode · tip: STACK_MONITOR_PROFILE=progress-narrator for sidecar narration",
+      )
+    }
+    state.goalModeProfileHintObjective = objective
+  }
+  if (!state.goalShutterWorkerPeek && state.focusMode === "agent" && state.inputBuffer.length === 0) {
+    state.focusMode = "monitor"
+    state.monitorWorkerTargetId = options.session.id
+  }
+}
+
+function focusGoalSidecarChat(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  if (!isMonitorOn(state.monitorSnapshot)) {
+    state.monitorSnapshot = setMonitorEnabled(options.config.stackDataRoot, options.session.id, true)
+    syncMonitorRightPanel(state)
+  }
+  state.goalShutterWorkerPeek = false
+  state.talkToMonitor = true
+  state.monitorPanelMode = "chat"
+  state.monitorWorkerTargetId = options.session.id
+  state.focusMode = "monitor"
+  refresh()
+}
+
+function focusGoalWorkerPeek(state: AppState, refresh: () => void): boolean {
+  if (!isGoalMode(state)) return false
+  state.goalShutterWorkerPeek = true
+  state.talkToMonitor = false
+  state.focusMode = "agent"
+  refresh()
+  return true
+}
+
+function returnToGoalShutter(state: AppState, refresh: () => void): boolean {
+  if (!isGoalMode(state) || !state.goalShutterWorkerPeek) return false
+  state.goalShutterWorkerPeek = false
+  state.focusMode = "monitor"
+  refresh()
+  return true
+}
+
 function providerOptionChip(
   label: string,
   active: boolean,
@@ -3149,7 +3286,7 @@ function submitMonitorOperatorMessage(
     session: options.session,
     message,
     agentContext: state.agentContext,
-    goalContext: state.goalContext,
+    goalContext: mergeMetaThreadGoalContext(state.goalContext, state.metaThreadManifest),
   })
     .then(async ({ snapshot }) => {
       state.monitorSnapshot = snapshot
@@ -3308,7 +3445,13 @@ function buildSlashDispatchHooks(
         refreshMetaEvents,
       )
     },
-    openMonitor: () => openMonitorPanel(options, state, refresh),
+    openMonitor: () => {
+      if (isGoalMode(state)) {
+        focusGoalSidecarChat(options, state, refresh)
+        return
+      }
+      openMonitorPanel(options, state, refresh)
+    },
     hideMonitor: () => toggleMonitorPanelVisibility(options, state, refresh),
     setMonitorEnabled: (enabled) => {
       state.monitorSnapshot = setMonitorEnabled(options.config.stackDataRoot, options.session.id, enabled)
@@ -3375,6 +3518,7 @@ function buildSlashDispatchHooks(
       }
     },
     focusAgent: () => {
+      if (focusGoalWorkerPeek(state, refresh)) return
       state.focusMode = "agent"
       refresh()
     },
@@ -3872,9 +4016,6 @@ function handleRawInput(
   cycleStackEnvironmentFromUi: (direction: number) => Promise<void>,
 ): boolean {
   if (sequence === "\x1b") {
-    if (state.status === "running") {
-      return true
-    }
     if (state.focusMode === "monitor" && state.monitorInputBuffer.length > 0) {
       state.monitorInputBuffer = ""
       state.slashMenuIndex = 0
@@ -3891,6 +4032,15 @@ function handleRawInput(
       state.inputBuffer = ""
       state.slashMenuIndex = 0
       refresh()
+      return true
+    }
+    if (isGoalMode(state)) {
+      if (returnToGoalShutter(state, refresh)) return true
+      focusGoalWorkerPeek(state, refresh)
+      return true
+    }
+    if (state.status === "running") {
+      return true
     }
     return true
   }
@@ -3915,6 +4065,16 @@ function handleRawInput(
         state,
         codexSessionHandle.session,
       ).finally(refresh)
+      return true
+    }
+    if (selected?.command === "monitor" && slashMenuVisible(buffer)) {
+      setActiveInputBuffer(state, "")
+      state.slashMenuIndex = 0
+      if (isGoalMode(state)) {
+        focusGoalSidecarChat(options, state, refresh)
+      } else {
+        openMonitorPanel(options, state, refresh)
+      }
       return true
     }
     const completed = completeSlashMenuSelection(buffer, state.slashMenuIndex)
@@ -3954,6 +4114,25 @@ function handleRawInput(
     state.showDetails = !state.showDetails
     refresh()
     return true
+  }
+
+  if (isGoalMode(state) && !focusedInputEditing(state)) {
+    if (sequence === "m") {
+      focusGoalSidecarChat(options, state, refresh)
+      return true
+    }
+    if (sequence === "g") {
+      state.goalShutterWorkerPeek = false
+      state.focusMode = "goal"
+      openGoalPanel(state)
+      refresh()
+      return true
+    }
+    if (sequence === "a") {
+      state.agentViewEnabled = !state.agentViewEnabled
+      refresh()
+      return true
+    }
   }
 
   if (state.focusMode === "agent" && !focusedInputEditing(state) && (sequence === "]" || sequence === "[")) {
@@ -4558,6 +4737,18 @@ function tailCoreEventScroll(
   const eventMax = Math.max(0, eventCount - visibleRows)
   if (state.gardenerEventScrollPinned) state.gardenerEventScrollOffset = 0
   else if (state.gardenerEventScrollOffset > eventMax) state.gardenerEventScrollOffset = eventMax
+}
+
+function tailGoalShutterScroll(
+  state: AppState,
+  events: StackThreadMetaEvent[],
+  columns: number,
+  visibleRows: number,
+): void {
+  const lineCount = goalShutterLineCount(events, columns, visibleRows, state.agentViewEnabled)
+  const maxOffset = Math.max(0, lineCount - visibleRows)
+  if (state.goalShutterScrollPinned) state.goalShutterScrollOffset = maxOffset
+  else if (state.goalShutterScrollOffset > maxOffset) state.goalShutterScrollOffset = maxOffset
 }
 
 function handleCoreEventScroll(

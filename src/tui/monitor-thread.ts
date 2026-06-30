@@ -5,12 +5,31 @@ import { stackTuiTheme as theme } from "./theme.js"
 
 const NARRATIVE_EVENT_TYPES = new Set([
   "monitor.operator_message",
+  "monitor.chat.reply",
   "monitor.wake",
   "monitor.summary",
+  "monitor.progress",
   "monitor.queued",
   "monitor.steer",
   "monitor.skill_context_push",
   "monitor.error",
+])
+
+const GOAL_SHUTTER_EVENT_TYPES = new Set([
+  "monitor.chat.request",
+  "monitor.chat.reply",
+  "monitor.summary",
+  "monitor.progress",
+  "monitor.queued",
+  "monitor.steer",
+  "monitor.error",
+  "monitor.handoff_preempt.eligible",
+  "monitor.handoff_preempt.skipped",
+  "meta_thread.goal_updated",
+  "goal.started",
+  "goal.paused",
+  "goal.resumed",
+  "goal.cleared",
 ])
 
 const WATCH_EVENT_TYPES = new Set([
@@ -74,6 +93,55 @@ export function monitorEventStreamLines(events: StackThreadMetaEvent[], columns:
   return threadEvents.map((event) => formatEventStreamLine(event, width, events))
 }
 
+export function goalShutterStreamEvents(
+  events: StackThreadMetaEvent[],
+  agentViewEnabled = false,
+): StackThreadMetaEvent[] {
+  if (agentViewEnabled) return monitorThreadEvents(events)
+  return events.filter((event) => {
+    if (GOAL_SHUTTER_EVENT_TYPES.has(event.type)) return true
+    if (event.type === "agent.tool.failed" || event.type === "agent.error") return true
+    if (event.type !== "agent.tool.completed") return false
+    return isGoalShutterToolCompletion(event)
+  })
+}
+
+export function goalShutterStreamLines(
+  events: StackThreadMetaEvent[],
+  snapshot: StackMonitorSnapshot,
+  columns: number,
+  agentViewEnabled = false,
+): string[] {
+  const width = Math.max(16, columns - 2)
+  const threadEvents = goalShutterStreamEvents(events, agentViewEnabled)
+  if (threadEvents.length === 0) {
+    const empty = snapshot.enabled ? "(waiting for sidecar progress)" : "(monitor off)"
+    return snapshot.lastSummary
+      ? [empty, oneLine(`monitor  ${snapshot.lastSummary}`, width)]
+      : [empty]
+  }
+  const lines: string[] = []
+  for (const event of threadEvents) {
+    const formatted = agentViewEnabled
+      ? [formatEventStreamLine(event, width, events)]
+      : formatGoalShutterEvent(event, width, events)
+    for (const line of formatted) lines.push(line)
+  }
+  return lines
+}
+
+export function goalShutterStreamLineCount(
+  events: StackThreadMetaEvent[],
+  columns: number,
+  visibleRows: number,
+  agentViewEnabled = false,
+): number {
+  return Math.max(
+    visibleRows,
+    goalShutterStreamRows(events, emptyGoalShutterSnapshot(), columns, agentViewEnabled).length,
+  )
+}
+
 export function renderMonitorNarrativeStyled(
   events: StackThreadMetaEvent[],
   snapshot: StackMonitorSnapshot,
@@ -100,6 +168,73 @@ export function renderMonitorEventStreamStyled(
     visibleRows,
     scrollOffset,
     styledEventStreamLine,
+  )
+}
+
+export type GoalShutterStreamRow = {
+  line: string
+  prefill?: string
+}
+
+export function goalShutterStreamRows(
+  events: StackThreadMetaEvent[],
+  snapshot: StackMonitorSnapshot,
+  columns: number,
+  agentViewEnabled = false,
+): GoalShutterStreamRow[] {
+  const width = Math.max(16, columns - 2)
+  const threadEvents = goalShutterStreamEvents(events, agentViewEnabled)
+  if (threadEvents.length === 0) {
+    const empty = snapshot.enabled ? "(waiting for sidecar progress)" : "(monitor off)"
+    const rows: GoalShutterStreamRow[] = [{ line: empty }]
+    if (snapshot.lastSummary) {
+      rows.push({ line: oneLine(`monitor  ${snapshot.lastSummary}`, width) })
+    }
+    return rows
+  }
+  const rows: GoalShutterStreamRow[] = []
+  for (const event of threadEvents) {
+    const prefill = sidecarPrefillPromptForEvent(event)
+    const formatted = agentViewEnabled
+      ? [formatEventStreamLine(event, width, events)]
+      : formatGoalShutterEvent(event, width, events)
+    formatted.forEach((line, index) => {
+      rows.push({ line, prefill: index === 0 ? prefill : undefined })
+    })
+  }
+  return rows
+}
+
+export function goalShutterStreamScrollWindow(
+  rows: GoalShutterStreamRow[],
+  scrollOffset: number,
+  visibleRows: number,
+): GoalShutterStreamRow[] {
+  if (visibleRows <= 0) return []
+  const maxOffset = Math.max(0, rows.length - visibleRows)
+  const offset = Math.min(Math.max(0, scrollOffset), maxOffset)
+  return rows.slice(offset, offset + visibleRows)
+}
+
+export function styleGoalShutterStreamLine(line: string): TextChunk[] {
+  return styledGoalShutterLine(line)
+}
+
+export function renderGoalShutterStreamStyled(
+  events: StackThreadMetaEvent[],
+  snapshot: StackMonitorSnapshot,
+  columns: number,
+  visibleRows: number,
+  scrollOffset = 0,
+  agentViewEnabled = false,
+): StyledText {
+  const rows = goalShutterStreamRows(events, snapshot, columns, agentViewEnabled)
+  const lines = rows.map((row) => row.line)
+  return renderMonitorLinesStyled(
+    lines,
+    visibleRows,
+    scrollOffset,
+    styledGoalShutterLine,
   )
 }
 
@@ -159,6 +294,17 @@ function formatNarrativeEvent(
   switch (event.type) {
     case "monitor.operator_message":
       return [oneLine(`› you  ${readString(payload.message) ?? "(empty)"}`, width)]
+    case "monitor.chat.request":
+      return [oneLine(`› ask  ${readString(payload.message) ?? "(empty)"}`, width)]
+    case "monitor.chat.reply": {
+      const answer = readString(payload.answer) ?? "(empty reply)"
+      const lines = [oneLine(`  sidecar  ${answer}`, width)]
+      const criteriaRefs = readNumberArray(payload.criteria_refs)
+      const cited = readStringArray(payload.cited_event_ids)
+      if (criteriaRefs.length > 0) lines.push(oneLine(`           criteria · ${criteriaRefs.join(", ")}`, width))
+      if (cited.length > 0) lines.push(oneLine(`           evidence · ${cited.slice(0, 3).join(", ")}`, width))
+      return lines
+    }
     case "monitor.wake": {
       const reason = readString(payload.wake_reason) ?? "trigger"
       if (reason === "operator_message") return []
@@ -183,6 +329,13 @@ function formatNarrativeEvent(
       }
       return lines
     }
+    case "monitor.progress":
+      return [
+        oneLine(
+          `  progress  ${readString(payload.summary) ?? readString(payload.phase) ?? "goal progress"}`,
+          width,
+        ),
+      ]
     case "monitor.queued":
       return [
         oneLine(
@@ -207,6 +360,73 @@ function formatNarrativeEvent(
     default:
       return []
   }
+}
+
+function formatGoalShutterEvent(
+  event: StackThreadMetaEvent,
+  width: number,
+  allEvents: StackThreadMetaEvent[],
+): string[] {
+  if (event.type.startsWith("monitor.")) return formatNarrativeEvent(event, width, allEvents)
+  if (event.type.startsWith("agent.")) return [oneLine(`  agent  ${formatAgentWatchLine(event.type, event.payload)}`, width)]
+  const payload = event.payload
+  const detail =
+    readString(payload.summary) ??
+    readString(payload.objective) ??
+    readString(payload.status) ??
+    readString(payload.reason) ??
+    event.type
+  return [oneLine(`  ${event.type.replace(/_/g, ".")}  ${detail}`, width)]
+}
+
+function sidecarPrefillPromptForEvent(event: StackThreadMetaEvent): string | undefined {
+  const payload = event.payload
+  switch (event.type) {
+    case "monitor.summary": {
+      const operatorUpdate = asRecord(payload.operator_update)
+      const struggling = readString(operatorUpdate?.struggling_with)
+      if (struggling) return `What's blocking progress on ${struggling.slice(0, 72)}?`
+      const workingOn = readString(operatorUpdate?.working_on)
+      if (workingOn) return `How is progress on ${workingOn.slice(0, 72)}?`
+      const summary = readString(payload.summary)
+      if (summary) return `Explain this sidecar update: ${summary.slice(0, 72)}`
+      return undefined
+    }
+    case "monitor.chat.reply": {
+      const answer = readString(payload.answer)
+      if (answer) return `Tell me more about: ${answer.slice(0, 72)}`
+      return undefined
+    }
+    case "monitor.progress":
+      return "What's the latest goal progress?"
+    case "agent.tool.failed": {
+      const command = readString(payload.command) ?? readString(payload.tool_name)
+      if (command) return `Why did ${command.slice(0, 72)} fail?`
+      return "Why did the latest tool call fail?"
+    }
+    case "agent.error": {
+      const message = readString(payload.message)
+      if (message) return `What caused this worker error: ${message.slice(0, 72)}?`
+      return "What caused the latest worker error?"
+    }
+    case "agent.tool.completed": {
+      const command = readString(payload.command) ?? readString(payload.tool_name)
+      if (command) return `What did ${command.slice(0, 72)} show?`
+      return undefined
+    }
+    default:
+      return undefined
+  }
+}
+
+function isGoalShutterToolCompletion(event: StackThreadMetaEvent): boolean {
+  const text = [
+    readString(event.payload.tool_name),
+    readString(event.payload.command),
+    readString(event.payload.output),
+    readString(event.payload.stdout),
+  ].filter(Boolean).join(" ").toLowerCase()
+  return /\b(test|pytest|bun|npm|pnpm|yarn|cargo|go test|tsc|ruff|mypy|build|smoke|verify|check)\b/.test(text)
 }
 
 function monitorRuntimeWakeMessage(wake: StackThreadMetaEvent, allEvents: StackThreadMetaEvent[]): string {
@@ -331,14 +551,23 @@ function formatAgentWatchLine(type: string, payload: Record<string, unknown>): s
 
 function styledNarrativeLine(line: string): TextChunk[] {
   if (line.startsWith("› you")) return [fg(theme.synth.gold)(line)]
+  if (line.startsWith("› ask")) return [fg(theme.synth.gold)(line)]
   if (line.startsWith("› runtime")) return [fg(theme.synth.amber)(line)]
   if (line.startsWith("  monitor")) return [fg("#3fb950")(line)]
+  if (line.startsWith("  sidecar")) return [fg("#3fb950")(line)]
+  if (line.startsWith("  progress")) return [fg("#3fb950")(line)]
   if (line.startsWith("  steer")) return [fg("#3fb950")(line)]
   if (line.startsWith("  queue")) return [fg(theme.synth.amber)(line)]
   if (line.startsWith("  push")) return [fg(theme.synth.gold)(line)]
   if (line.startsWith("  error")) return [fg(theme.synth.red)(line)]
-  if (line.startsWith("(no messages") || line.startsWith("(off)")) return [dim(fg(theme.fgMuted)(line))]
+  if (line.startsWith("(no messages") || line.startsWith("(waiting") || line.startsWith("(monitor off)") || line.startsWith("(off)")) return [dim(fg(theme.fgMuted)(line))]
   return [fg(theme.fgPrimary)(line)]
+}
+
+function styledGoalShutterLine(line: string): TextChunk[] {
+  if (line.includes(" ✗") || line.includes(" error") || line.includes("failed")) return [fg(theme.synth.red)(line)]
+  if (line.startsWith("  agent")) return [dim(fg(theme.transcript.toolLabel)(line))]
+  return styledNarrativeLine(line)
 }
 
 function styledEventStreamLine(line: string): TextChunk[] {
@@ -371,6 +600,16 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : undefined
 }
 
+function readStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is string => typeof entry === "string" && entry.trim().length > 0)
+}
+
+function readNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
+}
+
 function shortTime(value: string): string {
   const date = new Date(value)
   if (Number.isNaN(date.getTime())) return "--:--"
@@ -386,4 +625,25 @@ function oneLine(value: string, maxLength: number): string {
 
 function spinner(frame: number): string {
   return ["|", "/", "-", "\\"][frame % 4] ?? "|"
+}
+
+function emptyGoalShutterSnapshot(): StackMonitorSnapshot {
+  return {
+    enabled: true,
+    actorId: "monitor",
+    label: "Monitor",
+    runtime: "deterministic",
+    model: "monitor",
+    reasoningEffort: "medium",
+    strictness: "passive",
+    status: "watching",
+    lastSeverity: "none",
+    wakeCount: 0,
+    queuedCount: 0,
+    skillReadCount: 0,
+    contextPushCount: 0,
+    threadSpendUsd: 0,
+    focusResults: {},
+    modeSource: "config",
+  }
 }

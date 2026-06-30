@@ -19,6 +19,7 @@ const GARDENER_CHAT_EVENT_TYPES = new Set(["gardener.message", "gardener.frictio
 
 const MONITOR_CHAT_EVENT_TYPES = new Set([
   "monitor.operator_message",
+  "monitor.chat.reply",
   "monitor.summary",
   "monitor.steer",
   "monitor.skill_context_push",
@@ -149,6 +150,9 @@ function appendMonitorChatEvent(blocks: TranscriptBlock[], event: StackThreadMet
       blocks.push({ id: randomUUID(), kind: "agent", text: lines.join("\n") })
       return
     }
+    case "monitor.chat.reply":
+      blocks.push({ id: randomUUID(), kind: "agent", text: readString(payload.answer) ?? "(empty reply)" })
+      return
     case "monitor.steer":
       appendStackBlock(
         blocks,

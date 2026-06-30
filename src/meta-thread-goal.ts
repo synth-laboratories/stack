@@ -43,7 +43,9 @@ export function mergeMetaThreadGoalContext(
   return mergeGoalContext(codexGoal, {
     objective: meta.objective.trim(),
     status: meta.status,
-    source: codexGoal.objective ? codexGoal.source : "context",
+    acceptanceCriteria: meta.acceptance_criteria,
+    blockers: meta.blockers,
+    source: "meta_thread",
   })
 }
 

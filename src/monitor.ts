@@ -4,6 +4,7 @@ import type { StackConfig } from "./config.js"
 import { loadEnvironmentAuth } from "./config.js"
 import type { AgentContextSnapshot } from "./codex/agent-context.js"
 import type { CodexGoalSnapshot } from "./codex/goal-context.js"
+import { parseCriterionEntry } from "./meta-thread-goal-criteria.js"
 import {
   buildStyleSteerFromGuidance,
   detectSynthStyleViolations,
@@ -373,6 +374,18 @@ export function appendMonitorOperatorMessage(
   return event
 }
 
+export type SidecarChatContext = {
+  current_goal: CodexGoalSnapshot & {
+    acceptance_criteria?: string[]
+    blockers?: string[]
+  }
+  criteria_progress: CriteriaProgress
+  last_operator_updates: MonitorOperatorUpdate[]
+  delta_events: StackThreadMetaEvent[]
+  worker_status: "idle" | "running" | "error"
+  last_tool_summary?: string
+}
+
 export async function runMonitorAfterOperatorMessage(input: {
   config: StackConfig
   session: StackLocalSession
@@ -380,16 +393,389 @@ export async function runMonitorAfterOperatorMessage(input: {
   agentContext: AgentContextSnapshot
   goalContext: CodexGoalSnapshot
 }): Promise<{ event: StackThreadMetaEvent; snapshot: StackMonitorSnapshot }> {
-  const event = appendMonitorOperatorMessage(input.config.appRoot, input.session.id, input.message)
+  const operatorEvent = appendMonitorOperatorMessage(input.config.appRoot, input.session.id, input.message)
+  if (shouldUseSidecarGoalChat(input.goalContext)) {
+    const requestEvent = appendMonitorChatRequest({
+      stackRoot: input.config.appRoot,
+      session: input.session,
+      message: input.message,
+      goalContext: input.goalContext,
+      operatorEventId: operatorEvent.event_id,
+    })
+    await appendMonitorChatReply({
+      stackConfig: input.config,
+      stackRoot: input.config.appRoot,
+      session: input.session,
+      message: input.message,
+      goalContext: input.goalContext,
+      requestEvent,
+    })
+    return {
+      event: requestEvent,
+      snapshot: refreshMonitorSnapshot(input.config.appRoot, input.session.id),
+    }
+  }
   const snapshot = await runMonitorForNewEvents({
     config: input.config,
     session: input.session,
     agentContext: input.agentContext,
     goalContext: input.goalContext,
     wakeReason: "operator_message",
-    triggerEventIds: [event.event_id],
+    triggerEventIds: [operatorEvent.event_id],
   })
-  return { event, snapshot }
+  return { event: operatorEvent, snapshot }
+}
+
+function shouldUseSidecarGoalChat(goalContext: CodexGoalSnapshot): boolean {
+  if (!goalContext.objective?.trim()) return false
+  const status = goalContext.status?.trim().toLowerCase()
+  return !status || status === "active" || status === "blocked"
+}
+
+function appendMonitorChatRequest(input: {
+  stackRoot: string
+  session: StackLocalSession
+  message: string
+  goalContext: CodexGoalSnapshot
+  operatorEventId: string
+}): StackThreadMetaEvent {
+  const events = readThreadMetaEvents(input.stackRoot, input.session.id)
+  const context = buildSidecarChatContext(input.goalContext, events)
+  const event: StackThreadMetaEvent = {
+    event_id: stackEventId("monitor_chat_request"),
+    type: "monitor.chat.request",
+    thread_id: input.session.id,
+    observed_at: new Date().toISOString(),
+    actor_id: "operator",
+    actor_role: "primary",
+    meta_thread_id: input.session.metaThreadId,
+    segment_id: input.session.segmentId,
+    payload: {
+      message: input.message,
+      goal_mode: true,
+      operator_event_id: input.operatorEventId,
+      sidecar_context: serializableSidecarChatContext(context),
+    },
+  }
+  appendThreadMetaEvent(input.stackRoot, event)
+  return event
+}
+
+async function appendMonitorChatReply(input: {
+  stackConfig: StackConfig
+  stackRoot: string
+  session: StackLocalSession
+  message: string
+  goalContext: CodexGoalSnapshot
+  requestEvent: StackThreadMetaEvent
+}): Promise<StackThreadMetaEvent> {
+  const events = readThreadMetaEvents(input.stackRoot, input.session.id)
+  const context = buildSidecarChatContext(input.goalContext, events)
+  const criteriaRefs = criteriaRefsForQuestion(input.message, input.goalContext.acceptanceCriteria ?? [])
+  const citedEvents = sidecarCitedEvents(context.delta_events)
+  const deterministic = buildDeterministicSidecarChatReply({
+    question: input.message,
+    goalContext: input.goalContext,
+    context,
+    criteriaRefs,
+    citedEvents,
+  })
+  const monitorConfig = loadMonitorConfig(input.stackRoot)
+  const reply = await runMonitorSidecarChatReply({
+    stackConfig: input.stackConfig,
+    stackRoot: input.stackRoot,
+    config: monitorConfig,
+    question: input.message,
+    requestEvent: input.requestEvent,
+    goalContext: input.goalContext,
+    context,
+    deterministic,
+  })
+  const event: StackThreadMetaEvent = {
+    event_id: stackEventId("monitor_chat_reply"),
+    type: "monitor.chat.reply",
+    thread_id: input.session.id,
+    observed_at: new Date().toISOString(),
+    actor_id: monitorActorId(monitorConfig),
+    actor_role: "monitor",
+    meta_thread_id: input.session.metaThreadId,
+    segment_id: input.session.segmentId,
+    payload: {
+      request_event_id: input.requestEvent.event_id,
+      question: input.message,
+      answer: reply.answer,
+      cited_event_ids: reply.citedEventIds,
+      criteria_refs: reply.criteriaRefs,
+      operator_update: reply.operatorUpdate ?? context.last_operator_updates.at(-1) ?? null,
+      source: reply.source,
+      fallback_reason: reply.fallbackReason ?? null,
+      sidecar_context: {
+        criteria_progress: context.criteria_progress,
+        worker_status: context.worker_status,
+        last_tool_summary: context.last_tool_summary ?? null,
+      },
+    },
+  }
+  appendThreadMetaEvent(input.stackRoot, event)
+  return event
+}
+
+type SidecarChatReplyResult = {
+  answer: string
+  citedEventIds: string[]
+  criteriaRefs: number[]
+  operatorUpdate?: MonitorOperatorUpdate
+  source: "deterministic-runtime" | "openai-responses" | "synth-aux"
+  fallbackReason?: string
+}
+
+async function runMonitorSidecarChatReply(input: {
+  stackConfig: StackConfig
+  stackRoot: string
+  config: StackMonitorConfig
+  question: string
+  requestEvent: StackThreadMetaEvent
+  goalContext: CodexGoalSnapshot
+  context: SidecarChatContext
+  deterministic: SidecarChatReplyResult
+}): Promise<SidecarChatReplyResult> {
+  if (!shouldUseModelWorker(input.config)) return input.deterministic
+  const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
+  if (!inference) {
+    return {
+      ...input.deterministic,
+      fallbackReason: monitorInferenceFallbackReason(input.config, input.stackConfig),
+    }
+  }
+  try {
+    const response = await fetch(inference.url, {
+      method: "POST",
+      headers: {
+        "authorization": `Bearer ${inference.apiKey}`,
+        "content-type": "application/json",
+        ...inference.headers,
+      },
+      body: JSON.stringify({
+        model: input.config.model.model,
+        reasoning: { effort: input.config.model.reasoningEffort },
+        input: [
+          {
+            role: "developer",
+            content: [{
+              type: "input_text",
+              text: resolveSidecarChatDeveloperPrompt(input.stackRoot, input.config),
+            }],
+          },
+          {
+            role: "user",
+            content: [{
+              type: "input_text",
+              text: JSON.stringify(sidecarChatUserPayload(input), null, 2),
+            }],
+          },
+        ],
+      }),
+    })
+    const payload = await response.json().catch(() => undefined) as unknown
+    if (!response.ok) {
+      const label = inference.source === "synth-aux" ? "stack-aux" : "OpenAI"
+      throw new Error(`${label} sidecar chat failed ${response.status}: ${truncate(JSON.stringify(payload ?? {}), 300)}`)
+    }
+    const parsed = parseFirstJsonObject(extractOpenAiOutputText(payload))
+    const answer = readString(parsed?.answer)
+    if (!answer) throw new Error("Sidecar chat response did not contain answer")
+    const citedEventIds = readStringArray(parsed?.cited_event_ids) ?? []
+    const criteriaRefs = readNumberArray(parsed?.criteria_refs)
+    return {
+      answer,
+      citedEventIds: citedEventIds.length > 0 ? citedEventIds : input.deterministic.citedEventIds,
+      criteriaRefs: criteriaRefs.length > 0 ? criteriaRefs : input.deterministic.criteriaRefs,
+      operatorUpdate: readOperatorUpdateFromRecord(asRecord(parsed?.operator_update)) ?? input.deterministic.operatorUpdate,
+      source: inference.source,
+    }
+  } catch (error) {
+    return {
+      ...input.deterministic,
+      fallbackReason: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+function sidecarChatUserPayload(input: {
+  question: string
+  requestEvent: StackThreadMetaEvent
+  goalContext: CodexGoalSnapshot
+  context: SidecarChatContext
+  config: StackMonitorConfig
+}): Record<string, unknown> {
+  return {
+    question: input.question,
+    request_event_id: input.requestEvent.event_id,
+    mode: input.config.strictness,
+    current_goal: input.goalContext,
+    sidecar_context: serializableSidecarChatContext(input.context),
+  }
+}
+
+function resolveSidecarChatDeveloperPrompt(stackRoot: string, config: StackMonitorConfig): string {
+  return resolveActorPrompt(
+    stackRoot,
+    { ...config.prompt, systemFile: ".stack/monitors/progress-narrator-chat.system.md" },
+    defaultSidecarChatBuiltinPrompt(),
+  )
+}
+
+function defaultSidecarChatBuiltinPrompt(): string {
+  return [
+    "You are the Stack sidecar monitor answering the operator about a goal-pursuing coding agent.",
+    "Answer from the provided current_goal and sidecar_context only; do not invent events.",
+    "Reference the objective and at least one criterion or event id when available.",
+    "Return only JSON: {\"answer\":\"...\",\"cited_event_ids\":[\"...\"],\"criteria_refs\":[1],\"operator_update\":{}}.",
+  ].join("\n")
+}
+
+function buildSidecarChatContext(
+  goalContext: CodexGoalSnapshot,
+  events: StackThreadMetaEvent[],
+): SidecarChatContext {
+  const deltaEvents = recentSidecarDeltaEvents(events)
+  return {
+    current_goal: {
+      ...goalContext,
+      acceptance_criteria: goalContext.acceptanceCriteria,
+      blockers: goalContext.blockers,
+    },
+    criteria_progress: criteriaProgressFromGoal(goalContext),
+    last_operator_updates: lastOperatorUpdates(events, 5),
+    delta_events: deltaEvents,
+    worker_status: workerStatusFromEvents(events),
+    last_tool_summary: lastToolSummary(deltaEvents),
+  }
+}
+
+function serializableSidecarChatContext(context: SidecarChatContext): Record<string, unknown> {
+  return {
+    current_goal: context.current_goal,
+    criteria_progress: context.criteria_progress,
+    last_operator_updates: context.last_operator_updates,
+    delta_events: context.delta_events.map((event) => ({
+      event_id: event.event_id,
+      type: event.type,
+      observed_at: event.observed_at,
+      actor_role: event.actor_role,
+      payload: boundedPayload(event.payload),
+    })),
+    worker_status: context.worker_status,
+    last_tool_summary: context.last_tool_summary ?? null,
+  }
+}
+
+function recentSidecarDeltaEvents(events: StackThreadMetaEvent[]): StackThreadMetaEvent[] {
+  return events
+    .filter((event) => !event.type.startsWith("monitor.checkpoint"))
+    .filter((event) => event.type.startsWith("agent.") || event.type === "monitor.summary" || event.type === "monitor.progress")
+    .slice(-12)
+}
+
+function lastOperatorUpdates(events: StackThreadMetaEvent[], limit: number): MonitorOperatorUpdate[] {
+  const updates: MonitorOperatorUpdate[] = []
+  for (const event of [...events].reverse()) {
+    if (event.type !== "monitor.summary" && event.type !== "monitor.chat.reply") continue
+    const update = readOperatorUpdateFromRecord(asRecord(event.payload.operator_update))
+    if (update) updates.push(update)
+    if (updates.length >= limit) break
+  }
+  return updates.reverse()
+}
+
+function workerStatusFromEvents(events: StackThreadMetaEvent[]): "idle" | "running" | "error" {
+  const latest = [...events].reverse().find((event) =>
+    event.type === "agent.error" ||
+    event.type === "agent.tool.failed" ||
+    event.type === "agent.turn.started" ||
+    event.type === "agent.turn.completed"
+  )
+  if (!latest) return "idle"
+  if (latest.type === "agent.error" || latest.type === "agent.tool.failed") return "error"
+  if (latest.type === "agent.turn.started") return "running"
+  return "idle"
+}
+
+function lastToolSummary(events: readonly StackThreadMetaEvent[]): string | undefined {
+  const event = [...events].reverse().find((entry) =>
+    entry.type === "agent.tool.completed" || entry.type === "agent.tool.failed" || entry.type === "agent.error"
+  )
+  if (!event) return undefined
+  const toolName = readString(event.payload.tool_name) ?? event.type.replace(/^agent\./, "")
+  const command = readString(event.payload.command)
+  const output = readString(event.payload.message) ?? readString(event.payload.stderr) ?? readString(event.payload.output)
+  return truncate([toolName, command, output].filter(Boolean).join(" · "), 180)
+}
+
+function sidecarCitedEvents(events: readonly StackThreadMetaEvent[]): StackThreadMetaEvent[] {
+  return [...events]
+    .reverse()
+    .filter((event) =>
+      event.type === "agent.tool.failed" ||
+      event.type === "agent.error" ||
+      event.type === "agent.tool.completed" ||
+      event.type === "monitor.summary" ||
+      event.type === "monitor.progress"
+    )
+    .slice(0, 3)
+    .reverse()
+}
+
+function criteriaRefsForQuestion(question: string, criteria: readonly string[]): number[] {
+  if (criteria.length === 0) return []
+  const explicit = [...question.matchAll(/\bcriterion\s+(\d+)\b/gi)]
+    .map((match) => Number.parseInt(match[1] ?? "", 10))
+    .filter((index) => Number.isFinite(index) && index >= 1 && index <= criteria.length)
+  if (explicit.length > 0) return [...new Set(explicit)]
+  const firstOpen = criteria.findIndex((criterion) => !parseCriterionEntry(criterion).done)
+  return [firstOpen >= 0 ? firstOpen + 1 : 1]
+}
+
+function buildDeterministicSidecarChatReply(input: {
+  question: string
+  goalContext: CodexGoalSnapshot
+  context: SidecarChatContext
+  criteriaRefs: number[]
+  citedEvents: StackThreadMetaEvent[]
+}): SidecarChatReplyResult {
+  const objective = input.goalContext.objective?.trim() ?? "the active goal"
+  const progress = input.context.criteria_progress
+  const criterion = input.criteriaRefs[0]
+    ? criterionText(input.goalContext.acceptanceCriteria ?? [], input.criteriaRefs[0])
+    : undefined
+  const latestUpdate = input.context.last_operator_updates.at(-1)
+  const trajectory = latestUpdate?.trajectory ? latestUpdate.trajectory.replace(/_/g, " ") : "on track"
+  const evidence = input.citedEvents[0]
+    ? `${input.citedEvents[0].event_id} (${input.citedEvents[0].type})`
+    : "no recent event id"
+  const parts = [
+    `For "${truncate(objective, 120)}", the sidecar sees ${progress.done}/${progress.total} criteria complete.`,
+    criterion ? `Closest criterion: ${criterion}.` : undefined,
+    latestUpdate?.progress_note ? `Latest progress: ${latestUpdate.progress_note}.` : input.context.last_tool_summary ? `Latest evidence: ${input.context.last_tool_summary}.` : undefined,
+    input.context.worker_status === "error" || latestUpdate?.struggling_with
+      ? `Concern: ${latestUpdate?.struggling_with ?? "latest worker event is an error"}.`
+      : `Trajectory: ${trajectory}.`,
+    `Evidence: ${evidence}.`,
+  ]
+  return {
+    answer: parts.filter(Boolean).join(" "),
+    citedEventIds: input.citedEvents.map((event) => event.event_id),
+    criteriaRefs: input.criteriaRefs,
+    operatorUpdate: input.context.last_operator_updates.at(-1),
+    source: "deterministic-runtime",
+  }
+}
+
+function criterionText(criteria: readonly string[], oneBasedIndex: number): string | undefined {
+  const raw = criteria[oneBasedIndex - 1]
+  if (!raw) return undefined
+  const parsed = parseCriterionEntry(raw)
+  return `${oneBasedIndex}. ${parsed.done ? "[x]" : "[ ]"} ${parsed.label}`
 }
 
 export async function runMonitorAfterTurn(input: {
@@ -530,6 +916,7 @@ export async function runMonitorForNewEvents(input: {
       wakeId,
       wakeReason: candidate.reason,
       triggerEventIds: candidate.triggerEventIds,
+      priorEvents,
       pendingEvents: candidate.pendingEvents,
       turn,
       agentContext: input.agentContext,
@@ -1213,6 +1600,32 @@ export type MonitorOperatorUpdate = {
   struggling_with?: string
   progress_note?: string
   goal_status?: string
+  trajectory?: "on_track" | "stalled" | "regressed"
+  criteria_progress?: CriteriaProgress
+  spend_snapshot?: SpendSnapshot
+  eta?: EtaBand
+}
+
+export type CriteriaProgress = {
+  done: number
+  total: number
+  pct: number
+  last_criterion?: string
+}
+
+export type SpendSnapshot = {
+  elapsed_s: number
+  worker_usd: number
+  monitor_usd: number
+  worker_tokens: number
+  monitor_tokens: number
+}
+
+export type EtaBand = {
+  confidence: "low" | "med" | "high"
+  remaining_minutes_low: number
+  remaining_minutes_high: number
+  rationale: string
 }
 
 type MonitorUsageEstimate = {
@@ -1232,6 +1645,7 @@ async function runMonitorPass(input: {
   wakeId: string
   wakeReason: string
   triggerEventIds: string[]
+  priorEvents: StackThreadMetaEvent[]
   pendingEvents: StackThreadMetaEvent[]
   turn: StackCodexTurn
   agentContext: AgentContextSnapshot
@@ -1240,9 +1654,11 @@ async function runMonitorPass(input: {
 }): Promise<MonitorPassResult> {
   const deterministic = deterministicMonitorPass(input.config, input.checks, {
     goalContext: input.goalContext,
+    priorEvents: input.priorEvents,
     pendingEvents: input.pendingEvents,
     turn: input.turn,
     wakeReason: input.wakeReason,
+    priorWakeCount: input.actorState.wake_counts,
   })
   if (!shouldUseModelWorker(input.config)) return deterministic
   const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
@@ -1324,9 +1740,11 @@ function deterministicMonitorPass(
   checks: FocusCheck[],
   context?: {
     goalContext: CodexGoalSnapshot
+    priorEvents: StackThreadMetaEvent[]
     pendingEvents: StackThreadMetaEvent[]
     turn: StackCodexTurn
     wakeReason: string
+    priorWakeCount?: number
   },
 ): MonitorPassResult {
   const severity = combineSeverity(config, checks)
@@ -1367,6 +1785,7 @@ async function runResponsesMonitorPass(
     wakeId: string
     wakeReason: string
     triggerEventIds: string[]
+    priorEvents: StackThreadMetaEvent[]
     pendingEvents: StackThreadMetaEvent[]
     turn: StackCodexTurn
     agentContext: AgentContextSnapshot
@@ -1434,6 +1853,7 @@ function defaultMonitorBuiltinPrompt(): string {
     '  "thread_name": "optional short thread title when operator asks to name the thread (max 48 chars)",',
     '  "severity": "none|low|medium|high",',
     '  "focus_results": {"style":"pass|warn|fail|disabled","goal_progress":"pass|warn|fail|disabled","skills":"pass|warn|fail|disabled","tool_use":"pass|warn|fail|disabled","scope_control":"pass|warn|fail|disabled","acceptance":"pass|warn|fail|disabled"},',
+    '  "operator_update": {"working_on":"...","struggling_with":"...","progress_note":"...","goal_status":"active|blocked|done|unknown","trajectory":"on_track|stalled|regressed","criteria_progress":{"done":0,"total":0,"pct":0},"spend_snapshot":{"elapsed_s":0,"worker_usd":0,"monitor_usd":0,"worker_tokens":0,"monitor_tokens":0},"eta":{"confidence":"low|med|high","remaining_minutes_low":0,"remaining_minutes_high":0,"rationale":"..."}}',
     '  "queue_items": [{"severity":"low|medium|high","focus":"style|goal_progress|skills|tool_use|scope_control|acceptance","summary":"...","evidence":"..."}],',
     '  "checkpoint_summary": "rolling state for your next wake"',
     "}",
@@ -1448,6 +1868,7 @@ function monitorUserPayload(
     wakeId: string
     wakeReason: string
     triggerEventIds: string[]
+    priorEvents: StackThreadMetaEvent[]
     pendingEvents: StackThreadMetaEvent[]
     turn: StackCodexTurn
     agentContext: AgentContextSnapshot
@@ -1475,6 +1896,10 @@ function monitorUserPayload(
       queue_items: deterministic.queueItems,
     },
     current_goal: input.goalContext,
+    goal_mode: {
+      criteria_progress: criteriaProgressFromGoal(input.goalContext),
+      last_operator_updates: lastOperatorUpdates(input.priorEvents, 3),
+    },
     used_skills: input.agentContext.usedSkills,
     turn_context: {
       prompt: truncate(input.turn.prompt, 1200),
@@ -1731,7 +2156,7 @@ function runFocusChecks(
     checkSkills(config, input.agentContext, input.turn),
     checkToolUse(config, input.turn),
     checkScopeControl(config, input.turn),
-    checkAcceptance(config, input.turn),
+    checkAcceptance(config, input.turn, input.goalContext),
   ]
 }
 
@@ -1769,13 +2194,26 @@ function checkGoalProgress(config: StackMonitorConfig, goal: CodexGoalSnapshot):
     severity: config.strictness === "aggressive" ? "medium" : "low",
     summary: "no active goal context visible to monitor",
   }
+  if (goal.status === "blocked") return {
+    focus: "goal_progress",
+    status: "fail",
+    severity: "high",
+    summary: "goal status is blocked",
+    evidence: goal.blockers?.slice(0, 2).join(" · "),
+  }
   if (goal.status && goal.status !== "active") return {
     focus: "goal_progress",
     status: "warn",
     severity: "medium",
     summary: `goal status is ${goal.status}`,
   }
-  return pass("goal_progress", "active goal context visible")
+  const criteria = criteriaProgressFromGoal(goal)
+  return pass(
+    "goal_progress",
+    criteria.total > 0
+      ? `active goal context visible · ${criteria.done}/${criteria.total} criteria`
+      : "active goal context visible",
+  )
 }
 
 function checkSkills(config: StackMonitorConfig, context: AgentContextSnapshot, turn: StackCodexTurn): FocusCheck {
@@ -1823,8 +2261,12 @@ function checkScopeControl(config: StackMonitorConfig, turn: StackCodexTurn): Fo
   return pass("scope_control", "no obvious scope violation")
 }
 
-function checkAcceptance(config: StackMonitorConfig, turn: StackCodexTurn): FocusCheck {
+function checkAcceptance(config: StackMonitorConfig, turn: StackCodexTurn, goal: CodexGoalSnapshot): FocusCheck {
   if (!config.focus.acceptance) return disabled("acceptance")
+  const criteria = criteriaProgressFromGoal(goal)
+  if (criteria.total > 0) {
+    return pass("acceptance", `manifest criteria ${criteria.done}/${criteria.total} complete`)
+  }
   const text = `${turn.prompt}\n${turn.stdout}`.toLowerCase()
   if (text.includes("acceptance") && !text.includes("passed") && !text.includes("green")) {
     return {
@@ -1957,12 +2399,18 @@ function summarizeChecks(checks: FocusCheck[], severity: MonitorSeverity): strin
 }
 
 function goalSnapshotFromContext(goal: CodexGoalSnapshot): Record<string, unknown> | null {
-  if (!goal.objective && !goal.status && goal.tokensUsed === undefined) return null
+  if (!goal.objective && !goal.status && goal.tokensUsed === undefined && !goal.acceptanceCriteria?.length && !goal.blockers?.length) return null
+  const criteria = criteriaProgressFromGoal(goal)
   return {
     objective: goal.objective ?? null,
     status: goal.status ?? "active",
     tokens_used: goal.tokensUsed ?? null,
     token_budget: goal.tokenBudget ?? null,
+    acceptance_criteria: goal.acceptanceCriteria ?? [],
+    blockers: goal.blockers ?? [],
+    criteria_done: criteria.done,
+    criteria_total: criteria.total,
+    criteria_pct: criteria.pct,
     source: goal.source,
   }
 }
@@ -1973,13 +2421,73 @@ function readOperatorUpdateFromRecord(record: Record<string, unknown> | undefine
   const strugglingWith = readString(record.struggling_with)
   const progressNote = readString(record.progress_note)
   const goalStatus = readString(record.goal_status)
-  if (!workingOn && !strugglingWith && !progressNote && !goalStatus) return undefined
+  const trajectory = normalizeTrajectory(readString(record.trajectory))
+  const criteriaProgress = readCriteriaProgress(asRecord(record.criteria_progress))
+  const spendSnapshot = readSpendSnapshot(asRecord(record.spend_snapshot))
+  const eta = readEtaBand(asRecord(record.eta))
+  if (!workingOn && !strugglingWith && !progressNote && !goalStatus && !trajectory && !criteriaProgress && !spendSnapshot && !eta) return undefined
   return {
     working_on: workingOn,
     struggling_with: strugglingWith,
     progress_note: progressNote,
     goal_status: goalStatus,
+    trajectory,
+    criteria_progress: criteriaProgress,
+    spend_snapshot: spendSnapshot,
+    eta,
   }
+}
+
+function normalizeTrajectory(value: string | undefined): MonitorOperatorUpdate["trajectory"] | undefined {
+  if (value === "on_track" || value === "stalled" || value === "regressed") return value
+  return undefined
+}
+
+function readCriteriaProgress(record: Record<string, unknown> | undefined): CriteriaProgress | undefined {
+  if (!record) return undefined
+  const done = readNumber(record.done)
+  const total = readNumber(record.total)
+  const pct = readNumber(record.pct)
+  if (done === undefined || total === undefined) return undefined
+  return {
+    done,
+    total,
+    pct: pct ?? (total > 0 ? Math.round((done / total) * 100) : 0),
+    last_criterion: readString(record.last_criterion),
+  }
+}
+
+function readSpendSnapshot(record: Record<string, unknown> | undefined): SpendSnapshot | undefined {
+  if (!record) return undefined
+  return {
+    elapsed_s: readNumber(record.elapsed_s) ?? 0,
+    worker_usd: readNumber(record.worker_usd) ?? 0,
+    monitor_usd: readNumber(record.monitor_usd) ?? 0,
+    worker_tokens: readNumber(record.worker_tokens) ?? 0,
+    monitor_tokens: readNumber(record.monitor_tokens) ?? 0,
+  }
+}
+
+function readEtaBand(record: Record<string, unknown> | undefined): EtaBand | undefined {
+  if (!record) return undefined
+  const confidence = readString(record.confidence)
+  const low = readNumber(record.remaining_minutes_low)
+  const high = readNumber(record.remaining_minutes_high)
+  const rationale = readString(record.rationale)
+  if ((confidence !== "low" && confidence !== "med" && confidence !== "high") || low === undefined || high === undefined || !rationale) {
+    return undefined
+  }
+  return {
+    confidence,
+    remaining_minutes_low: low,
+    remaining_minutes_high: high,
+    rationale,
+  }
+}
+
+function readNumberArray(value: unknown): number[] {
+  if (!Array.isArray(value)) return []
+  return value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
 }
 
 function buildDeterministicOperatorUpdate(
@@ -1987,9 +2495,11 @@ function buildDeterministicOperatorUpdate(
   checks: FocusCheck[],
   context: {
     goalContext: CodexGoalSnapshot
+    priorEvents: StackThreadMetaEvent[]
     pendingEvents: StackThreadMetaEvent[]
     turn: StackCodexTurn
     wakeReason: string
+    priorWakeCount?: number
   },
 ): MonitorOperatorUpdate | undefined {
   if (!config.focus.goal_progress && !context.goalContext.objective) return undefined
@@ -2005,12 +2515,134 @@ function buildDeterministicOperatorUpdate(
     strugglingParts.push(readString(toolFailure.payload.message) ?? readString(toolFailure.payload.tool_name) ?? "tool failed")
   }
   const progressNote = describeMonitorProgress(context.wakeReason, toolCompleted, context.turn)
+  const criteria = criteriaProgressFromGoal(context.goalContext)
+  const spend = spendSnapshotFromEvents(context.goalContext, context.priorEvents)
+  const eta = etaBandForGoal(context.goalContext, criteria, context.priorWakeCount ?? 0, Boolean(toolFailure))
+  const trajectory = trajectoryForMonitorUpdate(actionable, toolFailure, criteria)
   return {
     working_on: workingOn,
     struggling_with: strugglingParts.join(" · ") || undefined,
     progress_note: progressNote,
     goal_status: context.goalContext.status ?? (goalObjective ? "active" : "unknown"),
+    trajectory,
+    criteria_progress: criteria,
+    spend_snapshot: spend,
+    eta,
   }
+}
+
+function criteriaProgressFromGoal(goal: CodexGoalSnapshot): CriteriaProgress {
+  const criteria = goal.acceptanceCriteria ?? []
+  let done = 0
+  let lastCriterion: string | undefined
+  for (const criterion of criteria) {
+    const parsed = parseCriterionEntry(criterion)
+    if (parsed.done) {
+      done += 1
+      lastCriterion = parsed.label
+    }
+  }
+  return {
+    done,
+    total: criteria.length,
+    pct: criteria.length > 0 ? Math.round((done / criteria.length) * 100) : 0,
+    last_criterion: lastCriterion,
+  }
+}
+
+function spendSnapshotFromEvents(goal: CodexGoalSnapshot, events: StackThreadMetaEvent[]): SpendSnapshot {
+  const monitor = monitorUsageSummary(events, "monitor")
+  const workerModel =
+    process.env.STACK_CODEX_MODEL?.trim() ||
+    process.env.CODEX_MODEL?.trim() ||
+    "gpt-4o"
+  const worker = workerUsageSummary(events, workerModel)
+  return {
+    elapsed_s: goal.timeUsedSeconds ?? 0,
+    worker_usd: worker.spendUsd,
+    monitor_usd: monitor.spendUsd,
+    worker_tokens: goal.tokensUsed ?? worker.inputTokens + worker.outputTokens,
+    monitor_tokens: monitor.inputTokens + monitor.outputTokens,
+  }
+}
+
+function workerUsageSummary(
+  events: StackThreadMetaEvent[],
+  model: string,
+): { spendUsd: number; inputTokens: number; outputTokens: number } {
+  const usageEvents = events.filter((event) => event.type === "agent.usage")
+  const totals = {
+    inputTokens: 0,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+  }
+  let recordedSpendUsd = 0
+  for (const event of usageEvents) {
+    totals.inputTokens += readNumber(event.payload.input_tokens) ?? 0
+    totals.cachedInputTokens += readNumber(event.payload.cached_input_tokens) ?? 0
+    totals.outputTokens += readNumber(event.payload.output_tokens) ?? 0
+    totals.reasoningOutputTokens += readNumber(event.payload.reasoning_output_tokens) ?? 0
+    recordedSpendUsd += readNumber(event.payload.estimated_spend_usd) ?? 0
+  }
+  const estimatedSpendUsd = estimateUsageSpendUsd(totals, model)
+  const spendUsd = recordedSpendUsd > 0 ? recordedSpendUsd : estimatedSpendUsd ?? 0
+  return { spendUsd, inputTokens: totals.inputTokens, outputTokens: totals.outputTokens }
+}
+
+function etaBandForGoal(
+  goal: CodexGoalSnapshot,
+  criteria: CriteriaProgress,
+  priorWakeCount: number,
+  hasToolFailure: boolean,
+): EtaBand | undefined {
+  if (!goal.objective?.trim()) return undefined
+  if (criteria.total > 0 && criteria.done >= criteria.total) {
+    return {
+      confidence: "high",
+      remaining_minutes_low: 0,
+      remaining_minutes_high: 0,
+      rationale: "All tracked criteria are complete.",
+    }
+  }
+  if (goal.blockers?.length) {
+    return {
+      confidence: "low",
+      remaining_minutes_low: 0,
+      remaining_minutes_high: 0,
+      rationale: `Waiting on blocker: ${truncate(goal.blockers[0] ?? "listed blocker", 120)}.`,
+    }
+  }
+  if (criteria.total === 0) {
+    return priorWakeCount >= 2
+      ? {
+          confidence: "low",
+          remaining_minutes_low: hasToolFailure ? 60 : 30,
+          remaining_minutes_high: hasToolFailure ? 180 : 120,
+          rationale: "No explicit criteria are bound, so ETA is based on wake history only.",
+        }
+      : undefined
+  }
+  const remaining = Math.max(1, criteria.total - criteria.done)
+  const baseLow = Math.max(15, remaining * 20)
+  const baseHigh = Math.max(baseLow + 30, remaining * (hasToolFailure ? 75 : 45))
+  return {
+    confidence: priorWakeCount >= 2 || criteria.done > 0 ? "med" : "low",
+    remaining_minutes_low: baseLow,
+    remaining_minutes_high: baseHigh,
+    rationale: `${criteria.done}/${criteria.total} criteria complete${hasToolFailure ? "; latest wake saw a tool failure" : ""}.`,
+  }
+}
+
+function trajectoryForMonitorUpdate(
+  actionable: FocusCheck[],
+  toolFailure: StackThreadMetaEvent | undefined,
+  criteria: CriteriaProgress,
+): MonitorOperatorUpdate["trajectory"] {
+  if (toolFailure || actionable.some((check) => check.status === "fail")) return "regressed"
+  if (actionable.some((check) => check.status === "warn")) return "stalled"
+  if (criteria.total > 0 && criteria.done === 0) return "stalled"
+  return "on_track"
 }
 
 function describeMonitorProgress(
@@ -2033,11 +2665,26 @@ function describeMonitorProgress(
 
 function formatOperatorSummary(update: MonitorOperatorUpdate, severity: MonitorSeverity): string {
   const parts: string[] = []
+  if (update.trajectory) parts.push(`Trajectory: ${update.trajectory.replace(/_/g, " ")}`)
   if (update.working_on) parts.push(`Working on: ${update.working_on}`)
+  if (update.criteria_progress && update.criteria_progress.total > 0) {
+    parts.push(`${update.criteria_progress.done}/${update.criteria_progress.total} criteria`)
+  }
+  if (update.eta) {
+    parts.push(`ETA ${formatEtaBand(update.eta)}`)
+  }
   if (update.progress_note) parts.push(update.progress_note)
   if (update.struggling_with) parts.push(`Struggling: ${update.struggling_with}`)
   if (parts.length === 0) return severity === "none" ? "Watching — no update yet." : "Monitor update"
   return parts.join(" · ")
+}
+
+function formatEtaBand(eta: EtaBand): string {
+  if (eta.remaining_minutes_low === 0 && eta.remaining_minutes_high === 0) {
+    return eta.rationale.toLowerCase().includes("blocker") ? "blocked" : "done"
+  }
+  if (eta.remaining_minutes_low === eta.remaining_minutes_high) return `${eta.remaining_minutes_low}m`
+  return `${eta.remaining_minutes_low}-${eta.remaining_minutes_high}m`
 }
 
 function snapshotFromEvents(
@@ -2079,7 +2726,7 @@ function snapshotFromEvents(
 function monitorUsageSummary(
   events: StackThreadMetaEvent[],
   model: string,
-): { runtime?: string; spendUsd: number } {
+): { runtime?: string; spendUsd: number; inputTokens: number; outputTokens: number } {
   const usageEvents = events.filter((event) => event.type === "monitor.usage")
   const totals = {
     inputTokens: 0,
@@ -2099,7 +2746,7 @@ function monitorUsageSummary(
   }
   const estimatedSpendUsd = estimateUsageSpendUsd(totals, model)
   const spendUsd = recordedSpendUsd > 0 ? recordedSpendUsd : estimatedSpendUsd ?? 0
-  return { runtime, spendUsd }
+  return { runtime, spendUsd, inputTokens: totals.inputTokens, outputTokens: totals.outputTokens }
 }
 
 function monitorStatus(

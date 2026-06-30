@@ -20,7 +20,12 @@ import {
   formatCriteriaListFeedback,
   formatCriteriaMutationFeedback,
 } from "../meta-thread-goal-criteria.js"
+import {
+  appendGoalLifecycleEvent,
+  shouldAppendGoalStarted,
+} from "../goal-session.js"
 import { mergeMetaThreadGoalContext, readMetaThreadManifest } from "../meta-thread-goal.js"
+import { readThreadMetaEvents } from "../thread-events.js"
 import type { StackLocalSession } from "../session.js"
 
 export type GoalSlashRunContext = {
@@ -215,6 +220,34 @@ async function runCodexGoalAction(
   }
 }
 
+function goalLifecycleSource(state: GoalSlashAppState, ctx: GoalSlashRunContext): "codex" | "manifest" | "operator" {
+  if (ctx.session.metaThreadId && state.metaThreadManifest?.active_goal?.objective?.trim()) return "manifest"
+  if (state.goalContext.source === "context" || state.goalContext.source === "meta_thread") {
+    return state.goalContext.source === "meta_thread" ? "manifest" : "codex"
+  }
+  return "operator"
+}
+
+function recordGoalLifecycleEvent(
+  ctx: GoalSlashRunContext,
+  type: "goal.started" | "goal.paused" | "goal.resumed" | "goal.cleared",
+  objective: string,
+  source: "codex" | "manifest" | "operator",
+  status?: string,
+): void {
+  if (!objective.trim()) return
+  appendGoalLifecycleEvent({
+    stackRoot: ctx.config.stackDataRoot,
+    threadId: ctx.session.id,
+    metaThreadId: ctx.session.metaThreadId,
+    segmentId: ctx.session.segmentId,
+    type,
+    objective: objective.trim(),
+    source,
+    status,
+  })
+}
+
 async function runMetaThreadGoalAction(
   ctx: GoalSlashRunContext,
   state: GoalSlashAppState,
@@ -239,16 +272,30 @@ async function runMetaThreadGoalAction(
     }
     case "set":
       await syncMetaThreadGoalFromObjective(ctx, state, action.objective)
+      if (shouldAppendGoalStarted(readThreadMetaEvents(ctx.config.stackDataRoot, ctx.session.id), action.objective)) {
+        recordGoalLifecycleEvent(ctx, "goal.started", action.objective, goalLifecycleSource(state, ctx), "active")
+      }
       return `goal set\n${action.objective}`
     case "pause":
       await syncMetaThreadGoalStatus(ctx, state, "paused")
+      if (activeGoalObjective(state)) {
+        recordGoalLifecycleEvent(ctx, "goal.paused", activeGoalObjective(state)!, goalLifecycleSource(state, ctx), "paused")
+      }
       return "goal paused"
     case "resume":
       await syncMetaThreadGoalStatus(ctx, state, "active")
+      if (activeGoalObjective(state)) {
+        recordGoalLifecycleEvent(ctx, "goal.resumed", activeGoalObjective(state)!, goalLifecycleSource(state, ctx), "active")
+      }
       return "goal resumed"
-    case "clear":
+    case "clear": {
+      const objective = activeGoalObjective(state)
+      if (objective) {
+        recordGoalLifecycleEvent(ctx, "goal.cleared", objective, goalLifecycleSource(state, ctx), "cleared")
+      }
       await clearMetaThreadGoal(ctx, state)
       return "goal cleared"
+    }
     case "criteria_show":
       return formatCriteriaListFeedback(activeGoalCriteria(state))
     case "criteria_add": {
@@ -377,17 +424,44 @@ async function runGoalSlashCommandInternal(
     state.codexTransport === "app-server" &&
     codexSession instanceof CodexAppServerSession
   ) {
+    const priorObjective = activeGoalObjective(state)
     const result = await runCodexGoalAction(codexSession, action)
     applyThreadGoalToState(state, result.goal, result.cleared)
     if (ctx.session.metaThreadId) {
       if (action.action === "set") {
         await syncMetaThreadGoalFromObjective(ctx, state, action.objective)
+        if (shouldAppendGoalStarted(readThreadMetaEvents(ctx.config.stackDataRoot, ctx.session.id), action.objective)) {
+          recordGoalLifecycleEvent(ctx, "goal.started", action.objective, "codex", "active")
+        }
       } else if (action.action === "pause") {
         await syncMetaThreadGoalStatus(ctx, state, "paused")
+        if (priorObjective) {
+          recordGoalLifecycleEvent(ctx, "goal.paused", priorObjective, "codex", "paused")
+        }
       } else if (action.action === "resume") {
         await syncMetaThreadGoalStatus(ctx, state, "active")
+        if (priorObjective) {
+          recordGoalLifecycleEvent(ctx, "goal.resumed", priorObjective, "codex", "active")
+        }
       } else if (action.action === "clear") {
+        if (priorObjective) {
+          recordGoalLifecycleEvent(ctx, "goal.cleared", priorObjective, "codex", "cleared")
+        }
         await clearMetaThreadGoal(ctx, state)
+      }
+    } else {
+      const source = "codex" as const
+      const events = readThreadMetaEvents(ctx.config.stackDataRoot, ctx.session.id)
+      if (action.action === "set") {
+        if (shouldAppendGoalStarted(events, action.objective)) {
+          recordGoalLifecycleEvent(ctx, "goal.started", action.objective, source, "active")
+        }
+      } else if (action.action === "pause" && priorObjective) {
+        recordGoalLifecycleEvent(ctx, "goal.paused", priorObjective, source, "paused")
+      } else if (action.action === "resume" && priorObjective) {
+        recordGoalLifecycleEvent(ctx, "goal.resumed", priorObjective, source, "active")
+      } else if (action.action === "clear" && priorObjective) {
+        recordGoalLifecycleEvent(ctx, "goal.cleared", priorObjective, source, "cleared")
       }
     }
     const notifyAction = harnessNotifyActionForGoalAction(action)
