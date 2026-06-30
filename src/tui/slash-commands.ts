@@ -11,6 +11,8 @@ export type SlashCommandContext = {
   environmentName: string
   model?: string
   effort?: string
+  goalObjective?: string
+  goalStatus?: string
 }
 
 export type SlashCommandSpec = {
@@ -24,6 +26,17 @@ export type SlashCommandSpec = {
 const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
   { command: "help", aliases: ["?"], description: "Show all commands" },
   { command: "exit", aliases: ["quit"], description: "Quit Stack" },
+  {
+    command: "goal",
+    args: "[objective|pause|resume|clear|criteria …]",
+    description: "Show, set, pause, resume, clear, or edit goal criteria",
+    describe: (ctx) => {
+      if (ctx.goalObjective) {
+        return `Goal ${ctx.goalStatus ?? "active"} · ${ctx.goalObjective} · Tab panel`
+      }
+      return "Manage active goal · Tab opens goal panel"
+    },
+  },
   { command: "g", aliases: ["gardener"], args: "[message]", description: "Open gardener or send a message" },
   {
     command: "monitor",
@@ -41,8 +54,10 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
   },
   {
     command: "model",
-    description: "Cycle worker model",
-    describe: (ctx) => (ctx.model ? `Cycle worker model (currently ${ctx.model})` : "Cycle worker model"),
+    args: "[filter]",
+    description: "Select worker model",
+    describe: (ctx) =>
+      ctx.model ? `Select worker model (currently ${ctx.model}) · Tab to edit` : "Select worker model · Tab to edit",
   },
   {
     command: "effort",
@@ -123,6 +138,13 @@ export function slashMenuVisible(buffer: string): boolean {
 
 export function filterSlashCommands(query: string): SlashCommandSpec[] {
   return SLASH_COMMAND_SPECS.filter((spec) => matchesQuery(spec, query))
+}
+
+export function selectedSlashCommandSpec(buffer: string, selectedIndex: number): SlashCommandSpec | undefined {
+  const query = slashMenuQuery(buffer)
+  if (query === null) return undefined
+  const matches = filterSlashCommands(query)
+  return matches[clampSlashMenuIndex(buffer, selectedIndex)]
 }
 
 export function resolveSlashSubmitPrompt(buffer: string, selectedIndex: number): string {
@@ -235,6 +257,11 @@ export function parseSlashCommand(prompt: string): { name: string; args: string 
   return { name: trimmed.slice(1, space).toLowerCase(), args: trimmed.slice(space + 1).trim() }
 }
 
+export function isGoalSlashCommand(prompt: string): boolean {
+  const trimmed = prompt.trim()
+  return trimmed === "/goal" || trimmed.startsWith("/goal ")
+}
+
 export type SlashDispatchHooks = {
   exit: () => void
   feedback: (message: string) => void
@@ -246,7 +273,8 @@ export type SlashDispatchHooks = {
   messageMonitor: (message: string) => void
   cycleEnvironment: (direction: number) => void
   setEnvironment: (name: string) => boolean
-  cycleModel: () => void
+  openModelSwitcher: () => void
+  setModel: (name: string) => boolean
   cycleEffort: () => void
   setSubagents: (enabled: boolean | undefined) => void
   toggleDetails: () => void
@@ -317,8 +345,13 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
       }
       return true
     case "model":
-      hooks.cycleModel()
-      hooks.feedback("cycled worker model")
+      if (args) {
+        if (!hooks.setModel(args)) {
+          hooks.feedback(`unknown model ${args}`)
+        }
+      } else {
+        hooks.openModelSwitcher()
+      }
       return true
     case "effort":
       hooks.cycleEffort()

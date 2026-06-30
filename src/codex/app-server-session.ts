@@ -13,6 +13,14 @@ import {
   type JsonRpcNotification,
   type JsonRpcServerRequest,
 } from "./app-server-client.js"
+import {
+  codexThreadGoalClear,
+  codexThreadGoalGet,
+  codexThreadGoalPause,
+  codexThreadGoalResume,
+  codexThreadGoalSet,
+  type CodexThreadGoal,
+} from "./thread-goal.js"
 import { autoApproveServerRequest, CodexAppServerEventBridge } from "./app-server-bridge.js"
 
 export type CodexRunOptions = {
@@ -277,6 +285,36 @@ export class CodexAppServerSession {
     this.flushUiOutput()
     await this.client?.close()
     this.client = undefined
+  }
+
+  async threadGoalGet(): Promise<CodexThreadGoal | null> {
+    await this.ensureReady()
+    if (!this.client || !this.threadId) return null
+    return codexThreadGoalGet(this.client, this.threadId)
+  }
+
+  async threadGoalSet(objective: string, tokenBudget?: number): Promise<CodexThreadGoal | null> {
+    await this.ensureReady()
+    if (!this.client || !this.threadId) return null
+    return codexThreadGoalSet(this.client, this.threadId, objective, tokenBudget)
+  }
+
+  async threadGoalClear(): Promise<boolean> {
+    await this.ensureReady()
+    if (!this.client || !this.threadId) return false
+    return codexThreadGoalClear(this.client, this.threadId)
+  }
+
+  async threadGoalPause(): Promise<CodexThreadGoal | null> {
+    await this.ensureReady()
+    if (!this.client || !this.threadId) return null
+    return codexThreadGoalPause(this.client, this.threadId)
+  }
+
+  async threadGoalResume(): Promise<CodexThreadGoal | null> {
+    await this.ensureReady()
+    if (!this.client || !this.threadId) return null
+    return codexThreadGoalResume(this.client, this.threadId)
   }
 
   private threadStartParams(config: StackConfig): Record<string, unknown> {

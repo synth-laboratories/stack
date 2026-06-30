@@ -349,6 +349,7 @@ export class CodexAppServerClient {
 
 export function codexAppServerArgs(codexArgs: readonly string[]): string[] {
   const args = ["app-server"]
+  let goalsEnabled = false
   for (let index = 0; index < codexArgs.length; index += 1) {
     const arg = codexArgs[index]
     if (
@@ -369,11 +370,13 @@ export function codexAppServerArgs(codexArgs: readonly string[]): string[] {
       const value = codexArgs[index + 1]
       if (value) {
         args.push(arg, value)
+        if (arg === "--enable" && value === "goals") goalsEnabled = true
         index += 1
       }
       continue
     }
   }
+  if (!goalsEnabled) args.push("--enable", "goals")
   return args
 }
 

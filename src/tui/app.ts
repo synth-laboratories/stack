@@ -307,15 +307,19 @@ import {
 import {
   completeSlashMenuSelection,
   dispatchSlashCommand,
+  isGoalSlashCommand,
   navigateSlashMenu,
   renderSlashCommandMenuStyled,
   resolveSlashSubmitPrompt,
+  selectedSlashCommandSpec,
   slashMenuQuery,
   slashMenuVisible,
   clampSlashMenuIndex,
   type SlashCommandContext,
   type SlashDispatchHooks,
 } from "./slash-commands.js"
+import { runGoalSlashCommand, runGoalPanelAction, refreshGoalPanelState } from "./goal-slash-dispatch.js"
+import { navigateGoalPanelSelection, openGoalPanel, renderGoalPanel } from "./goal-panel.js"
 import {
   blocksFromGardenerChatEvents,
   blocksFromMonitorChatEvents,
@@ -339,6 +343,7 @@ import {
 
 type FocusMode =
   | "agent"
+  | "goal"
   | "model"
   | "effort"
   | "subagent-model"
@@ -398,6 +403,7 @@ type AppState = {
   monitorInputBuffer: string
   gardenerInputBuffer: string
   slashMenuIndex: number
+  goalPanelSelectedIndex: number
   toolLogs: ToolLog[]
   subagentLogs: SubagentLog[]
   history: StackSessionSummary[]
@@ -732,6 +738,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     monitorInputBuffer: "",
     gardenerInputBuffer: "",
     slashMenuIndex: 0,
+    goalPanelSelectedIndex: 0,
     toolLogs: [],
     subagentLogs: [],
     history,
@@ -1033,6 +1040,21 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     key?.preventDefault?.()
     key?.stopPropagation?.()
     if (
+      submitGoalSlashIfNeeded(
+        prompt,
+        options,
+        state,
+        codexSessionHandle,
+        remount,
+        () => {
+          state.inputBuffer = ""
+          state.slashMenuIndex = 0
+        },
+      )
+    ) {
+      return true
+    }
+    if (
       dispatchSlashCommand(
         prompt,
         buildSlashDispatchHooks(
@@ -1064,6 +1086,21 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     if (!prompt) return false
     key?.preventDefault?.()
     key?.stopPropagation?.()
+    if (
+      submitGoalSlashIfNeeded(
+        prompt,
+        options,
+        state,
+        codexSessionHandle,
+        remount,
+        () => {
+          state.monitorInputBuffer = ""
+          state.slashMenuIndex = 0
+        },
+      )
+    ) {
+      return true
+    }
     if (
       dispatchSlashCommand(
         prompt,
@@ -1097,6 +1134,21 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     if (!prompt) return false
     key?.preventDefault?.()
     key?.stopPropagation?.()
+    if (
+      submitGoalSlashIfNeeded(
+        prompt,
+        options,
+        state,
+        codexSessionHandle,
+        remount,
+        () => {
+          state.gardenerInputBuffer = ""
+          state.slashMenuIndex = 0
+        },
+      )
+    ) {
+      return true
+    }
     if (
       dispatchSlashCommand(
         prompt,
@@ -1286,6 +1338,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     }
 
     if (key.name === "escape") {
+      if (state.focusMode === "goal") {
+        state.focusMode = "agent"
+        remount()
+        return
+      }
       if (state.status === "running" && codexSessionHandle.session) {
         appendStackBlock(state.blocks, "interrupt requested")
         void codexSessionHandle.session.interrupt().finally(remount)
@@ -1308,19 +1365,19 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
-    if (key.name === "b" && state.focusMode === "agent") {
+    if (key.name === "b" && state.focusMode === "agent" && !focusedInputEditing(state)) {
       state.railsVisible = !state.railsVisible
       remount()
       return
     }
 
-    if (key.name === "d" && state.focusMode === "agent") {
+    if (key.name === "d" && state.focusMode === "agent" && !focusedInputEditing(state)) {
       state.showDetails = !state.showDetails
       remount()
       return
     }
 
-    if (key.name === "a" && state.focusMode === "agent") {
+    if (key.name === "a" && state.focusMode === "agent" && !focusedInputEditing(state)) {
       state.agentViewEnabled = !state.agentViewEnabled
       remount()
       return
@@ -1336,7 +1393,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
-    if (key.name === "p" && state.focusMode === "agent") {
+    if (key.name === "p" && state.focusMode === "agent" && !focusedInputEditing(state)) {
       toggleLeftPanelRails(state)
       remount()
       return
@@ -1348,7 +1405,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
-    if (state.focusMode === "agent" && (key.name === "]" || key.name === "[")) {
+    if (state.focusMode === "agent" && !focusedInputEditing(state) && (key.name === "]" || key.name === "[")) {
       void cycleStackEnvironmentFromUi(key.name === "]" ? 1 : -1)
       return
     }
@@ -1454,6 +1511,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     if (state.focusMode === "model") {
       handleModelKey(key, options.config)
       remount()
+      return
+    }
+
+    if (state.focusMode === "goal") {
+      handleGoalPanelKey(key, options, state, codexSessionHandle, remount)
       return
     }
 
@@ -1631,6 +1693,7 @@ function createView(
   const agentChildren = [
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
     transcriptPane(renderTranscriptPanel(state, transcriptViewport)),
+    ...(state.focusMode === "goal" ? [renderGoalPanel(state)] : []),
     ...(switcher ? [switcher] : []),
     agentControlRow(options, state, transcriptViewport.columns, refresh),
   ]
@@ -1821,6 +1884,7 @@ function createView(
           borderStyle: "single",
           borderColor:
             state.focusMode === "agent" ||
+            state.focusMode === "goal" ||
             state.focusMode === "model" ||
             state.focusMode === "effort" ||
             state.focusMode === "environment" ||
@@ -2259,6 +2323,8 @@ function workerHarnessForDisplay(config: StackConfig, state: AppState): WorkerHa
 
 function buildSlashCommandContext(options: StackAppOptions, state: AppState): SlashCommandContext {
   const workerHarness = workerHarnessForDisplay(options.config, state)
+  const objective =
+    state.metaThreadManifest?.active_goal?.objective?.trim() ?? state.goalContext.objective?.trim()
   return {
     monitorEnabled: isMonitorOn(state.monitorSnapshot),
     monitorPanelOpen: state.rightPanelOpen,
@@ -2269,6 +2335,8 @@ function buildSlashCommandContext(options: StackAppOptions, state: AppState): Sl
     environmentName: options.config.environmentName,
     model: workerHarness.codexModel,
     effort: workerHarness.codexReasoningEffort,
+    goalObjective: objective,
+    goalStatus: state.metaThreadManifest?.active_goal?.status ?? state.goalContext.status,
   }
 }
 
@@ -2282,6 +2350,10 @@ function setActiveInputBuffer(state: AppState, value: string): void {
   if (state.focusMode === "gardener") state.gardenerInputBuffer = value
   else if (state.focusMode === "monitor") state.monitorInputBuffer = value
   else state.inputBuffer = value
+}
+
+function focusedInputEditing(state: AppState): boolean {
+  return activeInputBuffer(state).length > 0
 }
 
 function noteInputBufferEdit(state: AppState, previous: string, next: string): void {
@@ -3094,6 +3166,117 @@ function submitMonitorOperatorMessage(
     })
 }
 
+function submitGoalSlashIfNeeded(
+  prompt: string,
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: HarnessSession },
+  refresh: () => void,
+  clearBuffers: () => void,
+): boolean {
+  if (!isGoalSlashCommand(prompt)) return false
+  const args = prompt.trim().slice("/goal".length).trim()
+  clearBuffers()
+  if (!args) {
+    state.focusMode = "goal"
+    openGoalPanel(state)
+    void refreshGoalPanelState(
+      { config: options.config, session: options.session },
+      state,
+      codexSessionHandle.session,
+    ).finally(refresh)
+    return true
+  }
+  const codexSession =
+    codexSessionHandle.session instanceof CodexAppServerSession
+      ? codexSessionHandle.session
+      : undefined
+  void runGoalSlashCommand(
+    prompt,
+    { config: options.config, session: options.session },
+    state,
+    codexSession,
+    codexSessionHandle.session,
+    refresh,
+    (message) => appendStackBlock(state.blocks, message),
+  )
+  return true
+}
+
+function handleGoalPanelKey(
+  key: { name?: string },
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: HarnessSession },
+  refresh: () => void,
+): boolean {
+  const feedback = (message: string) => appendStackBlock(state.blocks, message)
+  if (key.name === "escape") {
+    state.focusMode = "agent"
+    refresh()
+    return true
+  }
+  if (key.name === "j" || key.name === "down") {
+    navigateGoalPanelSelection(state, "down")
+    refresh()
+    return true
+  }
+  if (key.name === "k" || key.name === "up") {
+    navigateGoalPanelSelection(state, "up")
+    refresh()
+    return true
+  }
+  if (key.name === "space") {
+    void runGoalPanelAction(
+      "toggle",
+      { config: options.config, session: options.session },
+      state,
+      codexSessionHandle.session,
+      state.goalPanelSelectedIndex,
+      feedback,
+      refresh,
+    )
+    return true
+  }
+  if (key.name === "p") {
+    void runGoalPanelAction(
+      "pause",
+      { config: options.config, session: options.session },
+      state,
+      codexSessionHandle.session,
+      state.goalPanelSelectedIndex,
+      feedback,
+      refresh,
+    )
+    return true
+  }
+  if (key.name === "r") {
+    void runGoalPanelAction(
+      "resume",
+      { config: options.config, session: options.session },
+      state,
+      codexSessionHandle.session,
+      state.goalPanelSelectedIndex,
+      feedback,
+      refresh,
+    )
+    return true
+  }
+  if (key.name === "c") {
+    void runGoalPanelAction(
+      "clear",
+      { config: options.config, session: options.session },
+      state,
+      codexSessionHandle.session,
+      state.goalPanelSelectedIndex,
+      feedback,
+      refresh,
+    )
+    return true
+  }
+  return false
+}
+
 function buildSlashDispatchHooks(
   options: StackAppOptions,
   state: AppState,
@@ -3145,9 +3328,20 @@ function buildSlashDispatchHooks(
       void refreshAfterEnvironmentChange(name as StackEnvironmentName)
       return true
     },
-    cycleModel: () => {
-      cycleModel(options.config, 1)
+    openModelSwitcher: () => {
+      state.focusMode = "model"
       refresh()
+    },
+    setModel: (name) => {
+      const modelOptions = switcherOptions(options.config, "model")
+      const needle = name.trim().toLowerCase()
+      const match =
+        modelOptions.find((option) => option.toLowerCase() === needle) ??
+        modelOptions.find((option) => option.toLowerCase().includes(needle))
+      if (!match) return false
+      applySwitcherOption("model", match, options, state, refresh)
+      appendStackBlock(state.blocks, `model ${match}`)
+      return true
     },
     cycleEffort: () => {
       cycleEffort(options.config, 1)
@@ -3702,8 +3896,29 @@ function handleRawInput(
   }
 
   if (sequence === "\t") {
-    const completed = completeSlashMenuSelection(activeInputBuffer(state), state.slashMenuIndex)
-    if (completed !== null && slashMenuVisible(activeInputBuffer(state))) {
+    const buffer = activeInputBuffer(state)
+    const selected = selectedSlashCommandSpec(buffer, state.slashMenuIndex)
+    if (selected?.command === "model" && slashMenuVisible(buffer)) {
+      state.focusMode = "model"
+      setActiveInputBuffer(state, "")
+      state.slashMenuIndex = 0
+      refresh()
+      return true
+    }
+    if (selected?.command === "goal" && slashMenuVisible(buffer)) {
+      state.focusMode = "goal"
+      openGoalPanel(state)
+      setActiveInputBuffer(state, "")
+      state.slashMenuIndex = 0
+      void refreshGoalPanelState(
+        { config: options.config, session: options.session },
+        state,
+        codexSessionHandle.session,
+      ).finally(refresh)
+      return true
+    }
+    const completed = completeSlashMenuSelection(buffer, state.slashMenuIndex)
+    if (completed !== null && slashMenuVisible(buffer)) {
       setActiveInputBuffer(state, completed)
       state.slashMenuIndex = 0
       refresh()
@@ -3729,19 +3944,19 @@ function handleRawInput(
     }
   }
 
-  if (sequence === "b" && state.focusMode === "agent") {
+  if (sequence === "b" && state.focusMode === "agent" && !focusedInputEditing(state)) {
     state.railsVisible = !state.railsVisible
     refresh()
     return true
   }
 
-  if (sequence === "d" && state.focusMode === "agent") {
+  if (sequence === "d" && state.focusMode === "agent" && !focusedInputEditing(state)) {
     state.showDetails = !state.showDetails
     refresh()
     return true
   }
 
-  if (state.focusMode === "agent" && (sequence === "]" || sequence === "[")) {
+  if (state.focusMode === "agent" && !focusedInputEditing(state) && (sequence === "]" || sequence === "[")) {
     void cycleStackEnvironmentFromUi(sequence === "]" ? 1 : -1)
     return true
   }
@@ -3857,6 +4072,11 @@ function handleRawInput(
   if (state.focusMode === "model") {
     handleModelKey({ name: keyName }, options.config)
     refresh()
+    return true
+  }
+
+  if (state.focusMode === "goal") {
+    handleGoalPanelKey({ name: keyName }, options, state, codexSessionHandle, refresh)
     return true
   }
 

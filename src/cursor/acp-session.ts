@@ -5,12 +5,23 @@ import { STACK_HARNESS_NAME } from "../harness.js"
 import { stackVersion } from "../version.js"
 import type { CodexRunOptions } from "../codex/app-server-session.js"
 import { buildStackHarnessPrompt } from "../codex/app-server-session.js"
+import {
+  buildHarnessGoalContextBlock,
+  type HarnessGoalNotifyPayload,
+  type HarnessGoalNotifyResult,
+} from "../harness/goal-notify.js"
 import { CursorAcpClient, cursorAcpArgs, type CursorAcpClientOptions } from "./acp-client.js"
 import { autoApproveCursorAcpRequest, CursorAcpEventBridge } from "./acp-bridge.js"
 import type { JsonRpcNotification, JsonRpcServerRequest } from "../jsonrpc/ndjson-client.js"
 
 /** ACP extension notifications for mid-turn input (Codex-acp / Claude-acp forks). */
 const CURSOR_STEER_METHODS = ["_session/steer", "session/steer"] as const
+const CURSOR_GOAL_NOTIFY_METHODS = [
+  "_session/goal/update",
+  "session/goal/update",
+  "_session/context",
+  "session/context",
+] as const
 
 export type CursorAcpSessionOptions = {
   config: StackConfig
@@ -29,6 +40,7 @@ export class CursorAcpSession {
   private closed = false
   private pendingUiOutput = ""
   private uiOutputFlushTimer?: ReturnType<typeof setTimeout>
+  private goalContextBlock?: string
 
   constructor(options: CursorAcpSessionOptions) {
     this.options = options
@@ -81,6 +93,39 @@ export class CursorAcpSession {
     this.emitExecLine(JSON.stringify({ type: "thread.started", thread_id: sessionId }))
   }
 
+  async publishGoalUpdate(payload: HarnessGoalNotifyPayload): Promise<HarnessGoalNotifyResult> {
+    const block = buildHarnessGoalContextBlock(payload)
+    this.goalContextBlock = block
+    await this.ensureReady()
+    if (!this.client || !this.sessionId) return { channel: "next-turn" }
+
+    const notifyParams = {
+      sessionId: this.sessionId,
+      goal: {
+        objective: payload.objective,
+        status: payload.status,
+        acceptanceCriteria: payload.acceptanceCriteria,
+        blockers: payload.blockers,
+        action: payload.action,
+      },
+      context: block,
+    }
+    for (const method of CURSOR_GOAL_NOTIFY_METHODS) {
+      try {
+        await this.client.notify(method, notifyParams)
+        return { channel: "acp-notify" }
+      } catch {
+        // try the next wire name
+      }
+    }
+
+    if (this.promptInFlight && (await this.trySteer(block))) {
+      return { channel: "steer" }
+    }
+
+    return { channel: "next-turn" }
+  }
+
   async trySteer(prompt: string): Promise<boolean> {
     if (!this.client?.supportsMidTurnSteering()) return false
     if (!this.client || !this.sessionId || !this.promptInFlight) return false
@@ -123,7 +168,8 @@ export class CursorAcpSession {
     this.stdoutLog = ""
     this.bridge.resetForTurn()
     this.promptInFlight = true
-    const prompt = await buildStackHarnessPrompt({ ...runOptions, onOutput: () => undefined })
+    const basePrompt = await buildStackHarnessPrompt({ ...runOptions, onOutput: () => undefined })
+    const prompt = this.goalContextBlock ? `${this.goalContextBlock}\n\n${basePrompt}` : basePrompt
 
     try {
       const result = await this.client.request(
