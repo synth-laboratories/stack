@@ -26,5 +26,11 @@ Reports we especially care about:
 ## Handling of secrets
 
 Stack treats the user's `~/.codex` (Codex's own home, including `auth.json`) as
-read-only and never copies credentials into Stack artifacts. If you find a path that
-violates this, treat it as a security issue and report it privately.
+read-only and never copies credentials into Stack artifacts.
+
+Specifically, Stack reads `~/.codex/auth.json` **read-only** to display account
+status (auth mode, account id, and the email decoded from the id token). It records
+only that **account metadata** — never the raw tokens — in its own auth ledger under
+the workspace `.stack/codex/`. Stack never writes to `~/.codex`. If you find a path
+that copies raw credentials into a Stack artifact or writes to `~/.codex`, treat it as
+a security issue and report it privately.
