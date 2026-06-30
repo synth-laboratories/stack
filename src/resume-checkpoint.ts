@@ -57,7 +57,6 @@ function safeCheckpointSegment(value: string): string {
 }
 
 export function resumeCheckpointFromCheckpoint(checkpoint: StackResumeCheckpoint): string {
-  if (checkpoint.metaThreadId) return resumeTokenFromMetaThreadId(checkpoint.metaThreadId)
   return checkpoint.sessionId.slice(0, 8)
 }
 

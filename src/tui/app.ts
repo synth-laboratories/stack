@@ -3710,11 +3710,11 @@ function kickWorkerForGoalObjective(
   const kickoff = buildGoalWorkerKickoffPrompt({ ...payload, objective, action: "set" })
   const transcriptLabel = goalKickoffTranscriptLabel(objective)
   if (state.status === "running") {
-    appendUserBlock(state.blocks, transcriptLabel)
     const codexSession = codexSessionHandle.session
     if (codexSession) {
       void codexSession.trySteer(kickoff).then((steered) => {
         if (steered) {
+          appendUserBlock(state.blocks, transcriptLabel)
           state.lastSteerHint = "goal-steer"
           refresh()
           return
@@ -3998,17 +3998,16 @@ function submitInputValue(
   }
 
   if (state.status === "running" && codexSession) {
-    appendUserBlock(state.blocks, prompt)
     if (forceQueue) {
       codexSession.enqueue(prompt)
       state.queuedMessages = [...state.queuedMessages, prompt]
       state.lastSteerHint = `queued (${state.queuedMessages.length})`
-      appendStackBlock(state.blocks, state.lastSteerHint)
       refresh()
       return
     }
     void codexSession.trySteer(prompt).then((steered) => {
       if (steered) {
+        appendUserBlock(state.blocks, prompt)
         state.lastSteerHint = "steered"
         refresh()
         return
@@ -4016,7 +4015,6 @@ function submitInputValue(
       codexSession.enqueue(prompt)
       state.queuedMessages = [...state.queuedMessages, prompt]
       state.lastSteerHint = `queued (${state.queuedMessages.length})`
-      appendStackBlock(state.blocks, state.lastSteerHint)
       refresh()
     })
     return
@@ -6202,6 +6200,14 @@ function renderAgentInputStyled(options: StackAppOptions, state: AppState): Styl
         fg(theme.synth.gold)("_"),
       ])
     }
+    const queuedPreview = queuedWorkerPromptPreview(state.queuedMessages)
+    if (queuedPreview) {
+      return new StyledText([
+        fg(theme.synth.amber)(runningLine),
+        fg(theme.fgMuted)(" · queued: "),
+        fg(theme.fgInput)(queuedPreview),
+      ])
+    }
     return new StyledText([fg(theme.synth.amber)(runningLine)])
   }
 
@@ -6217,6 +6223,13 @@ function renderAgentInputStyled(options: StackAppOptions, state: AppState): Styl
     fg(theme.fgInput)(preview),
     fg(theme.synth.gold)("_"),
   ])
+}
+
+function queuedWorkerPromptPreview(messages: readonly string[]): string | undefined {
+  const latest = messages.at(-1)?.replace(/\s+/g, " ").trim()
+  if (!latest) return undefined
+  const label = latest.startsWith("<stack_internal_context") ? "goal kickoff" : latest
+  return label.length > 120 ? `${label.slice(0, 117)}...` : label
 }
 
 function runningSpinner(state: AppState): string {
@@ -9635,7 +9648,15 @@ async function restoreWorkerSessionAfterResume(
   restoreHarnessFromSession(options, state)
   const backendSessionId =
     harnessBackendSessionId(checkpoint) ?? options.session.codexThreadId
-  await openHarnessSession(options, state, codexSessionHandle, backendSessionId)
+  if (
+    !isCursorHarness(options.config) &&
+    backendSessionId &&
+    checkpoint?.codexTransport === "exec" &&
+    resolveCodexTransport() === "app-server"
+  ) {
+    state.codexTransport = "app-server"
+  }
+  await openHarnessSession(options, state, codexSessionHandle, backendSessionId, { probe: true })
   const harnessResume = await resumeHarnessSession(codexSessionHandle.session, checkpoint)
   if (harnessResume.backendSessionId) {
     options.session.codexThreadId = harnessResume.backendSessionId
@@ -9799,8 +9820,16 @@ function renderTurns(turns: StackCodexTurn[]): {
   const tools: ToolLog[] = []
   const subagents: SubagentLog[] = []
   let usage: StackCodexUsage | undefined
-  for (const turn of turns) {
-    const rendered = blocksFromTurnStdout(turn.prompt, turn.stdout)
+  const renderWindow = turns.slice(-64)
+  const omittedTurnCount = turns.length - renderWindow.length
+  if (omittedTurnCount > 0) {
+    appendStackBlock(blocks, `restored transcript: ${omittedTurnCount} older turns hidden from TUI render`)
+  }
+  for (const turn of renderWindow) {
+    const rendered = blocksFromTurnStdout(
+      boundedTextForRender(turn.prompt, "restored prompt"),
+      boundedTurnStdoutForRender(turn.stdout),
+    )
     blocks.push(...rendered.blocks)
     for (const tool of rendered.tools) upsertToolLog(tools, tool)
     for (const subagent of rendered.subagents) upsertSubagentLog(subagents, subagent)
@@ -9811,6 +9840,27 @@ function renderTurns(turns: StackCodexTurn[]): {
     }
   }
   return { blocks, tools, subagents, usage }
+}
+
+function boundedTurnStdoutForRender(stdout: string): string {
+  const maxChars = 180_000
+  if (stdout.length <= maxChars) return stdout
+  const bounded = stdout.slice(0, maxChars)
+  const lastLineBreak = bounded.lastIndexOf("\n")
+  const safePrefix = lastLineBreak > 0 ? bounded.slice(0, lastLineBreak) : bounded
+  return [
+    safePrefix,
+    JSON.stringify({
+      type: "stack",
+      message: `restored turn output truncated for TUI render (${stdout.length - safePrefix.length} chars hidden)`,
+    }),
+  ].join("\n")
+}
+
+function boundedTextForRender(text: string, label: string): string {
+  const maxChars = 40_000
+  if (text.length <= maxChars) return text
+  return `${text.slice(0, maxChars)}\n\n[${label} truncated for TUI render: ${text.length - maxChars} chars hidden]`
 }
 
 async function submitPrompt(

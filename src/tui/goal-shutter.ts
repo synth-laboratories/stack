@@ -190,10 +190,11 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
   // Stream and thread now sit side by side (not stacked), so each gets a
   // narrower slice of the panel width rather than the full column count.
   const sidecarProgressInnerWidth = Math.max(24, input.columns - 4)
-  const sidecarThreadColumns = Math.max(16, Math.floor(sidecarProgressInnerWidth * 0.32) - 4)
+  const sidecarThreadWidth = Math.max(24, Math.floor(sidecarProgressInnerWidth * 0.32))
+  const sidecarThreadColumns = Math.max(16, sidecarThreadWidth - 4)
   const sidecarStreamColumns = Math.max(
     20,
-    sidecarProgressInnerWidth - 1 - Math.floor(sidecarProgressInnerWidth * 0.32),
+    sidecarProgressInnerWidth - 1 - sidecarThreadWidth,
   )
   const title = goal.objective
     ? `Goal · ${oneLine(goal.objective, Math.max(24, input.columns - 10))}`
@@ -290,6 +291,7 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
           padding: 1,
           flexGrow: 1,
           flexShrink: 0,
+          width: sidecarThreadWidth,
           minHeight: 0,
           gap: 0,
         },
@@ -321,24 +323,24 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
               : {}),
           }),
         ),
-        Text({
-          content: renderSidecarChatInputStyled(input.state),
-          bg: sidecarInputBackground(input.state),
-          width: "100%",
-          flexShrink: 0,
-          ...(input.onFocusSidecar
-            ? {
-                onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
-                  event.preventDefault?.()
-                  event.stopPropagation?.()
-                  input.onFocusSidecar?.()
-                },
-              }
-            : {}),
-        }),
-        ...(input.sidecarMenuElements ?? []),
       ),
     ),
+    Text({
+      content: renderSidecarChatInputStyled(input.state),
+      bg: sidecarInputBackground(input.state),
+      width: "100%",
+      flexShrink: 0,
+      ...(input.onFocusSidecar
+        ? {
+            onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
+              event.preventDefault?.()
+              event.stopPropagation?.()
+              input.onFocusSidecar?.()
+            },
+          }
+        : {}),
+    }),
+    ...(input.sidecarMenuElements ?? []),
     ...(input.state.sidecarQueuedMessages?.length
       ? [renderSidecarQueuedMessages(input.state.sidecarQueuedMessages, input.columns)!]
       : []),
