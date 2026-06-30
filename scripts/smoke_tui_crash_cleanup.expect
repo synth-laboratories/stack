@@ -1,0 +1,38 @@
+#!/usr/bin/env expect
+
+set timeout 45
+set smoke_dir "/tmp/stack-tui-crash-cleanup-smoke"
+set repo_root [pwd]
+set output_log "$smoke_dir/output.log"
+
+source [file join $repo_root scripts tui_smoke_common.tcl]
+stack_tui_smoke_env $repo_root $smoke_dir
+
+set env(STACK_CODEX_COMMAND) "bun"
+set env(STACK_CODEX_ARGS) "run $repo_root/scripts/fake_codex_jsonl.ts"
+
+log_file $output_log
+
+spawn ./bin/stack
+stty rows 45 columns 196 < $spawn_out(slave,name)
+
+expect {
+  -re {Build anything|Ask Codex|Agent|Thinking} {}
+  timeout {
+    puts stderr "timed out waiting for stack to render"
+    exit 1
+  }
+}
+
+stack_tui_kill_spawned_stack
+
+set output [stack_tui_read_output_log $output_log]
+stack_tui_assert_no_crash_artifacts $output
+stack_tui_assert_mouse_tracking_disabled
+
+if {[string first "Failed to create optimized buffer" $output] >= 0} {
+  puts stderr "OpenTUI buffer allocation crash detected during crash-cleanup smoke"
+  exit 1
+}
+
+puts "stack_tui_crash_cleanup_smoke_ok"

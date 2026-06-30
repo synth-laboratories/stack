@@ -1,0 +1,33 @@
+{
+  "workingDir": "..",
+  "defaultEnvironment": "dev",
+  "voice": {
+    "enabled": false,
+    "stt_provider": "groq",
+    "stt_fallback": "openai",
+    "stt_model_groq": "whisper-large-v3-turbo",
+    "stt_model_openai": "gpt-4o-mini-transcribe",
+    "language": "en",
+    "env_file": ".stack/voice.env"
+  },
+  "environments": {
+    "dev": {
+      "label": "Dev",
+      "apiBaseUrl": "http://127.0.0.1:8000",
+      "authEnv": "SYNTH_API_KEY",
+      "authEnvFile": ".env",
+      "optimizerDbPath": ".stack/optimizers/gepa-service.sqlite",
+      "optimizerServiceUrl": "http://127.0.0.1:8879"
+    },
+    "staging": {
+      "label": "Staging",
+      "apiBaseUrl": "https://staging-api.usesynth.ai",
+      "authEnv": "SYNTH_STAGING_API_KEY"
+    },
+    "prod": {
+      "label": "Prod",
+      "apiBaseUrl": "https://api.usesynth.ai",
+      "authEnv": "SYNTH_API_KEY"
+    }
+  }
+}

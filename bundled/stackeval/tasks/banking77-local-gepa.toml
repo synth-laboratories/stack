@@ -1,0 +1,102 @@
+# StackEval task: Banking77 local GEPA
+
+[task]
+id = "banking77-local-gepa"
+title = "Banking77 Local GEPA"
+description = "Local GEPA prompt optimization on Banking77 with Stack trace + independent grader"
+default_model = "gpt-5.5-low"
+prompt_file = "banking77-local-gepa.prompt.txt"
+spec_md = "banking77-local-gepa.md"
+
+[pipeline]
+modes = ["harness", "stack", "harness_then_stack"]
+default_mode = "harness"
+
+[presets.smoke]
+description = "8/8 split, 1 gen, 1 proposal - proves optimizer plumbing + trace path"
+mode = "harness"
+train_sample = 8
+test_sample = 8
+max_generations = 1
+proposals_per_generation = 1
+minibatch_size = 4
+rollout_chunk_size = 8
+max_train_rollouts = 24
+max_heldout_rollouts = 16
+max_total_rollouts = 48
+max_cost_usd = 0.0
+require_prompt_accepted = false
+require_heldout_lift = false
+min_task_outcome_score = 2
+min_stack_leverage_score = 2
+
+[presets.dev]
+description = "~50/50, multiple generations - optimization signal, lift not required"
+mode = "harness"
+train_sample = 50
+test_sample = 50
+max_generations = 3
+proposals_per_generation = 2
+minibatch_size = 8
+rollout_chunk_size = 16
+max_train_rollouts = 120
+max_heldout_rollouts = 100
+max_total_rollouts = 240
+max_cost_usd = 5.0
+require_prompt_accepted = true
+require_heldout_lift = false
+min_task_outcome_score = 3
+min_stack_leverage_score = 3
+
+[presets.gate]
+description = "Fixed heldout - accepted prompt + heldout lift required for pass"
+mode = "harness"
+train_sample = 50
+test_sample = 50
+max_generations = 5
+proposals_per_generation = 3
+minibatch_size = 8
+rollout_chunk_size = 16
+max_train_rollouts = 200
+max_heldout_rollouts = 100
+max_total_rollouts = 360
+max_cost_usd = 15.0
+require_prompt_accepted = true
+require_heldout_lift = true
+min_task_outcome_score = 4
+min_stack_leverage_score = 4
+
+[harness]
+template = "gepa-smoke.toml.template"
+default_mode = "cli"
+service_mode = "source-backed synth-optimizers service: POST /runs"
+policy_model = "gemini-3.1-flash-lite"
+policy_provider = "openai"
+policy_api_key_env = "GEMINI_API_KEY"
+policy_base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+proposer_model = "gpt-5.4-mini"
+proposer_reasoning_effort = "medium"
+proposer_timeout_seconds = 900
+policy_concurrency = 4
+policy_timeout_seconds = 30
+rollout_timeout_seconds = 35
+container_startup_timeout_seconds = 120
+container_port_base = 28800
+seed = 0
+seed_prompt = "Classify the customer banking query into exactly one Banking77 intent. Return exactly one label from the allowed label list, preserving spelling and punctuation. Return only the label."
+command = "uv run --project {{gepa_evals_project}} synth-optimizers gepa run --config {{gepa_config_path}}"
+service_command = "POST {{optimizer_service_url}}/runs"
+env = { BANKING77_POLICY_API_KEY_ENV = "GEMINI_API_KEY" }
+
+[acceptance]
+gates = [
+  "SE-B77-1-HARNESS",
+  "SE-B77-2-RUN",
+  "SE-B77-3-SCORE",
+  "SE-B77-4-ARTIFACTS",
+  "SE-B77-5-TRACE",
+  "SE-B77-6-LEVERAGE",
+]
+
+[stack_session]
+enabled = false

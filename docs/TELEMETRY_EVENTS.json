@@ -1,0 +1,116 @@
+{
+  "schema_version": 1,
+  "default_local_product_telemetry": "off",
+  "identity_policy": {
+    "signed_in": "backend_authenticated_user_org",
+    "signed_out": "no_local_product_events_unless_opted_in",
+    "public_acquisition": "request_level_or_short_retention_hmac"
+  },
+  "forbidden_fields": [
+    "prompt",
+    "transcript",
+    "source_code",
+    "artifact_body",
+    "raw_path",
+    "path",
+    "git_remote",
+    "secret",
+    "env",
+    "command",
+    "terminal",
+    "raw_ip",
+    "ip_hash_unsalted"
+  ],
+  "events": [
+    {
+      "name": "stack_docs_cta_clicked",
+      "class": "public_acquisition",
+      "owner": "docs_frontend",
+      "payload": ["campaign", "source", "medium", "channel"]
+    },
+    {
+      "name": "stack_download_clicked",
+      "class": "public_acquisition",
+      "owner": "docs_frontend",
+      "payload": ["campaign", "source", "medium", "channel", "target"]
+    },
+    {
+      "name": "stack_release_asset_downloaded",
+      "class": "public_acquisition",
+      "owner": "release_edge",
+      "payload": ["channel", "version", "target", "asset_kind"]
+    },
+    {
+      "name": "stack_installer_started",
+      "class": "installer",
+      "owner": "release_edge",
+      "payload": ["channel", "version", "target", "installer_version"]
+    },
+    {
+      "name": "stack_installer_succeeded",
+      "class": "installer",
+      "owner": "release_edge",
+      "payload": ["channel", "version", "target", "installer_version", "duration_bucket"]
+    },
+    {
+      "name": "stack_installer_failed",
+      "class": "installer",
+      "owner": "release_edge",
+      "payload": ["channel", "version", "target", "installer_version", "error_code"]
+    },
+    {
+      "name": "stack_first_launch",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "auth_state", "telemetry_state"]
+    },
+    {
+      "name": "stack_doctor_run",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "status", "check_counts"]
+    },
+    {
+      "name": "stack_local_demo_started",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "auth_state"]
+    },
+    {
+      "name": "stack_local_demo_succeeded",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "duration_bucket", "validator_status"]
+    },
+    {
+      "name": "stack_receipt_created",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "receipt_kind", "mode", "validator_status"]
+    },
+    {
+      "name": "stack_update_check",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "requested_channel", "status"]
+    },
+    {
+      "name": "stack_meta_thread_created",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "harness", "role"]
+    },
+    {
+      "name": "stack_handoff_sealed",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "harness", "reason", "artifact_count"]
+    },
+    {
+      "name": "stack_handoff_continued",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "harness", "successor_role"]
+    }
+  ]
+}

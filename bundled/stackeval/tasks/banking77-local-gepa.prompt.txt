@@ -1,0 +1,13 @@
+We are running StackEval task banking77-local-gepa.
+
+Goal: use local GEPA or the closest existing local Banking77 GEPA harness to produce a measured Banking77 prompt/model/config result. I need the final heldout accuracy percentage, the selected prompt/config/model, and the artifact paths needed to reproduce the result.
+
+Rules:
+- Start by inspecting existing Banking77 and GEPA harnesses in this workspace.
+- Prefer established repo commands over inventing a new harness.
+- Use gpt-5.5-low by default for agent and proposer/model calls unless a harness cannot support it; record any override and reason.
+- Use Stack/Stack MCP/Stack skills where available.
+- Record every command that matters.
+- If a path is missing, name the missing Stack affordance instead of silently working around it.
+- Do not print secrets.
+- At the end, summarize: score, artifacts, wall-clock time, time wasted, and the one Stack feature that would have saved the most time.

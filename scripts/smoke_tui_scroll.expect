@@ -1,0 +1,97 @@
+#!/usr/bin/env expect
+
+set timeout 45
+set smoke_dir "/tmp/stack-tui-scroll-smoke"
+set repo_root [pwd]
+
+file delete -force $smoke_dir
+file mkdir $smoke_dir
+
+source [file join $repo_root scripts tui_smoke_common.tcl]
+stack_tui_smoke_env $repo_root $smoke_dir
+
+set output_log "$smoke_dir/output.log"
+log_file $output_log
+set prompt_file "$smoke_dir/initial_prompt.txt"
+set prompt_handle [open $prompt_file w]
+puts -nonewline $prompt_handle "scroll proof"
+close $prompt_handle
+
+proc wait_for_log_pattern {path pattern timeout_ms} {
+  set deadline [expr {[clock milliseconds] + $timeout_ms}]
+  while {[clock milliseconds] < $deadline} {
+    if {[file exists $path]} {
+      set handle [open $path r]
+      set output [read $handle]
+      close $handle
+      if {[regexp $pattern $output]} {
+        return
+      }
+    }
+    after 100
+  }
+
+  puts stderr "timed out waiting for log evidence: $pattern"
+  exit 1
+}
+
+set env(STACK_CODEX_COMMAND) "bun"
+set env(STACK_CODEX_ARGS) "run $repo_root/scripts/fake_codex_long_jsonl.ts"
+set env(STACK_INITIAL_PROMPT_FILE) $prompt_file
+set env(STACK_AUTOSUBMIT) "1"
+
+spawn ./bin/stack
+stty rows 45 columns 196 < $spawn_out(slave,name)
+
+expect {
+  -re {Build anything|Ask Codex} {}
+  timeout {
+    puts stderr "timed out waiting for stack planning input"
+    exit 1
+  }
+}
+
+wait_for_log_pattern $output_log {BOTTOM_VISIBLE_SENTINEL_79|scroll-proof-line-7[0-9]|scroll-proof-line-80} 60000
+
+# End jumps to live bottom once the full long agent message is rendered.
+send -- "\033\[F"
+sleep 0.5
+
+send -- "b"
+sleep 0.5
+
+send -- "\t"
+send -- "\t"
+send -- "\t"
+send -- "\t"
+send -- "\t"
+sleep 0.5
+
+send -- "\033\[5~"
+wait_for_log_pattern $output_log {PAGEUP_SCROLL_SENTINEL_61} 5000
+
+send -- "\t"
+send -- "\025"
+sleep 0.2
+
+stack_tui_kill_spawned_stack
+
+set handle [open $output_log r]
+set output [read $handle]
+close $handle
+
+stack_tui_assert_no_crash_artifacts $output
+
+foreach required [list "PAGEUP_SCROLL_SENTINEL_61" "/exit quit" "scroll-proof-line-"] {
+  if {[string first $required $output] < 0} {
+    puts stderr "missing scroll smoke evidence: $required"
+    exit 1
+  }
+}
+
+if {![regexp {BOTTOM_VISIBLE_SENTINEL_79|scroll-proof-line-7[0-9]|scroll-proof-line-80} $output]} {
+  puts stderr "missing bottom scroll evidence"
+  exit 1
+}
+
+puts "stack_tui_scroll_smoke_ok"

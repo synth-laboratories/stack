@@ -1,0 +1,80 @@
+# Rendered by stackeval harness stage - do not edit by hand
+[run]
+run_id = "{{run_id}}"
+output_dir = "{{output_dir}}"
+seed = {{seed}}
+
+[container]
+url = "http://127.0.0.1:{{container_port}}"
+command = [
+  "/usr/bin/env",
+  "BANKING77_TRAIN_SAMPLE={{train_sample}}",
+  "BANKING77_TEST_SAMPLE={{test_sample}}",
+  "BANKING77_POLICY_CONCURRENCY={{policy_concurrency}}",
+  "BANKING77_POLICY_TIMEOUT_SECONDS={{policy_timeout_seconds}}",
+  "BANKING77_ROLLOUT_TIMEOUT_SECONDS={{rollout_timeout_seconds}}",
+  "BANKING77_POLICY_MODEL={{policy_model}}",
+  "BANKING77_POLICY_API_KEY_ENV={{policy_api_key_env}}",
+  "BANKING77_POLICY_BASE_URL={{policy_base_url}}",
+  "HF_HUB_DISABLE_PROGRESS_BARS=1",
+  "uv", "run", "--project", "banking77_container",
+  "python", "banking77_container/synth_service_app.py",
+  "--host", "127.0.0.1", "--port", "{{container_port}}",
+]
+cwd = "{{gepa_cookbook_root}}"
+startup_timeout_seconds = {{container_startup_timeout_seconds}}
+
+[taskset]
+train_split = "train"
+heldout_split = "test"
+train_ids = {{train_ids_json}}
+heldout_ids = {{heldout_ids_json}}
+
+[candidate]
+target_modules = ["stage2_system"]
+
+[seed_candidate]
+stage2_system = "{{seed_prompt}}"
+
+[policy]
+provider = "{{policy_provider}}"
+model = "{{policy_model}}"
+api_key_env = "{{policy_api_key_env}}"
+base_url = "{{policy_base_url}}"
+
+[proposer]
+backend = "codex_app_server"
+execution_mode = "local_process"
+timeout_seconds = {{proposer_timeout_seconds}}
+model = "{{proposer_model}}"
+reasoning_effort = "{{proposer_reasoning_effort}}"
+auth_mode = "chatgpt"
+copy_host_auth = true
+codex_home = "{{codex_home}}"
+sandbox_mode = "workspace-write"
+approval_policy = "never"
+
+[gepa]
+max_generations = {{max_generations}}
+proposals_per_generation = {{proposals_per_generation}}
+minibatch_size = {{minibatch_size}}
+rollout_submission_mode = "sync"
+rollout_chunk_size = {{rollout_chunk_size}}
+max_train_rollouts = {{max_train_rollouts}}
+max_heldout_rollouts = {{max_heldout_rollouts}}
+max_total_rollouts = {{max_total_rollouts}}
+max_cost_usd = {{max_cost_usd}}
+
+[gepa.task_pools]
+pareto = {{train_ids_json}}
+minibatch = {{train_ids_json}}
+reflection = {{train_ids_json}}
+heldout = {{heldout_ids_json}}
+
+[gepa.pipeline]
+mode = "sync_serial"
+
+[cache]
+mode = "off"
+path = ""
+namespace = ""

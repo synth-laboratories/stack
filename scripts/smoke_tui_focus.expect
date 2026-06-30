@@ -1,0 +1,79 @@
+#!/usr/bin/env expect
+
+set timeout 120
+set smoke_dir "/tmp/stack-tui-focus-smoke"
+set repo_root [pwd]
+set output_log "$smoke_dir/output.log"
+
+source [file join $repo_root scripts tui_smoke_common.tcl]
+stack_tui_smoke_env $repo_root $smoke_dir
+
+set env(STACK_CODEX_COMMAND) "bun"
+set env(STACK_CODEX_ARGS) "run $repo_root/scripts/fake_codex_stress_turn.ts"
+
+log_file $output_log
+
+spawn ./bin/stack
+stty rows 45 columns 196 < $spawn_out(slave,name)
+
+expect {
+  -re {Build anything|Ask Codex} {}
+  timeout {
+    puts stderr "timed out waiting for stack planning input"
+    exit 1
+  }
+}
+
+# Stack opens with gardener focused. In local mode, five Tab presses move
+# gardener -> harness -> projects -> history -> optimizers -> agent.
+foreach _ {1 2 3 4 5} {
+  send -- "\t"
+  sleep 0.05
+}
+
+# Start a live turn so remount/spinner stress matches real usage.
+send -- "focus and remount stress\r"
+stack_tui_expect_running_turn
+
+# Rapid focus cycling while the turn is active (panel focus + remount path).
+foreach _ {1 2 3 4 5 6 7 8} {
+  send -- "\t"
+  sleep 0.05
+}
+
+# Toggle rails/details repeatedly (extra remount pressure).
+foreach _ {1 2 3} {
+  send -- "b"
+  sleep 0.05
+  send -- "d"
+  sleep 0.05
+}
+
+# Resize the PTY mid-session — common trigger for optimized-buffer crashes.
+stty rows 32 columns 120 < $spawn_out(slave,name)
+sleep 0.2
+stty rows 45 columns 196 < $spawn_out(slave,name)
+sleep 0.2
+
+expect "STACK_RESILIENCE_SMOKE_OK"
+
+# Cycle focus again after the turn completes.
+foreach _ {1 2 3 4} {
+  send -- "\t"
+  sleep 0.05
+}
+
+sleep 0.3
+stack_tui_kill_spawned_stack
+
+set output [stack_tui_read_output_log $output_log]
+stack_tui_assert_no_crash_artifacts $output
+
+foreach required [list "STACK_RESILIENCE_SMOKE_OK" "/exit quit" "Actors"] {
+  if {[string first $required $output] < 0} {
+    puts stderr "missing focus smoke evidence: $required"
+    exit 1
+  }
+}
+
+puts "stack_tui_focus_smoke_ok"
