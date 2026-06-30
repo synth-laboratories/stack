@@ -23,7 +23,7 @@ const proofDir = resolve(appRoot, ".stack", "evidence", "telemetry-contract", st
 const failures: string[] = []
 
 if (contract.schema_version !== 1) failures.push("schema_version must be 1")
-if (contract.default_local_product_telemetry !== "off") failures.push("local product telemetry must default off")
+if (contract.default_local_product_telemetry !== "on") failures.push("local product telemetry must default on")
 
 const names = new Set<string>()
 for (const event of contract.events) {
@@ -56,6 +56,7 @@ const localProductEvents = [
   "stack_meta_thread_created",
   "stack_handoff_sealed",
   "stack_handoff_continued",
+  "stack_session_started",
 ]
 
 for (const required of [...acquisitionEvents, ...localProductEvents]) {

@@ -9,6 +9,7 @@ import { createSession } from "./session.js"
 import { runStackApp } from "./tui/app.js"
 import { resetTerminalAfterTui } from "./tui/terminal-cleanup.js"
 import { runUpdate } from "./update.js"
+import { emitSessionStarted, maybePrintFirstRunDisclosure, runTelemetryCommand } from "./telemetry.js"
 import { runVoiceCheck, voiceStatusLine, writeVoiceStatus, resolveVoiceStatus } from "./voice/status.js"
 import { printStackVersion, stackAppRoot, wantsVersionFlag } from "./version.js"
 
@@ -27,6 +28,9 @@ try {
   }
   if (process.argv[2] === "update") {
     process.exit(await runUpdate(config, process.argv.slice(3)))
+  }
+  if (process.argv[2] === "telemetry") {
+    process.exit(await runTelemetryCommand(process.argv.slice(3), { telemetryEnabled: config.telemetry.enabled }))
   }
   if (process.argv[2] === "voice" && process.argv[3] === "check") {
     const threadArgIndex = process.argv.indexOf("--thread-id")
@@ -47,6 +51,9 @@ try {
   await hydrateCodexPricing(config)
   const workspace = await detectWorkspace(config.workingDir)
   const session = createSession(config.workspaceRoot, harnessSessionCommand(config))
+
+  maybePrintFirstRunDisclosure(config.telemetry.enabled)
+  void emitSessionStarted({ enabled: config.telemetry.enabled })
 
   await runStackApp({ config, workspace, session })
 } catch (error) {

@@ -49,7 +49,7 @@ stack
 | `S4_TUI_BOMBADIL` | Bombadil B0 green before broad dogfood; B1 if handoff/update/auth flow is touched. |
 | `S5_LOCAL_PRODUCT` | First local workflow and receipt path are available or explicitly excluded from Nightly 1. |
 | `S6_DISTRIBUTION` | Installer/download path either works or docs clearly say source install only. |
-| `S7_AUTH_GROWTH` | Auth is optional; telemetry is off by default for local public usage. |
+| `S7_AUTH_GROWTH` | Auth is optional; anonymous telemetry is on by default, disclosed, and disabled with `stack telemetry off`. |
 | `S8_DOCS_CHANGELOG` | README, docs, and changelog agree on channel and status. |
 | `S9_SHIP_READOUT` | Dogfood readout records installs, activations, receipts, issues, and next owner. |
 
@@ -171,7 +171,7 @@ Nightly 1 auth posture:
 
 ```text
 Local ready · Synth sign-in optional
-Telemetry off
+Telemetry on (anonymous) · stack telemetry off to disable
 ```
 
 Login unlocks hosted Synth features. Login must not be required for:
@@ -290,7 +290,7 @@ utm_medium=cta
 - Candidate SHA is frozen with `launch:candidate -- --select --write-evidence`.
 - Installer/download story is truthful.
 - README and Mintlify docs agree.
-- Telemetry copy says local telemetry is off by default.
+- Telemetry copy says local telemetry is on by default (anonymous), disclosed on first run, and disabled with `stack telemetry off`.
 - Local-first auth state is visible.
 - At least one first-value path is defined and exercised from the install path:
   installed local demo receipt or StackEval receipt.
