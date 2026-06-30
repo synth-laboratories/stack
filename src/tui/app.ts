@@ -9953,6 +9953,7 @@ async function submitPrompt(
   )
 
   const runOneTurn = async (turnPrompt: string): Promise<StackCodexTurn> => {
+    const goalContext = mergeMetaThreadGoalContext(state.goalContext, state.metaThreadManifest)
     const harnessSession = codexSessionHandle.session
     if (harnessSession && state.codexTransport === "acp") {
       harnessSession.setOutputHandler(outputSink.write)
@@ -9961,6 +9962,7 @@ async function submitPrompt(
         userPrompt: turnPrompt,
         selectedFiles,
         priorTurns: options.session.turns,
+        goalContext,
       })
     }
     if (harnessSession && state.codexTransport === "app-server") {
@@ -9972,6 +9974,7 @@ async function submitPrompt(
             userPrompt: turnPrompt,
             selectedFiles,
             priorTurns: options.session.turns,
+            goalContext,
             onOutput: outputSink.write,
           },
           harnessSession as CodexAppServerSession,
@@ -10001,6 +10004,7 @@ async function submitPrompt(
       userPrompt: turnPrompt,
       selectedFiles,
       priorTurns: options.session.turns,
+      goalContext,
       onOutput: outputSink.write,
     })
   }

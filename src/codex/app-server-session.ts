@@ -6,6 +6,7 @@ import type { LocalContextFile } from "../local/workspace.js"
 import type { StackCodexTurn } from "../session.js"
 import { emitFirstAgentTurn } from "../telemetry/funnel.js"
 import { stackVersion } from "../version.js"
+import type { CodexGoalSnapshot } from "./goal-context.js"
 import {
   CodexAppServerClient,
   codexAppServerArgs,
@@ -28,6 +29,7 @@ export type CodexRunOptions = {
   userPrompt: string
   selectedFiles: LocalContextFile[]
   priorTurns: StackCodexTurn[]
+  goalContext?: CodexGoalSnapshot
   onOutput: (chunk: string) => void
 }
 
@@ -71,26 +73,66 @@ export async function buildStackHarnessPrompt(options: CodexRunOptions): Promise
       return `### ${file.path}\n${text}`
     }),
   )
-  const recentTranscript = options.priorTurns
-    .slice(-3)
+  const recentTurns = options.priorTurns.slice(-8)
+  const recentTranscript = recentTurns
     .map((turn, index) => {
       const answer = truncate(turn.stdout || turn.stderr || "(no output)", 3000)
-      return `Turn ${index + 1}\nUser: ${turn.prompt}\nCodex: ${answer}`
+      const turnNumber = options.priorTurns.length - recentTurns.length + index + 1
+      return `Turn ${turnNumber}\nUser: ${turn.prompt}\nCodex: ${answer}`
     })
     .join("\n\n")
+  const omittedTurns = options.priorTurns.length - recentTurns.length
+  const transcriptHeader =
+    omittedTurns > 0
+      ? `Restored Stack transcript (${options.priorTurns.length} turns, showing latest ${recentTurns.length}; ${omittedTurns} older omitted)`
+      : `Restored Stack transcript (${options.priorTurns.length} turns)`
 
   return [
     stackHarnessInstructions(options.config),
     "",
+    "## Active Stack goal",
+    formatActiveGoalForPrompt(options.goalContext),
+    "",
     "## User prompt",
     options.userPrompt,
     "",
-    "## Recent Stack transcript",
+    `## ${transcriptHeader}`,
     recentTranscript || "(none)",
     "",
     "## Selected local context",
     selectedContext.join("\n\n") || "(none selected)",
   ].join("\n")
+}
+
+function formatActiveGoalForPrompt(snapshot: CodexGoalSnapshot | undefined): string {
+  const objective = snapshot?.objective?.trim()
+  if (!snapshot || !objective) return "(none)"
+  const lines = [
+    "Treat this section as authoritative Stack state. If asked whether you have an active goal, answer from this section.",
+    `Status: ${snapshot.status?.trim() || "active"}`,
+    `Objective: ${objective}`,
+  ]
+  if (snapshot.acceptanceCriteria?.length) {
+    lines.push("Acceptance criteria:")
+    for (const criterion of snapshot.acceptanceCriteria) {
+      const normalized = criterion.trim()
+      if (normalized) lines.push(`- ${normalized}`)
+    }
+  }
+  if (snapshot.blockers?.length) {
+    lines.push("Blockers:")
+    for (const blocker of snapshot.blockers) {
+      const normalized = blocker.trim()
+      if (normalized) lines.push(`- ${normalized}`)
+    }
+  }
+  const budgetParts = [
+    snapshot.tokensUsed !== undefined ? `tokens_used=${snapshot.tokensUsed}` : undefined,
+    snapshot.tokenBudget ? `token_budget=${snapshot.tokenBudget}` : undefined,
+    snapshot.tokensRemaining ? `tokens_remaining=${snapshot.tokensRemaining}` : undefined,
+  ].filter((part): part is string => Boolean(part))
+  if (budgetParts.length > 0) lines.push(`Budget: ${budgetParts.join(", ")}`)
+  return lines.join("\n")
 }
 
 export function stackHarnessInstructions(config: StackConfig): string {
