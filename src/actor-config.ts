@@ -10,7 +10,7 @@ export type ActorModelConfig = {
   provider: string
   model: string
   reasoningEffort: string
-  worker: "auto" | "deterministic" | "openai_responses"
+  worker: "auto" | "deterministic" | "openai_responses" | "codex_app_server"
 }
 
 export type ActorToolsConfig = {
@@ -154,8 +154,13 @@ function trimQuotes(value: string): string {
 
 function normalizeModelWorker(
   value: string | undefined,
-  fallback: "auto" | "deterministic" | "openai_responses",
-): "auto" | "deterministic" | "openai_responses" {
-  if (value === "auto" || value === "deterministic" || value === "openai_responses") return value
+  fallback: "auto" | "deterministic" | "openai_responses" | "codex_app_server",
+): "auto" | "deterministic" | "openai_responses" | "codex_app_server" {
+  if (
+    value === "auto" ||
+    value === "deterministic" ||
+    value === "openai_responses" ||
+    value === "codex_app_server"
+  ) return value
   return fallback
 }

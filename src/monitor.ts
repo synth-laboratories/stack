@@ -17,6 +17,7 @@ import { ensureStackDefaults } from "./seed/defaults.js"
 import { stackAppRoot } from "./version.js"
 import { estimateUsageSpendUsd, formatEstimatedSpend } from "./codex/usage-cost.js"
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
+import { runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import {
   parseThreadNameFromAgentResponse,
@@ -82,7 +83,7 @@ export type StackMonitorConfig = {
     provider: string
     model: string
     reasoningEffort: string
-    worker: "auto" | "deterministic" | "openai_responses"
+    worker: "auto" | "deterministic" | "openai_responses" | "codex_app_server"
   }
   prompt: {
     system?: string
@@ -169,6 +170,9 @@ export type StackMonitorActorRuntimeState = {
   thread_id: string
   monitor_actor_id: string
   monitor_thread_id?: string
+  monitor_codex_thread_id?: string
+  monitor_codex_waiting_for_restart?: boolean
+  monitor_codex_last_pause_reason?: string
   state: "idle" | "running" | "paused" | "error"
   mode: MonitorStrictness
   strictness: MonitorStrictness
@@ -525,7 +529,7 @@ type SidecarChatReplyResult = {
   citedEventIds: string[]
   criteriaRefs: number[]
   operatorUpdate?: MonitorOperatorUpdate
-  source: "deterministic-runtime" | "openai-responses" | "synth-aux"
+  source: "deterministic-runtime" | "openai-responses" | "synth-aux" | "codex-app-server"
   fallbackReason?: string
 }
 
@@ -969,6 +973,9 @@ export async function runMonitorForNewEvents(input: {
       focus_results: focusResults(pass.checks),
       source: pass.source,
       model_thread_id: pass.monitorThreadId ?? null,
+      monitor_codex_thread_id: pass.monitorCodexThreadId ?? null,
+      sidecar_transcript: pass.monitorCodexThreadId ? "codex-app-server" : null,
+      fallback_reason: pass.fallbackReason ?? null,
       evidence: pass.checks.filter((check) => check.evidence).map((check) => ({
         focus: check.focus,
         evidence: check.evidence,
@@ -1147,6 +1154,9 @@ export async function runMonitorForNewEvents(input: {
     lastEventType: lastProcessedEvent?.type ?? actorState?.last_event_type,
     lastWakeId: wakeId,
     monitorThreadId: pass.monitorThreadId,
+    monitorCodexThreadId: pass.monitorCodexThreadId,
+    monitorCodexWaitingForRestart: pass.source === "codex-app-server",
+    monitorCodexLastPauseReason: pass.source === "codex-app-server" ? pass.checkpointSummary ?? pass.summary : undefined,
     rollingSummary: pass.checkpointSummary ?? pass.summary,
     severity: pass.severity,
     wakeDelta: 1,
@@ -1172,6 +1182,7 @@ export async function runMonitorForNewEvents(input: {
       state: completedState.state,
       actor_state_path: relativeActorStatePath(threadId, actorId),
       model_thread_id: pass.monitorThreadId ?? null,
+      monitor_codex_thread_id: pass.monitorCodexThreadId ?? null,
     },
   })
 
@@ -1589,8 +1600,9 @@ type MonitorPassResult = {
   queueItems: Record<string, unknown>[]
   checkpointSummary?: string
   operatorUpdate?: MonitorOperatorUpdate
-  source: "deterministic-runtime" | "openai-responses" | "synth-aux"
+  source: "deterministic-runtime" | "openai-responses" | "synth-aux" | "codex-app-server"
   monitorThreadId?: string
+  monitorCodexThreadId?: string
   usage?: MonitorUsageEstimate
   fallbackReason?: string
 }
@@ -1660,12 +1672,53 @@ async function runMonitorPass(input: {
     wakeReason: input.wakeReason,
     priorWakeCount: input.actorState.wake_counts,
   })
-  if (!shouldUseModelWorker(input.config)) return deterministic
+  let codexSidecarFallbackReason: string | undefined
+  if (shouldUseCodexSidecar(input.config)) {
+    try {
+      const codex = await runMonitorCodexSidecarTurn({
+        stackConfig: input.stackConfig,
+        monitorConfig: input.config,
+        threadId: input.threadId,
+        actorId: input.actorState.monitor_actor_id,
+        codexThreadId: input.actorState.monitor_codex_thread_id,
+        wakeId: input.wakeId,
+        wakeReason: input.wakeReason,
+        triggerEventIds: input.triggerEventIds,
+        priorEvents: input.priorEvents,
+        pendingEvents: input.pendingEvents,
+        goalContext: input.goalContext,
+        deterministicSummary: deterministic.summary,
+      })
+      const summary = codex.assistantText?.trim() || deterministic.summary
+      return {
+        ...deterministic,
+        summary,
+        checkpointSummary: summary,
+        source: "codex-app-server",
+        monitorCodexThreadId: codex.codexThreadId,
+        usage: codexUsageEstimate(codex.usage, summary),
+      }
+    } catch (error) {
+      codexSidecarFallbackReason = error instanceof Error ? error.message : String(error)
+      if (resolvedMonitorWorker(input.config) === "codex_app_server") {
+        return {
+          ...deterministic,
+          fallbackReason: codexSidecarFallbackReason,
+        }
+      }
+    }
+  }
+  if (!shouldUseModelWorker(input.config)) {
+    return {
+      ...deterministic,
+      fallbackReason: codexSidecarFallbackReason,
+    }
+  }
   const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
   if (!inference) {
     return {
       ...deterministic,
-      fallbackReason: monitorInferenceFallbackReason(input.config, input.stackConfig),
+      fallbackReason: codexSidecarFallbackReason ?? monitorInferenceFallbackReason(input.config, input.stackConfig),
     }
   }
   try {
@@ -1763,12 +1816,27 @@ function deterministicMonitorPass(
   }
 }
 
-function shouldUseModelWorker(config: StackMonitorConfig): boolean {
+function resolvedMonitorWorker(config: StackMonitorConfig): "auto" | "deterministic" | "openai_responses" | "codex_app_server" {
   const override = process.env.STACK_MONITOR_MODEL_WORKER?.trim()
-  const worker = override === "deterministic" || override === "openai_responses" || override === "auto"
+  return override === "deterministic" ||
+    override === "openai_responses" ||
+    override === "auto" ||
+    override === "codex_app_server"
     ? override
     : config.model.worker
+}
+
+function shouldUseCodexSidecar(config: StackMonitorConfig): boolean {
+  const worker = resolvedMonitorWorker(config)
+  if (worker === "codex_app_server") return true
+  if (worker !== "auto") return false
+  return process.env.STACK_MONITOR_CODEX_SIDECAR !== "0"
+}
+
+function shouldUseModelWorker(config: StackMonitorConfig): boolean {
+  const worker = resolvedMonitorWorker(config)
   if (worker === "deterministic") return false
+  if (worker === "codex_app_server") return false
   if (worker === "openai_responses") return true
   if (normalizeMonitorProvider(config.model.provider) === "synth_aux") {
     return process.env.STACK_AUX_INFERENCE === "1"
@@ -1952,6 +2020,15 @@ function parseResponsesMonitorResult(
   }
 }
 
+function codexUsageEstimate(usage: StackCodexTurn["usage"], summary: string): MonitorUsageEstimate {
+  return {
+    inputTokens: usage?.inputTokens ?? 0,
+    cachedInputTokens: usage?.cachedInputTokens ?? 0,
+    outputTokens: usage?.outputTokens ?? Math.max(1, Math.ceil(summary.length / 4)),
+    reasoningOutputTokens: usage?.reasoningOutputTokens ?? 0,
+  }
+}
+
 function extractOpenAiOutputText(payload: unknown): string {
   const record = asRecord(payload)
   const direct = readString(record?.output_text)
@@ -2057,6 +2134,9 @@ function actorStateFromConfig(
     lastEventType?: string
     lastWakeId?: string
     monitorThreadId?: string
+    monitorCodexThreadId?: string
+    monitorCodexWaitingForRestart?: boolean
+    monitorCodexLastPauseReason?: string
     rollingSummary?: string
     severity?: MonitorSeverity
     wakeDelta?: number
@@ -2075,6 +2155,11 @@ function actorStateFromConfig(
     thread_id: threadId,
     monitor_actor_id: monitorActorId(config),
     monitor_thread_id: options.monitorThreadId ?? previous?.monitor_thread_id,
+    monitor_codex_thread_id: options.monitorCodexThreadId ?? previous?.monitor_codex_thread_id,
+    monitor_codex_waiting_for_restart:
+      options.monitorCodexWaitingForRestart ?? previous?.monitor_codex_waiting_for_restart,
+    monitor_codex_last_pause_reason:
+      options.monitorCodexLastPauseReason ?? previous?.monitor_codex_last_pause_reason,
     state: options.state ?? previous?.state ?? (strictness === "off" ? "paused" : "idle"),
     mode: strictness,
     strictness,

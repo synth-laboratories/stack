@@ -1,5 +1,6 @@
 import { StyledText, bold, dim, fg, type TextChunk } from "@opentui/core"
 import type { StackMonitorSnapshot } from "../monitor.js"
+import type { StackMonitorSidecarTurn } from "../monitor-sidecar-codex.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
 import { stackTuiTheme as theme } from "./theme.js"
 
@@ -183,17 +184,111 @@ export function goalSidecarThreadLines(
 }
 
 export function renderGoalSidecarThreadStyled(
-  events: StackThreadMetaEvent[],
-  columns: number,
-  visibleRows = 5,
+  input: {
+    turns?: readonly StackMonitorSidecarTurn[]
+    events: StackThreadMetaEvent[]
+    columns: number
+    visibleRows?: number
+  },
 ): StyledText {
-  const lines = goalSidecarThreadLines(events, columns, visibleRows)
+  const visibleRows = input.visibleRows ?? 5
+  const lines = input.turns?.length
+    ? goalSidecarCodexThreadLines(input.turns, input.columns, visibleRows)
+    : goalSidecarThreadLines(input.events, input.columns, visibleRows)
   const chunks: TextChunk[] = []
   for (const [index, line] of lines.entries()) {
     if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
     chunks.push(...styledSidecarThreadLine(line))
   }
   return new StyledText(chunks)
+}
+
+function goalSidecarCodexThreadLines(
+  turns: readonly StackMonitorSidecarTurn[],
+  columns: number,
+  visibleRows: number,
+): GoalSidecarThreadLine[] {
+  const width = Math.max(16, columns - 2)
+  const lines: GoalSidecarThreadLine[] = []
+  for (const turn of turns) {
+    if (lines.length > 0) lines.push({ text: "", kind: "blank" })
+    lines.push(...wrapPlain(`› ${sidecarTurnPromptLabel(turn.prompt)}`, width).map((text) => ({
+      text,
+      kind: "ask" as const,
+    })))
+    for (const line of sidecarTurnOutputLines(turn.stdout, width)) lines.push(line)
+    if (turn.stderr.trim()) {
+      lines.push(...wrapPlain(`error · ${turn.stderr.trim()}`, width).map((text, index) => ({
+        text,
+        kind: index === 0 ? "reply-label" as const : "reply-body" as const,
+      })))
+    }
+  }
+  if (lines.length === 0) return [{ text: "(waiting for sidecar messages)", kind: "empty" }]
+  if (visibleRows <= 0) return []
+  return lines.slice(-visibleRows)
+}
+
+function sidecarTurnOutputLines(stdout: string, width: number): GoalSidecarThreadLine[] {
+  const lines: GoalSidecarThreadLine[] = []
+  let latestAgentMessage: string | undefined
+  let latestReasoning: string | undefined
+  for (const raw of stdout.split(/\r?\n/)) {
+    if (!raw.trim()) continue
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      continue
+    }
+    if (parsed.type === "agent_message" && typeof parsed.text === "string" && parsed.text.trim()) {
+      latestAgentMessage = parsed.text.trim()
+      continue
+    }
+    if (parsed.type === "reasoning_summary" && typeof parsed.text === "string" && parsed.text.trim()) {
+      latestReasoning = parsed.text.trim()
+      continue
+    }
+    if (parsed.type === "function_call") {
+      const name = typeof parsed.name === "string" ? parsed.name : "tool"
+      lines.push(...wrapPlain(`tool · ${name}`, width).map((text, index) => ({
+        text,
+        kind: index === 0 ? "reply-label" as const : "reply-body" as const,
+      })))
+    }
+    if (parsed.type === "function_call_output") {
+      const output = typeof parsed.output === "string" ? parsed.output : ""
+      const label = output.trim() ? `tool result · ${output.trim()}` : "tool result"
+      lines.push(...wrapPlain(label, width).map((text, index) => ({
+        text,
+        kind: index === 0 ? "reply-label" as const : "reply-body" as const,
+      })))
+    }
+  }
+  if (latestReasoning) {
+    lines.push(...wrapPlain(`thinking · ${latestReasoning}`, width).map((text, index) => ({
+      text,
+      kind: index === 0 ? "reply-label" as const : "reply-body" as const,
+    })))
+  }
+  if (latestAgentMessage) {
+    lines.push(...wrapPlain(`sidecar · ${latestAgentMessage}`, width).map((text, index) => ({
+      text,
+      kind: index === 0 ? "reply-label" as const : "reply-body" as const,
+    })))
+  }
+  return lines
+}
+
+function sidecarTurnPromptLabel(prompt: string): string {
+  try {
+    const parsed = JSON.parse(prompt) as Record<string, unknown>
+    const wakeReason = typeof parsed.wake_reason === "string" ? parsed.wake_reason : "wake"
+    const wakeId = typeof parsed.wake_id === "string" ? parsed.wake_id : undefined
+    return wakeId ? `${wakeReason} · ${wakeId}` : wakeReason
+  } catch {
+    return oneLine(prompt, 96)
+  }
 }
 
 function styledSidecarThreadLine(line: GoalSidecarThreadLine): TextChunk[] {

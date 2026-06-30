@@ -3,6 +3,7 @@ import { formatEstimatedSpend } from "../codex/usage-cost.js"
 import { reduceGoalSessionSnapshot } from "../goal-session.js"
 import { parseCriterionEntry } from "../meta-thread-goal-criteria.js"
 import type { StackMonitorSnapshot } from "../monitor.js"
+import type { StackMonitorSidecarTurn } from "../monitor-sidecar-codex.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
 import { activeGoalModeSnapshot, type GoalModeState } from "./goal-mode.js"
 import { deriveMetaGoalName } from "../meta-goal.js"
@@ -27,6 +28,8 @@ export type GoalShutterRenderInput = {
     spinnerFrame?: number
   }
   events: StackThreadMetaEvent[]
+  sidecarTurns?: readonly StackMonitorSidecarTurn[]
+  sidecarView: "thread" | "events"
   columns: number
   visibleRows: number
   streamRows?: number
@@ -37,6 +40,8 @@ export type GoalShutterRenderInput = {
   onPrefillSidecar?: (prompt: string) => void
   onSelectChatTab?: () => void
   onSelectProgressTab?: () => void
+  onSelectSidecarThread?: () => void
+  onSelectSidecarEvents?: () => void
 }
 
 function goalTabChip(label: string, hint: string, active: boolean, onSelect: () => void): ReturnType<typeof Box> {
@@ -134,15 +139,14 @@ export function goalShutterStreamVisibleRows(
   goalCardLineCount: number,
   sidecarMenuRows = 0,
 ): number {
-  const chromeRows =
-    3 + goalCardLineCount + 10 + GOAL_SHUTTER_SIDECAR_THREAD_ROWS + 2 + sidecarMenuRows
+  const chromeRows = 3 + goalCardLineCount + 7 + sidecarMenuRows
   return Math.max(3, visibleRows - chromeRows)
 }
 
 export function goalShutterCardLineCount(
   input: Pick<GoalShutterRenderInput, "state" | "events" | "columns" | "metaThreadId">,
 ): number {
-  return goalCardLines({ ...input, visibleRows: 0, scrollOffset: 0 }).length
+  return goalCardLines(input).length
 }
 
 export function renderSidecarQueuedMessages(
@@ -187,18 +191,14 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
   const streamRows =
     input.streamRows ??
     goalShutterStreamVisibleRows(input.visibleRows, cardLines.length, sidecarMenuRows)
-  // Stream and thread now sit side by side (not stacked), so each gets a
-  // narrower slice of the panel width rather than the full column count.
-  const sidecarProgressInnerWidth = Math.max(24, input.columns - 4)
-  const sidecarThreadWidth = Math.max(24, Math.floor(sidecarProgressInnerWidth * 0.32))
-  const sidecarThreadColumns = Math.max(16, sidecarThreadWidth - 4)
-  const sidecarStreamColumns = Math.max(
-    20,
-    sidecarProgressInnerWidth - 1 - sidecarThreadWidth,
-  )
+  const sidecarColumns = Math.max(20, input.columns - 4)
+  const sidecarThreadRows = Math.max(3, streamRows)
   const title = goal.objective
     ? `Goal · ${oneLine(goal.objective, Math.max(24, input.columns - 10))}`
     : "Goal shutter"
+  const sidecarTitle = input.sidecarView === "events"
+    ? input.state.agentViewEnabled ? "Agent tape" : "Sidecar events"
+    : "Sidecar thread"
 
   return Box(
     {
@@ -250,8 +250,8 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
         borderStyle: "single",
         borderColor: theme.borderInactive,
         titleColor: theme.synth.orange,
-        title: input.state.agentViewEnabled ? "Agent tape" : "Sidecar progress",
-        flexDirection: "row",
+        title: sidecarTitle,
+        flexDirection: "column",
         padding: 1,
         flexGrow: 1,
         minHeight: 0,
@@ -261,40 +261,40 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
       },
       Box(
         {
-          flexDirection: "column",
-          flexGrow: 2,
-          flexShrink: 1,
-          minHeight: 0,
-          overflow: "hidden",
-        },
-        Text({
-          content: renderGoalShutterStreamStyled(
-            input.events,
-            input.state.monitorSnapshot,
-            sidecarStreamColumns,
-            streamRows,
-            input.scrollOffset,
-            input.state.agentViewEnabled,
-          ),
+          flexDirection: "row",
           flexShrink: 0,
           width: "100%",
-        }),
-      ),
-      Box(
-        {
-          border: true,
-          borderStyle: "single",
-          borderColor: theme.borderInactive,
-          titleColor: theme.synth.orange,
-          title: "Sidecar thread",
-          flexDirection: "column",
-          padding: 1,
-          flexGrow: 1,
-          flexShrink: 0,
-          width: sidecarThreadWidth,
-          minHeight: 0,
           gap: 0,
         },
+        goalTabChip(
+          "thread",
+          "t",
+          input.sidecarView === "thread",
+          input.onSelectSidecarThread ?? (() => undefined),
+        ),
+        goalTabChip(
+          "events",
+          "e",
+          input.sidecarView === "events",
+          input.onSelectSidecarEvents ?? (() => undefined),
+        ),
+      ),
+      ...(input.sidecarView === "events"
+        ? [
+            Text({
+              content: renderGoalShutterStreamStyled(
+                input.events,
+                input.state.monitorSnapshot,
+                sidecarColumns,
+                streamRows,
+                input.scrollOffset,
+                input.state.agentViewEnabled,
+              ),
+              flexShrink: 0,
+              width: "100%",
+            }),
+          ]
+        : [
         Box(
           {
             flexDirection: "column",
@@ -306,9 +306,12 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
           },
           Text({
             content: renderGoalSidecarThreadStyled(
-              input.events,
-              sidecarThreadColumns,
-              GOAL_SHUTTER_SIDECAR_THREAD_ROWS,
+              {
+                turns: input.sidecarTurns,
+                events: input.events,
+                columns: sidecarColumns,
+                visibleRows: sidecarThreadRows,
+              },
             ),
             width: "100%",
             flexShrink: 0,
@@ -339,13 +342,13 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
             : {}),
         }),
         ...(input.sidecarMenuElements ?? []),
-      ),
+          ]),
     ),
     ...(input.state.sidecarQueuedMessages?.length
       ? [renderSidecarQueuedMessages(input.state.sidecarQueuedMessages, input.columns)!]
       : []),
     Text({
-      content: "1 chat · 2 progress · m sidecar · click stream · esc worker peek · g goal · a agent tape",
+      content: "1 worker · 2 sidecar · t thread · e events · m message sidecar · esc worker peek · g goal · a agent tape",
       fg: theme.fgMuted,
       width: "100%",
       flexShrink: 0,
@@ -388,7 +391,7 @@ export function sidecarInputBackground(state: { focusMode: string; monitorInputB
   return theme.bgPanel
 }
 
-function goalCardLines(input: GoalShutterRenderInput): string[] {
+function goalCardLines(input: Pick<GoalShutterRenderInput, "state" | "events" | "columns" | "metaThreadId">): string[] {
   const goal = activeGoalModeSnapshot(input.state)
   const session = reduceGoalSessionSnapshot({
     events: input.events,

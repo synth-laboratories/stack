@@ -305,19 +305,29 @@ export function activeThreadsFocusHint(focusMode: string): string {
   return focusMode === "history" ? "j/k select · enter resume" : "tab threads · p all · stack resume <id>"
 }
 
-export function renderActiveThreadRowsStyled(input: ActiveThreadsRenderInput): StyledText {
-  const chunks: TextChunk[] = []
+/** Row specs for the active-threads list, in display order. Pager rows are non-interactive;
+ * thread rows carry `historyIndex` so callers can wire per-row selection/resume on click. */
+export function activeThreadRows(input: ActiveThreadsRenderInput): ActiveThreadRow[] {
   const showAll = input.focusMode === "history"
   const summaries = showAll
     ? input.history
     : input.history.filter((summary) => input.activeThreadIds.has(summary.id))
 
   if (summaries.length === 0) {
-    chunks.push(dim(fg(theme.fgMuted)(showAll ? "(no threads yet)" : "(no active threads)")))
-    return new StyledText(chunks)
+    return [{ kind: "pager", text: showAll ? "(no threads yet)" : "(no active threads)" }]
   }
 
-  const rows = activeThreadRowSpecs(input, summaries, showAll)
+  return activeThreadRowSpecs(input, summaries, showAll)
+}
+
+/** Styled content for a single active-threads row, for per-row clickable rendering. */
+export function styleActiveThreadRowStyled(row: ActiveThreadRow): StyledText {
+  return new StyledText(styleActiveThreadRow(row))
+}
+
+export function renderActiveThreadRowsStyled(input: ActiveThreadsRenderInput): StyledText {
+  const chunks: TextChunk[] = []
+  const rows = activeThreadRows(input)
   for (const [index, row] of rows.entries()) {
     if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
     chunks.push(...styleActiveThreadRow(row))
@@ -343,10 +353,11 @@ const THREAD_GOAL_STATUS_COLOR: Record<ThreadGoalStatus, string> = {
   blocked: "#fd6600",
 }
 
-type ActiveThreadRow =
+export type ActiveThreadRow =
   | { kind: "pager"; text: string }
   | {
       kind: "thread"
+      historyIndex: number
       selected: boolean
       active: boolean
       gardener: boolean
@@ -372,6 +383,7 @@ function activeThreadRowSpecs(
     const index = input.history.findIndex((entry) => entry.id === summary.id)
     rows.push({
       kind: "thread",
+      historyIndex: index,
       selected: index === input.selectedHistoryIndex,
       active: input.activeThreadIds.has(summary.id),
       gardener: input.gardenerThreadIds.has(summary.id),

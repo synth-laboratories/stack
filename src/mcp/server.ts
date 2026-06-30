@@ -192,6 +192,35 @@ export class StackMcpServer {
     return config
   }
 
+  async sidecarPauseForRestart(args: JsonObject): Promise<JsonObject> {
+    const config = await this.config(args)
+    const threadId = requiredString(args, "thread_id")
+    const actorId = optionalString(args, "actor_id") ?? "monitor"
+    const reason = optionalString(args, "reason") ?? "sidecar finished current monitoring round"
+    const nextWakeOn = optionalStringArray(args, "next_wake_on") ?? []
+    const event = {
+      event_id: stackEventId("monitor_pause_for_restart"),
+      type: "monitor.pause_for_restart",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: actorId,
+      actor_role: "monitor" as const,
+      payload: {
+        reason,
+        next_wake_on: nextWakeOn.length > 0 ? nextWakeOn : ["worker_event", "operator_message", "goal_change"],
+        source: "sidecar_codex_tool",
+      },
+    }
+    const path = appendThreadMetaEvent(config.appRoot, event)
+    return {
+      ok: true,
+      event_id: event.event_id,
+      thread_id: threadId,
+      actor_id: actorId,
+      path,
+    }
+  }
+
   private async handleMessage(message: ParsedMessage): Promise<JsonObject | undefined> {
     const request = message.payload
     const method = readString(request.method)
@@ -2034,6 +2063,21 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         source: stringProperty("Optional runtime event source filter, e.g. sensor.local_gepa or sensor.remote_synth."),
       }),
       handler: (args) => server.runtimeStatus(args),
+    },
+    {
+      name: "stack_sidecar_pause_for_restart",
+      description: "Sidecar monitor tool: mark the persistent sidecar Codex thread as done with the current monitoring batch and waiting for the runtime to wake it on the next worker event, operator message, or goal change.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Worker Stack thread/session id this sidecar monitors."),
+          actor_id: stringProperty("Optional sidecar actor id. Defaults to monitor."),
+          reason: stringProperty("Short reason the sidecar is pausing until the next runtime wake."),
+          next_wake_on: arrayProperty("Optional wake conditions such as worker_event, operator_message, or goal_change."),
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.sidecarPauseForRestart(args),
     },
     {
       name: "stack_list_remote_projects",

@@ -24,6 +24,7 @@ export type StackResumeCheckpoint = {
   harness?: StackSessionHarness
   codexTransport?: "exec" | "app-server" | "acp"
   goalShutterWorkerPeek?: boolean
+  goalShutterSidecarView?: "thread" | "events"
   focusMode?: string
   displayName?: string
   harnessResume?: HarnessResumeState

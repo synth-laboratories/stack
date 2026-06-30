@@ -146,6 +146,7 @@ import {
   stripMonitorMessagePrefix,
   type StackMonitorSnapshot,
 } from "../monitor.js"
+import { readMonitorSidecarTranscript } from "../monitor-sidecar-codex.js"
 import { recordCoreAgentEventsFromCodexLine } from "../core-agent-events.js"
 import { startVoiceRecording, type VoiceRecordingHandle } from "../voice/recording.js"
 import { isLikelyJunkVoiceTranscript, MIN_VOICE_HOLD_MS, voiceHoldElapsedMs } from "../voice/hold.js"
@@ -360,13 +361,15 @@ import {
   type GardenerThreadContext,
 } from "./gardener-thread.js"
 import {
+  activeThreadRows,
+  type ActiveThreadsRenderInput,
   activeThreadsFocusHint,
   coreEventStreamLineCount,
   renderActiveProjectsStyled,
-  renderActiveThreadRowsStyled,
   renderCoreEventStreamStyled,
   resolveActiveThreadIds,
   resolveCoreEventStreamContext,
+  styleActiveThreadRowStyled,
   type ThreadGoalStatus,
 } from "./center-panel.js"
 
@@ -439,6 +442,7 @@ type AppState = {
   slashMenuIndex: number
   goalPanelSelectedIndex: number
   goalShutterWorkerPeek: boolean
+  goalShutterSidecarView: "thread" | "events"
   goalShutterScrollOffset: number
   goalShutterScrollPinned: boolean
   goalMonitorAutoEnabledObjective?: string
@@ -505,6 +509,8 @@ type AppState = {
   planningColumns: number
   codexTransport: "app-server" | "exec" | "acp"
   queuedMessages: string[]
+  activeTurnPromise?: Promise<void>
+  abortTurnLoop?: boolean
   talkToGardener: boolean
   talkToMonitor: boolean
   gardenerThreadId: string
@@ -783,6 +789,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     slashMenuIndex: 0,
     goalPanelSelectedIndex: 0,
     goalShutterWorkerPeek: false,
+    goalShutterSidecarView: "thread",
     goalShutterScrollOffset: 0,
     goalShutterScrollPinned: true,
     toolLogs: [],
@@ -1451,6 +1458,16 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         focusGoalSidecarChat(options, state, remount)
         return
       }
+      if (key.name === "t") {
+        state.goalShutterSidecarView = "thread"
+        remount()
+        return
+      }
+      if (key.name === "e") {
+        state.goalShutterSidecarView = "events"
+        remount()
+        return
+      }
       if (key.name === "g") {
         state.goalShutterWorkerPeek = false
         state.focusMode = "goal"
@@ -1919,6 +1936,9 @@ function createView(
         onSelectProgressTab: () => returnToGoalShutter(state, refresh),
       }
     : undefined
+  const sidecarTranscript = showGoalShutter
+    ? readMonitorSidecarTranscript(options.config.appRoot, options.session.id, state.monitorSnapshot.actorId)
+    : undefined
   const agentChildren = [
     agentPanelIdsCopyIcon(renderer, options, state, refresh),
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
@@ -1927,6 +1947,8 @@ function createView(
           renderGoalShutter({
             state,
             events: workerMetaEvents,
+            sidecarTurns: sidecarTranscript?.turns,
+            sidecarView: state.goalShutterSidecarView,
             columns: transcriptViewport.columns,
             visibleRows: transcriptViewport.lines,
             streamRows: goalStreamRows,
@@ -1937,6 +1959,14 @@ function createView(
             onPrefillSidecar: (prompt) => {
               state.monitorInputBuffer = prompt
               focusGoalSidecarChat(options, state, refresh)
+            },
+            onSelectSidecarThread: () => {
+              state.goalShutterSidecarView = "thread"
+              refresh()
+            },
+            onSelectSidecarEvents: () => {
+              state.goalShutterSidecarView = "events"
+              refresh()
             },
             ...goalPanelTabHandlers,
           }),
@@ -2099,21 +2129,30 @@ function createView(
               void startNewThread(options, state, codexSessionHandle, refresh, refreshHistory, refreshMetaEvents)
             }),
           ),
-          Text({
-            content: renderActiveThreadRowsStyled({
-              focusMode: state.focusMode,
-              history: state.history,
-              activeThreadIds,
-              selectedHistoryIndex: state.selectedHistoryIndex,
-              currentSessionId: options.session.id,
-              visibleRows: threadRows,
-              columns: centerColumns,
-              gardenerThreadIds: new Set([state.gardenerThreadId]),
-              liveTokensPerSecond: formatAverageTokensPerSecond(displayTokensPerSecond(state)),
-              usageForSummary: (summary) => threadUsageSummary(options, summary),
-              threadGoalStatus: state.threadGoalStatus,
-            }),
-          }),
+          Box(
+            { flexDirection: "column", width: "100%", flexShrink: 0 },
+            ...activeThreadRowElements(
+              {
+                focusMode: state.focusMode,
+                history: state.history,
+                activeThreadIds,
+                selectedHistoryIndex: state.selectedHistoryIndex,
+                currentSessionId: options.session.id,
+                visibleRows: threadRows,
+                columns: centerColumns,
+                gardenerThreadIds: new Set([state.gardenerThreadId]),
+                liveTokensPerSecond: formatAverageTokensPerSecond(displayTokensPerSecond(state)),
+                usageForSummary: (summary) => threadUsageSummary(options, summary),
+                threadGoalStatus: state.threadGoalStatus,
+              },
+              options,
+              state,
+              codexSessionHandle,
+              refresh,
+              refreshHistory,
+              refreshMetaEvents,
+            ),
+          ),
         ),
         Box(
           {
@@ -2180,7 +2219,7 @@ function createView(
             state.lastAgentScrollAt = Date.now()
             const direction = event.scroll?.direction
             if (showGoalShutter) {
-              if (direction === "up" || direction === "down") {
+              if (state.goalShutterSidecarView === "events" && (direction === "up" || direction === "down")) {
                 handleGoalShutterMouseScroll(
                   direction,
                   state,
@@ -2863,6 +2902,49 @@ function controlChip(content: string, active: boolean, onSelect?: () => void): R
   })
 }
 
+/** Renders the active-threads list as one clickable Text per row. Thread rows resume the clicked
+ * thread (mirroring `enter`); pager/empty rows carry no handler so the click bubbles to the panel
+ * and just focuses the list. */
+function activeThreadRowElements(
+  input: ActiveThreadsRenderInput,
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: HarnessSession },
+  refresh: () => void,
+  refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+): ReturnType<typeof Text>[] {
+  return activeThreadRows(input).map((row) => {
+    if (row.kind !== "thread") {
+      return Text({ content: styleActiveThreadRowStyled(row), flexShrink: 0 })
+    }
+    const historyIndex = row.historyIndex
+    return Text({
+      content: styleActiveThreadRowStyled(row),
+      flexShrink: 0,
+      onMouseDown(event: PanelMouseEvent) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        state.focusMode = "history"
+        state.selectedHistoryIndex = historyIndex
+        if (input.history[historyIndex]?.id === options.session.id) {
+          refresh()
+          return
+        }
+        void loadSelectedSession(
+          options,
+          state,
+          codexSessionHandle,
+          refresh,
+          refreshHistory,
+          refreshMetaEvents,
+          "resume",
+        )
+      },
+    })
+  })
+}
+
 function focusControlChip(
   content: string,
   focusMode: FocusMode,
@@ -2920,6 +3002,7 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
 function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
   if (!isGoalMode(state)) {
     state.goalShutterWorkerPeek = false
+    state.goalShutterSidecarView = "thread"
     state.goalShutterScrollOffset = 0
     state.goalShutterScrollPinned = true
     state.goalMonitorAutoEnabledObjective = undefined
@@ -2954,6 +3037,7 @@ function focusGoalSidecarChat(
     syncMonitorRightPanel(state)
   }
   state.goalShutterWorkerPeek = false
+  state.goalShutterSidecarView = "thread"
   state.talkToMonitor = true
   state.monitorPanelMode = "chat"
   state.monitorWorkerTargetId = options.session.id
@@ -2973,6 +3057,7 @@ function focusGoalWorkerPeek(state: AppState, refresh: () => void): boolean {
 function returnToGoalShutter(state: AppState, refresh: () => void): boolean {
   if (!isGoalMode(state) || !state.goalShutterWorkerPeek) return false
   state.goalShutterWorkerPeek = false
+  state.goalShutterSidecarView = "thread"
   state.focusMode = "monitor"
   refresh()
   return true
@@ -3728,16 +3813,19 @@ function kickWorkerForGoalObjective(
     return
   }
   focusGoalSidecarChat(options, state, refresh)
-  void submitPrompt(
-    kickoff,
-    options,
+  trackActiveTurn(
     state,
-    codexSessionHandle,
-    renderer,
-    refresh,
-    refreshHistory,
-    refreshMetaEvents,
-    { transcriptPrompt: transcriptLabel },
+    submitPrompt(
+      kickoff,
+      options,
+      state,
+      codexSessionHandle,
+      renderer,
+      refresh,
+      refreshHistory,
+      refreshMetaEvents,
+      { transcriptPrompt: transcriptLabel },
+    ),
   )
 }
 
@@ -4021,7 +4109,10 @@ function submitInputValue(
   }
 
   if (state.status === "running") return
-  void submitPrompt(prompt, options, state, codexSessionHandle, renderer, refresh, refreshHistory, refreshMetaEvents)
+  trackActiveTurn(
+    state,
+    submitPrompt(prompt, options, state, codexSessionHandle, renderer, refresh, refreshHistory, refreshMetaEvents),
+  )
 }
 
 function gardenerVoiceHintLine(state: AppState): string | undefined {
@@ -4509,6 +4600,16 @@ function handleRawInputInner(
   if (isGoalMode(state) && !focusedInputEditing(state)) {
     if (sequence === "m") {
       focusGoalSidecarChat(options, state, refresh)
+      return true
+    }
+    if (sequence === "t") {
+      state.goalShutterSidecarView = "thread"
+      refresh()
+      return true
+    }
+    if (sequence === "e") {
+      state.goalShutterSidecarView = "events"
+      refresh()
       return true
     }
     if (sequence === "g") {
@@ -7810,15 +7911,18 @@ async function routeGardenerInboxItems(
   }
 
   state.gardenerWorkerQueue = [...state.gardenerWorkerQueue, ...routeMessages.slice(1)]
-  void submitPrompt(
-    routeMessages[0],
-    options,
+  trackActiveTurn(
     state,
-    codexSessionHandle,
-    renderer,
-    refresh,
-    refreshHistory,
-    refreshMetaEvents,
+    submitPrompt(
+      routeMessages[0],
+      options,
+      state,
+      codexSessionHandle,
+      renderer,
+      refresh,
+      refreshHistory,
+      refreshMetaEvents,
+    ),
   )
   void refreshGardenerMaintenance(options, state, "inbox")
 }
@@ -9232,9 +9336,20 @@ async function startNewThread(
   refreshMetaEvents: () => void,
 ): Promise<void> {
   if (state.status === "running") {
-    appendStackBlock(state.blocks, "interrupt or wait for the current turn before starting a new thread")
+    if (!isGoalMode(state)) {
+      appendStackBlock(state.blocks, "interrupt or wait for the current turn before starting a new thread")
+      refresh()
+      return
+    }
+    // Goal mode keeps the worker turn perpetually running, so a plain status guard would
+    // make "+ new" permanently unavailable. Stop the live worker turn and let its loop fully
+    // wind down before swapping sessions, so the displaced turn can't clobber the new thread.
+    appendStackBlock(state.blocks, "stopping goal worker to start a new thread")
     refresh()
-    return
+    state.abortTurnLoop = true
+    await codexSessionHandle.session?.interrupt().catch(() => undefined)
+    await state.activeTurnPromise?.catch(() => undefined)
+    state.abortTurnLoop = false
   }
 
   setStackHarness(options.config, "codex")
@@ -9601,9 +9716,11 @@ function applyGoalUiAfterSessionResume(
 ): void {
   if (!isGoalMode(state)) {
     state.goalShutterWorkerPeek = false
+    state.goalShutterSidecarView = "thread"
     return
   }
   state.goalShutterWorkerPeek = checkpoint?.goalShutterWorkerPeek ?? false
+  state.goalShutterSidecarView = checkpoint?.goalShutterSidecarView ?? "thread"
   state.goalShutterScrollOffset = 0
   state.goalShutterScrollPinned = true
   state.talkToMonitor = true
@@ -9641,9 +9758,17 @@ async function restoreWorkerSessionAfterResume(
   if (checkpoint?.codexTransport) {
     state.codexTransport = checkpoint.codexTransport
   }
-  if (options.resumeManifest) {
+  // Scope the goal to the resumed thread's OWN metathread. Without this the previously
+  // foregrounded thread's goal leaks onto the resumed thread — e.g. resuming the gardener showed
+  // the worker's goal. resumeManifest is the launch-time checkpoint, so it only applies to the
+  // thread it actually belongs to; every other thread reloads its own manifest (or none).
+  state.metaThreadManifest = undefined
+  state.goalContext = emptyGoalContext()
+  if (options.resumeManifest && options.resumeManifest.id === options.session.metaThreadId) {
     state.metaThreadManifest = options.resumeManifest
     state.goalContext = mergeMetaThreadGoalContext(state.goalContext, options.resumeManifest)
+  } else {
+    await refreshMetaThreadGoal(options, state)
   }
   restoreHarnessFromSession(options, state)
   const backendSessionId =
@@ -9715,6 +9840,7 @@ function persistStackResumeCheckpoint(
       harness: options.session.harness ?? (isCursorHarness(options.config) ? "cursor" : "codex"),
       codexTransport: state.codexTransport,
       goalShutterWorkerPeek: state.goalShutterWorkerPeek,
+      goalShutterSidecarView: state.goalShutterSidecarView,
       focusMode: state.focusMode,
       displayName: options.session.displayName,
     },
@@ -9791,6 +9917,7 @@ function applySession(
   state.turnStartedAt = undefined
   state.focusMode = "agent"
   state.goalShutterWorkerPeek = false
+  state.goalShutterSidecarView = "thread"
   state.goalShutterScrollOffset = 0
   state.goalShutterScrollPinned = true
   state.agentViewEnabled = false
@@ -9861,6 +9988,13 @@ function boundedTextForRender(text: string, label: string): string {
   const maxChars = 40_000
   if (text.length <= maxChars) return text
   return `${text.slice(0, maxChars)}\n\n[${label} truncated for TUI render: ${text.length - maxChars} chars hidden]`
+}
+
+function trackActiveTurn(state: AppState, turn: Promise<void>): void {
+  state.activeTurnPromise = turn
+  void turn.finally(() => {
+    if (state.activeTurnPromise === turn) state.activeTurnPromise = undefined
+  })
 }
 
 async function submitPrompt(
@@ -10100,7 +10234,7 @@ async function submitPrompt(
     refreshMetaEvents()
     void refreshGardenerMaintenance(options, state, "turn_completed")
 
-    while (codexSessionHandle.session && codexSessionHandle.session.queueLength > 0) {
+    while (!state.abortTurnLoop && codexSessionHandle.session && codexSessionHandle.session.queueLength > 0) {
       const queuedPrompt = codexSessionHandle.session.takeQueuedPrompt()
       if (!queuedPrompt) break
       state.queuedMessages = state.queuedMessages.filter((entry) => entry !== queuedPrompt)
@@ -10137,7 +10271,7 @@ async function submitPrompt(
       refreshMetaEvents()
     }
 
-    while (state.gardenerWorkerQueue.length > 0) {
+    while (!state.abortTurnLoop && state.gardenerWorkerQueue.length > 0) {
       const gardenerPrompt = state.gardenerWorkerQueue.shift()
       if (!gardenerPrompt) break
       appendUserBlock(state.blocks, `[gardener→worker] ${gardenerPrompt}`)
