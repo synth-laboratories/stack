@@ -111,6 +111,42 @@
       "class": "local_product_opt_in",
       "owner": "stackd",
       "payload": ["channel", "version", "target", "harness", "successor_role"]
+    },
+    {
+      "name": "stack_agent_backend_configured",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "backend", "detected_via"]
+    },
+    {
+      "name": "stack_codex_authenticated",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "auth_mode"]
+    },
+    {
+      "name": "stack_synth_authenticated",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "environment", "org_present"]
+    },
+    {
+      "name": "stack_session_started",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "agent_backend", "has_synth_auth"]
+    },
+    {
+      "name": "stack_first_agent_turn",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "agent_backend"]
+    },
+    {
+      "name": "stack_optimizer_run_started",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "optimizer", "mode"]
     }
   ]
 }
