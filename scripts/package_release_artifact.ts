@@ -102,6 +102,16 @@ cpSync(join(outputRoot, `${archiveName}.sha256`), join(releaseSiteDownloads, `${
 cpSync(join(appRoot, "packaging", "install.sh"), join(releaseSiteRoot, "install.sh"))
 chmodSync(join(releaseSiteRoot, "install.sh"), 0o755)
 
+// install.sh downloads targets.<triple>.url directly. For a public release the served
+// manifest must point at a public URL; set STACK_RELEASE_DOWNLOAD_BASE at publish time
+// (e.g. https://stack.usesynth.ai/releases/downloads) so the URL matches the release-site
+// layout `releases/downloads/<version>/<archive>` and the sha256 stays paired with the
+// co-published tarball. Default (local build/smoke) keeps the on-disk path so the
+// release-site contract can verify install end-to-end locally.
+const downloadBase = process.env.STACK_RELEASE_DOWNLOAD_BASE?.replace(/\/$/, "")
+const artifactUrl = downloadBase
+  ? `${downloadBase}/${versionMeta.version}/${archiveName}`
+  : join(releaseSiteDownloads, archiveName)
 const manifest = {
   schema_version: 1,
   channel,
@@ -110,7 +120,7 @@ const manifest = {
   yanked: false,
   targets: {
     [target]: {
-      url: join(releaseSiteDownloads, archiveName),
+      url: artifactUrl,
       sha256,
       size: archiveSize,
     },
