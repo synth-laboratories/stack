@@ -17,7 +17,7 @@ import { ensureStackDefaults } from "./seed/defaults.js"
 import { stackAppRoot } from "./version.js"
 import { estimateUsageSpendUsd, formatEstimatedSpend } from "./codex/usage-cost.js"
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
-import { runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
+import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import {
   parseThreadNameFromAgentResponse,
@@ -485,10 +485,13 @@ async function appendMonitorChatReply(input: {
     citedEvents,
   })
   const monitorConfig = loadMonitorConfig(input.stackRoot)
+  const actorId = monitorActorId(monitorConfig)
+  const actorState = readMonitorActorState(input.stackRoot, input.session.id, actorId)
   const reply = await runMonitorSidecarChatReply({
     stackConfig: input.stackConfig,
     stackRoot: input.stackRoot,
     config: monitorConfig,
+    actorState,
     question: input.message,
     requestEvent: input.requestEvent,
     goalContext: input.goalContext,
@@ -500,7 +503,7 @@ async function appendMonitorChatReply(input: {
     type: "monitor.chat.reply",
     thread_id: input.session.id,
     observed_at: new Date().toISOString(),
-    actor_id: monitorActorId(monitorConfig),
+    actor_id: actorId,
     actor_role: "monitor",
     meta_thread_id: input.session.metaThreadId,
     segment_id: input.session.segmentId,
@@ -521,6 +524,17 @@ async function appendMonitorChatReply(input: {
     },
   }
   appendThreadMetaEvent(input.stackRoot, event)
+  if (reply.monitorCodexThreadId) {
+    writeMonitorActorState(input.stackRoot, actorStateFromConfig(monitorConfig, input.session.id, {
+      previous: actorState,
+      state: "idle",
+      monitorCodexThreadId: reply.monitorCodexThreadId,
+      monitorCodexWaitingForRestart: true,
+      monitorCodexLastPauseReason: reply.answer,
+      rollingSummary: reply.operatorUpdate?.progress_note ?? reply.answer,
+      lastCompletedAt: event.observed_at,
+    }))
+  }
   return event
 }
 
@@ -531,24 +545,63 @@ type SidecarChatReplyResult = {
   operatorUpdate?: MonitorOperatorUpdate
   source: "deterministic-runtime" | "openai-responses" | "synth-aux" | "codex-app-server"
   fallbackReason?: string
+  monitorCodexThreadId?: string
 }
 
 async function runMonitorSidecarChatReply(input: {
   stackConfig: StackConfig
   stackRoot: string
   config: StackMonitorConfig
+  actorState?: StackMonitorActorRuntimeState
   question: string
   requestEvent: StackThreadMetaEvent
   goalContext: CodexGoalSnapshot
   context: SidecarChatContext
   deterministic: SidecarChatReplyResult
 }): Promise<SidecarChatReplyResult> {
-  if (!shouldUseModelWorker(input.config)) return input.deterministic
+  let codexSidecarFallbackReason: string | undefined
+  if (shouldUseCodexSidecar(input.config)) {
+    try {
+      const codex = await runMonitorCodexSidecarChatTurn({
+        stackConfig: input.stackConfig,
+        monitorConfig: input.config,
+        threadId: input.requestEvent.thread_id,
+        actorId: monitorActorId(input.config),
+        codexThreadId: input.actorState?.monitor_codex_thread_id,
+        question: input.question,
+        requestEventId: input.requestEvent.event_id,
+        goalContext: input.goalContext,
+        sidecarContext: serializableSidecarChatContext(input.context),
+        deterministicAnswer: input.deterministic.answer,
+      })
+      const answer = codex.assistantText?.trim() || input.deterministic.answer
+      return {
+        ...input.deterministic,
+        answer,
+        source: "codex-app-server",
+        monitorCodexThreadId: codex.codexThreadId,
+      }
+    } catch (error) {
+      codexSidecarFallbackReason = error instanceof Error ? error.message : String(error)
+      if (resolvedMonitorWorker(input.config) === "codex_app_server") {
+        return {
+          ...input.deterministic,
+          fallbackReason: codexSidecarFallbackReason,
+        }
+      }
+    }
+  }
+  if (!shouldUseModelWorker(input.config)) {
+    return {
+      ...input.deterministic,
+      fallbackReason: codexSidecarFallbackReason,
+    }
+  }
   const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
   if (!inference) {
     return {
       ...input.deterministic,
-      fallbackReason: monitorInferenceFallbackReason(input.config, input.stackConfig),
+      fallbackReason: codexSidecarFallbackReason ?? monitorInferenceFallbackReason(input.config, input.stackConfig),
     }
   }
   try {

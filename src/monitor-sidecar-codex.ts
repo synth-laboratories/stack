@@ -114,6 +114,46 @@ export async function runMonitorCodexSidecarTurn(input: {
   goalContext: CodexGoalSnapshot
   deterministicSummary: string
 }): Promise<MonitorCodexSidecarRunResult> {
+  return runMonitorCodexSidecarPrompt({
+    stackConfig: input.stackConfig,
+    monitorConfig: input.monitorConfig,
+    threadId: input.threadId,
+    actorId: input.actorId,
+    codexThreadId: input.codexThreadId,
+    prompt: monitorCodexWakePrompt(input),
+  })
+}
+
+export async function runMonitorCodexSidecarChatTurn(input: {
+  stackConfig: StackConfig
+  monitorConfig: StackMonitorConfig
+  threadId: string
+  actorId: string
+  codexThreadId?: string
+  question: string
+  requestEventId: string
+  goalContext: CodexGoalSnapshot
+  sidecarContext: Record<string, unknown>
+  deterministicAnswer: string
+}): Promise<MonitorCodexSidecarRunResult> {
+  return runMonitorCodexSidecarPrompt({
+    stackConfig: input.stackConfig,
+    monitorConfig: input.monitorConfig,
+    threadId: input.threadId,
+    actorId: input.actorId,
+    codexThreadId: input.codexThreadId,
+    prompt: monitorCodexChatPrompt(input),
+  })
+}
+
+async function runMonitorCodexSidecarPrompt(input: {
+  stackConfig: StackConfig
+  monitorConfig: StackMonitorConfig
+  threadId: string
+  actorId: string
+  codexThreadId?: string
+  prompt: string
+}): Promise<MonitorCodexSidecarRunResult> {
   const startedAt = new Date().toISOString()
   const bridge = new CodexAppServerEventBridge()
   let stdout = ""
@@ -154,20 +194,19 @@ export async function runMonitorCodexSidecarTurn(input: {
       }
       stdout += `${JSON.stringify({ type: "thread.started", thread_id: codexThreadId })}\n`
     }
-    const prompt = monitorCodexWakePrompt(input)
     const turnId = await client.startTurn({
       threadId: codexThreadId,
       cwd: input.stackConfig.workspaceRoot,
       model: input.monitorConfig.model.model || input.stackConfig.codexModel,
       effort: input.monitorConfig.model.reasoningEffort,
-      input: textTurnInput(prompt),
+      input: textTurnInput(input.prompt),
     })
     const final = await client.waitForTurnEnd(turnId, 900_000)
     const exitCode = final.method === "turn/completed" ? 0 : 1
     const usage = readUsageFromStdout(stdout)
     const turn: StackMonitorSidecarTurn = {
       id: randomUUID(),
-      prompt,
+      prompt: input.prompt,
       startedAt,
       finishedAt: new Date().toISOString(),
       exitCode,
@@ -199,7 +238,7 @@ export async function runMonitorCodexSidecarTurn(input: {
         codexThreadId,
         turn: {
           id: randomUUID(),
-          prompt: monitorCodexWakePrompt(input),
+          prompt: input.prompt,
           startedAt,
           finishedAt: new Date().toISOString(),
           exitCode: 1,
@@ -251,6 +290,29 @@ function monitorCodexWakePrompt(input: {
       recent_context_events: input.priorEvents.slice(-20).map(serializableEvent),
       instruction:
         "Review the pending events as the persistent sidecar monitor. Reply to the operator-facing thread with what matters now, then pause for restart when done.",
+    },
+    null,
+    2,
+  )
+}
+
+function monitorCodexChatPrompt(input: {
+  question: string
+  requestEventId: string
+  goalContext: CodexGoalSnapshot
+  sidecarContext: Record<string, unknown>
+  deterministicAnswer: string
+}): string {
+  return JSON.stringify(
+    {
+      wake_reason: "operator_message",
+      request_event_id: input.requestEventId,
+      operator_message: input.question,
+      current_goal: input.goalContext,
+      sidecar_context: input.sidecarContext,
+      deterministic_baseline_answer: input.deterministicAnswer,
+      instruction:
+        "Answer the operator in the persistent sidecar thread using the current goal and sidecar context. After answering, call stack_sidecar_pause_for_restart so the runtime can wake you again on the next event.",
     },
     null,
     2,

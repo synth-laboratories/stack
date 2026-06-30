@@ -283,6 +283,8 @@ function sidecarTurnOutputLines(stdout: string, width: number): GoalSidecarThrea
 function sidecarTurnPromptLabel(prompt: string): string {
   try {
     const parsed = JSON.parse(prompt) as Record<string, unknown>
+    const operatorMessage = typeof parsed.operator_message === "string" ? parsed.operator_message.trim() : ""
+    if (operatorMessage) return operatorMessage
     const wakeReason = typeof parsed.wake_reason === "string" ? parsed.wake_reason : "wake"
     const wakeId = typeof parsed.wake_id === "string" ? parsed.wake_id : undefined
     return wakeId ? `${wakeReason} · ${wakeId}` : wakeReason
