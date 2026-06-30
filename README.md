@@ -80,6 +80,7 @@ client at Synth and use `nemotron-3-ultra`:
 export SYNTH_API_KEY=sk_...    # from https://usesynth.ai/keys
 curl https://api.usesynth.ai/api/v1/stack-aux/openai/v1/responses \
   -H "authorization: Bearer $SYNTH_API_KEY" \
+  -H "x-stack-actor-role: aux" \
   -H "content-type: application/json" \
   -d '{"model":"nemotron-3-ultra","input":"hello"}'
 ```

@@ -62,7 +62,7 @@ try {
 try {
   const res = await fetch(`${baseUrl}/api/v1/stack-aux/openai/v1/responses`, {
     method: "POST",
-    headers: { ...authHeaders, "content-type": "application/json" },
+    headers: { ...authHeaders, "content-type": "application/json", "x-stack-actor-role": "aux" },
     body: JSON.stringify({ model, input: "Reply with the single word: pong." }),
   })
   const body = await res.json().catch(() => ({}))
