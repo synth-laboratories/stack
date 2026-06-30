@@ -46,7 +46,7 @@ const surfaces: Surface[] = [
       "not launched",
       "manifest-first installer",
       "publishable: true",
-      "Telemetry off",
+      "Telemetry on (anonymous)",
       "Hosted Synth features are optional",
       "make smoke-release-site-contract",
     ],
@@ -68,7 +68,7 @@ const surfaces: Surface[] = [
     id: "telemetry-doc",
     path: join(stackRoot, "docs", "TELEMETRY.md"),
     required: [
-      "Telemetry: off by default",
+      "Telemetry: on by default",
       "GET /telemetry/status",
       "POST /telemetry/events",
       "Never send",

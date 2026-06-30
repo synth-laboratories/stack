@@ -83,11 +83,7 @@ pub async fn telemetry_status(
         local_product_telemetry: TelemetryLocalStatus {
             enabled: local_enabled,
             default: contract.default_local_product_telemetry,
-            reason: if local_enabled {
-                "enabled by STACK_TELEMETRY=1".to_string()
-            } else {
-                "local product telemetry is off by default".to_string()
-            },
+            reason: telemetry_enabled_reason(),
             endpoint_configured,
         },
         event_count: contract.events.len(),
@@ -140,7 +136,7 @@ pub async fn record_telemetry_event(
             ok: true,
             accepted: true,
             emitted: false,
-            reason: "local product telemetry is off by default".to_string(),
+            reason: telemetry_enabled_reason(),
             outbox_path: None,
             event: None,
         }));
@@ -275,15 +271,68 @@ fn telemetry_outbox_path(state: &AppState) -> PathBuf {
         .unwrap_or_else(|| state.paths.stack_dir.join("telemetry").join("events.jsonl"))
 }
 
+fn telemetry_preference_path() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join(".stack").join("telemetry").join("preference"))
+}
+
+fn parse_bool(value: &str) -> Option<bool> {
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "on" | "yes" | "enabled" => Some(true),
+        "0" | "false" | "off" | "no" | "disabled" => Some(false),
+        _ => None,
+    }
+}
+
+fn read_telemetry_preference() -> Option<bool> {
+    let path = telemetry_preference_path()?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    parse_bool(&raw)
+}
+
+fn do_not_track_set() -> bool {
+    match env::var("DO_NOT_TRACK") {
+        Ok(value) => parse_bool(&value).unwrap_or(!value.trim().is_empty()),
+        Err(_) => false,
+    }
+}
+
+/// Machine-global telemetry preference. Precedence:
+/// DO_NOT_TRACK > STACK_TELEMETRY env > ~/.stack/telemetry/preference > default ON.
 fn local_telemetry_enabled() -> bool {
-    matches!(
-        std::env::var("STACK_TELEMETRY")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "on" | "yes"
-    )
+    if do_not_track_set() {
+        return false;
+    }
+    if let Ok(value) = env::var("STACK_TELEMETRY") {
+        if let Some(parsed) = parse_bool(&value) {
+            return parsed;
+        }
+    }
+    if let Some(pref) = read_telemetry_preference() {
+        return pref;
+    }
+    true
+}
+
+fn telemetry_enabled_reason() -> String {
+    if do_not_track_set() {
+        return "disabled by DO_NOT_TRACK".to_string();
+    }
+    if let Ok(value) = env::var("STACK_TELEMETRY") {
+        if let Some(parsed) = parse_bool(&value) {
+            return format!(
+                "{} by STACK_TELEMETRY={}",
+                if parsed { "enabled" } else { "disabled" },
+                value.trim()
+            );
+        }
+    }
+    match read_telemetry_preference() {
+        Some(true) => "enabled by ~/.stack/telemetry/preference".to_string(),
+        Some(false) => "disabled by ~/.stack/telemetry/preference".to_string(),
+        None => "enabled by default (anonymous; disable with `stack telemetry off`)".to_string(),
+    }
 }
 
 fn target_triple() -> String {

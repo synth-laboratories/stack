@@ -25,9 +25,9 @@ await withStackd({ telemetry: "0", outboxPath }, async () => {
 
   if (!status.ok) failures.push("status ok=false")
   if (status.schema_version !== 1) failures.push(`unexpected schema ${status.schema_version}`)
-  if (status.local_product_telemetry.enabled) failures.push("local telemetry should default off")
-  if (status.local_product_telemetry.default !== "off") failures.push("default local telemetry should be off")
-  if (status.event_count !== 15) failures.push(`expected 15 events, got ${status.event_count}`)
+  if (status.local_product_telemetry.enabled) failures.push("telemetry should be disabled with STACK_TELEMETRY=0")
+  if (status.local_product_telemetry.default !== "on") failures.push("default local telemetry should be on")
+  if (status.event_count !== 16) failures.push(`expected 16 events, got ${status.event_count}`)
   for (const required of ["stack_download_clicked", "stack_receipt_created", "stack_update_check"]) {
     if (!names.has(required)) failures.push(`missing event ${required}`)
   }
@@ -39,9 +39,9 @@ await withStackd({ telemetry: "0", outboxPath }, async () => {
     name: "stack_update_check",
     payload: { requested_channel: "nightly", status: "current" },
   }, baseUrl)
-  if (!skipped.accepted) failures.push("default-off telemetry event should validate")
-  if (skipped.emitted) failures.push("default-off telemetry event should not emit")
-  if (existsSync(outboxPath)) failures.push("default-off telemetry wrote an outbox event")
+  if (!skipped.accepted) failures.push("disabled telemetry event should validate")
+  if (skipped.emitted) failures.push("disabled telemetry event should not emit")
+  if (existsSync(outboxPath)) failures.push("disabled telemetry wrote an outbox event")
 })
 
 await withStackd({ telemetry: "1", outboxPath }, async () => {
@@ -87,7 +87,7 @@ await withStackd({ telemetry: "1", outboxPath }, async () => {
     proof_dir: proofDir,
     outbox_path: outboxPath,
     emitted_rows: 1,
-    default_local_product_telemetry: "off",
+    default_local_product_telemetry: "on",
   }, null, 2))
 
 async function waitForStackd(baseUrl: string): Promise<void> {

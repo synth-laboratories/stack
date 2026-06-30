@@ -2,6 +2,11 @@ import { existsSync, readFileSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { defaultCodexPricing, type CodexModelPricing } from "./codex/usage-cost.js"
 import { loadOpenAiPricing } from "./codex/openai-pricing.js"
+import { resolveTelemetryEnabled } from "./telemetry.js"
+
+export type StackTelemetryConfig = {
+  enabled: boolean
+}
 
 const DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
 const DEFAULT_CODEX_REASONING_EFFORT = "medium"
@@ -102,6 +107,7 @@ export type StackConfig = {
   initialPromptFile?: string
   autoSubmitInitialPrompt: boolean
   voice: StackVoiceConfig
+  telemetry: StackTelemetryConfig
 }
 
 type StackConfigFile = {
@@ -128,6 +134,9 @@ type StackConfigFile = {
     stt_model_openai?: string
     language?: string
     env_file?: string
+  }
+  telemetry?: {
+    enabled?: boolean
   }
 }
 
@@ -263,6 +272,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
       : undefined,
     autoSubmitInitialPrompt: process.env.STACK_AUTOSUBMIT === "1",
     voice: readVoiceConfig(appRoot, fileConfig),
+    telemetry: { enabled: resolveTelemetryEnabled(fileConfig.telemetry?.enabled ?? true) },
   }
 }
 

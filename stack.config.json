@@ -10,6 +10,9 @@
     "language": "en",
     "env_file": ".stack/voice.env"
   },
+  "telemetry": {
+    "enabled": true
+  },
   "environments": {
     "dev": {
       "label": "Dev",

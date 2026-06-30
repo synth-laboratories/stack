@@ -1,9 +1,9 @@
 {
   "schema_version": 1,
-  "default_local_product_telemetry": "off",
+  "default_local_product_telemetry": "on",
   "identity_policy": {
     "signed_in": "backend_authenticated_user_org",
-    "signed_out": "no_local_product_events_unless_opted_in",
+    "signed_out": "anonymous_resettable_install_id",
     "public_acquisition": "request_level_or_short_retention_hmac"
   },
   "forbidden_fields": [
@@ -111,6 +111,12 @@
       "class": "local_product_opt_in",
       "owner": "stackd",
       "payload": ["channel", "version", "target", "harness", "successor_role"]
+    },
+    {
+      "name": "stack_session_started",
+      "class": "local_product_opt_in",
+      "owner": "stackd",
+      "payload": ["channel", "version", "target", "install_id", "auth_state"]
     }
   ]
 }
