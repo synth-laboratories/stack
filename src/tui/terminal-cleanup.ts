@@ -1,6 +1,7 @@
 import type { CliRenderer } from "@opentui/core"
 
 const TERMINAL_RESET_SEQUENCES = [
+  "\u001b[?2004l",
   "\u001b[?1000l",
   "\u001b[?1002l",
   "\u001b[?1003l",

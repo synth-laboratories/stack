@@ -1,5 +1,5 @@
-import { stackdUpdateMetaThreadGoal } from "../client/stackd.js"
-import { isCursorHarness, type StackConfig } from "../config.js"
+import { stackdCreateMetaThread, stackdUpdateMetaThreadGoal } from "../client/stackd.js"
+import { harnessModel, isCursorHarness, type StackConfig } from "../config.js"
 import { emptyGoalContext, mergeGoalContext, type CodexGoalSnapshot } from "../codex/goal-context.js"
 import { CodexAppServerSession } from "../codex/app-server-session.js"
 import {
@@ -26,7 +26,7 @@ import {
 } from "../goal-session.js"
 import { mergeMetaThreadGoalContext, readMetaThreadManifest } from "../meta-thread-goal.js"
 import { readThreadMetaEvents } from "../thread-events.js"
-import type { StackLocalSession } from "../session.js"
+import { writeSessionLog, type StackLocalSession } from "../session.js"
 
 export type GoalSlashRunContext = {
   config: StackConfig
@@ -248,11 +248,47 @@ function recordGoalLifecycleEvent(
   })
 }
 
+async function ensureMetaThreadBound(
+  ctx: GoalSlashRunContext,
+  state: GoalSlashAppState,
+  objective: string,
+): Promise<void> {
+  if (ctx.session.metaThreadId) return
+  const title = objective.length > 80 ? `${objective.slice(0, 77)}...` : objective
+  const created = await stackdCreateMetaThread({
+    title,
+    thread_id: ctx.session.id,
+    role: "implement",
+    model: harnessModel(ctx.config),
+    reasoning_effort: ctx.config.codexReasoningEffort,
+    harness: ctx.config.harness,
+    active_goal: { objective, status: "active", acceptance_criteria: [], blockers: [] },
+  })
+  ctx.session.metaThreadId = created.id
+  ctx.session.segmentId = created.head_segment_id
+  ctx.session.segmentRole = "implement"
+  state.metaThreadManifest = created
+  state.goalContext = mergeMetaThreadGoalContext(state.goalContext, created)
+  await writeSessionLog(ctx.session, ctx.config.sessionLogDir, {
+    codexModel: harnessModel(ctx.config),
+    pricingRows: ctx.config.codexPricing,
+  })
+}
+
 async function runMetaThreadGoalAction(
   ctx: GoalSlashRunContext,
   state: GoalSlashAppState,
   action: GoalSlashAction,
 ): Promise<string> {
+  if (action.action === "set") {
+    await ensureMetaThreadBound(ctx, state, action.objective)
+  } else if (!ctx.session.metaThreadId) {
+    if (action.action === "panel" || action.action === "show") {
+      return "no active goal\nnext: /goal <objective>"
+    }
+    throw new Error("no active goal · start one with /goal <objective>")
+  }
+
   const metaThreadId = ctx.session.metaThreadId
   if (!metaThreadId) {
     throw new Error("no meta-thread bound · start a goal-first session or use ChatGPT harness for native Codex goals")

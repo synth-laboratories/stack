@@ -1,0 +1,84 @@
+#!/usr/bin/env expect
+
+# PTY integration smoke for Stack TUI paste (bracketed + inline multi-line).
+# Playwright cannot drive a terminal TUI; expect is Stack's E2E harness.
+
+set timeout 60
+set smoke_dir "/tmp/stack-tui-input-paste-smoke"
+set repo_root [pwd]
+set output_log "$smoke_dir/output.log"
+set paste_log "$smoke_dir/paste.log"
+set paste_marker "STACK_TUI_PASTE_SMOKE_MARKER"
+
+source [file join $repo_root scripts tui_smoke_common.tcl]
+stack_tui_smoke_env $repo_root $smoke_dir
+
+set env(STACK_CODEX_COMMAND) "bun"
+set env(STACK_CODEX_ARGS) "run $repo_root/scripts/fake_codex_jsonl.ts"
+set env(STACK_TUI_PASTE_SMOKE_FILE) $paste_log
+
+file delete -force $paste_log
+log_file $output_log
+
+proc stack_tui_focus_agent {} {
+  global spawn_id
+  foreach _ {1 2 3 4 5} {
+    send -i $spawn_id -- "\t"
+    after 60
+  }
+}
+
+proc stack_tui_read_paste_log {} {
+  global paste_log
+  if {![file exists $paste_log]} {
+    return ""
+  }
+  set handle [open $paste_log r]
+  set text [read $handle]
+  close $handle
+  return $text
+}
+
+spawn ./bin/stack
+set sid $spawn_id
+stty rows 45 columns 160 < $spawn_out(slave,name)
+
+expect {
+  -re {Build anything|Ask Codex|Message gardener} {}
+  timeout {
+    puts stderr "timed out waiting for stack input prompt"
+    exit 1
+  }
+}
+
+stack_tui_focus_agent
+after 250
+
+set bracketed_paste "\x1b\[200~/goal $paste_marker line one\n/goal criteria add $paste_marker line two\x1b\[201~"
+send -i $sid -- $bracketed_paste
+after 800
+
+set pasted [stack_tui_read_paste_log]
+if {[string first $paste_marker $pasted] < 0} {
+  puts stderr "bracketed paste was not handled by Stack (paste log empty or missing marker)"
+  puts stderr "paste log: $pasted"
+  exit 1
+}
+
+send -i $sid -- "\r"
+after 800
+
+set output [stack_tui_read_output_log $output_log]
+if {[string first "goal set" $output] < 0 && [string first "goal failed" $output] < 0} {
+  puts stderr "expected goal slash feedback after pasted /goal submit"
+  exit 1
+}
+
+send -i $sid -- "\033"
+after 150
+stack_tui_kill_spawned_stack
+
+set output [stack_tui_read_output_log $output_log]
+stack_tui_assert_no_crash_artifacts $output
+
+puts "stack_tui_input_paste_smoke_ok"

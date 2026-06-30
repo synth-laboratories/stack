@@ -1,11 +1,13 @@
 import {
   Box,
   createCliRenderer,
+  decodePasteBytes,
   StyledText,
   Text,
   dim,
   fg,
   type CliRenderer,
+  type PasteEvent,
   type TextChunk,
 } from "@opentui/core"
 import { renderAgentContextStyled } from "./context-rail.js"
@@ -308,6 +310,14 @@ import {
 import { activeGoalModeSnapshot, isGoalMode } from "./goal-mode.js"
 import { goalShutterLineCount, renderGoalShutter } from "./goal-shutter.js"
 import {
+  consumeBracketedPasteSequences,
+  ENABLE_BRACKETED_PASTE,
+  handleRawTextInputSequence,
+  isRawEnterSequence,
+  normalizePasteText,
+  splitSubmitLines,
+} from "./input-paste.js"
+import {
   completeSlashMenuSelection,
   dispatchSlashCommand,
   isGoalSlashCommand,
@@ -412,6 +422,7 @@ type AppState = {
   goalShutterScrollPinned: boolean
   goalMonitorAutoEnabledObjective?: string
   goalModeProfileHintObjective?: string
+  pasteAccumulator?: string
   toolLogs: ToolLog[]
   subagentLogs: SubagentLog[]
   history: StackSessionSummary[]
@@ -1230,6 +1241,19 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     ],
   })
 
+  const onPaste = (event: PasteEvent) => {
+    const paste = normalizePasteText(decodePasteBytes(event.bytes))
+    if (!paste) return
+    appendPasteToFocusedBuffer(state, paste, remount)
+    event.preventDefault()
+    event.stopPropagation()
+  }
+  if (typeof renderer.keyInput.prependListener === "function") {
+    renderer.keyInput.prependListener("paste", onPaste)
+  } else {
+    renderer.keyInput.on("paste", onPaste)
+  }
+
   view = mountView(renderer, options, state, undefined)
   remount = () => {
     view = mountView(renderer, options, state, view)
@@ -1279,6 +1303,18 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   }, 120_000)
 
   registerFatalProcessHandlers(shutdown)
+  try {
+    process.stdout.write(ENABLE_BRACKETED_PASTE)
+  } catch {
+    // Best-effort; paste still works for inline multi-line chunks when supported.
+  }
+  shutdown.register(() => {
+    try {
+      process.stdout.write("\x1b[?2004l")
+    } catch {
+      // ignore
+    }
+  })
   registerRendererShutdown(shutdown, renderer, [spinnerInterval, optimizerInterval, projectsInterval, rateLimitsInterval], [
     () => {
       void codexSessionHandle.session?.close()
@@ -2688,7 +2724,12 @@ function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
     }
     state.goalModeProfileHintObjective = objective
   }
-  if (!state.goalShutterWorkerPeek && state.focusMode === "agent" && state.inputBuffer.length === 0) {
+  if (
+    !state.goalShutterWorkerPeek &&
+    state.focusMode === "agent" &&
+    state.inputBuffer.length === 0 &&
+    state.monitorInputBuffer.length === 0
+  ) {
     state.focusMode = "monitor"
     state.monitorWorkerTargetId = options.session.id
   }
@@ -3311,32 +3352,28 @@ function submitGoalSlashIfNeeded(
   refresh: () => void,
   clearBuffers: () => void,
 ): boolean {
-  if (!isGoalSlashCommand(prompt)) return false
-  const args = prompt.trim().slice("/goal".length).trim()
+  const lines = splitSubmitLines(prompt)
+  if (lines.length === 0) return false
+  if (!lines.every(isGoalSlashCommand)) return false
+
   clearBuffers()
-  if (!args) {
-    state.focusMode = "goal"
-    openGoalPanel(state)
-    void refreshGoalPanelState(
-      { config: options.config, session: options.session },
-      state,
-      codexSessionHandle.session,
-    ).finally(refresh)
-    return true
-  }
   const codexSession =
     codexSessionHandle.session instanceof CodexAppServerSession
       ? codexSessionHandle.session
       : undefined
-  void runGoalSlashCommand(
-    prompt,
-    { config: options.config, session: options.session },
-    state,
-    codexSession,
-    codexSessionHandle.session,
-    refresh,
-    (message) => appendStackBlock(state.blocks, message),
-  )
+  const ctx = { config: options.config, session: options.session }
+  const feedback = (message: string) => appendStackBlock(state.blocks, message)
+
+  for (const line of lines) {
+    const args = line.slice("/goal".length).trim()
+    if (!args) {
+      state.focusMode = "goal"
+      openGoalPanel(state)
+      void refreshGoalPanelState(ctx, state, codexSessionHandle.session).finally(refresh)
+      continue
+    }
+    void runGoalSlashCommand(line, ctx, state, codexSession, codexSessionHandle.session, refresh, feedback)
+  }
   return true
 }
 
@@ -3851,16 +3888,6 @@ function isEnterKey(key: StackKeyEvent): boolean {
   )
 }
 
-function isRawEnterSequence(sequence: string): boolean {
-  return (
-    sequence === "\r" ||
-    sequence === "\n" ||
-    sequence === "\r\n" ||
-    sequence === "\x1bOM" ||
-    sequence === "\x1b[13~"
-  )
-}
-
 function handleRawAgentInput(
   sequence: string,
   state: AppState,
@@ -3869,45 +3896,19 @@ function handleRawAgentInput(
   refresh: () => void,
 ): boolean {
   if (state.focusMode !== "agent") return false
-
-  if (sequence === "\n" || sequence === "\x0a") {
-    state.inputBuffer += "\n"
-    refresh()
-    return true
-  }
-
-  if (isRawEnterSequence(sequence)) {
-    return submit()
-  }
-
-  if (sequence === "\t" || sequence === "\x1b") {
-    return false
-  }
-
-  // Shift+V arrives as raw "V" on the gardener thread — defer to parsed keypress.
-  if (sequence === "V" && activeSessionId === state.gardenerThreadId) {
-    return false
-  }
-
-  if (state.status === "running" && sequence !== "\x7f" && sequence !== "\b" && !isPrintableInput(sequence)) {
-    return false
-  }
-
-  if (sequence === "\x7f" || sequence === "\b") {
-    const previous = state.inputBuffer
-    state.inputBuffer = state.inputBuffer.slice(0, -1)
-    noteInputBufferEdit(state, previous, state.inputBuffer)
-    refresh()
-    return true
-  }
-
-  if (!isPrintableInput(sequence)) return false
-
-  const previous = state.inputBuffer
-  state.inputBuffer += sequence
-  noteInputBufferEdit(state, previous, state.inputBuffer)
-  refresh()
-  return true
+  return handleRawTextInputSequence({
+    sequence,
+    readBuffer: () => state.inputBuffer,
+    writeBuffer: (next) => {
+      noteInputBufferEdit(state, state.inputBuffer, next)
+      state.inputBuffer = next
+    },
+    submit,
+    refresh,
+    deferSequence: (chunk) => chunk === "V" && activeSessionId === state.gardenerThreadId,
+    blockWhileRunning: true,
+    isRunning: state.status === "running",
+  })
 }
 
 function handleRawMonitorInput(
@@ -3917,36 +3918,16 @@ function handleRawMonitorInput(
   refresh: () => void,
 ): boolean {
   if (state.focusMode !== "monitor") return false
-
-  if (sequence === "\n" || sequence === "\x0a") {
-    state.monitorInputBuffer += "\n"
-    refresh()
-    return true
-  }
-
-  if (isRawEnterSequence(sequence)) {
-    return submit()
-  }
-
-  if (sequence === "\t" || sequence === "\x1b") {
-    return false
-  }
-
-  if (sequence === "\x7f" || sequence === "\b") {
-    const previous = state.monitorInputBuffer
-    state.monitorInputBuffer = state.monitorInputBuffer.slice(0, -1)
-    noteInputBufferEdit(state, previous, state.monitorInputBuffer)
-    refresh()
-    return true
-  }
-
-  if (!isPrintableInput(sequence)) return false
-
-  const previous = state.monitorInputBuffer
-  state.monitorInputBuffer += sequence
-  noteInputBufferEdit(state, previous, state.monitorInputBuffer)
-  refresh()
-  return true
+  return handleRawTextInputSequence({
+    sequence,
+    readBuffer: () => state.monitorInputBuffer,
+    writeBuffer: (next) => {
+      noteInputBufferEdit(state, state.monitorInputBuffer, next)
+      state.monitorInputBuffer = next
+    },
+    submit,
+    refresh,
+  })
 }
 
 function handleRawGardenerInput(
@@ -3956,44 +3937,91 @@ function handleRawGardenerInput(
   refresh: () => void,
 ): boolean {
   if (state.focusMode !== "gardener") return false
+  return handleRawTextInputSequence({
+    sequence,
+    readBuffer: () => state.gardenerInputBuffer,
+    writeBuffer: (next) => {
+      noteInputBufferEdit(state, state.gardenerInputBuffer, next)
+      state.gardenerInputBuffer = next
+    },
+    submit,
+    refresh,
+    deferSequence: (chunk) => chunk === "V",
+  })
+}
 
-  if (sequence === "\n" || sequence === "\x0a") {
-    state.gardenerInputBuffer += "\n"
-    refresh()
-    return true
+function appendPasteToFocusedBuffer(state: AppState, paste: string, refresh: () => void): void {
+  if (state.focusMode === "goal") {
+    state.focusMode = isGoalMode(state) ? "monitor" : "agent"
+  } else if (
+    state.focusMode !== "agent" &&
+    state.focusMode !== "monitor" &&
+    state.focusMode !== "gardener"
+  ) {
+    state.focusMode = "agent"
   }
-
-  if (isRawEnterSequence(sequence)) {
-    return submit()
-  }
-
-  if (sequence === "\t" || sequence === "\x1b") {
-    return false
-  }
-
-  // Shift+V arrives as raw "V" — defer to parsed keypress/keyrelease for voice hold.
-  if (sequence === "V") {
-    return false
-  }
-
-  if (sequence === "\x7f" || sequence === "\b") {
-    const previous = state.gardenerInputBuffer
-    state.gardenerInputBuffer = state.gardenerInputBuffer.slice(0, -1)
-    noteInputBufferEdit(state, previous, state.gardenerInputBuffer)
-    refresh()
-    return true
-  }
-
-  if (!isPrintableInput(sequence)) return false
-
-  const previous = state.gardenerInputBuffer
-  state.gardenerInputBuffer += sequence
-  noteInputBufferEdit(state, previous, state.gardenerInputBuffer)
+  const previous = activeInputBuffer(state)
+  const next = `${previous}${paste}`
+  setActiveInputBuffer(state, next)
+  noteInputBufferEdit(state, previous, next)
   refresh()
-  return true
 }
 
 function handleRawInput(
+  sequence: string,
+  options: StackAppOptions,
+  state: AppState,
+  renderer: CliRenderer,
+  submit: () => boolean,
+  submitMonitor: () => boolean,
+  submitGardener: () => boolean,
+  refresh: () => void,
+  refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+  codexSessionHandle: { session?: HarnessSession },
+  refreshHarnessAccount: () => Promise<void>,
+  refreshOptimizers: () => Promise<void>,
+  refreshRemoteAccount: () => Promise<void>,
+  refreshRemoteUsage: () => Promise<void>,
+  refreshRemoteResearch: () => Promise<void>,
+  refreshRemoteProjects: () => Promise<void>,
+  refreshHostedOptimizers: () => Promise<void>,
+  refreshRemoteOpsPanel: () => Promise<void>,
+  cycleStackEnvironmentFromUi: (direction: number) => Promise<void>,
+): boolean {
+  const pasteResult = consumeBracketedPasteSequences(
+    state.pasteAccumulator,
+    sequence,
+    (paste) => appendPasteToFocusedBuffer(state, paste, refresh),
+    (chunk) =>
+      handleRawInputInner(
+        chunk,
+        options,
+        state,
+        renderer,
+        submit,
+        submitMonitor,
+        submitGardener,
+        refresh,
+        refreshHistory,
+        refreshMetaEvents,
+        codexSessionHandle,
+        refreshHarnessAccount,
+        refreshOptimizers,
+        refreshRemoteAccount,
+        refreshRemoteUsage,
+        refreshRemoteResearch,
+        refreshRemoteProjects,
+        refreshHostedOptimizers,
+        refreshRemoteOpsPanel,
+        cycleStackEnvironmentFromUi,
+      ),
+  )
+  state.pasteAccumulator = pasteResult.accumulator
+  return pasteResult.handled
+}
+
+function handleRawInputInner(
   sequence: string,
   options: StackAppOptions,
   state: AppState,
@@ -4328,15 +4356,6 @@ function rawSequenceKeyName(sequence: string): string | undefined {
   if (sequence === "\x1b[H" || sequence === "\x1b[1~") return "home"
   if (sequence === "\x1b[F" || sequence === "\x1b[4~") return "end"
   return undefined
-}
-
-function isPrintableInput(sequence: string): boolean {
-  for (const char of sequence) {
-    const code = char.codePointAt(0)
-    if (code === undefined) return false
-    if (code < 32 || code === 127) return false
-  }
-  return sequence.length > 0
 }
 
 function isGardenerSession(options: StackAppOptions, state: AppState): boolean {

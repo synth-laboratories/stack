@@ -68,11 +68,16 @@
     "smoke:meta-threads:concurrency": "bun run scripts/smoke_meta_threads_concurrency.ts",
     "smoke:ui:meta-thread-goal": "bun run scripts/smoke_ui_meta_thread_goal.ts",
     "smoke:ui:agent-view": "bun run scripts/smoke_ui_agent_view.ts",
+    "smoke:tui:input-paste": "bun run scripts/smoke_tui_input_paste.ts && bun run scripts/smoke_tui_input_paste_integration.ts && bun run smoke:tui:e2e",
+    "smoke:tui:e2e": "bun run scripts/tui_e2e/run.ts paste",
+    "smoke:tui:e2e:boot": "bun run scripts/tui_e2e/run.ts boot",
+    "smoke:tui:e2e:ghostty": "bun run scripts/tui_e2e/run.ts paste ghostty",
+    "smoke:tui:e2e:all": "bun run smoke:tui:e2e:boot && bun run smoke:tui:e2e && STACK_TUI_E2E_BACKEND=ghostty bun run smoke:tui:e2e",
     "prove:goal-first-e2e": "bun run scripts/prove_goal_first_e2e.ts",
     "smoke:mcp:local-threads": "bun run scripts/smoke_mcp_local_threads.ts",
     "smoke:mcp:http": "bun run scripts/smoke_mcp_http.ts",
     "quality:static": "bun run check && bun run release-check",
-    "smoke:acceptance:t0": "bun run check && bun run smoke:voice:tui && bun run smoke:gardener:v1 && bun run smoke:guidance:l2 && bun run smoke:monitor:style-steer && bun run smoke:goal-shutter && bun run smoke:sidecar-chat && bun run smoke:bombadil:b0",
+    "smoke:acceptance:t0": "bun run check && bun run smoke:voice:tui && bun run smoke:gardener:v1 && bun run smoke:guidance:l2 && bun run smoke:monitor:style-steer && bun run smoke:goal-shutter && bun run smoke:sidecar-chat && bun run smoke:tui:input-paste && bun run smoke:bombadil:b0",
     "smoke:acceptance:t1": "bun run smoke:stackd && bun run smoke:mcp:local-threads && bun run smoke:voice:gardener-demo && bun run smoke:observability",
     "quality:dev": "bun run smoke:acceptance:t0",
     "quality:local": "bun run smoke:acceptance:t1",
@@ -106,6 +111,9 @@
     "@opentui/core": "^0.4.1"
   },
   "devDependencies": {
+    "@termless/core": "^0.7.0",
+    "@termless/ghostty": "^0.4.0",
+    "@termless/xtermjs": "^0.4.0",
     "@types/bun": "^1.3.6",
     "typescript": "^6.0.3"
   }

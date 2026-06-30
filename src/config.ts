@@ -195,10 +195,14 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
 
   // Data home (.stack) resolves like the Rust core's app_root (STACK_ROOT || cwd),
   // so TS and stackd agree on a per-workspace .stack rather than the install dir.
-  // Prefer an existing workspace ./.stack; otherwise the workspace cwd. Never the
-  // install dir (appRoot), which would scatter user state into the binary's home.
+  // Prefer an explicitly configured workingDir's ./.stack if present; otherwise
+  // the workspace cwd. Never an implicit workingDir==appRoot default, which would
+  // scatter user state into the binary's home whenever the checkout happens to
+  // already have a .stack dir (e.g. dev-from-checkout with cwd outside the repo).
+  const explicitWorkingDir = process.env.STACK_WORKING_DIR ?? fileConfig.workingDir
   const workspaceHome = process.env.STACK_ROOT ?? process.cwd()
-  const stackDataHome = existsSync(join(workingDir, ".stack")) ? workingDir : workspaceHome
+  const stackDataHome =
+    explicitWorkingDir && existsSync(join(workingDir, ".stack")) ? workingDir : workspaceHome
   const sessionLogDir = process.env.STACK_SESSION_DIR ?? join(stackDataHome, ".stack", "sessions")
   const stackDataRoot = stackDataRootFromSessionDir(sessionLogDir) ?? stackDataHome
 
