@@ -78,6 +78,7 @@ import {
   mergeMetaThreadGoalContext,
   metaThreadGoalStripLines,
   readMetaThreadManifest,
+  reconcileMetaThreadGoalFromCodex,
 } from "../meta-thread-goal.js"
 import type { StackdMetaThreadManifest } from "../client/stackd.js"
 import {
@@ -292,6 +293,7 @@ import {
   type TranscriptRenderOptions,
   type TranscriptViewport,
 } from "./transcript.js"
+import { readRolloutTranscript } from "./rollout-transcript.js"
 import { anchorTranscriptBox } from "./transcript-slot.js"
 import type { SubagentLog } from "./subagents.js"
 import { upsertSubagentLog } from "./subagents.js"
@@ -7652,7 +7654,10 @@ async function refreshMetaThreadGoal(
     refresh?.()
     return
   }
-  const manifest = await readMetaThreadManifest(options.config.stackDataRoot, metaThreadId)
+  const read = await readMetaThreadManifest(options.config.stackDataRoot, metaThreadId)
+  // Sync codex thread goal → meta goal: the agent marks completion on its own thread goal, which
+  // would otherwise leave this manifest stuck "active". Persists divergence so all readers agree.
+  const manifest = await reconcileMetaThreadGoalFromCodex(metaThreadId, options.session.codexThreadId, read)
   state.metaThreadManifest = manifest
   if (manifest) {
     state.goalContext = mergeMetaThreadGoalContext(state.goalContext, manifest)
@@ -7879,6 +7884,7 @@ async function activateWorkerSessionForGardener(
     await refreshAgentContextFromSession(options, state, refresh, (limits) => {
       void observeCodexAuthState(options.config, options.session.id, limits, state)
     })
+    await hydrateTranscriptFromRollout(options, state)
     state.monitorSnapshot = refreshMonitorSnapshot(options.config.stackDataRoot, options.session.id)
     state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
     syncMonitorRightPanel(state)
@@ -9756,6 +9762,7 @@ async function loadSelectedSession(
       await refreshAgentContextFromSession(options, state, refresh, (limits) => {
         void observeCodexAuthState(options.config, options.session.id, limits, state)
       })
+      await hydrateTranscriptFromRollout(options, state)
     }
     if (mode === "fork") {
       state.lastSessionLogPath = await writeSessionLog(options.session, options.config.sessionLogDir, {
@@ -9778,6 +9785,24 @@ function forkSession(current: StackLocalSession, loaded: StackLocalSession): Sta
     startedAt: new Date().toISOString(),
     turns: loaded.turns.map((turn) => ({ ...turn, selectedPaths: [...turn.selectedPaths] })),
   }
+}
+
+/**
+ * Replaces the visible transcript with the real Codex thread, read from its rollout on disk. The
+ * local session-log turns are an incomplete shadow (often empty for workers driven elsewhere), so
+ * on resume the chat must be a view over the canonical thread, not that shadow. No-op when the
+ * thread has no resolvable rollout (e.g. exec-mode threads) — the local render is kept in that case.
+ */
+async function hydrateTranscriptFromRollout(options: StackAppOptions, state: AppState): Promise<void> {
+  const threadId = options.session.codexThreadId
+  if (!threadId) return
+  const rollout = await readRolloutTranscript(threadId)
+  if (!rollout || rollout.blocks.length === 0) return
+  state.blocks = rollout.blocks
+  state.toolLogs = rollout.tools
+  state.subagentLogs = rollout.subagents
+  state.selectedToolIndex = clampIndex(rollout.tools.length - 1, rollout.tools.length)
+  state.agentScrollOffset = 0
 }
 
 function restoreHarnessFromSession(options: StackAppOptions, state: AppState): void {
@@ -9884,6 +9909,7 @@ async function restoreWorkerSessionAfterResume(
   await refreshAgentContextFromSession(options, state, refresh, (limits) => {
     void observeCodexAuthState(options.config, options.session.id, limits, state)
   })
+  await hydrateTranscriptFromRollout(options, state)
   state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
   refreshMetaEvents()
   state.monitorSnapshot = refreshMonitorSnapshot(options.config.stackDataRoot, options.session.id)

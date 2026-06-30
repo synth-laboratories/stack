@@ -242,6 +242,21 @@ function truncateGoalLine(text: string, maxWidth: number): string {
   return `${text.slice(0, Math.max(0, maxWidth - 1))}…`
 }
 
+/**
+ * Single, non-retrying read of a thread's Codex goal from its rollout — the authoritative,
+ * agent-owned goal state (it captures the latest `update_goal` status). Used by the meta-goal sync
+ * layer, which runs on hot paths (post-turn / resume) and must not block on the retry loop.
+ */
+export async function readCodexGoalSnapshotOnce(threadId: string): Promise<CodexGoalSnapshot | undefined> {
+  const sessionPath = await resolveCodexSessionPath(threadId)
+  if (!sessionPath) return undefined
+  try {
+    return parseGoalFromSessionJsonl(await readFile(sessionPath, "utf8"))
+  } catch {
+    return undefined
+  }
+}
+
 export async function readGoalFromSession(threadId: string): Promise<CodexGoalSnapshot | undefined> {
   for (let attempt = 0; attempt < 6; attempt += 1) {
     const sessionPath = await resolveCodexSessionPath(threadId)

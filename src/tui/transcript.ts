@@ -755,7 +755,7 @@ function updateLiveThinking(
   blocks[index] = { ...current, text, startedAt: current.startedAt ?? startedAt }
 }
 
-function finalizeLiveThinking(blocks: TranscriptBlock[], liveThinkingId: { current?: string }): void {
+export function finalizeLiveThinking(blocks: TranscriptBlock[], liveThinkingId: { current?: string }): void {
   if (!liveThinkingId.current) return
   const index = blocks.findIndex((block) => block.id === liveThinkingId.current && block.kind === "thinking")
   if (index >= 0) {
@@ -799,7 +799,7 @@ function noteToolInLiveGroup(
   }
 }
 
-function finalizeLiveToolGroup(blocks: TranscriptBlock[], liveToolGroupId: { current?: string }): void {
+export function finalizeLiveToolGroup(blocks: TranscriptBlock[], liveToolGroupId: { current?: string }): void {
   if (!liveToolGroupId.current) return
   const index = blocks.findIndex((block) => block.id === liveToolGroupId.current && block.kind === "tool_group")
   if (index >= 0) {
@@ -847,7 +847,7 @@ function noteSubagentInLiveGroup(
   }
 }
 
-function finalizeLiveSubagentGroup(blocks: TranscriptBlock[], liveSubagentGroupId: { current?: string }): void {
+export function finalizeLiveSubagentGroup(blocks: TranscriptBlock[], liveSubagentGroupId: { current?: string }): void {
   if (!liveSubagentGroupId.current) return
   const index = blocks.findIndex((block) => block.id === liveSubagentGroupId.current && block.kind === "subagent_group")
   if (index >= 0) {

@@ -29,6 +29,8 @@
     "smoke:tui:resilience": "expect scripts/smoke_tui_resilience.expect",
     "smoke:tui:all": "bun run check && expect scripts/smoke_tui_submit.expect && expect scripts/smoke_tui_scroll.expect && bun run scripts/smoke_tui_gepa.ts && expect scripts/smoke_tui_resilience.expect",
     "smoke:transcript": "bun run scripts/smoke_transcript.ts",
+    "smoke:rollout-transcript": "bun run scripts/smoke_rollout_transcript.ts",
+    "smoke:meta-goal-sync": "bun run scripts/smoke_meta_goal_sync.ts",
     "smoke:agent-context": "bun run scripts/smoke_agent_context.ts",
     "smoke:rate-limits": "bun run scripts/smoke_rate_limits.ts",
     "smoke:usage-cost": "bun run scripts/smoke_usage_cost.ts",

@@ -3,9 +3,10 @@ import { join } from "node:path"
 import {
   stackdHealthOk,
   stackdMetaThread,
+  stackdUpdateMetaThreadGoal,
   type StackdMetaThreadManifest,
 } from "./client/stackd.js"
-import { mergeGoalContext, type CodexGoalSnapshot } from "./codex/goal-context.js"
+import { mergeGoalContext, readCodexGoalSnapshotOnce, type CodexGoalSnapshot } from "./codex/goal-context.js"
 
 export type MetaThreadActiveGoal = {
   objective: string
@@ -31,6 +32,73 @@ export async function readMetaThreadManifest(
     return JSON.parse(text) as StackdMetaThreadManifest
   } catch {
     return undefined
+  }
+}
+
+/**
+ * Maps the Codex thread-goal status vocabulary (active / paused / complete) onto the meta-thread
+ * `active_goal.status` vocabulary (active / paused / blocked / done / cleared). Codex never emits
+ * blocked or cleared — those are operator-owned on the meta side.
+ */
+export function mapCodexGoalStatusToMeta(status: string | undefined): string | undefined {
+  const normalized = status?.trim().toLowerCase()
+  if (!normalized) return undefined
+  if (normalized === "complete" || normalized === "completed" || normalized === "done") return "done"
+  if (normalized === "paused") return "paused"
+  if (normalized === "active" || normalized === "in_progress" || normalized === "running") return "active"
+  return normalized
+}
+
+/**
+ * Decides the meta-goal status given the authoritative Codex thread-goal status. Direction is
+ * codex → meta: the agent owns the lifecycle and marks completion. Precedence:
+ *  - never resurrect an operator-cleared goal;
+ *  - completion (agent-owned, terminal) always propagates;
+ *  - operator-owned holds (paused / blocked) win over a codex "active";
+ *  - otherwise mirror codex.
+ * Returns the desired meta status, or `undefined` when no change is warranted.
+ */
+export function reconcileMetaGoalStatus(
+  codexStatus: string | undefined,
+  metaStatus: string | undefined,
+): string | undefined {
+  const codex = mapCodexGoalStatusToMeta(codexStatus)
+  if (!codex) return undefined
+  const meta = metaStatus?.trim().toLowerCase() || "active"
+  if (meta === "cleared") return undefined
+  if (codex === "done") return meta === "done" ? undefined : "done"
+  if (meta === "paused" || meta === "blocked") return undefined
+  if (codex === meta) return undefined
+  return codex
+}
+
+/**
+ * Sync layer: reconciles a meta-thread's `active_goal` with its worker thread's authoritative Codex
+ * goal, persisting any divergence through stackd so every reader (display, badges, other processes)
+ * sees the truth. The common case — agent calls `update_goal {complete}` without going through a
+ * Stack `/goal` command — would otherwise leave the meta goal stuck "active". No-op when there's no
+ * codex thread, no bound goal, or no divergence. Returns the (possibly updated) manifest.
+ */
+export async function reconcileMetaThreadGoalFromCodex(
+  metaThreadId: string,
+  codexThreadId: string | undefined,
+  manifest: StackdMetaThreadManifest | undefined,
+): Promise<StackdMetaThreadManifest | undefined> {
+  const meta = manifest?.active_goal
+  if (!codexThreadId || !meta?.objective?.trim()) return manifest
+  const codexGoal = await readCodexGoalSnapshotOnce(codexThreadId)
+  const desired = reconcileMetaGoalStatus(codexGoal?.status, meta.status)
+  if (!desired) return manifest
+  try {
+    return await stackdUpdateMetaThreadGoal(metaThreadId, {
+      objective: meta.objective,
+      status: desired,
+      acceptance_criteria: meta.acceptance_criteria,
+      blockers: meta.blockers,
+    })
+  } catch {
+    // stackd unavailable — keep the current manifest and let the next refresh retry the sync.
+    return manifest
   }
 }
 
