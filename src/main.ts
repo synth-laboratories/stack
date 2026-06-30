@@ -7,6 +7,7 @@ import { runDoctor } from "./doctor.js"
 import { detectWorkspace } from "./local/workspace.js"
 import { createSession } from "./session.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
+import { emitSessionFunnel } from "./telemetry/funnel.js"
 import { runStackApp } from "./tui/app.js"
 import { resetTerminalAfterTui } from "./tui/terminal-cleanup.js"
 import { runUpdate } from "./update.js"
@@ -50,6 +51,7 @@ try {
   const workspace = await detectWorkspace(config.workingDir)
   const session = createSession(config.workspaceRoot, harnessSessionCommand(config))
 
+  void emitSessionFunnel()
   await runStackApp({ config, workspace, session })
 } catch (error) {
   resetTerminalAfterTui()
