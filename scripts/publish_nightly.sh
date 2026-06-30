@@ -30,7 +30,8 @@ PUBLIC_DOWNLOAD_BASE="${STACK_RELEASE_DOWNLOAD_BASE:-https://stack.usesynth.ai/r
 PAGES_PROJECT="${STACK_PAGES_PROJECT:-stack-install-host}"
 
 VERSION="$(python3 -c 'import json;print(json.load(open("version.json"))["version"])')"
-CHANNEL="$(python3 -c 'import json;print(json.load(open("version.json"))["channel"])')"
+# Match the packager's channel mapping: stable stays stable, everything else (dev) is the nightly channel.
+CHANNEL="$(python3 -c 'import json;c=json.load(open("version.json"))["channel"];print("stable" if c=="stable" else "nightly")')"
 TAG="v${VERSION}"
 echo "publishing Stack ${TAG} (channel ${CHANNEL})"
 
