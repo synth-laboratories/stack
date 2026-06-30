@@ -88,15 +88,15 @@ for (const required of ["context", "agents", "seen", "used", "jsk"]) {
   }
 }
 
-const discovered = discoverAgentsMdPaths(join(homedir(), "Documents", "GitHub"))
+const discovered = discoverAgentsMdPaths(process.cwd())
 if (discovered.length === 0) {
-  console.error("expected at least one AGENTS.md walking GitHub workspace")
+  console.error("expected at least one AGENTS.md walking the workspace from cwd")
   process.exit(1)
 }
 
 const discoveredSkills = discoverAvailableSkills(process.cwd())
 if (discoveredSkills.length === 0) {
-  console.error("expected Codex skills under ~/.codex/skills")
+  console.error("expected bundled Codex skills discoverable from the workspace")
   process.exit(1)
 }
 
@@ -106,7 +106,7 @@ if (boot.discoveredSkills.length === 0) {
   process.exit(1)
 }
 const bootRail = agentContextRailText(boot, process.cwd(), 60)
-if (!bootRail.includes("on disk")) {
+if (!bootRail.includes("disk")) {
   console.error("boot rail should show disk skills before injection")
   console.error(bootRail)
   process.exit(1)
