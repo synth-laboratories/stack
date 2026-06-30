@@ -26,11 +26,6 @@ expect {
 
 stack_tui_kill_spawned_stack
 
-expect {
-  eof {}
-  timeout {}
-}
-
 set output [stack_tui_read_output_log $output_log]
 stack_tui_assert_no_crash_artifacts $output
 stack_tui_assert_mouse_tracking_disabled

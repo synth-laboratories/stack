@@ -13,13 +13,57 @@ pub async fn doc() -> Json<Value> {
             "/health": {
                 "get": {
                     "summary": "Health and local path metadata",
-                    "responses": { "200": { "description": "stackd is healthy" } }
+                    "responses": { "200": { "description": "stackd is healthy; includes mcp_url when live MCP is enabled" } }
+                }
+            },
+            "/mcp": {
+                "get": {
+                    "summary": "Stack live MCP streamable HTTP discovery",
+                    "responses": { "200": { "description": "MCP server metadata" } }
+                },
+                "post": {
+                    "summary": "Stack live MCP JSON-RPC endpoint",
+                    "responses": { "200": { "description": "JSON-RPC response" }, "503": { "description": "MCP sidecar unavailable" } }
+                }
+            },
+            "/.well-known/mcp.json": {
+                "get": {
+                    "summary": "MCP server discovery document",
+                    "responses": { "200": { "description": "Cursor-compatible MCP discovery JSON" } }
                 }
             },
             "/status": {
                 "get": {
                     "summary": "Return stackd process, runtime, and latest session status",
                     "responses": { "200": { "description": "stackd status snapshot" } }
+                }
+            },
+            "/runtime/factory": {
+                "get": {
+                    "summary": "Return the latest stackd factory runtime snapshot",
+                    "responses": { "200": { "description": "runtime factory snapshot or empty status" } }
+                }
+            },
+            "/runtime/events": {
+                "get": {
+                    "summary": "List durable stackd runtime events",
+                    "parameters": [
+                        { "name": "after_seq", "in": "query", "required": false },
+                        { "name": "limit", "in": "query", "required": false },
+                        { "name": "source", "in": "query", "required": false }
+                    ],
+                    "responses": { "200": { "description": "runtime events" } }
+                },
+                "post": {
+                    "summary": "Append a bounded Stack-owned lever event",
+                    "requestBody": { "required": true, "description": "lever.* event draft; sensor.* writes are rejected" },
+                    "responses": { "200": { "description": "appended event and updated factory snapshot" }, "400": { "description": "invalid event" } }
+                }
+            },
+            "/runtime/tick": {
+                "post": {
+                    "summary": "Run one bounded runtime sensor tick",
+                    "responses": { "200": { "description": "updated factory snapshot" } }
                 }
             },
             "/threads": {

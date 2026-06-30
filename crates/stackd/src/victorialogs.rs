@@ -34,12 +34,15 @@ pub async fn query_logs(
 ) -> Result<VictoriaLogsQueryResponse, String> {
     let base_url = victorialogs_read_url(stack_dir, &request.slot)
         .ok_or_else(|| format!("{} VictoriaLogs URL not configured", request.slot))?;
-    let status = victorialogs_status(stack_dir, &request.slot, &base_url, request.timeout_seconds).await?;
+    let status =
+        victorialogs_status(stack_dir, &request.slot, &base_url, request.timeout_seconds).await?;
     if status.state == VICTORIA_LOGS_STATE_DOWN {
         return Err(format!(
             "{} VictoriaLogs is unhealthy: {}",
             request.slot,
-            status.error.unwrap_or_else(|| "VictoriaLogs unavailable".to_string())
+            status
+                .error
+                .unwrap_or_else(|| "VictoriaLogs unavailable".to_string())
         ));
     }
     let limit = request.limit.clamp(1, request.max_limit.max(1));
@@ -346,7 +349,10 @@ fn vl_insert_url(stack_dir: &Path) -> Option<String> {
         .or_else(|_| env::var("STACK_VICTORIA_LOGS_WRITE_URL"))
         .ok()
         .filter(|value| !value.trim().is_empty())
-        .or_else(|| read_slot_vl_port_for(stack_dir, &safe_slot(&vl_slot())).map(|port| format!("http://127.0.0.1:{port}")))?;
+        .or_else(|| {
+            read_slot_vl_port_for(stack_dir, &safe_slot(&vl_slot()))
+                .map(|port| format!("http://127.0.0.1:{port}"))
+        })?;
     let base = write_url.trim_end_matches('/');
     let separator = if base.contains('?') { "&" } else { "?" };
     if base.contains("/insert/") {

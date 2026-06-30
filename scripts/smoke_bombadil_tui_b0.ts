@@ -4,6 +4,7 @@ import { resolve } from "node:path"
 const port = Number.parseInt(process.env.STACK_BOMBADIL_PORT ?? "8988", 10)
 const proofPath = process.env.STACK_BOMBADIL_PROOF ?? "/tmp/stack-bombadil-b0-proof.json"
 const outputPath = process.env.STACK_BOMBADIL_OUTPUT ?? "/tmp/stack-bombadil-b0"
+const proofTimeoutMs = readPositiveInteger(process.env.STACK_BOMBADIL_B0_TIMEOUT_MS, 180_000)
 const bombadilBin =
   process.env.STACK_BOMBADIL_BIN ??
   resolve(process.cwd(), "../synth-managed-research/tests/property/bombadil")
@@ -79,7 +80,7 @@ async function waitForHealth(serverPort: number): Promise<void> {
 }
 
 async function waitForPassingProof(): Promise<{ message: string }> {
-  const deadline = Date.now() + 420_000
+  const deadline = Date.now() + proofTimeoutMs
   while (Date.now() < deadline) {
     if (bombadilExitCode !== undefined && bombadilExitCode !== 0) {
       throw new Error(`Bombadil exited before proof: ${bombadilExitCode}`)
@@ -92,7 +93,7 @@ async function waitForPassingProof(): Promise<{ message: string }> {
     }
     await sleep(500)
   }
-  throw new Error("Timed out waiting for Bombadil B0 proof")
+  throw new Error(`Timed out waiting ${proofTimeoutMs}ms for Bombadil B0 proof`)
 }
 
 async function readProof(): Promise<
@@ -134,4 +135,10 @@ async function stopChildren(...children: Array<ReturnType<typeof Bun.spawn> | un
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+}
+
+function readPositiveInteger(value: string | undefined, fallback: number): number {
+  if (!value) return fallback
+  const parsed = Number.parseInt(value, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback
 }

@@ -1,23 +1,33 @@
 # Stack
 
-Synth operator cockpit: local OpenTUI + Codex agent pane + Stack MCP for SMR,
-Research Factory, optimizers, containers, and WorkProduct exchange across dev,
-staging, and prod.
+**Top priority:** hyper-productive access to the **full Synth stack** — OSS
+(`synth-optimizers`, synth-dev, StackEval) and hosted (`synth-ai`, `usesynth.ai`) — from
+one cockpit. See [`docs/SYNTH_PRODUCTIVITY.md`](docs/SYNTH_PRODUCTIVITY.md).
+
+**Research engineering cockpit** for Synth: local OpenTUI + Codex agent pane, OSS GEPA
+via `synth-optimizers`, StackEval receipts, and Stack MCP for SMR, Research Factory,
+hosted optimizers, containers, and WorkProduct exchange across dev, staging, and prod.
+
+Stack is designed **for research engineering first** — eval containers, prompt optimization
+loops, and inspectable run artifacts — while remaining usable for everyday software
+engineering. Bundled **`oss-gepa`** and **`synth-via-stack`** skills are first-class; the
+full **`gepa`** skill bridges from the optimizers repo when checked out beside Stack.
 
 **Version:** `stack --version` shows **channel** (`stable` | `dev`) and last public
 **release** on dev builds · [CHANGELOG.md](CHANGELOG.md) · [docs/RELEASE.md](docs/RELEASE.md)
 
 ## Notes
 
-**Status (2026-06-26):** Stack is a **private** Synth Labs repo. There is **no public
-release yet** — no git tag published, no GitHub Release, and no live Homebrew tap.
+**Status (2026-06-29):** Stack is a **private** Synth Labs repo. There is **no public
+release yet** — internal tags may exist, but there is no public GitHub Release
+object and no live Homebrew tap.
 Versioning and tap formulas are **prepared** (`version.json`, `packaging/homebrew/`,
 [docs/RELEASE.md](docs/RELEASE.md)) for when we go public.
 
 | Today | Planned (not live yet) |
 | --- | --- |
-| Private `git clone` + `make install` for teammates with repo access | `brew tap synth-laboratories/tap` + `brew install stack` |
-| **dev** channel on `main` (`make bump-dev`) | **stable** channel on tagged `vX.Y.Z` releases |
+| Private `git clone` + `make install` for teammates with repo access | first-party installer backed by GitHub Release assets |
+| **dev/nightly** channel on `main` (`make bump-dev`) for fast dogfood learning | **stable** channel on tagged `vX.Y.Z` releases for supported public installs |
 | Stack-owned release notes + evidence packets | Public GitHub Release + tap push |
 
 Until the first public release: use **git clone** (below), not Homebrew. Stable channel
@@ -25,6 +35,13 @@ in `version.json` (`release: 0.1.0`) is the intended first public version — no
 externally yet.
 
 - [SMR code TUI sketch](notes/2026-06-19-smr-code.txt)
+- **[Quality guide](docs/QUALITY.md)** — lint, Bombadil, acceptance tiers, StackEval, GameBench launch gates
+- **[Release process](docs/RELEASE.md)** — dev/nightly vs stable, versioning, changelog, promotion
+- **[Launch readiness](docs/LAUNCH_READINESS.md)** — public-safe S0-S9 inventory before dogfood or release
+- **[Nightly 1 packet](docs/NIGHTLY_1.md)** — first nightly launch packet, not launched yet
+- **[Distribution](docs/DISTRIBUTION.md)** — installer/download target contract
+- **[Telemetry](docs/TELEMETRY.md)** — privacy posture and event allowlist
+- **[Synth productivity guide](docs/SYNTH_PRODUCTIVITY.md)** — OSS + hosted workflows Stack must make fast
 
 ## Install
 
@@ -43,19 +60,19 @@ make install
 stack --version
 ```
 
-### Homebrew (planned — after public release)
+### Public installer (planned — after public release)
 
-Not available yet. When the repo is public and `v0.1.0` (or later) is tagged:
+Not available yet. When public release assets are live, the intended default
+path is a first-party installer:
 
 ```bash
-brew tap synth-laboratories/tap
-brew install stack          # stable — tagged public releases
-brew install stack-dev      # dev/nightly — main branch
+curl -fsSL https://stack.usesynth.ai/install.sh | sh
 stack --version
 ```
 
-Maintainer prep lives in `packaging/homebrew/README.md`. Dev channel on main:
-`make bump-dev` · stable cuts: `docs/RELEASE.md`.
+Package-manager channels are deferred until they have their own install, update,
+rollback, and support proof. Dev channel on main: `make bump-dev` · stable cuts:
+`docs/RELEASE.md`.
 
 ### Direct repo launch (no install)
 
@@ -78,10 +95,22 @@ cd ~/Documents/GitHub/stack   # or your clone path
 git pull
 make install
 stack --version
+stack doctor
+stack demo
+stack update --check --manifest packaging/manifests/nightly.example.json
+make smoke-first-run-local
+make smoke-installer-contract
+make smoke-installer-apply-rollback
+make smoke-release-artifact-local
+make smoke-release-site-contract
+make smoke-launch-docs-alignment
+make smoke-telemetry-contract
+make smoke-stackd-telemetry
 ```
 
 **After first public release:** git tags `vX.Y.Z`, GitHub Release notes from
-`CHANGELOG.md`, and Homebrew tap publish — see `docs/RELEASE.md`.
+`CHANGELOG.md`, release assets, and the first-party installer — see
+`docs/RELEASE.md`.
 
 Then from any terminal:
 
@@ -140,32 +169,47 @@ preview/download.
 
 ### stackd local API
 
-`stackd` is a read-only localhost indexer/exporter over `.stack/sessions/*.json`.
-The TUI still writes session files directly, and Codex still owns JSONL
-transcripts under `~/.codex/sessions/`.
+`stackd` is the localhost control plane for local Stack state. It indexes local
+threads, serves Stack MCP, appends Stack-side events, exports traces, and owns
+local Stack persistence for meta-thread and handoff lifecycle resources. Codex
+still owns JSONL transcripts under `~/.codex/sessions/`; Stack projects those
+transcripts into typed stackd views instead of treating them as the Stack state
+owner.
 
 ```bash
 ./bin/stackd serve
 curl -s http://127.0.0.1:8792/health
+curl -s http://127.0.0.1:8792/telemetry/status
+curl -s http://127.0.0.1:8792/.well-known/mcp.json
 bun run smoke:stackd
+bun run smoke:mcp:http
+bun run smoke:stackd:telemetry
 ```
+
+When `stackd` is healthy it also hosts **live Stack MCP** at `http://127.0.0.1:8792/mcp`
+(streamable HTTP). Cursor and other MCP clients can attach to that URL instead of
+stdio `stack-mcp`. The `/health` response includes `mcp_url`; discovery lives at
+`/.well-known/mcp.json`. Disable the sidecar with `STACKD_MCP=0`.
 
 `./bin/stack` auto-starts `stackd` when `/health` is unavailable, exports
 `STACK_API_URL` as `http://127.0.0.1:8792`, and continues without the sidecar if
 startup fails. Logs are written to `.stack/runtime/stackd.log`.
 
-The TUI threads rail and local-thread MCP tools read through stackd first, so
-the API is the normal source of truth for local thread lists, trace, and export.
-If stackd is unavailable, the TUI rail falls back to the local session files as a
-degraded offline path.
+The TUI is a client of stackd for local thread lists, trace, export,
+meta-threads, handoffs, and event streams. It may render cached/degraded views
+when the sidecar is unavailable, but stackd owns local Stack persistence
+mutations. Client code should not directly write stackd-owned resources such as
+`.stack/meta-threads/**`, handoff JSON, handoff artifacts, successor sessions,
+receipts, or update state.
 
-Routes in L1: `/health`, `/threads`, `/threads/:id`,
+Routes in L1: `/health`, `/mcp`, `/.well-known/mcp.json`, `/threads`, `/threads/:id`,
 `/threads/:id/status`, `/threads/:id/events`, `/threads/:id/actors`,
 `/events/stream`,
 `/threads/:id/monitors/:monitorId/pause`,
 `/threads/:id/monitors/:monitorId/resume`,
 `/threads/:id/monitors/:monitorId/mode`, `/threads/:id/trace`,
-`/threads/:id/export`, `/logs/query`, and
+`/threads/:id/export`, `/logs/query`, `/telemetry/status`,
+`/telemetry/events`, and
 `/doc` (`/openapi.json`). Export writes
 `.stack/exports/<session-id>/<stamp>/` with `manifest.json`, redacted
 `session.json`, `metadata.json`, optional `codex.jsonl`, and optional
@@ -198,6 +242,14 @@ to tool/turn triggers, writes durable monitor actor checkpoints, emits
 thread-scoped `monitor.*` events, and shows the latest monitor status in the
 left rail.
 
+**Intended UX (not fully shipped):** the monitor is the **human-facing intermediary**
+between operator and core agent — it watches the full agent event stream, steers the
+primary as a human watcher would, and writes curated progress (`monitor.summary`,
+`monitor.queued`, etc.) to the shared thread event log. By default the center event
+stream shows those human-useful updates; **Agent view** (planned toggle) exposes the
+full interleaved `agent.*` + `monitor.*` tape for debug and calibration. Design SSOT:
+`Jstack/.jstack/daily_notes/2026-06-28/stack_monitor_actor.md` § Human-facing intermediary.
+
 Profiles:
 
 - `.stack/monitors/default.toml`
@@ -206,6 +258,7 @@ Profiles:
 Useful overrides:
 
 - `STACK_MONITOR_PROFILE=gepa-dogfood`
+- `STACK_MONITOR_PROFILE=progress-narrator` — passive human progress updates (`operator_update` on `monitor.summary`)
 - `STACK_MONITOR_ENABLED=0`
 - `STACK_MONITOR_STRICTNESS=passive|conservative|aggressive`
 - In the TUI, `M` cycles the current thread through
@@ -431,7 +484,14 @@ The server reads `stack.config.json` and supports both JSONL and
 - `stack_skills_push_context`: record a visible monitor-to-primary skill context
   push and append it to the thread meta-harness event log
 
-Codex should load the bundled Stack skills for Synth work:
+Codex should load **`synth-stack-productivity`** first, then domain skills:
+
+- **`synth-stack-productivity`** — OSS + hosted map (load first)
+- **`oss-gepa`** — local GEPA install, optimizers repo checkout
+- **`synth-via-stack`** — containers, local → hosted optimizer graduation
+- **`stack-agent-bridge`** — live MCP on usesynth.ai (SMR, Factory, hosted optimizers)
+- **`stack-local-setup`** — install, bootstrap, auth env files
+- **`gepa`** — full Rust GEPA skill (when `optimizers/` sibling checkout is present)
 
 - **`synth-via-stack`** — optimizers (local GEPA + hosted), **synth-ai** SDK/CLI, eval
   container contract (`/health`, `/info`, `/rollout`), local → hosted graduation
@@ -664,6 +724,14 @@ Useful overrides:
 - `STACK_OPTIMIZER_DB`: SQLite service DB path
 - `STACK_OPTIMIZER_SERVICE_URL`: read endpoint if different from `--bind`
 
-The status bar shows the Codex model and reasoning effort from
-`~/.codex/config.toml`. Override them for a run with `STACK_CODEX_MODEL` and
+The status bar shows the agent model and reasoning effort from
+`~/.codex/config.toml` when `STACK_HARNESS=codex` (default). Override them for a run with `STACK_CODEX_MODEL` and
 `STACK_CODEX_REASONING_EFFORT`.
+
+**Cursor harness** (`STACK_HARNESS=cursor`):
+
+- `STACK_CURSOR_COMMAND`: default `cursor`
+- `STACK_CURSOR_MODEL`: default `composer-2.5`
+- `STACK_CURSOR_AUTH_PLAN`: account label in the status row, default `Cursor`
+- Requires `cursor agent login` (or `CURSOR_API_KEY`); Stack talks to `cursor agent acp` over JSON-RPC
+- Proof: `bun run scripts/smoke_cursor_acp.ts`

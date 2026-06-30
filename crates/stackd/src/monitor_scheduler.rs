@@ -5,9 +5,12 @@ use serde_json::{json, Value};
 use stack_core::events::{read_thread_events, thread_monitor_actor_dir_path};
 use stack_core::session::list_summaries;
 use std::collections::HashSet;
+use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::fs;
+use topologies_core::{BudgetEnvelope, WorkflowScript};
+use topologies_monty::{MontyHostContract, MontyPythonRunner};
 
 #[derive(Debug, Clone)]
 struct MonitorRuntimeConfig {
@@ -27,6 +30,14 @@ struct MonitorRuntimeConfig {
     on_turn_completed: bool,
     on_tool_completed: bool,
     on_tool_failed: bool,
+    delta_events: u64,
+    cooldown_ms: u64,
+    weight_threshold: f64,
+    max_delay_ms: u64,
+    turn_cooldown_ms: u64,
+    batch_cooldown_ms: u64,
+    wake_policy_script: Option<PathBuf>,
+    monty_python_bin: String,
 }
 
 pub fn spawn_monitor_scheduler(state: Arc<AppState>) {
@@ -132,15 +143,11 @@ async fn process_thread(
         return Ok(());
     }
     let triggered = triggered_event_ids(&events, &config.actor_id);
-    let triggers: Vec<&Value> = pending
-        .iter()
-        .copied()
-        .filter(|event| is_trigger_event(config, event))
-        .filter(|event| event_id(event).is_some_and(|id| !triggered.contains(id)))
-        .collect();
-    if triggers.is_empty() {
+    let Some(wake) =
+        select_wake_candidate(state, config, actor.as_ref(), &pending, &triggered).await
+    else {
         return Ok(());
-    }
+    };
 
     run_monitor_pass(
         state,
@@ -150,10 +157,114 @@ async fn process_thread(
         actor.as_ref(),
         &events,
         pending,
-        triggers,
+        wake.triggers,
+        wake.reason,
         effective_strictness,
     )
     .await
+}
+
+struct WakeSelection<'a> {
+    reason: String,
+    triggers: Vec<&'a Value>,
+}
+
+async fn select_wake_candidate<'a>(
+    state: &AppState,
+    config: &MonitorRuntimeConfig,
+    actor: Option<&Value>,
+    pending: &[&'a Value],
+    triggered: &HashSet<String>,
+) -> Option<WakeSelection<'a>> {
+    if let Some(script_path) = &config.wake_policy_script {
+        match select_monty_wake_candidate(state, config, actor, pending, triggered, script_path)
+            .await
+        {
+            Ok(Some(selection)) => return Some(selection),
+            Ok(None) => return None,
+            Err(error) => {
+                tracing::warn!(
+                    "stackd monitor wake policy failed; using legacy trigger policy: {error}"
+                );
+            }
+        }
+    }
+
+    let triggers: Vec<&Value> = pending
+        .iter()
+        .copied()
+        .filter(|event| is_trigger_event(config, event))
+        .filter(|event| event_id(event).is_some_and(|id| !triggered.contains(id)))
+        .collect();
+    if triggers.is_empty() {
+        return None;
+    }
+    Some(WakeSelection {
+        reason: wake_reason(triggers.first().copied()).to_string(),
+        triggers,
+    })
+}
+
+async fn select_monty_wake_candidate<'a>(
+    state: &AppState,
+    config: &MonitorRuntimeConfig,
+    actor: Option<&Value>,
+    pending: &[&'a Value],
+    triggered: &HashSet<String>,
+    script_path: &PathBuf,
+) -> anyhow::Result<Option<WakeSelection<'a>>> {
+    let source = fs::read_to_string(script_path).await?;
+    let script = WorkflowScript::monty(source)?;
+    let contract = MontyHostContract::default_for_script(script, BudgetEnvelope::default());
+    let args = json!({
+        "thread_stack_root": state.paths.stack_dir.to_string_lossy(),
+        "monitor_actor_id": config.actor_id,
+        "actor_state": actor,
+        "pending_events": pending,
+        "triggered_event_ids": triggered.iter().collect::<Vec<_>>(),
+        "now_ms": Utc::now().timestamp_millis(),
+        "wake": {
+            "on_turn_completed": config.on_turn_completed,
+            "on_tool_completed": config.on_tool_completed,
+            "on_tool_failed": config.on_tool_failed,
+            "delta_events": config.delta_events,
+            "cooldown_ms": config.cooldown_ms,
+            "weight_threshold": config.weight_threshold,
+            "max_delay_ms": config.max_delay_ms,
+            "turn_cooldown_ms": config.turn_cooldown_ms,
+            "batch_cooldown_ms": config.batch_cooldown_ms,
+        },
+    });
+    let runner = MontyPythonRunner::new(&config.monty_python_bin);
+    let execution = tokio::task::spawn_blocking(move || runner.execute(&contract, args)).await??;
+    let result = execution.result;
+    if result.get("wake").and_then(Value::as_bool) != Some(true) {
+        return Ok(None);
+    }
+    let trigger_ids: HashSet<&str> = result
+        .get("trigger_event_ids")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .collect();
+    if trigger_ids.is_empty() {
+        return Ok(None);
+    }
+    let triggers: Vec<&Value> = pending
+        .iter()
+        .copied()
+        .filter(|event| event_id(event).is_some_and(|id| trigger_ids.contains(id)))
+        .collect();
+    if triggers.is_empty() {
+        return Ok(None);
+    }
+    let reason = result
+        .get("reason")
+        .and_then(Value::as_str)
+        .unwrap_or_else(|| wake_reason(triggers.first().copied()))
+        .to_string();
+    Ok(Some(WakeSelection { reason, triggers }))
 }
 
 async fn run_monitor_pass(
@@ -165,6 +276,7 @@ async fn run_monitor_pass(
     all_events: &[Value],
     pending: Vec<&Value>,
     triggers: Vec<&Value>,
+    reason: String,
     strictness: String,
 ) -> anyhow::Result<()> {
     let started_at = now();
@@ -190,7 +302,6 @@ async fn run_monitor_pass(
         .iter()
         .filter_map(|event| event_id(event).map(str::to_string))
         .collect();
-    let reason = wake_reason(triggers.first().copied());
     append_thread_event_projected(
         &state.paths.stack_dir,
         thread_id,
@@ -202,7 +313,7 @@ async fn run_monitor_pass(
             "actor_id": config.actor_id,
             "actor_role": "monitor",
             "payload": {
-                "wake_reason": reason,
+                "wake_reason": &reason,
                 "trigger_event_ids": trigger_ids,
                 "pending_event_count": pending.len(),
                 "strictness": strictness,
@@ -775,11 +886,13 @@ async fn write_actor_state(
         .get("skill_read_counts")
         .and_then(Value::as_u64)
         .unwrap_or(0));
-    actor["context_push_counts"] = json!(actor
-        .get("context_push_counts")
-        .and_then(Value::as_u64)
-        .unwrap_or(0)
-        + update.context_push_delta);
+    actor["context_push_counts"] = json!(
+        actor
+            .get("context_push_counts")
+            .and_then(Value::as_u64)
+            .unwrap_or(0)
+            + update.context_push_delta
+    );
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
@@ -837,6 +950,29 @@ async fn read_monitor_config(state: &AppState) -> MonitorRuntimeConfig {
         on_turn_completed: toml_bool(&text, "wake", "on_turn_completed").unwrap_or(true),
         on_tool_completed: toml_bool(&text, "wake", "on_tool_completed").unwrap_or(true),
         on_tool_failed: toml_bool(&text, "wake", "on_tool_failed").unwrap_or(true),
+        delta_events: toml_u64(&text, "wake", "delta_events").unwrap_or(12),
+        cooldown_ms: toml_u64(&text, "wake", "cooldown_ms").unwrap_or(250),
+        weight_threshold: toml_f64(&text, "wake", "weight_threshold")
+            .unwrap_or_else(|| toml_u64(&text, "wake", "delta_events").unwrap_or(12) as f64),
+        max_delay_ms: toml_u64(&text, "wake", "max_delay_ms").unwrap_or(0),
+        turn_cooldown_ms: toml_u64(&text, "wake", "turn_cooldown_ms")
+            .unwrap_or_else(|| toml_u64(&text, "wake", "cooldown_ms").unwrap_or(250)),
+        batch_cooldown_ms: toml_u64(&text, "wake", "batch_cooldown_ms")
+            .unwrap_or_else(|| toml_u64(&text, "wake", "cooldown_ms").unwrap_or(250)),
+        wake_policy_script: toml_string(&text, "wake", "policy_script")
+            .map(|path| resolve_config_path(&state.paths.app_root, &path))
+            .or_else(|| {
+                Some(
+                    state
+                        .paths
+                        .app_root
+                        .join("scripts")
+                        .join("monitor_wake_policy.py"),
+                )
+            }),
+        monty_python_bin: toml_string(&text, "wake", "monty_python_bin")
+            .or_else(|| std::env::var("STACK_MONITOR_MONTY_PYTHON").ok())
+            .unwrap_or_else(|| "python3".to_string()),
     }
 }
 
@@ -1056,10 +1192,7 @@ fn can_push_skill_context(config: &MonitorRuntimeConfig, strictness: &str) -> bo
         return false;
     }
     let policy = config.skill_context_push.trim().to_ascii_lowercase();
-    if matches!(
-        policy.as_str(),
-        "" | "off" | "never" | "false" | "disabled"
-    ) {
+    if matches!(policy.as_str(), "" | "off" | "never" | "false" | "disabled") {
         return false;
     }
     policy == "queue_or_steer"
@@ -1215,6 +1348,10 @@ fn toml_u64(text: &str, section: &str, key: &str) -> Option<u64> {
     toml_value(text, section, key)?.parse::<u64>().ok()
 }
 
+fn toml_f64(text: &str, section: &str, key: &str) -> Option<f64> {
+    toml_value(text, section, key)?.parse::<f64>().ok()
+}
+
 fn toml_string_array(text: &str, section: &str, key: &str) -> Option<Vec<String>> {
     let value = toml_value(text, section, key)?;
     let trimmed = value.trim();
@@ -1229,6 +1366,15 @@ fn toml_string_array(text: &str, section: &str, key: &str) -> Option<Vec<String>
         .filter(|item| !item.is_empty())
         .collect::<Vec<String>>();
     Some(items)
+}
+
+fn resolve_config_path(app_root: &std::path::Path, path: &str) -> PathBuf {
+    let path = PathBuf::from(path);
+    if path.is_absolute() {
+        path
+    } else {
+        app_root.join(path)
+    }
 }
 
 fn toml_value(text: &str, section: &str, key: &str) -> Option<String> {

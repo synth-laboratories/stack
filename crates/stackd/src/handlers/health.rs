@@ -10,6 +10,7 @@ pub struct HealthResponse {
     pub stack_version: Option<String>,
     pub channel: Option<String>,
     pub session_log_dir: String,
+    pub mcp_url: Option<String>,
 }
 
 pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
@@ -19,5 +20,6 @@ pub async fn health(State(state): State<Arc<AppState>>) -> Json<HealthResponse> 
         stack_version: state.stack_version.clone(),
         channel: state.stack_channel.clone(),
         session_log_dir: state.paths.session_log_dir.to_string_lossy().to_string(),
+        mcp_url: state.mcp_url.clone(),
     })
 }

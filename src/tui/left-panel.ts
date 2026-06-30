@@ -1,3 +1,4 @@
+import { agentRolePanelTitle } from "../agent-roles.js"
 import { StyledText, fg, type TextChunk } from "@opentui/core"
 import { basename } from "node:path"
 import type { GardenerInboxItem } from "../gardener.js"
@@ -26,7 +27,7 @@ export function leftPanelTitle(
   liveOpsMode: "local" | "remote",
 ): string {
   if (mode === "account") return `Subscription · ${environmentName}`
-  if (mode === "gardener") return "Gardener"
+  if (mode === "gardener") return agentRolePanelTitle("gardener")
   if (mode === "bridge") return `Bridge · ${liveOpsModeLabel(liveOpsMode)}`
   return basename(workspaceRoot) || workspaceRoot
 }
@@ -43,11 +44,11 @@ export function leftPanelHint(mode: LeftPanelMode, focused: boolean): string {
           : "threads"
   const scrollHint =
     mode === "threads"
-      ? " · j/k sessions · f fork · enter resume"
+      ? " · j/k sessions · n new · f fork · enter resume"
       : mode === "account"
         ? " · r refresh"
         : mode === "gardener"
-          ? " · j/k inbox · enter route · a route all"
+          ? " · j/k inbox · w target · enter route · a route all · d dismiss"
           : " · tab bridge controls · x toggle local/remote"
   return `p → ${next}${scrollHint}`
 }
@@ -81,10 +82,12 @@ export function leftPanelLineCount(input: {
     inbox: GardenerInboxItem[]
     selectedIndex: number
     workerQueueCount: number
+    workerTargetLabel?: string
+    workerTargetStatus?: string
+    lastGardenRewrite?: string
+    authSwapHint?: string
+    workspaceGardenPath?: string
     gardenPath?: string
-    voiceStatusLine?: string
-    voiceRecording?: boolean
-    voiceTranscribing?: boolean
   }
 }): number {
   if (input.mode === "threads") return input.threadsInput.history.length + 4
@@ -125,10 +128,12 @@ export function renderLeftPanelStyled(input: {
     inbox: GardenerInboxItem[]
     selectedIndex: number
     workerQueueCount: number
+    workerTargetLabel?: string
+    workerTargetStatus?: string
+    lastGardenRewrite?: string
+    authSwapHint?: string
+    workspaceGardenPath?: string
     gardenPath?: string
-    voiceStatusLine?: string
-    voiceRecording?: boolean
-    voiceTranscribing?: boolean
   }
 }): StyledText {
   if (input.mode === "threads") {
@@ -159,12 +164,6 @@ export function renderLeftPanelStyled(input: {
     if (line.includes("@") && input.mode === "account") {
       chunks.push(fg(theme.synth.amber)(line))
     } else if (line.startsWith("▸") || (input.mode === "gardener" && line.includes("talk mode ON"))) {
-      chunks.push(fg(theme.synth.amber)(line))
-    } else if (line.includes("Voice READY")) {
-      chunks.push(fg("#3fb950")(line))
-    } else if (line.includes("Voice BLOCKED") || line.includes("Voice OFF")) {
-      chunks.push(fg(theme.synth.red)(line))
-    } else if (line.includes("Voice DEGRADED")) {
       chunks.push(fg(theme.synth.amber)(line))
     } else if (line.startsWith("  blocked") || line.includes("missing-auth")) {
       chunks.push(fg(theme.synth.red)(line))

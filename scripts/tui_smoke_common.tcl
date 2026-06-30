@@ -69,6 +69,8 @@ proc stack_tui_kill_spawned_stack {} {
     if {![catch {exec kill -0 $pid} _]} {
       catch {exec kill -9 $pid}
     }
+    catch {close -i $spawn_id}
+    catch {wait -i $spawn_id}
     return
   }
 
@@ -87,6 +89,8 @@ proc stack_tui_kill_spawned_stack {} {
   if {![catch {exec kill -0 $pid} _]} {
     exec kill -9 $pid
   }
+  catch {close -i $spawn_id}
+  catch {wait -i $spawn_id}
 }
 
 proc stack_tui_has_controlling_tty {} {
@@ -167,7 +171,7 @@ proc stack_tui_read_output_log {output_log} {
 
 proc stack_tui_expect_running_turn {} {
   expect {
-    -re {Thinking|Codex is running} {}
+    -re {Thinking|thinking|starting|Codex is running} {}
     timeout {
       puts stderr "timed out waiting for running turn indicator"
       exit 1

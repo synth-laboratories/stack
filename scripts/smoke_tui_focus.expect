@@ -24,6 +24,13 @@ expect {
   }
 }
 
+# Stack opens with gardener focused. In local mode, five Tab presses move
+# gardener -> harness -> projects -> history -> optimizers -> agent.
+foreach _ {1 2 3 4 5} {
+  send -- "\t"
+  sleep 0.05
+}
+
 # Start a live turn so remount/spinner stress matches real usage.
 send -- "focus and remount stress\r"
 stack_tui_expect_running_turn
@@ -62,7 +69,7 @@ stack_tui_kill_spawned_stack
 set output [stack_tui_read_output_log $output_log]
 stack_tui_assert_no_crash_artifacts $output
 
-foreach required [list "STACK_RESILIENCE_SMOKE_OK" "tab focus" "Agent"] {
+foreach required [list "STACK_RESILIENCE_SMOKE_OK" "tab focus" "Actors"] {
   if {[string first $required $output] < 0} {
     puts stderr "missing focus smoke evidence: $required"
     exit 1

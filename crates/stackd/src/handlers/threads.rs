@@ -1,4 +1,5 @@
 use crate::handlers::ApiError;
+use crate::runtime::{runtime_status_projection, store::RuntimeStore};
 use crate::server::AppState;
 use crate::victorialogs::append_thread_event_projected;
 use axum::extract::{Path, Query, State};
@@ -82,7 +83,7 @@ pub async fn get_stack_status(
             .to_string(),
         session_count: summaries.len(),
         latest_session: summaries.first().cloned(),
-        runtime: read_runtime_status(&state).await,
+        runtime: read_factory_runtime_status(&state).await,
     }))
 }
 
@@ -428,14 +429,23 @@ fn safe_segment(value: &str) -> Result<String, ApiError> {
 }
 
 async fn read_matching_runtime_status(state: &AppState, id: &str) -> Option<Value> {
-    let value = read_runtime_status(state).await?;
+    let value = read_runtime_status_file(state).await?;
     if value.get("stack_session_id").and_then(Value::as_str) == Some(id) {
         return Some(value);
     }
     None
 }
 
-async fn read_runtime_status(state: &AppState) -> Option<Value> {
+async fn read_factory_runtime_status(state: &AppState) -> Option<Value> {
+    if let Ok(store) = RuntimeStore::open(&state.paths) {
+        if let Ok(Some(snapshot)) = store.load_snapshot() {
+            return Some(runtime_status_projection(&snapshot, 0));
+        }
+    }
+    read_runtime_status_file(state).await
+}
+
+async fn read_runtime_status_file(state: &AppState) -> Option<Value> {
     let text = fs::read_to_string(&state.paths.runtime_status_path)
         .await
         .ok()?;

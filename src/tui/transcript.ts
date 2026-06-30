@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto"
 import type { CodexRateLimitsSnapshot } from "../codex/rate-limits.js"
 import { parseRateLimitsFromCodexStdoutLine, parseRateLimitsFromEvent } from "../codex/rate-limits.js"
 import { harnessSpeakerLabel } from "../harness.js"
+import { readUsageFromCodexEvent } from "../session.js"
 import { stackTuiTheme as theme } from "./theme.js"
 import {
   applyMultiAgentFunctionOutput,
@@ -182,7 +183,12 @@ export function applyCodexLine(
   if (rendered.agentText) {
     finalizeLiveToolGroup(blocks, liveToolGroupId)
     finalizeLiveSubagentGroup(blocks, liveSubagentGroupId)
-    blocks.push({ id: randomUUID(), kind: "agent", text: rendered.agentText })
+    const last = blocks.at(-1)
+    if (last?.kind === "agent") {
+      last.text = rendered.agentText
+    } else {
+      blocks.push({ id: randomUUID(), kind: "agent", text: rendered.agentText })
+    }
   }
 
   if (rendered.stackText) {
@@ -925,14 +931,15 @@ function parseCodexEvent(event: unknown): CodexLineResult | undefined {
     return { threadId: readString(record.thread_id) ?? undefined }
   }
   if (eventType === "turn.started") return { turnStarted: true, thinking: "…" }
-  if (eventType === "turn.completed") return { turnCompleted: true, usage: readUsage(record) }
+  if (eventType === "turn.completed") return { turnCompleted: true, usage: readUsageFromCodexEvent(record) }
 
   const payloadType = payload ? readString(payload.type) ?? "" : ""
   const type = payloadType || eventType
 
   if (payloadType === "token_count" || type === "token_count") {
     const rateLimits = parseRateLimitsFromEvent(record)
-    if (rateLimits) return { rateLimits }
+    const usage = readUsageFromCodexEvent(record)
+    if (rateLimits || usage) return { rateLimits, usage }
   }
 
   if (readString(record.role) === "user" || readString(payload?.role) === "user") return {}
@@ -1046,17 +1053,6 @@ function readThinkingPreview(
   }
   const text = extractText(record) ?? extractText(payload)
   return text ? cleanThinkingText(text) : "…"
-}
-
-function readUsage(record: Record<string, unknown>): CodexLineResult["usage"] {
-  const usage = asRecord(record.usage)
-  if (!usage) return undefined
-  return {
-    inputTokens: readNumber(usage.input_tokens),
-    cachedInputTokens: readNumber(usage.cached_input_tokens),
-    outputTokens: readNumber(usage.output_tokens),
-    reasoningOutputTokens: readNumber(usage.reasoning_output_tokens),
-  }
 }
 
 function extractText(value: unknown): string | undefined {

@@ -6,7 +6,9 @@ import { findTuiCrashArtifacts, primaryCrashFailureClass } from "./tui_crash_gua
 import { stackChannel, stackVersion } from "../src/version.ts"
 
 const stackRoot = join(import.meta.dir, "..")
-const proofPath = process.env.STACK_BOMBADIL_B0_PROOF ?? "/tmp/stack-bombadil-b0-proof.json"
+const evidenceId = process.env.STACK_EVIDENCE_ID ?? compactTimestamp(new Date())
+const defaultProofPath = join(stackRoot, ".stack", "evidence", "bombadil-b0", evidenceId, "proof.json")
+const proofPath = process.env.STACK_BOMBADIL_B0_PROOF ?? defaultProofPath
 const rawProofPath = process.env.STACK_BOMBADIL_PROOF ?? "/tmp/stack-bombadil-b0-proof.json"
 
 const startedAt = new Date().toISOString()
@@ -118,4 +120,8 @@ function classifyFailure(
 
 function tail(value: string): string {
   return value.split("\n").slice(-40).join("\n")
+}
+
+function compactTimestamp(value: Date): string {
+  return value.toISOString().replaceAll("-", "").replaceAll(":", "").replace(/\.\d{3}Z$/, "Z")
 }

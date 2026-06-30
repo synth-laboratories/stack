@@ -1,6 +1,11 @@
 pub mod export;
 pub mod health;
 pub mod logs;
+pub mod mcp;
+pub mod meta_threads;
+pub mod runtime;
+pub mod skills;
+pub mod telemetry;
 pub mod threads;
 
 use axum::http::StatusCode;
@@ -51,6 +56,45 @@ impl From<EventLogError> for ApiError {
         match error {
             EventLogError::InvalidThreadId(_) => Self {
                 status: StatusCode::BAD_REQUEST,
+                message: error.to_string(),
+            },
+            _ => Self::internal(error.to_string()),
+        }
+    }
+}
+
+impl From<stack_core::meta_thread::MetaThreadError> for ApiError {
+    fn from(error: stack_core::meta_thread::MetaThreadError) -> Self {
+        match error {
+            stack_core::meta_thread::MetaThreadError::NotFound(_)
+            | stack_core::meta_thread::MetaThreadError::HandoffNotFound(_) => Self {
+                status: StatusCode::NOT_FOUND,
+                message: error.to_string(),
+            },
+            stack_core::meta_thread::MetaThreadError::InvalidPathSegment(_) => Self {
+                status: StatusCode::BAD_REQUEST,
+                message: error.to_string(),
+            },
+            _ => Self::internal(error.to_string()),
+        }
+    }
+}
+
+impl From<stack_core::skills::SkillError> for ApiError {
+    fn from(error: stack_core::skills::SkillError) -> Self {
+        match error {
+            stack_core::skills::SkillError::NotFound(_) => Self {
+                status: StatusCode::NOT_FOUND,
+                message: error.to_string(),
+            },
+            stack_core::skills::SkillError::InvalidId(_)
+            | stack_core::skills::SkillError::MissingContent
+            | stack_core::skills::SkillError::InvalidSourcePath(_) => Self {
+                status: StatusCode::BAD_REQUEST,
+                message: error.to_string(),
+            },
+            stack_core::skills::SkillError::AlreadyExists(_) => Self {
+                status: StatusCode::CONFLICT,
                 message: error.to_string(),
             },
             _ => Self::internal(error.to_string()),

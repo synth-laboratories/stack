@@ -1,6 +1,8 @@
 mod handlers;
+mod mcp_sidecar;
 mod monitor_scheduler;
 mod openapi;
+mod runtime;
 mod server;
 mod victorialogs;
 

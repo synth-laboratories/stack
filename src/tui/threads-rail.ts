@@ -1,5 +1,6 @@
 import { StyledText, bold, dim, fg, type TextChunk } from "@opentui/core"
 import type { StackSessionSummary, StackSessionUsageSummary } from "../session.js"
+import { resolveThreadDisplayLabel } from "../thread-display-name.js"
 import { formatEstimatedSpend, formatThreadUsageLine, formatTokenTotal, sessionTokenTotal } from "../codex/usage-cost.js"
 import { stackTuiTheme as theme } from "./theme.js"
 
@@ -11,6 +12,9 @@ export type ThreadsRailRenderInput = {
   visibleRows: number
   columns: number
   liveTokensPerSecond?: string
+  gardenerThreadIds: ReadonlySet<string>
+  gardenerInboxCount: number
+  gardenerTalkMode: boolean
   usageForSummary: (summary: StackSessionSummary) => StackSessionUsageSummary | undefined
 }
 
@@ -19,7 +23,13 @@ export function renderThreadsRailStyled(input: ThreadsRailRenderInput): StyledTe
   const focusHint = input.focusMode === "history" ? "j/k select" : "tab threads"
   chunks.push(dim(fg(theme.fgMuted)(focusHint)))
   chunks.push(fg(theme.fgPrimary)("\n"))
-  chunks.push(dim(fg(theme.synth.amber)("enter resume · f fork")))
+  chunks.push(dim(fg(theme.synth.amber)("n new · enter resume · f fork · p gardener")))
+  chunks.push(fg(theme.fgPrimary)("\n"))
+  chunks.push(
+    fg(input.gardenerTalkMode ? "#3fb950" : theme.fgMuted)(
+      `Gardener · inbox ${input.gardenerInboxCount} · ${input.gardenerTalkMode ? "talk ON" : "G talk"} · p panel`,
+    ),
+  )
   chunks.push(fg(theme.fgPrimary)("\n"))
 
   const rows = threadRowSpecs(input)
@@ -37,6 +47,7 @@ type ThreadRowSpec =
       kind: "thread"
       selected: boolean
       active: boolean
+      gardener: boolean
       time: string
       prompt: string
       usage?: string
@@ -59,12 +70,17 @@ function threadRowSpecs(input: ThreadsRailRenderInput): ThreadRowSpec[] {
     const index = start + offset
     const usageSummary = input.usageForSummary(summary)
     const usageParts = splitThreadUsage(usageSummary, input.columns - 4, summary.id === input.currentSessionId, input.liveTokensPerSecond)
+    const isGardener = input.gardenerThreadIds.has(summary.id)
     rows.push({
       kind: "thread",
       selected: index === input.selectedHistoryIndex,
       active: summary.id === input.currentSessionId,
+      gardener: isGardener,
       time: formatRelativeTime(summary.updatedAt),
-      prompt: summary.lastPrompt ? oneLine(summary.lastPrompt, 22) : "(empty)",
+      prompt: resolveThreadDisplayLabel(summary, {
+        isGardener,
+        maxLength: 22,
+      }),
       usage: usageParts?.combined,
       usageTokens: usageParts?.tokens,
       usageSpend: usageParts?.spend,
@@ -91,9 +107,12 @@ function styleThreadRow(row: ThreadRowSpec): TextChunk[] {
     chunks.push(fg(theme.synth.amber)(row.time.padStart(3)))
     if (row.active) chunks.push(fg(theme.synth.orange)(activeMarker))
     else chunks.push(fg(theme.fgMuted)(activeMarker))
+    if (row.gardener) chunks.push(fg("#3fb950")(" gard"))
     chunks.push(fg(theme.fgPrimary)(` ${row.prompt}`))
   } else {
-    chunks.push(dim(fg(theme.fgMuted)(`${cursor} ${row.time.padStart(3)}${activeMarker} `)))
+    chunks.push(dim(fg(theme.fgMuted)(`${cursor} ${row.time.padStart(3)}${activeMarker}`)))
+    if (row.gardener) chunks.push(fg("#3fb950")(" gard"))
+    chunks.push(fg(theme.fgMuted)(" "))
     chunks.push(fg(row.active ? theme.fgSecondary : theme.fgMuted)(row.prompt))
   }
 

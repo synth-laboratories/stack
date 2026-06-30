@@ -15,7 +15,7 @@ pub enum SessionError {
     Json(#[from] serde_json::Error),
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct StackSessionUsageTotals {
     pub input_tokens: u64,
@@ -25,7 +25,7 @@ pub struct StackSessionUsageTotals {
     pub turn_count_with_usage: u64,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct StackSessionUsageSummary {
     pub model: String,
@@ -79,6 +79,22 @@ pub struct StackLocalSession {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_thread_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment_role: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub predecessor_thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_summary: Option<StackSessionUsageSummary>,
     #[serde(default)]
     pub turns: Vec<StackCodexTurn>,
@@ -94,6 +110,16 @@ pub struct StackSessionSummary {
     pub turn_count: usize,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub last_prompt: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub display_name: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub harness: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_thread_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub segment_role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub codex_thread_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -196,6 +222,11 @@ pub async fn list_summaries(
             updated_at,
             turn_count: session.turns.len(),
             last_prompt,
+            display_name: session.display_name,
+            harness: session.harness,
+            meta_thread_id: session.meta_thread_id,
+            segment_id: session.segment_id,
+            segment_role: session.segment_role,
             codex_thread_id,
             usage_summary,
         });
@@ -261,7 +292,7 @@ pub fn build_usage_summary(session: &StackLocalSession) -> Option<StackSessionUs
         model: session
             .codex_model
             .clone()
-            .unwrap_or_else(|| infer_codex_model(&session.codex_command)),
+            .or_else(|| infer_codex_model(&session.codex_command))?,
         totals,
         estimated_spend_usd: None,
     })
@@ -287,35 +318,83 @@ fn extract_codex_thread_id_from_turns(turns: &[StackCodexTurn]) -> Option<String
     None
 }
 
-fn read_usage_from_stdout(stdout: &str) -> Option<StackCodexUsage> {
+pub fn read_usage_from_stdout(stdout: &str) -> Option<StackCodexUsage> {
+    let mut usage = None;
     for line in stdout.lines().filter(|line| !line.trim().is_empty()) {
         let Ok(record) = serde_json::from_str::<Value>(line) else {
             continue;
         };
-        if record.get("type").and_then(Value::as_str) != Some("turn.completed") {
-            continue;
-        }
-        let usage = record.get("usage")?;
-        return Some(StackCodexUsage {
-            input_tokens: usage.get("input_tokens").and_then(Value::as_u64),
-            cached_input_tokens: usage.get("cached_input_tokens").and_then(Value::as_u64),
-            output_tokens: usage.get("output_tokens").and_then(Value::as_u64),
-            reasoning_output_tokens: usage.get("reasoning_output_tokens").and_then(Value::as_u64),
-        });
+        usage = read_usage_from_event(&record).or(usage);
     }
+    usage
+}
+
+fn read_usage_from_event(record: &Value) -> Option<StackCodexUsage> {
+    if matches!(
+        record.get("type").and_then(Value::as_str),
+        Some("event_msg" | "response_item")
+    ) {
+        return record.get("payload").and_then(read_usage_from_event);
+    }
+
+    if record.get("type").and_then(Value::as_str) == Some("turn.completed") {
+        return read_usage_fields(record.get("usage")?);
+    }
+
+    if record.get("type").and_then(Value::as_str) == Some("token_count") {
+        let info = record.get("info");
+        return info
+            .and_then(|value| value.get("total_token_usage"))
+            .and_then(read_usage_fields)
+            .or_else(|| {
+                info.and_then(|value| value.get("last_token_usage"))
+                    .and_then(read_usage_fields)
+            })
+            .or_else(|| record.get("usage").and_then(read_usage_fields));
+    }
+
     None
 }
 
-fn infer_codex_model(codex_command: &str) -> String {
+fn read_usage_fields(usage: &Value) -> Option<StackCodexUsage> {
+    let parsed = StackCodexUsage {
+        input_tokens: usage
+            .get("input_tokens")
+            .or_else(|| usage.get("inputTokens"))
+            .and_then(Value::as_u64),
+        cached_input_tokens: usage
+            .get("cached_input_tokens")
+            .or_else(|| usage.get("cachedInputTokens"))
+            .and_then(Value::as_u64),
+        output_tokens: usage
+            .get("output_tokens")
+            .or_else(|| usage.get("outputTokens"))
+            .and_then(Value::as_u64),
+        reasoning_output_tokens: usage
+            .get("reasoning_output_tokens")
+            .or_else(|| usage.get("reasoningOutputTokens"))
+            .and_then(Value::as_u64),
+    };
+    if parsed.input_tokens.is_none()
+        && parsed.cached_input_tokens.is_none()
+        && parsed.output_tokens.is_none()
+        && parsed.reasoning_output_tokens.is_none()
+    {
+        return None;
+    }
+    Some(parsed)
+}
+
+fn infer_codex_model(codex_command: &str) -> Option<String> {
     let mut parts = codex_command.split_whitespace();
     while let Some(part) = parts.next() {
         if part == "-m" {
             if let Some(model) = parts.next() {
-                return model.to_string();
+                return Some(model.to_string());
             }
         }
     }
-    "gpt-5.4-mini".to_string()
+    None
 }
 
 fn prompt_preview(prompt: &str) -> String {

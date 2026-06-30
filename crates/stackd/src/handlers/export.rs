@@ -73,7 +73,11 @@ pub async fn export_thread(
         .cloned()
         .collect();
     if !monitor_events.is_empty() {
-        write_json(export_dir.join("monitor_events.json"), &json!(monitor_events)).await?;
+        write_json(
+            export_dir.join("monitor_events.json"),
+            &json!(monitor_events),
+        )
+        .await?;
         files.push("monitor_events.json");
     }
     let guidance_events: Vec<_> = events
@@ -87,7 +91,11 @@ pub async fn export_thread(
         .cloned()
         .collect();
     if !guidance_events.is_empty() {
-        write_json(export_dir.join("guidance_events.json"), &json!(guidance_events)).await?;
+        write_json(
+            export_dir.join("guidance_events.json"),
+            &json!(guidance_events),
+        )
+        .await?;
         files.push("guidance_events.json");
     }
     let voice_events: Vec<_> = events

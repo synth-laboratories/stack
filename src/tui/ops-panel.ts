@@ -8,6 +8,7 @@ import type { RemoteProjectsPanelSnapshot, RemoteTagScopeSummary } from "../remo
 import type { RemoteUsageSnapshot } from "../remote/usage.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
 import { isChatGptAuthPlan } from "../codex/account.js"
+import { isCursorAuthPlan } from "../cursor/account.js"
 import type { SubagentLog } from "./subagents.js"
 import { subagentDisplayName, subagentDurationSeconds, subagentStatusLabel } from "./subagents.js"
 import { stackTuiTheme as theme } from "./theme.js"
@@ -44,6 +45,7 @@ export type OpsPanelActors = {
   primaryStatus: string
   turnCount: number
   currentTurnStartedAt?: string
+  cursorHarness?: boolean
   codexSubagentsEnabled: boolean
   codexSubagentModel: string
   codexSubagentReasoningEffort: string
@@ -263,6 +265,9 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
     lines.push(`  wallet ${formatUsd(usage.walletUsd)}`)
   }
 
+  const stackAuxBudget = formatStackAuxBudgetLine(usage)
+  if (stackAuxBudget) lines.push(stackAuxBudget)
+
   lines.push(...formatAllowanceSummaryLines(usage.allowanceWindows))
 
   const spendParts: string[] = []
@@ -309,10 +314,13 @@ export function subscriptionPanelLines(
     }
   }
   lines.push("", "Local agent")
-  if (agentUsage.codexEmail && isChatGptAuthPlan(agentUsage.codexAuthPlan)) {
+  if (
+    agentUsage.codexEmail &&
+    (isChatGptAuthPlan(agentUsage.codexAuthPlan) || isCursorAuthPlan(agentUsage.codexAuthPlan))
+  ) {
     lines.push(`  email ${oneLine(agentUsage.codexEmail, 52)}`)
   }
-  lines.push(`  codex ${agentUsage.codexAuthPlan}${agentUsage.codexBudget ? ` · ${agentUsage.codexBudget}` : ""}`)
+  lines.push(`  agent ${agentUsage.codexAuthPlan}${agentUsage.codexBudget ? ` · ${agentUsage.codexBudget}` : ""}`)
   if (agentUsage.sessionSummary) lines.push(`  session ${oneLine(agentUsage.sessionSummary, 46)}`)
   if (codexAuthHistory && codexAuthHistory.length > 0) {
     lines.push("", ...codexAuthHistory)
@@ -353,6 +361,31 @@ function formatAllowanceSummaryLines(
   return lines
 }
 
+function formatStackAuxBudgetLine(usage: RemoteUsageSnapshot): string | undefined {
+  const budget = usage.stackAuxBudget
+  if (!budget) return undefined
+  const model = budget.model ? oneLine(budget.model, 18) : "aux"
+  const synthWide = `${formatUsd(budget.synthWide.remainingUsd)} / ${formatUsd(budget.synthWide.capUsd)} global`
+  const orgDaily = `${formatUsd(budget.orgDaily.remainingUsd)} / ${formatUsd(budget.orgDaily.capUsd)} org today`
+  const reset = budget.orgDaily.resetsInSeconds === undefined
+    ? ""
+    : ` · reset ${formatDuration(budget.orgDaily.resetsInSeconds)}`
+  return `  Synth ${model} · ${oneLine(`${synthWide} · ${orgDaily}${reset}`, 50)}`
+}
+
+function formatDuration(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds <= 0) return "soon"
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 1) return "soon"
+  if (minutes < 60) return `${minutes}m`
+  const hours = Math.floor(minutes / 60)
+  const remMinutes = minutes % 60
+  if (hours < 24) return remMinutes > 0 ? `${hours}h${remMinutes}m` : `${hours}h`
+  const days = Math.floor(hours / 24)
+  const remHours = hours % 24
+  return remHours > 0 ? `${days}d${remHours}h` : `${days}d`
+}
+
 function allowanceWindowLabel(windowKind: string): string {
   if (windowKind === "five_hour") return "5h"
   if (windowKind === "weekly") return "wk"
@@ -381,6 +414,20 @@ function localSynthLines(
 }
 
 function actorsLines(actors: OpsPanelActors): string[] {
+  if (actors.cursorHarness) {
+    const lines = [
+      "Launch config",
+      "  Cursor harness — subagents N/A (Codex multi_agent only)",
+      "",
+      "Actors",
+      `├─ primary ${oneLine(actors.primaryStatus, 9)} · ${oneLine(actors.primaryModel, 14)} · turn ${actors.turnCount}`,
+    ]
+    if (actors.currentTurnStartedAt && actors.primaryStatus === "running") {
+      lines.push(`│  running ${durationSinceLabel(actors.currentTurnStartedAt)}`)
+    }
+    lines.push("└─ workers N/A on Cursor harness", "", "F2 preview · stackd actor tree lands L5")
+    return lines
+  }
   const enabled = actors.codexSubagentsEnabled ? "on" : "off"
   const locked = actors.codexArgsLocked ? "locked by STACK_CODEX_ARGS" : "enter toggles next launch"
   const running = actors.subagents.filter((agent) => agent.status === "running" || agent.status === "spawning").length
@@ -676,6 +723,7 @@ function isVisualMetaEvent(event: OpsPanelMetaEvent): boolean {
     event.type === "guidance.used" ||
     event.type === "guidance.impact_judged" ||
     event.type === "monitor.skill_context_push" ||
+    event.type === "gardener.skill_suggest" ||
     event.type === "monitor.wake" ||
     event.type.startsWith("gardener.") ||
     isSkillFileReadEvent(event)
@@ -685,10 +733,14 @@ function isVisualMetaEvent(event: OpsPanelMetaEvent): boolean {
 function metaEventLabel(event: OpsPanelMetaEvent): string {
   if (event.type === "skill.read" || isSkillFileReadEvent(event)) return "skill"
   if (event.type === "monitor.wake") return "monitor"
-  if (event.type === "monitor.skill_context_push") return "push"
+  if (event.type === "monitor.skill_context_push" || event.type === "gardener.skill_suggest") return "push"
   if (event.type === "gardener.queued") return "gardener"
   if (event.type === "gardener.routed") return "route"
+  if (event.type === "gardener.dispatched") return "dispatch"
   if (event.type === "gardener.garden_updated") return "garden"
+  if (event.type === "gardener.workspace_updated") return "workspace"
+  if (event.type === "gardener.maintenance_pass") return "maint"
+  if (event.type === "gardener.dismissed") return "dismiss"
   if (event.type === "gardener.friction") return "friction"
   if (event.type === "guidance.query") return "search"
   if (event.type === "guidance.impact_judged") return "impact"

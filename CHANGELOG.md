@@ -5,6 +5,12 @@ All notable changes to Stack are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+This is the public technical changelog. Include user-visible behavior, install
+changes, breaking changes, migration notes, and known limitations. Do not include
+private launch gates, dogfood waivers, customer-specific incidents, raw evidence
+transcripts, secret names, or internal planning IDs; those belong in Jstack and
+private release ledgers.
+
 ## [Unreleased]
 
 ### Added

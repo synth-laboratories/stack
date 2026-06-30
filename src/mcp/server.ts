@@ -32,20 +32,39 @@ import {
   type StackGuidanceImpact,
 } from "../codex/guidance-events.js"
 import { appendThreadMetaEvent, stackEventId } from "../thread-events.js"
-import { stackdExport, stackdThread, stackdThreads, stackdTrace } from "../client/stackd.js"
+import {
+  stackdExport,
+  stackdRuntimeAppendEvent,
+  stackdRuntimeEvents,
+  stackdRuntimeFactory,
+  stackdRuntimeTick,
+  stackdThread,
+  stackdThreads,
+  stackdTrace,
+  type StackdFactorySnapshot,
+  type StackdRuntimeEventAppendRequest,
+  type StackdRuntimeFactoryResponse,
+} from "../client/stackd.js"
 import { projectLogDocumentToVictoriaLogs, queryStackLogs } from "../observability/victorialogs.js"
 import { readReadmeSmokeEvalLaunch, startReadmeSmokeEval, type StackEvalLaunch } from "../local/evals.js"
 import { readActiveStackevalPacket } from "../stackeval/packet.js"
 import { readOptimizerSnapshot } from "../local/optimizers.js"
 import {
+  createRemoteLaunch,
+  decideRemoteRunApproval,
   downloadRemoteOutput,
   executeRemoteRunAction,
+  getRemoteLaunch,
+  listRemoteRunApprovals,
+  listRemoteRunQuestions,
   openUrlInSystemBrowser,
   previewRemoteOutput,
   previewSavedRemoteDownload,
   readRemoteDownloadHistory,
+  respondRemoteRunQuestion,
   sendRemoteFactoryMessage,
   sendRemoteRunMessage,
+  terminateRemoteLaunch,
   uploadRemoteRunFile,
   type RemoteActionResult,
   type RemoteDownloadRecord,
@@ -59,6 +78,7 @@ import {
 import { readHostedOptimizerSnapshot } from "../remote/optimizers.js"
 import {
   readRemoteResearchSnapshot,
+  readRemoteProjectsPanelSnapshot,
   readRemoteRunDetail,
   readRunHostedArtifactStatus,
   type HostedArtifactStatus,
@@ -92,9 +112,45 @@ const SERVER_NAME = STACK_MCP_SERVER_NAME
 export class StackMcpServer {
   private readonly tools: Map<string, ToolDefinition>
   private evalLaunch: StackEvalLaunch | undefined
+  private httpMode = false
 
   constructor(private readonly appRoot: string) {
     this.tools = new Map(buildTools(this).map((tool) => [tool.name, tool]))
+  }
+
+  async handleJsonRpc(request: JsonObject): Promise<JsonObject | undefined> {
+    return this.handleMessage({ payload: request, framing: "jsonl" })
+  }
+
+  async serveHttp(options: {
+    bind?: string
+    port: number
+    path?: string
+  }): Promise<{ url: string; stop: () => void }> {
+    this.httpMode = true
+    const bind = options.bind ?? "127.0.0.1"
+    const path = normalizeMcpHttpPath(options.path ?? "/mcp")
+    let messageChain = Promise.resolve()
+
+    const server = Bun.serve({
+      hostname: bind,
+      port: options.port,
+      fetch: (req) => {
+        const url = new URL(req.url)
+        if (!url.pathname.startsWith(path)) {
+          return new Response("Not Found", { status: 404 })
+        }
+        return handleHttpRequest(this.appRoot, this, req, path, () => messageChain, (next) => {
+          messageChain = next
+        })
+      },
+    })
+
+    const url = `http://${bind}:${server.port}${path}`
+    return {
+      url,
+      stop: () => server.stop(),
+    }
   }
 
   async serveStdio(): Promise<void> {
@@ -165,7 +221,7 @@ export class StackMcpServer {
       if (method === "initialized" || method === "notifications/initialized") return undefined
       if (method === "shutdown") return response(id, {})
       if (method === "exit") {
-        setTimeout(() => process.exit(0), 0)
+        if (!this.httpMode) setTimeout(() => process.exit(0), 0)
         return undefined
       }
       throw new RpcError(-32601, `Unknown method: ${method ?? "<missing>"}`)
@@ -202,11 +258,18 @@ export class StackMcpServer {
     const config = await this.config(args)
     const mode = optionalBridgeMode(args) ?? "all"
     const auth = environmentAuthStatus(config.environment)
-    const [local, research, hosted] = await Promise.all([
+    const [local, runtime] = await Promise.all([
       mode === "remote" ? Promise.resolve(undefined) : readOptimizerSnapshot(config),
-      mode === "local" ? Promise.resolve(undefined) : readRemoteResearchSnapshot(config),
-      mode === "local" ? Promise.resolve(undefined) : readHostedOptimizerSnapshot(config),
+      readStackRuntimeFactory(),
     ])
+    const runtimeSummary = runtimeSummaryFromFactory(runtime?.snapshot)
+    const shouldReadDirectRemote = mode !== "local" && !runtimeSummary
+    const [research, hosted] = shouldReadDirectRemote
+      ? await Promise.all([
+          readRemoteResearchSnapshot(config),
+          readHostedOptimizerSnapshot(config),
+        ])
+      : [undefined, undefined] as const
     const readmeSmoke = mode === "local" || !research
       ? readReadmeSmokeEvalLaunch(config)
       : correlateReadmeSmokeRun(this.evalLaunch ?? readReadmeSmokeEvalLaunch(config), research.jobs)
@@ -243,8 +306,9 @@ export class StackMcpServer {
             })),
           }
         : undefined,
-      remote: research
+      remote: runtimeSummary?.remote ?? (research
         ? {
+            source: "direct-api",
             status: research.status,
             message: research.message,
             smr_runs: research.jobs.length,
@@ -256,16 +320,26 @@ export class StackMcpServer {
               ? (research.hostedArtifacts[research.jobs[0].runId] ?? null)
               : null,
           }
-        : undefined,
-      hosted_optimizers: hosted
+        : undefined),
+      hosted_optimizers: runtimeSummary?.hostedOptimizers ?? (hosted
         ? {
+            source: "direct-api",
             status: hosted.status,
             message: hosted.message,
             runs: hosted.runs.length,
             active_runs: hosted.runs.filter((run) => isActiveState(run.status)).length,
             selected_run_id: hosted.runs[0]?.runId,
           }
-        : undefined,
+        : undefined),
+      runtime: runtime
+        ? {
+            status: runtime.status,
+            snapshot: runtime.snapshot ?? null,
+          }
+        : {
+            status: "unavailable",
+            snapshot: null,
+          },
       readme_smoke: {
         status: readmeSmoke.status,
         run_id: readmeSmoke.runId,
@@ -284,15 +358,27 @@ export class StackMcpServer {
             updated_at: stackevalPacket.updatedAt ?? null,
           }
         : null,
-      next_actions: bridgeNextActions(mode, auth.hasAuth, research?.jobs.length ?? 0, hosted?.runs.length ?? 0),
+      next_actions: bridgeNextActions(
+        mode,
+        auth.hasAuth,
+        runtimeSummary?.remote.active_smr_runs ?? research?.jobs.length ?? 0,
+        runtimeSummary?.hostedOptimizers.active_runs ?? hosted?.runs.length ?? 0,
+      ),
     }) ?? null
   }
 
   async listLiveSmrs(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const tick = optionalBoolean(args, "tick") ?? false
+    const runtime = tick
+      ? await stackdRuntimeTick().catch(() => undefined)
+      : await readStackRuntimeFactory()
+    const runtimeRuns = liveSmrsMcpFromRuntime(runtime?.snapshot, config)
+    if (runtimeRuns) return runtimeRuns
     const snapshot = await readRemoteResearchSnapshot(config)
     return toJsonValue({
       environment: config.environmentName,
+      source: "direct-api",
       status: snapshot.status,
       message: snapshot.message,
       count: snapshot.jobs.length,
@@ -324,6 +410,330 @@ export class StackMcpServer {
         }
       }),
     }) ?? null
+  }
+
+  async inspectLiveRun(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const runId = requiredString(args, "run_id")
+    const projectId = optionalString(args, "project_id")
+    const snapshot = await readRemoteResearchSnapshot(config)
+    const run = snapshot.jobs.find((item) => item.runId === runId) ?? {
+      runId,
+      projectId,
+      state: "unknown",
+    }
+    const [detail, hostedArtifact] = await Promise.all([
+      readRemoteRunDetail(config, run),
+      readRunHostedArtifactStatus(config, runId).catch(() => undefined),
+    ])
+    return toJsonValue({
+      environment: config.environmentName,
+      run: {
+        run_id: run.runId,
+        project_id: run.projectId,
+        state: run.state,
+        phase: run.phase,
+        runbook: run.runbook,
+        updated_at: run.updatedAt,
+        reason: run.reason,
+      },
+      detail: runDetailToMcp(detail),
+      hosted_artifact: hostedArtifact
+        ? {
+            status: hostedArtifact.status,
+            hosted_url: hostedArtifact.hostedUrl ?? null,
+            public_url: hostedArtifact.publicUrl ?? null,
+            slug: hostedArtifact.slug ?? null,
+            visibility: hostedArtifact.visibility ?? null,
+            url_status: hostedArtifact.urlStatus ?? null,
+            message: hostedArtifact.message ?? null,
+          }
+        : null,
+    }) ?? null
+  }
+
+  async runtimeStatus(args: JsonObject): Promise<JsonValue> {
+    await this.config(args)
+    const afterSeq = optionalInteger(args, "after_seq")
+    const limit = optionalInteger(args, "limit")
+    const source = optionalString(args, "source")
+    const tick = optionalBoolean(args, "tick") ?? false
+    const factory = tick ? await stackdRuntimeTick().catch(errorToRuntimeUnavailable) : await readStackRuntimeFactory()
+    const events = await stackdRuntimeEvents({ afterSeq, limit, source }).catch(() => undefined)
+    return toJsonValue({
+      status: factory?.status ?? "unavailable",
+      snapshot: factory?.snapshot ?? null,
+      events: events?.events ?? [],
+    }) ?? null
+  }
+
+  async listRemoteProjects(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const tick = optionalBoolean(args, "tick") ?? false
+    const runtime = tick
+      ? await stackdRuntimeTick().catch(() => undefined)
+      : await readStackRuntimeFactory()
+    const runtimeProjects = remoteProjectsMcpFromRuntime(runtime?.snapshot, config)
+    if (runtimeProjects) return runtimeProjects
+    const snapshot = await readRemoteProjectsPanelSnapshot(config)
+    return toJsonValue({
+      environment: config.environmentName,
+      source: "direct-api",
+      status: snapshot.status,
+      message: snapshot.message,
+      checked_at: snapshot.checkedAt,
+      count: snapshot.projects.length,
+      tag_scope: snapshot.tagScope
+        ? {
+            scope_id: snapshot.tagScope.scopeId,
+            name: snapshot.tagScope.name,
+            status: snapshot.tagScope.status,
+            is_default: snapshot.tagScope.isDefault,
+            factory_id: snapshot.tagScope.factoryId,
+            default_project_id: snapshot.tagScope.defaultProjectId,
+          }
+        : null,
+      projects: snapshot.projects.map((project) => ({
+        project_id: project.projectId,
+        name: project.name,
+        alias: project.alias,
+        updated_at: project.updatedAt,
+        active_run_id: project.activeRunId,
+        experiments_last_7d: project.experimentsLast7Days,
+        experiments_last_7d_capped: project.experimentsLast7DaysCapped ?? false,
+        live_runs: project.runs.filter((run) => isActiveState(run.state)).map((run) => ({
+          run_id: run.runId,
+          project_id: run.projectId,
+          state: run.state,
+          phase: run.phase,
+          runbook: run.runbook,
+          updated_at: run.updatedAt,
+          reason: run.reason,
+        })),
+        recent_runs: project.runs.map((run) => ({
+          run_id: run.runId,
+          project_id: run.projectId,
+          state: run.state,
+          phase: run.phase,
+          runbook: run.runbook,
+          updated_at: run.updatedAt,
+          reason: run.reason,
+        })),
+        factories: project.factories.map((factory) => ({
+          factory_id: factory.factoryId,
+          name: factory.name,
+          kind: factory.kind,
+          status: factory.status,
+          canonical_project_id: factory.canonicalProjectId,
+          latest_project_id: factory.latestProjectId,
+          latest_run_id: factory.latestRunId,
+          has_cloud_dev_env: factory.hasCloudDevEnv ?? null,
+          cloud_dev_label: factory.cloudDevLabel,
+          is_running: factory.isRunning ?? false,
+          active_efforts: factory.activeEfforts ?? 0,
+          next_wake_at: factory.nextWakeAt,
+        })),
+      })),
+    }) ?? null
+  }
+
+  async prepareCloudPromotionPacket(args: JsonObject): Promise<JsonValue> {
+    const { packet } = await this.buildCloudPromotionPacket(args)
+    return toJsonValue(packet) ?? null
+  }
+
+  async launchCloudPromotion(args: JsonObject): Promise<JsonValue> {
+    const { config, packet } = await this.buildCloudPromotionPacket(args)
+    const dryRun = optionalBoolean(args, "dry_run") ?? true
+    const confirm = optionalBoolean(args, "confirm") ?? false
+    if (dryRun) {
+      const runtimeEvent = await recordRuntimeLeverEvent({
+        event_type: "lever.cloud_promotion.prepared",
+        source: "lever.stack_mcp",
+        subject: {
+          kind: "cloud_promotion_packet",
+          id: packet.stackeval_packet?.task_id ?? packet.created_at,
+        },
+        correlation: {
+          stackeval_packet_id: packet.stackeval_packet?.task_id ?? undefined,
+        },
+        payload: {
+          environment: config.environmentName,
+          dry_run: true,
+          has_runtime_snapshot: packet.runtime.status !== "unavailable",
+        },
+      })
+      return toJsonValue({
+        ok: true,
+        status: 0,
+        dry_run: true,
+        message: "promotion packet prepared; no cloud launch was created",
+        promotion_packet: packet,
+        runtime_event: runtimeEvent,
+      }) ?? null
+    }
+    if (!confirm) {
+      return {
+        ok: false,
+        status: 0,
+        message: "confirm=true is required when dry_run=false",
+      }
+    }
+    const taskId = optionalString(args, "task_id") ?? packet.stackeval_packet?.task_id
+    const objective = optionalString(args, "objective")
+    if (!taskId && !objective) {
+      throw new RpcError(-32602, "task_id or objective is required when dry_run=false")
+    }
+    const metadata = optionalJsonObject(args, "metadata") ?? {}
+    const result = await createRemoteLaunch(config, {
+      ...(optionalString(args, "project_id") ? { project_id: optionalString(args, "project_id") } : {}),
+      ...(taskId ? { task_id: taskId } : {}),
+      ...(objective ? { objective } : {}),
+      ...(optionalString(args, "runbook") ? { runbook: optionalString(args, "runbook") } : {}),
+      metadata: {
+        ...metadata,
+        source: "stack_mcp",
+        promotion_packet: packet,
+      },
+    })
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.cloud_promotion.launched",
+      source: "lever.stack_mcp",
+      subject: {
+        kind: "cloud_launch",
+        id: remoteLaunchRunId(result) ?? taskId ?? objective ?? packet.created_at,
+      },
+      correlation: {
+        project_id: optionalString(args, "project_id") ?? undefined,
+        run_id: remoteLaunchRunId(result) ?? undefined,
+        stackeval_packet_id: packet.stackeval_packet?.task_id ?? undefined,
+      },
+      payload: {
+        environment: config.environmentName,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+        dry_run: false,
+      },
+    })
+    return actionResultWithData(result, { dry_run: false, promotion_packet: packet, runtime_event: runtimeEvent })
+  }
+
+  async getCloudLaunch(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const runId = requiredString(args, "run_id")
+    const result = await getRemoteLaunch(config, runId)
+    return actionResultWithData(result)
+  }
+
+  async terminateCloudLaunch(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const runId = requiredString(args, "run_id")
+    const result = await terminateRemoteLaunch(config, runId, {
+      ...(optionalString(args, "reason") ? { reason: optionalString(args, "reason") } : {}),
+    })
+    return actionResultWithData(result)
+  }
+
+  async listRunInteractions(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const run = remoteRunRef(args)
+    const statusFilter = optionalString(args, "status_filter")
+    const [questions, approvals] = await Promise.all([
+      listRemoteRunQuestions(config, run, statusFilter),
+      listRemoteRunApprovals(config, run, statusFilter),
+    ])
+    return toJsonValue({
+      environment: config.environmentName,
+      run_id: run.runId,
+      project_id: run.projectId ?? null,
+      questions: remoteActionPayload(questions),
+      approvals: remoteActionPayload(approvals),
+    }) ?? null
+  }
+
+  async respondRunQuestion(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const run = remoteRunRef(args)
+    const questionId = requiredString(args, "question_id")
+    const responseText = requiredString(args, "response_text")
+    const result = await respondRemoteRunQuestion(config, run, questionId, responseText)
+    return actionResultWithData(result)
+  }
+
+  async decideRunApproval(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const run = remoteRunRef(args)
+    const approvalId = requiredString(args, "approval_id")
+    const decision = requiredApprovalDecision(args)
+    const result = await decideRemoteRunApproval(config, run, approvalId, decision, optionalString(args, "comment"))
+    return actionResultWithData(result)
+  }
+
+  private async buildCloudPromotionPacket(args: JsonObject): Promise<{
+    config: StackConfig
+    packet: {
+      schema: string
+      created_at: string
+      source: string
+      environment: {
+        name: string
+        api_base_url: string
+      }
+      project_id: string | null
+      task_id: string | null
+      objective: string | null
+      runbook: string | null
+      metadata: Record<string, unknown>
+      stackeval_packet: {
+        task_id: string
+        packet_dir: string
+        stamp: string
+        preset?: string
+        status?: string
+        updated_at?: string
+      } | null
+      runtime: {
+        status: string
+        snapshot: unknown
+      }
+    }
+  }> {
+    const config = await this.config(args)
+    const stackevalPacket = readActiveStackevalPacket(config.appRoot)
+    const runtime = await readStackRuntimeFactory()
+    const taskId = optionalString(args, "task_id") ?? stackevalPacket?.taskId ?? null
+    return {
+      config,
+      packet: {
+        schema: "stack.cloud_promotion_packet.v1",
+        created_at: new Date().toISOString(),
+        source: "stack_mcp",
+        environment: {
+          name: config.environmentName,
+          api_base_url: config.environment.apiBaseUrl,
+        },
+        project_id: optionalString(args, "project_id") ?? null,
+        task_id: taskId,
+        objective: optionalString(args, "objective") ?? null,
+        runbook: optionalString(args, "runbook") ?? null,
+        metadata: optionalJsonObject(args, "metadata") ?? {},
+        stackeval_packet: stackevalPacket
+          ? {
+              task_id: stackevalPacket.taskId,
+              packet_dir: stackevalPacket.packetDir,
+              stamp: stackevalPacket.stamp,
+              ...(stackevalPacket.preset ? { preset: stackevalPacket.preset } : {}),
+              ...(stackevalPacket.status ? { status: stackevalPacket.status } : {}),
+              ...(stackevalPacket.updatedAt ? { updated_at: stackevalPacket.updatedAt } : {}),
+            }
+          : null,
+        runtime: {
+          status: runtime?.status ?? "unavailable",
+          snapshot: runtime?.snapshot ?? null,
+        },
+      },
+    }
   }
 
   async getRunArtifactStatus(args: JsonObject): Promise<JsonValue> {
@@ -374,9 +784,16 @@ export class StackMcpServer {
 
   async listFactories(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const tick = optionalBoolean(args, "tick") ?? false
+    const runtime = tick
+      ? await stackdRuntimeTick().catch(() => undefined)
+      : await readStackRuntimeFactory()
+    const runtimeFactories = factoriesMcpFromRuntime(runtime?.snapshot, config)
+    if (runtimeFactories) return runtimeFactories
     const snapshot = await readRemoteResearchSnapshot(config)
     return toJsonValue({
       environment: config.environmentName,
+      source: "direct-api",
       status: snapshot.status,
       message: snapshot.message,
       count: snapshot.factories.length,
@@ -398,9 +815,16 @@ export class StackMcpServer {
 
   async listHostedOptimizerRuns(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const tick = optionalBoolean(args, "tick") ?? false
+    const runtime = tick
+      ? await stackdRuntimeTick().catch(() => undefined)
+      : await readStackRuntimeFactory()
+    const runtimeOptimizers = hostedOptimizersMcpFromRuntime(runtime?.snapshot, config)
+    if (runtimeOptimizers) return runtimeOptimizers
     const snapshot = await readHostedOptimizerSnapshot(config)
     return toJsonValue({
       environment: config.environmentName,
+      source: "direct-api",
       status: snapshot.status,
       message: snapshot.message,
       count: snapshot.runs.length,
@@ -433,7 +857,20 @@ export class StackMcpServer {
     const body = requiredString(args, "body")
     const projectId = optionalString(args, "project_id")
     const result = await sendRemoteRunMessage(config, { runId, projectId, state: "unknown" }, body)
-    return actionResult(result)
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.remote_smr.run.message_sent",
+      source: "lever.stack_mcp",
+      subject: { kind: "remote_smr_run", id: runId },
+      correlation: { run_id: runId, project_id: projectId ?? undefined },
+      payload: {
+        environment: config.environmentName,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+        body_preview: body.slice(0, 160),
+      },
+    })
+    return actionResultWithData(result, { runtime_event: runtimeEvent })
   }
 
   async messageFactoryProject(args: JsonObject): Promise<JsonValue> {
@@ -451,7 +888,23 @@ export class StackMcpServer {
       factory = snapshot.factories.find((item) => item.factoryId === factoryId) ?? factory
     }
     const result = await sendRemoteFactoryMessage(config, factory, body)
-    return actionResult(result)
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.remote_factory.message_sent",
+      source: "lever.stack_mcp",
+      subject: { kind: "remote_factory", id: factoryId },
+      correlation: {
+        factory_id: factoryId,
+        project_id: projectId ?? factory.canonicalProjectId ?? factory.latestProjectId ?? undefined,
+      },
+      payload: {
+        environment: config.environmentName,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+        body_preview: body.slice(0, 160),
+      },
+    })
+    return actionResultWithData(result, { runtime_event: runtimeEvent })
   }
 
   async controlLiveRun(args: JsonObject): Promise<JsonValue> {
@@ -467,7 +920,20 @@ export class StackMcpServer {
       state: "unknown",
     }
     const result = await executeRemoteRunAction(config, run, action)
-    return actionResult(result)
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: `lever.remote_smr.run.${action.replace("-run", "").replace("-", "_")}` as `lever.${string}`,
+      source: "lever.stack_mcp",
+      subject: { kind: "remote_smr_run", id: runId },
+      correlation: { run_id: runId, project_id: run.projectId ?? undefined },
+      payload: {
+        environment: config.environmentName,
+        action,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+      },
+    })
+    return actionResultWithData(result, { runtime_event: runtimeEvent })
   }
 
   async cancelHostedOptimizer(args: JsonObject): Promise<JsonValue> {
@@ -478,7 +944,19 @@ export class StackMcpServer {
       algorithm: "unknown",
       status: "unknown",
     })
-    return actionResult(result)
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.hosted_optimizer.cancel_requested",
+      source: "lever.stack_mcp",
+      subject: { kind: "hosted_optimizer_run", id: runId },
+      correlation: { optimizer_run_id: runId },
+      payload: {
+        environment: config.environmentName,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+      },
+    })
+    return actionResultWithData(result, { runtime_event: runtimeEvent })
   }
 
   async previewHostedOptimizerArtifact(args: JsonObject): Promise<JsonValue> {
@@ -1126,6 +1604,356 @@ function correlateReadmeSmokeRun(
   return run ? { ...launch, runId: run.runId } : launch
 }
 
+function runDetailToMcp(detail: RemoteRunDetail): JsonObject {
+  return toJsonValue({
+    run_id: detail.runId,
+    artifact_count: detail.artifactCount,
+    work_product_count: detail.workProductCount,
+    runtime_message_count: detail.runtimeMessageCount,
+    pending_runtime_message_count: detail.pendingRuntimeMessageCount,
+    file_mount_count: detail.fileMountCount,
+    active_file_mount_count: detail.activeFileMountCount,
+    artifact_types: detail.artifactTypes,
+    work_product_kinds: detail.workProductKinds,
+    artifacts: detail.artifacts.map((artifact) => ({
+      artifact_id: artifact.artifactId,
+      artifact_type: artifact.artifactType,
+      title: artifact.title,
+      created_at: artifact.createdAt,
+    })),
+    work_products: detail.workProducts.map((workProduct) => ({
+      work_product_id: workProduct.workProductId,
+      kind: workProduct.kind,
+      title: workProduct.title,
+      status: workProduct.status,
+      readiness: workProduct.readiness,
+      artifact_id: workProduct.artifactId,
+      created_at: workProduct.createdAt,
+    })),
+    runtime_messages: detail.runtimeMessages.map((message) => ({
+      message_id: message.messageId,
+      status: message.status,
+      mode: message.mode,
+      sender: message.sender,
+      target: message.target,
+      action: message.action,
+      body: message.body,
+      created_at: message.createdAt,
+    })),
+    file_mounts: detail.fileMounts.map((mount) => ({
+      mount_id: mount.mountId,
+      file_id: mount.fileId,
+      mount_path: mount.mountPath,
+      visibility: mount.visibility,
+      active: mount.active,
+      content_type: mount.contentType,
+      content_bytes: mount.contentBytes,
+      created_at: mount.createdAt,
+    })),
+    message: detail.message,
+  }) as JsonObject
+}
+
+async function readStackRuntimeFactory(): Promise<StackdRuntimeFactoryResponse | undefined> {
+  try {
+    return await stackdRuntimeFactory()
+  } catch {
+    return undefined
+  }
+}
+
+async function recordRuntimeLeverEvent(
+  request: StackdRuntimeEventAppendRequest,
+): Promise<Record<string, unknown>> {
+  try {
+    const response = await stackdRuntimeAppendEvent(request)
+    const event = response.events[0]
+    return {
+      ok: true,
+      event_id: event?.event_id ?? null,
+      seq: event?.seq ?? null,
+      event_type: event?.event_type ?? request.event_type,
+      source: event?.source ?? request.source,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      message: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+function remoteLaunchRunId(result: RemoteActionResult): string | undefined {
+  const data = result.data
+  if (!data) return undefined
+  for (const key of ["run_id", "runId", "id", "launch_id", "launchId"]) {
+    const value = data[key]
+    if (typeof value === "string" && value.trim()) return value
+  }
+  const launch = data.launch
+  if (launch && typeof launch === "object" && !Array.isArray(launch)) {
+    for (const key of ["run_id", "runId", "id"]) {
+      const value = (launch as Record<string, unknown>)[key]
+      if (typeof value === "string" && value.trim()) return value
+    }
+  }
+  return undefined
+}
+
+function errorToRuntimeUnavailable(error: unknown): { status: string; snapshot?: unknown } {
+  return {
+    status: "unavailable",
+    snapshot: {
+      error: error instanceof Error ? error.message : String(error),
+    },
+  }
+}
+
+function runtimeSummaryFromFactory(snapshot: StackdFactorySnapshot | null | undefined): {
+  remote: {
+    source: "runtime"
+    status: string
+    message: string
+    control_state: string
+    smr_runs: number
+    factories: number
+    active_smr_runs: number
+    active_factories: number
+    selected_smr_run_id?: string
+    selected_factory_id?: string
+    hosted_artifact_for_first: null
+  }
+  hostedOptimizers: {
+    source: "runtime"
+    status: string
+    message: string
+    runs: number
+    active_runs: number
+    selected_run_id?: string
+  }
+} | undefined {
+  const remote = snapshot?.remote_synth
+  if (!snapshot || !remote) return undefined
+  const hasRemoteState =
+    remote.projects.length > 0 ||
+    remote.runs.length > 0 ||
+    remote.factories.length > 0 ||
+    remote.hosted_optimizers.length > 0 ||
+    remote.active_run_count > 0 ||
+    remote.active_factory_count > 0 ||
+    remote.active_hosted_optimizer_count > 0
+  if (!hasRemoteState) return undefined
+  const selectedRun = remote.runs.find((run) => !run.terminal) ?? remote.runs[0]
+  const selectedFactory = remote.factories.find((factory) => factory.is_running) ?? remote.factories[0]
+  const selectedOptimizer = remote.hosted_optimizers.find((run) => !run.terminal) ?? remote.hosted_optimizers[0]
+  return {
+    remote: {
+      source: "runtime",
+      status: remote.auth_status === "ready" ? "ready" : "missing-auth",
+      message: `runtime ${remote.active_project_count} projects`,
+      control_state: snapshot.control_state,
+      smr_runs: remote.runs.length,
+      factories: remote.factories.length,
+      active_smr_runs: remote.active_run_count,
+      active_factories: remote.active_factory_count,
+      ...(selectedRun ? { selected_smr_run_id: selectedRun.run_id } : {}),
+      ...(selectedFactory ? { selected_factory_id: selectedFactory.factory_id } : {}),
+      hosted_artifact_for_first: null,
+    },
+    hostedOptimizers: {
+      source: "runtime",
+      status: remote.auth_status === "ready" ? "ready" : "missing-auth",
+      message: `runtime ${remote.hosted_optimizers.length} hosted optimizer runs`,
+      runs: remote.hosted_optimizers.length,
+      active_runs: remote.active_hosted_optimizer_count,
+      ...(selectedOptimizer ? { selected_run_id: selectedOptimizer.run_id } : {}),
+    },
+  }
+}
+
+function remoteProjectsMcpFromRuntime(
+  snapshot: StackdFactorySnapshot | null | undefined,
+  config: StackConfig,
+): JsonValue | undefined {
+  const remote = snapshot?.remote_synth
+  const projects = remote?.projects ?? []
+  if (!remote || projects.length === 0) return undefined
+  const runtimeRuns = remote.runs ?? []
+  const runtimeFactories = remote.factories ?? []
+  const runsById = new Map(runtimeRuns.map((run) => [run.run_id, run]))
+  const factoriesById = new Map(runtimeFactories.map((factory) => [factory.factory_id, factory]))
+  return toJsonValue({
+    environment: config.environmentName,
+    source: "runtime",
+    status: remote.auth_status === "ready" ? "ready" : "missing-auth",
+    message: `runtime ${projects.length} projects`,
+    checked_at: snapshot.updated_at,
+    count: projects.length,
+    tag_scope: null,
+    hosted_optimizers: {
+      active_count: remote.active_hosted_optimizer_count,
+      runs: remote.hosted_optimizers.map((optimizer) => ({
+        run_id: optimizer.run_id,
+        status: optimizer.status,
+        updated_at: optimizer.updated_at,
+        terminal: optimizer.terminal,
+      })),
+    },
+    projects: projects.map((project) => {
+      const linkedRuns = project.run_ids
+        .map((runId) => runsById.get(runId))
+        .filter((run): run is NonNullable<typeof run> => Boolean(run))
+      const projectRuns = linkedRuns.length > 0
+        ? linkedRuns
+        : runtimeRuns.filter((run) => run.project_id === project.project_id)
+      const linkedFactories = project.factory_ids
+        .map((factoryId) => factoriesById.get(factoryId))
+        .filter((factory): factory is NonNullable<typeof factory> => Boolean(factory))
+      const projectFactories = linkedFactories.length > 0
+        ? linkedFactories
+        : runtimeFactories.filter((factory) => factory.project_ids.includes(project.project_id))
+      return {
+        project_id: project.project_id,
+        name: project.name,
+        alias: project.alias,
+        updated_at: project.updated_at,
+        active_run_id: project.active_run_id ?? projectRuns.find((run) => !run.terminal)?.run_id,
+        experiments_last_7d: null,
+        experiments_last_7d_capped: false,
+        live_runs: projectRuns.filter((run) => !run.terminal).map((run) => ({
+          run_id: run.run_id,
+          project_id: run.project_id,
+          state: run.state,
+          phase: run.phase,
+          runbook: run.runbook,
+          updated_at: run.updated_at,
+          reason: null,
+        })),
+        recent_runs: projectRuns.map((run) => ({
+          run_id: run.run_id,
+          project_id: run.project_id,
+          state: run.state,
+          phase: run.phase,
+          runbook: run.runbook,
+          updated_at: run.updated_at,
+          reason: null,
+        })),
+        factories: projectFactories.map((factory) => ({
+          factory_id: factory.factory_id,
+          name: factory.name,
+          kind: factory.kind,
+          status: factory.status,
+          canonical_project_id: factory.canonical_project_id,
+          latest_project_id: factory.latest_project_id,
+          latest_run_id: factory.latest_run_id,
+          has_cloud_dev_env: factory.has_cloud_dev_env,
+          cloud_dev_label: factory.cloud_dev_label,
+          is_running: factory.is_running ?? false,
+          active_efforts: factory.active_efforts ?? 0,
+          next_wake_at: factory.next_wake_at,
+        })),
+      }
+    }),
+  })
+}
+
+function liveSmrsMcpFromRuntime(
+  snapshot: StackdFactorySnapshot | null | undefined,
+  config: StackConfig,
+): JsonValue | undefined {
+  const remote = snapshot?.remote_synth
+  const runs = remote?.runs ?? []
+  if (!remote || runs.length === 0) return undefined
+  return toJsonValue({
+    environment: config.environmentName,
+    source: "runtime",
+    status: remote.auth_status === "ready" ? "ready" : "missing-auth",
+    message: `runtime ${runs.length} SMR runs`,
+    count: runs.length,
+    control_state: snapshot.control_state,
+    runs: runs.map((run) => ({
+      run_id: run.run_id,
+      project_id: run.project_id,
+      state: run.state,
+      phase: run.phase,
+      runbook: run.runbook,
+      updated_at: run.updated_at,
+      reason: run.terminal ? "terminal" : null,
+      terminal: run.terminal,
+      work_products: 0,
+      artifacts: 0,
+      pending_messages: 0,
+      file_mounts: 0,
+      hosted_artifact: null,
+    })),
+  })
+}
+
+function factoriesMcpFromRuntime(
+  snapshot: StackdFactorySnapshot | null | undefined,
+  config: StackConfig,
+): JsonValue | undefined {
+  const remote = snapshot?.remote_synth
+  const factories = remote?.factories ?? []
+  if (!remote || factories.length === 0) return undefined
+  return toJsonValue({
+    environment: config.environmentName,
+    source: "runtime",
+    status: remote.auth_status === "ready" ? "ready" : "missing-auth",
+    message: `runtime ${factories.length} factories`,
+    count: factories.length,
+    control_state: snapshot.control_state,
+    factories: factories.map((factory) => ({
+      factory_id: factory.factory_id,
+      name: factory.name,
+      kind: factory.kind,
+      status: factory.status,
+      canonical_project_id: factory.canonical_project_id,
+      latest_project_id: factory.latest_project_id,
+      latest_run_id: factory.latest_run_id,
+      latest_work_product_id: null,
+      next_wake_at: factory.next_wake_at,
+      active_efforts: factory.active_efforts ?? 0,
+      paused_or_waiting: 0,
+      has_cloud_dev_env: factory.has_cloud_dev_env,
+      cloud_dev_label: factory.cloud_dev_label,
+      is_running: factory.is_running ?? false,
+      project_ids: factory.project_ids,
+    })),
+  })
+}
+
+function hostedOptimizersMcpFromRuntime(
+  snapshot: StackdFactorySnapshot | null | undefined,
+  config: StackConfig,
+): JsonValue | undefined {
+  const remote = snapshot?.remote_synth
+  const runs = remote?.hosted_optimizers ?? []
+  if (!remote || runs.length === 0) return undefined
+  return toJsonValue({
+    environment: config.environmentName,
+    source: "runtime",
+    status: remote.auth_status === "ready" ? "ready" : "missing-auth",
+    message: `runtime ${runs.length} hosted optimizer runs`,
+    count: runs.length,
+    control_state: snapshot.control_state,
+    runs: runs.map((run) => ({
+      run_id: run.run_id,
+      project_id: null,
+      algorithm: "unknown",
+      status: run.status,
+      finalize_state: null,
+      cancellation_requested: false,
+      updated_at: run.updated_at,
+      terminal: run.terminal,
+      artifact_names: [],
+      event_count: 0,
+      event_types: [],
+      detail_message: null,
+    })),
+  })
+}
+
 function buildTools(server: StackMcpServer): ToolDefinition[] {
   return [
     {
@@ -1138,10 +1966,145 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.agentStatus(args),
     },
     {
+      name: "stack_runtime_status",
+      description: "Read stackd runtime factory snapshot and recent runtime sensor events. Optionally force one runtime tick.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        tick: { type: "boolean", description: "If true, request one stackd /runtime/tick before reading events." },
+        after_seq: numberProperty("Only return runtime events after this sequence."),
+        limit: numberProperty("Maximum runtime events to return. Defaults to stackd default."),
+        source: stringProperty("Optional runtime event source filter, e.g. sensor.local_gepa or sensor.remote_synth."),
+      }),
+      handler: (args) => server.runtimeStatus(args),
+    },
+    {
+      name: "stack_list_remote_projects",
+      description: "List remote Synth projects with associated live/recent SMR runs and linked Factory/cloud badges. Uses stackd runtime snapshot first, with direct API fallback.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        tick: { type: "boolean", description: "If true, request one stackd /runtime/tick before reading projects." },
+      }),
+      handler: (args) => server.listRemoteProjects(args),
+    },
+    {
+      name: "stack_prepare_cloud_promotion_packet",
+      description: "Prepare a local-to-cloud promotion packet from the active StackEval packet and stackd runtime snapshot. Does not create cloud work.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        project_id: stringProperty("Optional target Synth project id."),
+        task_id: stringProperty("Optional task id. Defaults to the active StackEval packet task id when present."),
+        objective: stringProperty("Optional cloud launch objective."),
+        runbook: stringProperty("Optional runbook or launch mode hint."),
+        metadata: jsonObjectProperty("Optional structured metadata to carry into the promotion packet."),
+      }),
+      handler: (args) => server.prepareCloudPromotionPacket(args),
+    },
+    {
+      name: "stack_launch_cloud_promotion",
+      description: "Create a cloud launch from a Stack promotion packet through the Managed Research launch owner route. Dry-run by default; set dry_run=false and confirm=true to mutate cloud state.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        project_id: stringProperty("Optional target Synth project id."),
+        task_id: stringProperty("Optional task id. Defaults to the active StackEval packet task id when present."),
+        objective: stringProperty("Optional cloud launch objective. Required when no task_id is available and dry_run=false."),
+        runbook: stringProperty("Optional runbook or launch mode hint."),
+        metadata: jsonObjectProperty("Optional structured metadata to carry into the launch request."),
+        dry_run: { type: "boolean", description: "Defaults to true. When true, returns the launch packet without creating cloud work." },
+        confirm: { type: "boolean", description: "Required as true when dry_run=false." },
+      }),
+      handler: (args) => server.launchCloudPromotion(args),
+    },
+    {
+      name: "stack_get_cloud_launch",
+      description: "Read one Managed Research cloud launch through the launch owner route.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          run_id: stringProperty("Cloud launch run id."),
+        },
+        ["run_id"],
+      ),
+      handler: (args) => server.getCloudLaunch(args),
+    },
+    {
+      name: "stack_terminate_cloud_launch",
+      description: "Terminate one Managed Research cloud launch through the launch owner route.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          run_id: stringProperty("Cloud launch run id."),
+          reason: stringProperty("Optional termination reason."),
+        },
+        ["run_id"],
+      ),
+      handler: (args) => server.terminateCloudLaunch(args),
+    },
+    {
+      name: "stack_list_run_interactions",
+      description: "List pending or filtered human questions and approvals for one SMR run through backend interaction owner routes.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          run_id: stringProperty("SMR run id."),
+          project_id: stringProperty("Optional project id for project-scoped interaction routes."),
+          status_filter: stringProperty("Optional backend status filter, e.g. pending."),
+        },
+        ["run_id"],
+      ),
+      handler: (args) => server.listRunInteractions(args),
+    },
+    {
+      name: "stack_respond_run_question",
+      description: "Respond to one SMR run question through the backend interaction owner route.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          run_id: stringProperty("SMR run id."),
+          project_id: stringProperty("Optional project id for project-scoped interaction routes."),
+          question_id: stringProperty("Question id."),
+          response_text: stringProperty("Human response text."),
+        },
+        ["run_id", "question_id", "response_text"],
+      ),
+      handler: (args) => server.respondRunQuestion(args),
+    },
+    {
+      name: "stack_decide_run_approval",
+      description: "Approve or deny one SMR run approval request through the backend interaction owner route.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          run_id: stringProperty("SMR run id."),
+          project_id: stringProperty("Optional project id for project-scoped interaction routes."),
+          approval_id: stringProperty("Approval id."),
+          decision: enumProperty(["approve", "deny"], "Approval decision."),
+          comment: stringProperty("Optional decision comment."),
+        },
+        ["run_id", "approval_id", "decision"],
+      ),
+      handler: (args) => server.decideRunApproval(args),
+    },
+    {
       name: "stack_list_live_smrs",
-      description: "List recent live SMR runs in a concise Codex-friendly shape, including output/message/file counts when loaded.",
-      inputSchema: objectSchema({ environment: environmentProperty() }),
+      description: "List recent live SMR runs in a concise Codex-friendly shape. Uses stackd runtime snapshot first, with direct API fallback for output/message/file counts.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        tick: { type: "boolean", description: "If true, request one stackd /runtime/tick before reading runs." },
+      }),
       handler: (args) => server.listLiveSmrs(args),
+    },
+    {
+      name: "stack_inspect_live_run",
+      description: "Inspect one SMR run with WorkProducts, artifacts, runtime messages, file mounts, and hosted artifact status.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          run_id: stringProperty("SMR run id."),
+          project_id: stringProperty("Optional project id for project-scoped WorkProduct/runtime-message reads."),
+        },
+        ["run_id"],
+      ),
+      handler: (args) => server.inspectLiveRun(args),
     },
     {
       name: "stack_query_logs",
@@ -1200,14 +2163,20 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_list_factories",
-      description: "List remote Research Factories and routable project/run hints for operator mediation.",
-      inputSchema: objectSchema({ environment: environmentProperty() }),
+      description: "List remote Research Factories and routable project/run hints for operator mediation. Uses stackd runtime snapshot first, with direct API fallback.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        tick: { type: "boolean", description: "If true, request one stackd /runtime/tick before reading factories." },
+      }),
       handler: (args) => server.listFactories(args),
     },
     {
       name: "stack_list_hosted_optimizer_runs",
-      description: "List hosted optimizer runs with selected detail, artifact names, events, and cancellation hints.",
-      inputSchema: objectSchema({ environment: environmentProperty() }),
+      description: "List hosted optimizer runs. Uses stackd runtime snapshot first, with direct API fallback for artifact/event details.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        tick: { type: "boolean", description: "If true, request one stackd /runtime/tick before reading hosted optimizer runs." },
+      }),
       handler: (args) => server.listHostedOptimizerRuns(args),
     },
     {
@@ -1790,6 +2759,38 @@ function actionResult(result: RemoteActionResult): JsonValue {
   return { ok: result.ok, status: result.status, message: result.message }
 }
 
+function actionResultWithData(result: RemoteActionResult, extra: Record<string, unknown> = {}): JsonValue {
+  return toJsonValue({
+    ok: result.ok,
+    status: result.status,
+    message: result.message,
+    data: result.data ?? null,
+    ...extra,
+  }) ?? null
+}
+
+function remoteActionPayload(result: RemoteActionResult): Record<string, unknown> {
+  return {
+    ok: result.ok,
+    status: result.status,
+    message: result.message,
+    data: result.data ?? null,
+  }
+}
+
+function remoteRunRef(args: JsonObject): Pick<RemoteSmrRunSummary, "runId" | "projectId"> {
+  return {
+    runId: requiredString(args, "run_id"),
+    projectId: optionalString(args, "project_id"),
+  }
+}
+
+function requiredApprovalDecision(args: JsonObject): "approve" | "deny" {
+  const decision = requiredString(args, "decision")
+  if (decision === "approve" || decision === "deny") return decision
+  throw new RpcError(-32602, "decision must be approve or deny")
+}
+
 type HarnessCommandEvent = {
   eventType: "command.start" | "command.exit" | "command.failed"
   phase: "started" | "completed"
@@ -1862,6 +2863,15 @@ function optionalInteger(args: JsonObject, key: string): number | undefined {
   if (value === undefined || value === null) return undefined
   if (typeof value !== "number" || !Number.isInteger(value)) {
     throw new RpcError(-32602, `${key} must be an integer`)
+  }
+  return value
+}
+
+function optionalBoolean(args: JsonObject, key: string): boolean | undefined {
+  const value = args[key]
+  if (value === undefined || value === null) return undefined
+  if (typeof value !== "boolean") {
+    throw new RpcError(-32602, `${key} must be a boolean`)
   }
   return value
 }
@@ -2010,10 +3020,88 @@ function defaultAppRoot(): string {
   return resolve(dirname(fileURLToPath(import.meta.url)), "..", "..")
 }
 
+function normalizeMcpHttpPath(value: string): string {
+  const trimmed = value.trim() || "/mcp"
+  return trimmed.startsWith("/") ? trimmed.replace(/\/+$/, "") || "/mcp" : `/${trimmed.replace(/\/+$/, "")}`
+}
+
+async function handleHttpRequest(
+  appRoot: string,
+  server: StackMcpServer,
+  req: Request,
+  path: string,
+  readChain: () => Promise<void>,
+  setChain: (next: Promise<void>) => void,
+): Promise<Response> {
+  if (req.method === "GET") {
+    return Response.json({
+      ok: true,
+      server: SERVER_NAME,
+      version: stackVersion(appRoot),
+      transport: "streamable-http",
+      protocolVersion: PROTOCOL_VERSION,
+      path,
+    })
+  }
+  if (req.method !== "POST") {
+    return new Response("Method Not Allowed", { status: 405, headers: { Allow: "GET, POST" } })
+  }
+
+  let payload: unknown
+  try {
+    payload = await req.json()
+  } catch {
+    return Response.json(errorResponse(null, new RpcError(-32700, "Invalid JSON")), { status: 400 })
+  }
+
+  const messages = Array.isArray(payload) ? payload : [payload]
+  const responses: JsonObject[] = []
+  for (const message of messages) {
+    if (!message || typeof message !== "object" || Array.isArray(message)) {
+      return Response.json(errorResponse(null, new RpcError(-32600, "Invalid Request")), { status: 400 })
+    }
+    const prior = readChain()
+    let responseMessage: JsonObject | undefined
+    const next = prior.then(async () => {
+      responseMessage = await server.handleJsonRpc(message as JsonObject)
+    })
+    setChain(next)
+    await next
+    if (responseMessage) responses.push(responseMessage)
+  }
+
+  if (responses.length === 1) return Response.json(responses[0])
+  return Response.json(responses)
+}
+
 if (import.meta.main) {
   if (wantsVersionFlag(process.argv)) {
     printStackVersion("stack-mcp")
     process.exit(0)
   }
-  await new StackMcpServer(process.env.STACK_APP_ROOT ?? defaultAppRoot()).serveStdio()
+  const httpArgs = readHttpServeArgs(process.argv.slice(2))
+  const appRoot = process.env.STACK_APP_ROOT ?? defaultAppRoot()
+  const mcp = new StackMcpServer(appRoot)
+  if (httpArgs) {
+    const served = await mcp.serveHttp(httpArgs)
+    console.log(`stack_mcp_http_ready ${served.url}`)
+    await new Promise<void>(() => undefined)
+  } else {
+    await mcp.serveStdio()
+  }
+}
+
+function readHttpServeArgs(argv: string[]): { bind?: string; port: number; path?: string } | undefined {
+  if (!argv.includes("--http")) return undefined
+  let bind = process.env.STACK_MCP_HTTP_BIND ?? "127.0.0.1"
+  let port = Number.parseInt(process.env.STACK_MCP_HTTP_PORT ?? "8793", 10)
+  let path = process.env.STACK_MCP_HTTP_PATH ?? "/mcp"
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]
+    if (arg === "--bind" && argv[index + 1]) bind = argv[++index]
+    else if (arg === "--port" && argv[index + 1]) port = Number.parseInt(argv[++index], 10)
+    else if (arg === "--path" && argv[index + 1]) path = argv[++index]
+  }
+  if (!Number.isFinite(port) || port <= 0) throw new Error("invalid MCP HTTP port")
+  return { bind, port, path }
 }
