@@ -19,8 +19,6 @@ scope_control = false
 provider = "openai"
 model = "gpt-5.4-mini"
 reasoning_effort = "medium"
-worker = "auto"
-
 [prompt]
 system_file = ".stack/monitors/progress-narrator.system.md"
 

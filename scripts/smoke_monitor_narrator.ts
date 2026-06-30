@@ -9,9 +9,10 @@ import { appendThreadMetaEvent, readThreadMetaEvents, stackEventId } from "../sr
 import type { StackCodexTurn, StackLocalSession } from "../src/session.js"
 
 process.env.STACK_MONITOR_PROFILE = "progress-narrator"
-process.env.STACK_MONITOR_MODEL_WORKER = "deterministic"
 
 const appRoot = resolve(import.meta.dir, "..")
+process.env.STACK_CODEX_COMMAND = join(appRoot, "scripts/fake_codex_jsonl.ts")
+delete process.env.STACK_CODEX_ARGS
 const config = await loadConfig(appRoot)
 const stamp = new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15) + "Z"
 const threadId = process.env.STACK_MONITOR_NARRATOR_SMOKE_THREAD_ID ?? `monitor-narrator-${randomUUID()}`
@@ -101,14 +102,15 @@ if (readString(goalSnapshot?.objective) !== goalObjective) {
   failures.push("goal_snapshot.objective missing or wrong")
 }
 
-const operatorUpdate = payload.operator_update as Record<string, unknown> | undefined
-if (!readString(operatorUpdate?.working_on)) failures.push("operator_update.working_on missing")
-if (!readString(operatorUpdate?.progress_note)) failures.push("operator_update.progress_note missing")
-if (!readString(operatorUpdate?.struggling_with)) failures.push("operator_update.struggling_with missing on tool_failed wake")
-
 const summaryText = readString(payload.summary) ?? ""
-if (!summaryText.includes("Working on:") && !summaryText.includes(goalObjective.slice(0, 20))) {
-  failures.push("summary must cite goal/working_on")
+if (!summaryText.includes("Harbor") && !summaryText.includes("criterion")) {
+  failures.push("summary must cite Codex sidecar goal context")
+}
+if (readString(payload.source) !== "codex-app-server") {
+  failures.push(`expected monitor.summary source=codex-app-server, got ${String(payload.source)}`)
+}
+if (!readString(payload.monitor_codex_thread_id)) {
+  failures.push("monitor.summary missing monitor_codex_thread_id")
 }
 
 const summary = {
@@ -117,7 +119,7 @@ const summary = {
   profile: "progress-narrator",
   summary_count: summaries.length,
   latest_summary: summaryText,
-  operator_update: operatorUpdate,
+  monitor_codex_thread_id: readString(payload.monitor_codex_thread_id),
   goal_snapshot: goalSnapshot,
   focus_results: focus,
   failures,

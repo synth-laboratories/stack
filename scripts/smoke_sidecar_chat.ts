@@ -10,9 +10,10 @@ import { appendThreadMetaEvent, readThreadMetaEvents, stackEventId } from "../sr
 import type { StackCodexTurn, StackLocalSession } from "../src/session.js"
 
 process.env.STACK_MONITOR_PROFILE = "progress-narrator"
-process.env.STACK_MONITOR_MODEL_WORKER = "deterministic"
 
 const appRoot = resolve(import.meta.dir, "..")
+process.env.STACK_CODEX_COMMAND = join(appRoot, "scripts/fake_codex_jsonl.ts")
+delete process.env.STACK_CODEX_ARGS
 const config = await loadConfig(appRoot)
 const stamp = new Date().toISOString().replace(/[-:.]/g, "").slice(0, 15) + "Z"
 const threadId = process.env.STACK_SIDECAR_CHAT_SMOKE_THREAD_ID ?? `sidecar-chat-${randomUUID()}`
@@ -107,17 +108,20 @@ if (operatorWakes.length > 0) {
 }
 
 const latestSummary = summaries.at(-1)
-const operatorUpdate = asRecord(latestSummary?.payload.operator_update)
-const criteriaProgress = asRecord(operatorUpdate?.criteria_progress)
-if (!criteriaProgress || readNumber(criteriaProgress.total) !== 3) {
-  failures.push("expected criteria_progress.total=3 in monitor.summary")
+const latestSummaryPayload = latestSummary?.payload ?? {}
+const goalSnapshot = asRecord(latestSummaryPayload.goal_snapshot)
+if (readNumber(goalSnapshot?.criteria_total) !== 3) {
+  failures.push("expected goal_snapshot.criteria_total=3 in monitor.summary")
 }
-if (readNumber(criteriaProgress?.done) !== 1) {
-  failures.push(`expected criteria_progress.done=1, got ${String(criteriaProgress?.done)}`)
+if (readNumber(goalSnapshot?.criteria_done) !== 1) {
+  failures.push(`expected goal_snapshot.criteria_done=1, got ${String(goalSnapshot?.criteria_done)}`)
 }
-
-const eta = asRecord(operatorUpdate?.eta)
-if (!eta || !readString(eta.confidence)) failures.push("expected ETA band on repeated wakes")
+if (readString(latestSummaryPayload.source) !== "codex-app-server") {
+  failures.push(`expected monitor.summary source=codex-app-server, got ${String(latestSummaryPayload.source)}`)
+}
+if (!readString(latestSummaryPayload.monitor_codex_thread_id)) {
+  failures.push("monitor.summary missing monitor_codex_thread_id")
+}
 
 const reply = chatReplies[0]
 const replyPayload = reply?.payload ?? {}
@@ -131,6 +135,9 @@ if (criteriaRefs.length === 0 && cited.length === 0) {
 if (!answer?.includes("Harbor") && !answer?.includes("criterion")) {
   failures.push("sidecar chat answer should reference goal or criterion")
 }
+if (readString(replyPayload.source) !== "codex-app-server") {
+  failures.push(`expected monitor.chat.reply source=codex-app-server, got ${String(replyPayload.source)}`)
+}
 
 const summary = {
   stamp,
@@ -139,8 +146,8 @@ const summary = {
   chat_request_count: chatRequests.length,
   chat_reply_count: chatReplies.length,
   operator_wake_count: operatorWakes.length,
-  criteria_progress: criteriaProgress,
-  eta,
+  goal_snapshot: goalSnapshot,
+  monitor_codex_thread_id: readString(latestSummaryPayload.monitor_codex_thread_id),
   reply: {
     answer,
     criteria_refs: criteriaRefs,

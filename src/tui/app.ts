@@ -3650,9 +3650,7 @@ function monitorStrictnessLabel(snapshot: StackMonitorSnapshot): string {
 }
 
 function monitorRuntimeLabel(value: string): string {
-  if (value === "openai-responses" || value === "openai_responses") return "openai"
-  if (value === "synth-aux" || value === "synth_aux") return "aux"
-  if (value === "deterministic-runtime" || value === "deterministic") return "det"
+  if (value === "codex-app-server") return "codex"
   return value
 }
 

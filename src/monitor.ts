@@ -1,7 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 import type { StackConfig } from "./config.js"
-import { loadEnvironmentAuth } from "./config.js"
 import type { AgentContextSnapshot } from "./codex/agent-context.js"
 import type { CodexGoalSnapshot } from "./codex/goal-context.js"
 import { parseCriterionEntry } from "./meta-thread-goal-criteria.js"
@@ -21,12 +20,10 @@ import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./mo
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import {
   parseThreadNameFromAgentResponse,
-  sanitizeThreadDisplayName,
   setThreadDisplayName,
 } from "./thread-display-name.js"
 import {
   actorToolAllowed,
-  mergeActorModel,
   mergeActorPrompt,
   mergeActorTools,
   parseTomlLike,
@@ -34,7 +31,6 @@ import {
   readNumber,
   readString,
   readStringArray,
-  resolveActorPrompt,
 } from "./actor-config.js"
 import {
   appendThreadMetaEvent,
@@ -83,7 +79,6 @@ export type StackMonitorConfig = {
     provider: string
     model: string
     reasoningEffort: string
-    worker: "auto" | "deterministic" | "openai_responses" | "codex_app_server"
   }
   prompt: {
     system?: string
@@ -198,7 +193,6 @@ export type StackMonitorActorRuntimeState = {
     provider: string
     model: string
     reasoning_effort: string
-    worker: string
   }
 }
 
@@ -222,7 +216,6 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
     provider: "openai",
     model: "gpt-5.4-mini",
     reasoningEffort: "medium",
-    worker: "auto",
   },
   prompt: {
     systemFile: ".stack/monitors/default.system.md",
@@ -302,8 +295,12 @@ export function ensureDefaultMonitorConfig(stackRoot: string): string {
 export function loadMonitorConfig(stackRoot: string): StackMonitorConfig {
   const profile = process.env.STACK_MONITOR_PROFILE?.trim() || "default"
   const path = join(stackRoot, ".stack", "monitors", `${profile}.toml`)
-  const fallbackPath = ensureDefaultMonitorConfig(stackRoot)
-  const parsed = parseTomlLike(readFileSync(existsSync(path) ? path : fallbackPath, "utf8"))
+  const defaultPath = ensureDefaultMonitorConfig(stackRoot)
+  const configPath = profile === "default" ? defaultPath : path
+  if (!existsSync(configPath)) {
+    throw new Error(`monitor profile not found: ${profile} (${configPath})`)
+  }
+  const parsed = parseTomlLike(readFileSync(configPath, "utf8"))
   const config = mergeMonitorConfig(DEFAULT_MONITOR_CONFIG, parsed)
   const enabledOverride = process.env.STACK_MONITOR_ENABLED?.trim()
   if (enabledOverride === "0" || enabledOverride === "false") config.enabled = false
@@ -320,7 +317,7 @@ export function emptyMonitorSnapshot(stackRoot: string): StackMonitorSnapshot {
     enabled: effective.enabled,
     actorId: monitorActorId(config),
     label: config.label,
-    runtime: config.model.worker,
+    runtime: "codex-app-server",
     model: config.model.model,
     reasoningEffort: config.model.reasoningEffort,
     strictness: effective.strictness,
@@ -475,15 +472,6 @@ async function appendMonitorChatReply(input: {
 }): Promise<StackThreadMetaEvent> {
   const events = readThreadMetaEvents(input.stackRoot, input.session.id)
   const context = buildSidecarChatContext(input.goalContext, events)
-  const criteriaRefs = criteriaRefsForQuestion(input.message, input.goalContext.acceptanceCriteria ?? [])
-  const citedEvents = sidecarCitedEvents(context.delta_events)
-  const deterministic = buildDeterministicSidecarChatReply({
-    question: input.message,
-    goalContext: input.goalContext,
-    context,
-    criteriaRefs,
-    citedEvents,
-  })
   const monitorConfig = loadMonitorConfig(input.stackRoot)
   const actorId = monitorActorId(monitorConfig)
   const actorState = readMonitorActorState(input.stackRoot, input.session.id, actorId)
@@ -496,7 +484,6 @@ async function appendMonitorChatReply(input: {
     requestEvent: input.requestEvent,
     goalContext: input.goalContext,
     context,
-    deterministic,
   })
   const event: StackThreadMetaEvent = {
     event_id: stackEventId("monitor_chat_reply"),
@@ -515,7 +502,6 @@ async function appendMonitorChatReply(input: {
       criteria_refs: reply.criteriaRefs,
       operator_update: reply.operatorUpdate ?? context.last_operator_updates.at(-1) ?? null,
       source: reply.source,
-      fallback_reason: reply.fallbackReason ?? null,
       sidecar_context: {
         criteria_progress: context.criteria_progress,
         worker_status: context.worker_status,
@@ -543,8 +529,7 @@ type SidecarChatReplyResult = {
   citedEventIds: string[]
   criteriaRefs: number[]
   operatorUpdate?: MonitorOperatorUpdate
-  source: "deterministic-runtime" | "openai-responses" | "synth-aux" | "codex-app-server"
-  fallbackReason?: string
+  source: "codex-app-server"
   monitorCodexThreadId?: string
 }
 
@@ -557,115 +542,29 @@ async function runMonitorSidecarChatReply(input: {
   requestEvent: StackThreadMetaEvent
   goalContext: CodexGoalSnapshot
   context: SidecarChatContext
-  deterministic: SidecarChatReplyResult
 }): Promise<SidecarChatReplyResult> {
-  if (shouldUseCodexSidecar(input.config)) {
-    const codex = await runMonitorCodexSidecarChatTurn({
-      stackConfig: input.stackConfig,
-      monitorConfig: input.config,
-      threadId: input.requestEvent.thread_id,
-      actorId: monitorActorId(input.config),
-      codexThreadId: input.actorState?.monitor_codex_thread_id,
-      question: input.question,
-      requestEventId: input.requestEvent.event_id,
-      goalContext: input.goalContext,
-      sidecarContext: serializableSidecarChatContext(input.context),
-    })
-    const answer = codex.assistantText?.trim()
-    if (!answer) {
-      throw new Error("Codex sidecar chat completed without an assistant message")
-    }
-    return {
-      answer,
-      citedEventIds: [input.requestEvent.event_id],
-      criteriaRefs: [],
-      source: "codex-app-server",
-      monitorCodexThreadId: codex.codexThreadId,
-    }
-  }
-  if (!shouldUseModelWorker(input.config)) return input.deterministic
-  const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
-  if (!inference) {
-    throw new Error(monitorInferenceFallbackReason(input.config, input.stackConfig))
-  }
-  const response = await fetch(inference.url, {
-    method: "POST",
-    headers: {
-      "authorization": `Bearer ${inference.apiKey}`,
-      "content-type": "application/json",
-      ...inference.headers,
-    },
-    body: JSON.stringify({
-      model: input.config.model.model,
-      reasoning: { effort: input.config.model.reasoningEffort },
-      input: [
-        {
-          role: "developer",
-          content: [{
-            type: "input_text",
-            text: resolveSidecarChatDeveloperPrompt(input.stackRoot, input.config),
-          }],
-        },
-        {
-          role: "user",
-          content: [{
-            type: "input_text",
-            text: JSON.stringify(sidecarChatUserPayload(input), null, 2),
-          }],
-        },
-      ],
-    }),
+  const codex = await runMonitorCodexSidecarChatTurn({
+    stackConfig: input.stackConfig,
+    monitorConfig: input.config,
+    threadId: input.requestEvent.thread_id,
+    actorId: monitorActorId(input.config),
+    codexThreadId: input.actorState?.monitor_codex_thread_id,
+    question: input.question,
+    requestEventId: input.requestEvent.event_id,
+    goalContext: input.goalContext,
+    sidecarContext: serializableSidecarChatContext(input.context),
   })
-  const payload = await response.json().catch(() => undefined) as unknown
-  if (!response.ok) {
-    const label = inference.source === "synth-aux" ? "stack-aux" : "OpenAI"
-    throw new Error(`${label} sidecar chat failed ${response.status}: ${truncate(JSON.stringify(payload ?? {}), 300)}`)
+  const answer = codex.assistantText?.trim()
+  if (!answer) {
+    throw new Error("Codex sidecar chat completed without an assistant message")
   }
-  const parsed = parseFirstJsonObject(extractOpenAiOutputText(payload))
-  const answer = readString(parsed?.answer)
-  if (!answer) throw new Error("Sidecar chat response did not contain answer")
-  const citedEventIds = readStringArray(parsed?.cited_event_ids) ?? []
-  const criteriaRefs = readNumberArray(parsed?.criteria_refs)
   return {
     answer,
-    citedEventIds,
-    criteriaRefs,
-    operatorUpdate: readOperatorUpdateFromRecord(asRecord(parsed?.operator_update)),
-    source: inference.source,
+    citedEventIds: [input.requestEvent.event_id],
+    criteriaRefs: [],
+    source: "codex-app-server",
+    monitorCodexThreadId: codex.codexThreadId,
   }
-}
-
-function sidecarChatUserPayload(input: {
-  question: string
-  requestEvent: StackThreadMetaEvent
-  goalContext: CodexGoalSnapshot
-  context: SidecarChatContext
-  config: StackMonitorConfig
-}): Record<string, unknown> {
-  return {
-    question: input.question,
-    request_event_id: input.requestEvent.event_id,
-    mode: input.config.strictness,
-    current_goal: input.goalContext,
-    sidecar_context: serializableSidecarChatContext(input.context),
-  }
-}
-
-function resolveSidecarChatDeveloperPrompt(stackRoot: string, config: StackMonitorConfig): string {
-  return resolveActorPrompt(
-    stackRoot,
-    { ...config.prompt, systemFile: ".stack/monitors/progress-narrator-chat.system.md" },
-    defaultSidecarChatBuiltinPrompt(),
-  )
-}
-
-function defaultSidecarChatBuiltinPrompt(): string {
-  return [
-    "You are the Stack sidecar monitor answering the operator about a goal-pursuing coding agent.",
-    "Answer from the provided current_goal and sidecar_context only; do not invent events.",
-    "Reference the objective and at least one criterion or event id when available.",
-    "Return only JSON: {\"answer\":\"...\",\"cited_event_ids\":[\"...\"],\"criteria_refs\":[1],\"operator_update\":{}}.",
-  ].join("\n")
 }
 
 function buildSidecarChatContext(
@@ -744,72 +643,6 @@ function lastToolSummary(events: readonly StackThreadMetaEvent[]): string | unde
   const command = readString(event.payload.command)
   const output = readString(event.payload.message) ?? readString(event.payload.stderr) ?? readString(event.payload.output)
   return truncate([toolName, command, output].filter(Boolean).join(" · "), 180)
-}
-
-function sidecarCitedEvents(events: readonly StackThreadMetaEvent[]): StackThreadMetaEvent[] {
-  return [...events]
-    .reverse()
-    .filter((event) =>
-      event.type === "agent.tool.failed" ||
-      event.type === "agent.error" ||
-      event.type === "agent.tool.completed" ||
-      event.type === "monitor.summary" ||
-      event.type === "monitor.progress"
-    )
-    .slice(0, 3)
-    .reverse()
-}
-
-function criteriaRefsForQuestion(question: string, criteria: readonly string[]): number[] {
-  if (criteria.length === 0) return []
-  const explicit = [...question.matchAll(/\bcriterion\s+(\d+)\b/gi)]
-    .map((match) => Number.parseInt(match[1] ?? "", 10))
-    .filter((index) => Number.isFinite(index) && index >= 1 && index <= criteria.length)
-  if (explicit.length > 0) return [...new Set(explicit)]
-  const firstOpen = criteria.findIndex((criterion) => !parseCriterionEntry(criterion).done)
-  return [firstOpen >= 0 ? firstOpen + 1 : 1]
-}
-
-function buildDeterministicSidecarChatReply(input: {
-  question: string
-  goalContext: CodexGoalSnapshot
-  context: SidecarChatContext
-  criteriaRefs: number[]
-  citedEvents: StackThreadMetaEvent[]
-}): SidecarChatReplyResult {
-  const objective = input.goalContext.objective?.trim() ?? "the active goal"
-  const progress = input.context.criteria_progress
-  const criterion = input.criteriaRefs[0]
-    ? criterionText(input.goalContext.acceptanceCriteria ?? [], input.criteriaRefs[0])
-    : undefined
-  const latestUpdate = input.context.last_operator_updates.at(-1)
-  const trajectory = latestUpdate?.trajectory ? latestUpdate.trajectory.replace(/_/g, " ") : "on track"
-  const evidence = input.citedEvents[0]
-    ? `${input.citedEvents[0].event_id} (${input.citedEvents[0].type})`
-    : "no recent event id"
-  const parts = [
-    `For "${truncate(objective, 120)}", the sidecar sees ${progress.done}/${progress.total} criteria complete.`,
-    criterion ? `Closest criterion: ${criterion}.` : undefined,
-    latestUpdate?.progress_note ? `Latest progress: ${latestUpdate.progress_note}.` : input.context.last_tool_summary ? `Latest evidence: ${input.context.last_tool_summary}.` : undefined,
-    input.context.worker_status === "error" || latestUpdate?.struggling_with
-      ? `Concern: ${latestUpdate?.struggling_with ?? "latest worker event is an error"}.`
-      : `Trajectory: ${trajectory}.`,
-    `Evidence: ${evidence}.`,
-  ]
-  return {
-    answer: parts.filter(Boolean).join(" "),
-    citedEventIds: input.citedEvents.map((event) => event.event_id),
-    criteriaRefs: input.criteriaRefs,
-    operatorUpdate: input.context.last_operator_updates.at(-1),
-    source: "deterministic-runtime",
-  }
-}
-
-function criterionText(criteria: readonly string[], oneBasedIndex: number): string | undefined {
-  const raw = criteria[oneBasedIndex - 1]
-  if (!raw) return undefined
-  const parsed = parseCriterionEntry(raw)
-  return `${oneBasedIndex}. ${parsed.done ? "[x]" : "[ ]"} ${parsed.label}`
 }
 
 export async function runMonitorAfterTurn(input: {
@@ -1005,7 +838,6 @@ export async function runMonitorForNewEvents(input: {
       model_thread_id: pass.monitorThreadId ?? null,
       monitor_codex_thread_id: pass.monitorCodexThreadId ?? null,
       sidecar_transcript: pass.monitorCodexThreadId ? "codex-app-server" : null,
-      fallback_reason: pass.fallbackReason ?? null,
       evidence: pass.checks.filter((check) => check.evidence).map((check) => ({
         focus: check.focus,
         evidence: check.evidence,
@@ -1029,23 +861,6 @@ export async function runMonitorForNewEvents(input: {
     if (input.session.id === threadId) {
       input.session.displayName = suggestedThreadName
     }
-  }
-
-  if (pass.fallbackReason) {
-    appendThreadMetaEvent(input.config.appRoot, {
-      event_id: stackEventId("monitor_model_fallback"),
-      type: "monitor.model_fallback",
-      thread_id: threadId,
-      observed_at: new Date().toISOString(),
-      actor_id: actorId,
-      actor_role: "monitor",
-      payload: {
-        wake_id: wakeId,
-        reason: pass.fallbackReason,
-        worker: monitorConfig.model.worker,
-        model: monitorConfig.model.model,
-      },
-    })
   }
 
   const queueItems = monitorConfig.permissions.queue && actorToolAllowed(monitorConfig.tools, "monitor.queue")
@@ -1274,8 +1089,7 @@ export function monitorRailLines(snapshot: StackMonitorSnapshot, columns: number
 }
 
 function formatRuntime(value: string): string {
-  if (value === "openai-responses" || value === "openai_responses") return "openai"
-  if (value === "deterministic-runtime" || value === "deterministic") return "det"
+  if (value === "codex-app-server") return "codex"
   return value
 }
 
@@ -1630,11 +1444,10 @@ type MonitorPassResult = {
   queueItems: Record<string, unknown>[]
   checkpointSummary?: string
   operatorUpdate?: MonitorOperatorUpdate
-  source: "deterministic-runtime" | "openai-responses" | "synth-aux" | "codex-app-server"
+  source: "codex-app-server"
   monitorThreadId?: string
   monitorCodexThreadId?: string
   usage?: MonitorUsageEstimate
-  fallbackReason?: string
 }
 
 export type MonitorOperatorUpdate = {
@@ -1694,337 +1507,41 @@ async function runMonitorPass(input: {
   goalContext: CodexGoalSnapshot
   checks: FocusCheck[]
 }): Promise<MonitorPassResult> {
-  const deterministic = deterministicMonitorPass(input.config, input.checks, {
-    goalContext: input.goalContext,
+  const codex = await runMonitorCodexSidecarTurn({
+    stackConfig: input.stackConfig,
+    monitorConfig: input.config,
+    threadId: input.threadId,
+    actorId: input.actorState.monitor_actor_id,
+    codexThreadId: input.actorState.monitor_codex_thread_id,
+    wakeId: input.wakeId,
+    wakeReason: input.wakeReason,
+    triggerEventIds: input.triggerEventIds,
     priorEvents: input.priorEvents,
     pendingEvents: input.pendingEvents,
-    turn: input.turn,
-    wakeReason: input.wakeReason,
-    priorWakeCount: input.actorState.wake_counts,
+    goalContext: input.goalContext,
   })
-  if (shouldUseCodexSidecar(input.config)) {
-    const codex = await runMonitorCodexSidecarTurn({
-      stackConfig: input.stackConfig,
-      monitorConfig: input.config,
-      threadId: input.threadId,
-      actorId: input.actorState.monitor_actor_id,
-      codexThreadId: input.actorState.monitor_codex_thread_id,
-      wakeId: input.wakeId,
-      wakeReason: input.wakeReason,
-      triggerEventIds: input.triggerEventIds,
-      priorEvents: input.priorEvents,
-      pendingEvents: input.pendingEvents,
-      goalContext: input.goalContext,
-      deterministicSummary: deterministic.summary,
-    })
-    const summary = codex.assistantText?.trim()
-    if (!summary) {
-      throw new Error("Codex sidecar monitor completed without an assistant message")
-    }
-    return {
-      ...deterministic,
-      summary,
-      checkpointSummary: summary,
-      source: "codex-app-server",
-      monitorCodexThreadId: codex.codexThreadId,
-      usage: codexUsageEstimate(codex.usage, summary),
-    }
+  const summary = codex.assistantText?.trim()
+  if (!summary) {
+    throw new Error("Codex sidecar monitor completed without an assistant message")
   }
-  if (!shouldUseModelWorker(input.config)) return deterministic
-  const inference = resolveMonitorInferenceEndpoint(input.config, input.stackConfig)
-  if (!inference) {
-    throw new Error(monitorInferenceFallbackReason(input.config, input.stackConfig))
-  }
-  return await runResponsesMonitorPass(input, deterministic, inference)
-}
-
-function normalizeMonitorProvider(provider: string | undefined): "openai" | "synth_aux" {
-  const normalized = (provider ?? "openai").trim().toLowerCase().replace(/-/g, "_")
-  return normalized === "synth_aux" ? "synth_aux" : "openai"
-}
-
-type MonitorInferenceEndpoint = {
-  url: string
-  apiKey: string
-  headers: Record<string, string>
-  source: "openai-responses" | "synth-aux"
-}
-
-function resolveMonitorInferenceEndpoint(
-  config: StackMonitorConfig,
-  stackConfig: StackConfig,
-): MonitorInferenceEndpoint | null {
-  const provider = normalizeMonitorProvider(config.model.provider)
-  if (provider === "synth_aux") {
-    if (process.env.STACK_AUX_INFERENCE !== "1") return null
-    loadEnvironmentAuth(stackConfig.environment)
-    const apiKey = process.env[stackConfig.environment.authEnv]?.trim()
-    if (!apiKey) return null
-    const base = stackConfig.environment.apiBaseUrl.replace(/\/+$/, "")
-    return {
-      url: `${base}/api/v1/stack-aux/openai/v1/responses`,
-      apiKey,
-      headers: { "X-Stack-Actor-Role": "monitor" },
-      source: "synth-aux",
-    }
-  }
-  const apiKey = process.env.OPENAI_API_KEY?.trim()
-  if (!apiKey) return null
   return {
-    url: "https://api.openai.com/v1/responses",
-    apiKey,
-    headers: {},
-    source: "openai-responses",
-  }
-}
-
-function monitorInferenceFallbackReason(
-  config: StackMonitorConfig,
-  stackConfig: StackConfig,
-): string | undefined {
-  const worker = process.env.STACK_MONITOR_MODEL_WORKER?.trim() || config.model.worker
-  if (worker !== "openai_responses") return undefined
-  if (normalizeMonitorProvider(config.model.provider) === "synth_aux") {
-    if (process.env.STACK_AUX_INFERENCE !== "1") return "STACK_AUX_INFERENCE not enabled"
-    loadEnvironmentAuth(stackConfig.environment)
-    if (!process.env[stackConfig.environment.authEnv]?.trim()) {
-      return `${stackConfig.environment.authEnv} missing`
-    }
-    return "stack-aux inference unavailable"
-  }
-  return "OPENAI_API_KEY missing"
-}
-
-function deterministicMonitorPass(
-  config: StackMonitorConfig,
-  checks: FocusCheck[],
-  context?: {
-    goalContext: CodexGoalSnapshot
-    priorEvents: StackThreadMetaEvent[]
-    pendingEvents: StackThreadMetaEvent[]
-    turn: StackCodexTurn
-    wakeReason: string
-    priorWakeCount?: number
-  },
-): MonitorPassResult {
-  const severity = combineSeverity(config, checks)
-  const operatorUpdate = context ? buildDeterministicOperatorUpdate(config, checks, context) : undefined
-  const summary = operatorUpdate
-    ? formatOperatorSummary(operatorUpdate, severity)
-    : summarizeChecks(checks, severity)
-  return {
-    checks,
-    severity,
+    checks: input.checks,
+    severity: combineSeverity(input.config, input.checks),
     summary,
-    operatorUpdate,
-    queueItems: queueItemsFor(config, checks),
-    checkpointSummary: operatorUpdate?.progress_note ?? summary,
-    source: "deterministic-runtime",
+    queueItems: queueItemsFor(input.config, input.checks),
+    checkpointSummary: summary,
+    source: "codex-app-server",
+    monitorCodexThreadId: codex.codexThreadId,
+    usage: codexUsageEstimate(codex.usage, summary),
   }
-}
-
-function resolvedMonitorWorker(config: StackMonitorConfig): "auto" | "deterministic" | "openai_responses" | "codex_app_server" {
-  const override = process.env.STACK_MONITOR_MODEL_WORKER?.trim()
-  return override === "deterministic" ||
-    override === "openai_responses" ||
-    override === "auto" ||
-    override === "codex_app_server"
-    ? override
-    : config.model.worker
-}
-
-function shouldUseCodexSidecar(config: StackMonitorConfig): boolean {
-  const worker = resolvedMonitorWorker(config)
-  if (worker === "codex_app_server") return true
-  if (worker !== "auto") return false
-  return process.env.STACK_MONITOR_CODEX_SIDECAR !== "0"
-}
-
-function shouldUseModelWorker(config: StackMonitorConfig): boolean {
-  const worker = resolvedMonitorWorker(config)
-  if (worker === "deterministic") return false
-  if (worker === "codex_app_server") return false
-  if (worker === "openai_responses") return true
-  if (normalizeMonitorProvider(config.model.provider) === "synth_aux") {
-    return process.env.STACK_AUX_INFERENCE === "1"
-  }
-  return Boolean(process.env.OPENAI_API_KEY?.trim())
-}
-
-async function runResponsesMonitorPass(
-  input: {
-    stackRoot: string
-    config: StackMonitorConfig
-    actorState: StackMonitorActorRuntimeState
-    threadId: string
-    wakeId: string
-    wakeReason: string
-    triggerEventIds: string[]
-    priorEvents: StackThreadMetaEvent[]
-    pendingEvents: StackThreadMetaEvent[]
-    turn: StackCodexTurn
-    agentContext: AgentContextSnapshot
-    goalContext: CodexGoalSnapshot
-    checks: FocusCheck[]
-  },
-  deterministic: MonitorPassResult,
-  inference: MonitorInferenceEndpoint,
-): Promise<MonitorPassResult> {
-  const response = await fetch(inference.url, {
-    method: "POST",
-    headers: {
-      "authorization": `Bearer ${inference.apiKey}`,
-      "content-type": "application/json",
-      ...inference.headers,
-    },
-    body: JSON.stringify({
-      model: input.config.model.model,
-      previous_response_id: input.actorState.monitor_thread_id,
-      reasoning: { effort: input.config.model.reasoningEffort },
-      input: [
-        {
-          role: "developer",
-          content: [{
-            type: "input_text",
-            text: resolveMonitorDeveloperPrompt(input.stackRoot, input.config),
-          }],
-        },
-        {
-          role: "user",
-          content: [{
-            type: "input_text",
-            text: JSON.stringify(monitorUserPayload(input, deterministic), null, 2),
-          }],
-        },
-      ],
-    }),
-  })
-  const payload = await response.json().catch(() => undefined) as unknown
-  if (!response.ok) {
-    const label = inference.source === "synth-aux" ? "stack-aux" : "OpenAI"
-    throw new Error(`${label} monitor pass failed ${response.status}: ${truncate(JSON.stringify(payload ?? {}), 300)}`)
-  }
-  const parsed = parseResponsesMonitorResult(payload, deterministic, inference.source)
-  return {
-    ...parsed,
-    monitorThreadId: readString(asRecord(payload)?.id) ?? input.actorState.monitor_thread_id,
-    usage: readOpenAiUsage(payload) ?? deterministic.usage,
-  }
-}
-
-function resolveMonitorDeveloperPrompt(stackRoot: string, config: StackMonitorConfig): string {
-  return resolveActorPrompt(stackRoot, config.prompt, defaultMonitorBuiltinPrompt())
 }
 
 function defaultMonitorBuiltinPrompt(): string {
   return [
-    "You are the Stack monitor actor watching a primary coding agent.",
-    "Behave like calibrated human oversight: sparse, concrete, and non-spammy.",
-    "Review only the delta events and rolling summary provided.",
-    "Never claim direct tool access. Do not invent events.",
-    "Return only a JSON object with this shape:",
-    "{",
-    '  "summary": "short operator-facing summary",',
-    '  "thread_name": "optional short thread title when operator asks to name the thread (max 48 chars)",',
-    '  "severity": "none|low|medium|high",',
-    '  "focus_results": {"style":"pass|warn|fail|disabled","goal_progress":"pass|warn|fail|disabled","skills":"pass|warn|fail|disabled","tool_use":"pass|warn|fail|disabled","scope_control":"pass|warn|fail|disabled","acceptance":"pass|warn|fail|disabled"},',
-    '  "operator_update": {"working_on":"...","struggling_with":"...","progress_note":"...","goal_status":"active|blocked|done|unknown","trajectory":"on_track|stalled|regressed","criteria_progress":{"done":0,"total":0,"pct":0},"spend_snapshot":{"elapsed_s":0,"worker_usd":0,"monitor_usd":0,"worker_tokens":0,"monitor_tokens":0},"eta":{"confidence":"low|med|high","remaining_minutes_low":0,"remaining_minutes_high":0,"rationale":"..."}}',
-    '  "queue_items": [{"severity":"low|medium|high","focus":"style|goal_progress|skills|tool_use|scope_control|acceptance","summary":"...","evidence":"..."}],',
-    '  "checkpoint_summary": "rolling state for your next wake"',
-    "}",
+    "The Stack monitor is a persistent Codex sidecar agent.",
+    "It watches the primary worker event stream, answers operator sidecar chat, and pauses with stack_sidecar_pause_for_restart after each monitoring round.",
+    "There are no alternate monitor workers.",
   ].join("\n")
-}
-
-function monitorUserPayload(
-  input: {
-    config: StackMonitorConfig
-    actorState: StackMonitorActorRuntimeState
-    threadId: string
-    wakeId: string
-    wakeReason: string
-    triggerEventIds: string[]
-    priorEvents: StackThreadMetaEvent[]
-    pendingEvents: StackThreadMetaEvent[]
-    turn: StackCodexTurn
-    agentContext: AgentContextSnapshot
-    goalContext: CodexGoalSnapshot
-  },
-  deterministic: MonitorPassResult,
-): Record<string, unknown> {
-  return {
-    thread_id: input.threadId,
-    wake_id: input.wakeId,
-    wake_reason: input.wakeReason,
-    trigger_event_ids: input.triggerEventIds,
-    mode: input.config.strictness,
-    focus_selection: input.config.focusSelection,
-    focus_enabled: input.config.focus,
-    previous_checkpoint: {
-      last_event_id: input.actorState.last_event_id,
-      rolling_summary: input.actorState.rolling_summary,
-      last_severity: input.actorState.last_severity,
-    },
-    deterministic_baseline: {
-      summary: deterministic.summary,
-      severity: deterministic.severity,
-      focus_results: focusResults(deterministic.checks),
-      queue_items: deterministic.queueItems,
-    },
-    current_goal: input.goalContext,
-    goal_mode: {
-      criteria_progress: criteriaProgressFromGoal(input.goalContext),
-      last_operator_updates: lastOperatorUpdates(input.priorEvents, 3),
-    },
-    used_skills: input.agentContext.usedSkills,
-    turn_context: {
-      prompt: truncate(input.turn.prompt, 1200),
-      exit_code: input.turn.exitCode ?? null,
-      stdout_tail: truncate(input.turn.stdout.slice(-4000), 4000),
-      stderr_tail: truncate(input.turn.stderr.slice(-2000), 2000),
-    },
-    delta_events: input.pendingEvents.map((event) => ({
-      event_id: event.event_id,
-      type: event.type,
-      observed_at: event.observed_at,
-      actor_role: event.actor_role,
-      payload: boundedPayload(event.payload),
-    })),
-  }
-}
-
-function parseResponsesMonitorResult(
-  payload: unknown,
-  deterministic: MonitorPassResult,
-  source: "openai-responses" | "synth-aux",
-): MonitorPassResult {
-  const text = extractOpenAiOutputText(payload)
-  const parsed = parseFirstJsonObject(text)
-  if (!parsed) {
-    throw new Error("Monitor Responses payload did not contain JSON")
-  }
-  const focusRecord = asRecord(parsed.focus_results)
-  const checks = deterministic.checks.map((check) => {
-    const status = normalizeFocusStatus(readString(focusRecord?.[check.focus]), check.status)
-    return {
-      ...check,
-      status,
-      severity: status === "fail" ? maxSeverity(check.severity, "high") : status === "warn" ? maxSeverity(check.severity, "low") : check.severity,
-    }
-  })
-  const severity = normalizeSeverity(readString(parsed.severity), deterministic.severity)
-  const operatorUpdate = readOperatorUpdateFromRecord(asRecord(parsed.operator_update)) ?? deterministic.operatorUpdate
-  const summary = readString(parsed.summary) ?? (operatorUpdate ? formatOperatorSummary(operatorUpdate, severity) : deterministic.summary)
-  const threadName = sanitizeThreadDisplayName(readString(parsed.thread_name) ?? "")
-  return {
-    checks,
-    severity,
-    summary,
-    threadName: threadName ?? undefined,
-    operatorUpdate,
-    queueItems: readQueueItems(parsed.queue_items) ?? deterministic.queueItems,
-    checkpointSummary: readString(parsed.checkpoint_summary) ?? operatorUpdate?.progress_note ?? summary,
-    source,
-  }
 }
 
 function codexUsageEstimate(usage: StackCodexTurn["usage"], summary: string): MonitorUsageEstimate {
@@ -2034,80 +1551,6 @@ function codexUsageEstimate(usage: StackCodexTurn["usage"], summary: string): Mo
     outputTokens: usage?.outputTokens ?? Math.max(1, Math.ceil(summary.length / 4)),
     reasoningOutputTokens: usage?.reasoningOutputTokens ?? 0,
   }
-}
-
-function extractOpenAiOutputText(payload: unknown): string {
-  const record = asRecord(payload)
-  const direct = readString(record?.output_text)
-  if (direct) return direct
-  const parts: string[] = []
-  const output = record?.output
-  if (Array.isArray(output)) {
-    for (const item of output) {
-      const itemRecord = asRecord(item)
-      const content = itemRecord?.content
-      if (!Array.isArray(content)) continue
-      for (const part of content) {
-        const partRecord = asRecord(part)
-        const text = readString(partRecord?.text) ?? readString(partRecord?.output_text)
-        if (text) parts.push(text)
-      }
-    }
-  }
-  return parts.join("\n")
-}
-
-function parseFirstJsonObject(text: string): Record<string, unknown> | undefined {
-  const trimmed = text.trim()
-  if (!trimmed) return undefined
-  try {
-    return asRecord(JSON.parse(trimmed))
-  } catch {
-    const start = trimmed.indexOf("{")
-    const end = trimmed.lastIndexOf("}")
-    if (start < 0 || end <= start) return undefined
-    try {
-      return asRecord(JSON.parse(trimmed.slice(start, end + 1)))
-    } catch {
-      return undefined
-    }
-  }
-}
-
-function readOpenAiUsage(payload: unknown): MonitorUsageEstimate | undefined {
-  const usage = asRecord(asRecord(payload)?.usage)
-  if (!usage) return undefined
-  const inputTokens = readNumber(usage.input_tokens) ?? readNumber(usage.inputTokens)
-  const outputTokens = readNumber(usage.output_tokens) ?? readNumber(usage.outputTokens)
-  if (inputTokens === undefined && outputTokens === undefined) return undefined
-  const outputDetails = asRecord(usage.output_tokens_details)
-  return {
-    inputTokens: inputTokens ?? 0,
-    cachedInputTokens: readNumber(asRecord(usage.input_tokens_details)?.cached_tokens),
-    outputTokens: outputTokens ?? 0,
-    reasoningOutputTokens: readNumber(outputDetails?.reasoning_tokens),
-    estimatedSpendUsd: 0,
-  }
-}
-
-function readQueueItems(value: unknown): Record<string, unknown>[] | undefined {
-  if (!Array.isArray(value)) return undefined
-  const items: Record<string, unknown>[] = []
-  for (const item of value) {
-    const record = asRecord(item)
-    if (!record) continue
-    const severity = normalizeSeverity(readString(record.severity), "low")
-    const focus = normalizeFocusName(readString(record.focus))
-    const summary = readString(record.summary)
-    if (!focus || !summary) continue
-    items.push({
-      severity,
-      focus,
-      summary,
-      evidence: readString(record.evidence) ?? null,
-    })
-  }
-  return items
 }
 
 function boundedPayload(payload: Record<string, unknown>): Record<string, unknown> {
@@ -2192,7 +1635,6 @@ function actorStateFromConfig(
       provider: config.model.provider,
       model: config.model.model,
       reasoning_effort: config.model.reasoningEffort,
-      worker: config.model.worker,
     },
   }
 }
@@ -2484,12 +1926,6 @@ function uniqueStrings(values: Array<string | undefined>): string[] {
   return [...new Set(values.filter((value): value is string => Boolean(value)))]
 }
 
-function summarizeChecks(checks: FocusCheck[], severity: MonitorSeverity): string {
-  const actionable = checks.filter((check) => check.status === "warn" || check.status === "fail")
-  if (actionable.length === 0 || severity === "none") return "No monitor action needed."
-  return actionable.map((check) => `${check.focus}: ${check.summary}`).join(" · ")
-}
-
 function goalSnapshotFromContext(goal: CodexGoalSnapshot): Record<string, unknown> | null {
   if (!goal.objective && !goal.status && goal.tokensUsed === undefined && !goal.acceptanceCriteria?.length && !goal.blockers?.length) return null
   const criteria = criteriaProgressFromGoal(goal)
@@ -2577,52 +2013,6 @@ function readEtaBand(record: Record<string, unknown> | undefined): EtaBand | und
   }
 }
 
-function readNumberArray(value: unknown): number[] {
-  if (!Array.isArray(value)) return []
-  return value.filter((entry): entry is number => typeof entry === "number" && Number.isFinite(entry))
-}
-
-function buildDeterministicOperatorUpdate(
-  config: StackMonitorConfig,
-  checks: FocusCheck[],
-  context: {
-    goalContext: CodexGoalSnapshot
-    priorEvents: StackThreadMetaEvent[]
-    pendingEvents: StackThreadMetaEvent[]
-    turn: StackCodexTurn
-    wakeReason: string
-    priorWakeCount?: number
-  },
-): MonitorOperatorUpdate | undefined {
-  if (!config.focus.goal_progress && !context.goalContext.objective) return undefined
-  const goalObjective = context.goalContext.objective?.trim()
-  const workingOn = goalObjective
-    ?? truncate(context.turn.prompt.replace(/\s+/g, " ").trim(), 160)
-    ?? "primary agent turn"
-  const actionable = checks.filter((check) => check.status === "warn" || check.status === "fail")
-  const toolFailure = context.pendingEvents.find((event) => event.type === "agent.tool.failed")
-  const toolCompleted = [...context.pendingEvents].reverse().find((event) => event.type === "agent.tool.completed")
-  const strugglingParts = actionable.map((check) => check.summary)
-  if (toolFailure) {
-    strugglingParts.push(readString(toolFailure.payload.message) ?? readString(toolFailure.payload.tool_name) ?? "tool failed")
-  }
-  const progressNote = describeMonitorProgress(context.wakeReason, toolCompleted, context.turn)
-  const criteria = criteriaProgressFromGoal(context.goalContext)
-  const spend = spendSnapshotFromEvents(context.goalContext, context.priorEvents)
-  const eta = etaBandForGoal(context.goalContext, criteria, context.priorWakeCount ?? 0, Boolean(toolFailure))
-  const trajectory = trajectoryForMonitorUpdate(actionable, toolFailure, criteria)
-  return {
-    working_on: workingOn,
-    struggling_with: strugglingParts.join(" · ") || undefined,
-    progress_note: progressNote,
-    goal_status: context.goalContext.status ?? (goalObjective ? "active" : "unknown"),
-    trajectory,
-    criteria_progress: criteria,
-    spend_snapshot: spend,
-    eta,
-  }
-}
-
 function criteriaProgressFromGoal(goal: CodexGoalSnapshot): CriteriaProgress {
   const criteria = goal.acceptanceCriteria ?? []
   let done = 0
@@ -2642,143 +2032,6 @@ function criteriaProgressFromGoal(goal: CodexGoalSnapshot): CriteriaProgress {
   }
 }
 
-function spendSnapshotFromEvents(goal: CodexGoalSnapshot, events: StackThreadMetaEvent[]): SpendSnapshot {
-  const monitor = monitorUsageSummary(events, "monitor")
-  const workerModel =
-    process.env.STACK_CODEX_MODEL?.trim() ||
-    process.env.CODEX_MODEL?.trim() ||
-    "gpt-4o"
-  const worker = workerUsageSummary(events, workerModel)
-  return {
-    elapsed_s: goal.timeUsedSeconds ?? 0,
-    worker_usd: worker.spendUsd,
-    monitor_usd: monitor.spendUsd,
-    worker_tokens: goal.tokensUsed ?? worker.inputTokens + worker.outputTokens,
-    monitor_tokens: monitor.inputTokens + monitor.outputTokens,
-  }
-}
-
-function workerUsageSummary(
-  events: StackThreadMetaEvent[],
-  model: string,
-): { spendUsd: number; inputTokens: number; outputTokens: number } {
-  const usageEvents = events.filter((event) => event.type === "agent.usage")
-  const totals = {
-    inputTokens: 0,
-    cachedInputTokens: 0,
-    outputTokens: 0,
-    reasoningOutputTokens: 0,
-  }
-  let recordedSpendUsd = 0
-  for (const event of usageEvents) {
-    totals.inputTokens += readNumber(event.payload.input_tokens) ?? 0
-    totals.cachedInputTokens += readNumber(event.payload.cached_input_tokens) ?? 0
-    totals.outputTokens += readNumber(event.payload.output_tokens) ?? 0
-    totals.reasoningOutputTokens += readNumber(event.payload.reasoning_output_tokens) ?? 0
-    recordedSpendUsd += readNumber(event.payload.estimated_spend_usd) ?? 0
-  }
-  const estimatedSpendUsd = estimateUsageSpendUsd(totals, model)
-  const spendUsd = recordedSpendUsd > 0 ? recordedSpendUsd : estimatedSpendUsd ?? 0
-  return { spendUsd, inputTokens: totals.inputTokens, outputTokens: totals.outputTokens }
-}
-
-function etaBandForGoal(
-  goal: CodexGoalSnapshot,
-  criteria: CriteriaProgress,
-  priorWakeCount: number,
-  hasToolFailure: boolean,
-): EtaBand | undefined {
-  if (!goal.objective?.trim()) return undefined
-  if (criteria.total > 0 && criteria.done >= criteria.total) {
-    return {
-      confidence: "high",
-      remaining_minutes_low: 0,
-      remaining_minutes_high: 0,
-      rationale: "All tracked criteria are complete.",
-    }
-  }
-  if (goal.blockers?.length) {
-    return {
-      confidence: "low",
-      remaining_minutes_low: 0,
-      remaining_minutes_high: 0,
-      rationale: `Waiting on blocker: ${truncate(goal.blockers[0] ?? "listed blocker", 120)}.`,
-    }
-  }
-  if (criteria.total === 0) {
-    return priorWakeCount >= 2
-      ? {
-          confidence: "low",
-          remaining_minutes_low: hasToolFailure ? 60 : 30,
-          remaining_minutes_high: hasToolFailure ? 180 : 120,
-          rationale: "No explicit criteria are bound, so ETA is based on wake history only.",
-        }
-      : undefined
-  }
-  const remaining = Math.max(1, criteria.total - criteria.done)
-  const baseLow = Math.max(15, remaining * 20)
-  const baseHigh = Math.max(baseLow + 30, remaining * (hasToolFailure ? 75 : 45))
-  return {
-    confidence: priorWakeCount >= 2 || criteria.done > 0 ? "med" : "low",
-    remaining_minutes_low: baseLow,
-    remaining_minutes_high: baseHigh,
-    rationale: `${criteria.done}/${criteria.total} criteria complete${hasToolFailure ? "; latest wake saw a tool failure" : ""}.`,
-  }
-}
-
-function trajectoryForMonitorUpdate(
-  actionable: FocusCheck[],
-  toolFailure: StackThreadMetaEvent | undefined,
-  criteria: CriteriaProgress,
-): MonitorOperatorUpdate["trajectory"] {
-  if (toolFailure || actionable.some((check) => check.status === "fail")) return "regressed"
-  if (actionable.some((check) => check.status === "warn")) return "stalled"
-  if (criteria.total > 0 && criteria.done === 0) return "stalled"
-  return "on_track"
-}
-
-function describeMonitorProgress(
-  wakeReason: string,
-  toolEvent: StackThreadMetaEvent | undefined,
-  turn: StackCodexTurn,
-): string {
-  if (toolEvent) {
-    const toolName = readString(toolEvent.payload.tool_name) ?? "tool"
-    const command = readString(toolEvent.payload.command)
-    return command ? `Completed ${toolName}: ${truncate(command, 80)}` : `Completed ${toolName}`
-  }
-  if (wakeReason === "turn_completed") {
-    const tail = truncate(turn.stdout.replace(/\s+/g, " ").trim(), 100)
-    return tail ? `Turn finished — ${tail}` : "Turn finished"
-  }
-  if (wakeReason === "tool_failed") return "Tool failure in latest delta"
-  return wakeReason.replace(/_/g, " ")
-}
-
-function formatOperatorSummary(update: MonitorOperatorUpdate, severity: MonitorSeverity): string {
-  const parts: string[] = []
-  if (update.trajectory) parts.push(`Trajectory: ${update.trajectory.replace(/_/g, " ")}`)
-  if (update.working_on) parts.push(`Working on: ${update.working_on}`)
-  if (update.criteria_progress && update.criteria_progress.total > 0) {
-    parts.push(`${update.criteria_progress.done}/${update.criteria_progress.total} criteria`)
-  }
-  if (update.eta) {
-    parts.push(`ETA ${formatEtaBand(update.eta)}`)
-  }
-  if (update.progress_note) parts.push(update.progress_note)
-  if (update.struggling_with) parts.push(`Struggling: ${update.struggling_with}`)
-  if (parts.length === 0) return severity === "none" ? "Watching — no update yet." : "Monitor update"
-  return parts.join(" · ")
-}
-
-function formatEtaBand(eta: EtaBand): string {
-  if (eta.remaining_minutes_low === 0 && eta.remaining_minutes_high === 0) {
-    return eta.rationale.toLowerCase().includes("blocker") ? "blocked" : "done"
-  }
-  if (eta.remaining_minutes_low === eta.remaining_minutes_high) return `${eta.remaining_minutes_low}m`
-  return `${eta.remaining_minutes_low}-${eta.remaining_minutes_high}m`
-}
-
 function snapshotFromEvents(
   config: StackMonitorConfig,
   events: StackThreadMetaEvent[],
@@ -2794,7 +2047,7 @@ function snapshotFromEvents(
     enabled: effective.enabled,
     actorId: monitorActorId(config),
     label: config.label,
-    runtime: usage.runtime ?? actorState?.model.worker ?? config.model.worker,
+    runtime: usage.runtime ?? "codex-app-server",
     model: actorState?.model.model ?? config.model.model,
     reasoningEffort: actorState?.model.reasoning_effort ?? config.model.reasoningEffort,
     strictness: effective.strictness,
@@ -2883,6 +2136,9 @@ function nextStrictness(current: MonitorStrictness): MonitorStrictness {
 }
 
 function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Record<string, unknown>>): StackMonitorConfig {
+  if (process.env.STACK_MONITOR_MODEL_WORKER?.trim()) {
+    throw new Error("STACK_MONITOR_MODEL_WORKER is not supported; Stack monitor always uses Codex app-server")
+  }
   return {
     ...base,
     id: readString(parsed.monitor?.id) ?? base.id,
@@ -2900,7 +2156,11 @@ function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Rec
       scope_control: readBoolean(parsed.focus?.scope_control) ?? base.focus.scope_control,
       acceptance: readBoolean(parsed.focus?.acceptance) ?? base.focus.acceptance,
     },
-    model: mergeActorModel(base.model, parsed),
+    model: {
+      provider: readString(parsed.model?.provider) ?? base.model.provider,
+      model: readString(parsed.model?.model) ?? base.model.model,
+      reasoningEffort: readString(parsed.model?.reasoning_effort) ?? base.model.reasoningEffort,
+    },
     prompt: mergeActorPrompt(base.prompt, parsed),
     wake: {
       maxWakesPerPrimaryTurn: readNumber(parsed.wake?.max_wakes_per_primary_turn) ?? base.wake.maxWakesPerPrimaryTurn,
@@ -2993,7 +2253,6 @@ function defaultMonitorToml(): string {
     'provider = "openai"',
     'model = "gpt-5.4-mini"',
     'reasoning_effort = "medium"',
-    'worker = "auto"',
     "",
     "[prompt]",
     'system_file = ".stack/monitors/default.system.md"',
@@ -3081,23 +2340,23 @@ function monitorActorId(config: StackMonitorConfig): string {
   return `monitor_${config.id}`
 }
 
-function normalizeStrictness(value: string | undefined, fallback: MonitorStrictness): MonitorStrictness {
+function normalizeStrictness(value: string | undefined, defaultValue: MonitorStrictness): MonitorStrictness {
   if (value === "off" || value === "passive" || value === "conservative" || value === "aggressive") return value
-  return fallback
+  return defaultValue
 }
 
-function normalizeSelection(value: string | undefined, fallback: "any" | "all"): "any" | "all" {
-  return value === "any" || value === "all" ? value : fallback
+function normalizeSelection(value: string | undefined, defaultValue: "any" | "all"): "any" | "all" {
+  return value === "any" || value === "all" ? value : defaultValue
 }
 
-function normalizeSeverity(value: string | undefined, fallback: MonitorSeverity): MonitorSeverity {
+function normalizeSeverity(value: string | undefined, defaultValue: MonitorSeverity): MonitorSeverity {
   if (value === "none" || value === "low" || value === "medium" || value === "high") return value
-  return fallback
+  return defaultValue
 }
 
-function normalizeFocusStatus(value: string | undefined, fallback: MonitorFocusStatus): MonitorFocusStatus {
+function normalizeFocusStatus(value: string | undefined, defaultValue: MonitorFocusStatus): MonitorFocusStatus {
   if (value === "pass" || value === "warn" || value === "fail" || value === "disabled") return value
-  return fallback
+  return defaultValue
 }
 
 function normalizeFocusName(value: string | undefined): MonitorFocusName | undefined {

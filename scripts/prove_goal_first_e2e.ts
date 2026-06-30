@@ -70,7 +70,8 @@ try {
   process.env.STACK_ROOT = stackRoot
   process.env.STACK_SESSION_DIR = sessionLogDir
   process.env.STACK_MONITOR_PROFILE = "progress-narrator"
-  process.env.STACK_MONITOR_MODEL_WORKER = "deterministic"
+  process.env.STACK_CODEX_COMMAND = join(appRoot, "scripts/fake_codex_jsonl.ts")
+  delete process.env.STACK_CODEX_ARGS
 
   await waitForHealth(`${baseUrl}/health`)
   checks.stackd_health = true

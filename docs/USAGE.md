@@ -103,8 +103,8 @@ Routes in L1: `/health`, `/mcp`, `/.well-known/mcp.json`, `/threads`, `/threads/
 and meta-harness events live at `.stack/events/threads/<session-id>.jsonl` and
 capture Stack-side events such as `agent.tool.completed`, `agent.tool.failed`,
 `agent.turn.completed`, `skill.read`, `monitor.wake`, `monitor.summary`,
-`monitor.queued`, `monitor.usage`, `monitor.model_fallback`,
-`monitor.checkpoint`, and `monitor.skill_context_push`.
+`monitor.queued`, `monitor.usage`, `monitor.checkpoint`, and
+`monitor.skill_context_push`.
 Monitor actor checkpoints live under
 `.stack/actors/<session-id>/monitors/<monitor-actor-id>.json`.
 `POST /threads/:id/events` appends core or meta events through stackd, filling
@@ -114,11 +114,9 @@ over the same thread event log for TUI, monitor, and exporter subscribers.
 stackd also runs a monitor scheduler over the same event log by default; it
 dedupes trigger event ids, advances actor checkpoints, and emits
 `monitor.wake`/`monitor.summary`/`monitor.usage`/`monitor.checkpoint` when
-non-TUI producers append core events. With
-`STACK_MONITOR_MODEL_WORKER=openai_responses` or `worker = "openai_responses"`,
-the scheduler calls OpenAI Responses and persists `monitor_thread_id` so later
-wakes continue the same monitor actor thread. Set `STACKD_MONITOR_SCHEDULER=0`
-to disable it or `STACKD_MONITOR_POLL_MS=<ms>` to tune polling.
+non-TUI producers append core events. The scheduler always wakes the persistent
+Codex sidecar monitor. Set `STACKD_MONITOR_SCHEDULER=0` to disable it or
+`STACKD_MONITOR_POLL_MS=<ms>` to tune polling.
 
 ### Stack Monitor
 
@@ -151,13 +149,9 @@ Useful overrides:
 
 The monitor pass is event-backed: it checks enabled focus areas such as style,
 goal progress, skills, tool use, scope control, and acceptance.
-The configured model slot is `gpt-5.4-mini` with medium reasoning. With
-`worker = "auto"`, Stack uses OpenAI Responses when `OPENAI_API_KEY` is
-available and persists the returned response id as `monitor_thread_id`; without
-credentials it falls back to the deterministic pass, emits
-`monitor.model_fallback` when the model worker was explicitly requested, and
-keeps the same `agent.*`, `monitor.*`, actor checkpoint, API, and export
-contract.
+The monitor is always a persistent Codex sidecar thread. Stack wakes that same
+Codex thread for event batches and operator sidecar chat. There are no monitor
+worker overrides.
 When the skills focus detects Stack/Synth work without a recorded skill use and
 `skill_context_push` is enabled, the monitor emits a visible
 `monitor.skill_context_push` message for the primary actor instead of silently
@@ -178,11 +172,6 @@ Monitor proof commands:
   guidance roots.
 - `bun run smoke:monitor:style-steer` proves `app/style/stack-norms` steering
   and conservative tool-failure summary without steer.
-
-Model-worker overrides:
-
-- TOML: `[model] worker = "auto" | "deterministic" | "openai_responses"`
-- Env: `STACK_MONITOR_MODEL_WORKER=auto|deterministic|openai_responses`
 
 ### Actors Preview
 

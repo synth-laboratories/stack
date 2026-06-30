@@ -88,10 +88,8 @@ export function stackTuiSmokeEnv(
   env.STACK_MONITOR_ENABLED = options.monitorEnabled ? "1" : "0"
   if (options.monitorEnabled) {
     env.STACK_MONITOR_PROFILE = "progress-narrator"
-    env.STACK_MONITOR_MODEL_WORKER = "deterministic"
   }
-  env.STACK_CODEX_COMMAND = "bun"
-  env.STACK_CODEX_ARGS = `run ${join(repoRoot, "scripts/fake_codex_jsonl.ts")}`
+  env.STACK_CODEX_COMMAND = join(repoRoot, "scripts/fake_codex_jsonl.ts")
   env.TERM = "xterm-ghostty"
   env.TERM_PROGRAM = "ghostty"
   delete env.SYNTH_API_KEY

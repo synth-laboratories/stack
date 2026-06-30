@@ -112,7 +112,6 @@ export async function runMonitorCodexSidecarTurn(input: {
   priorEvents: StackThreadMetaEvent[]
   pendingEvents: StackThreadMetaEvent[]
   goalContext: CodexGoalSnapshot
-  deterministicSummary: string
 }): Promise<MonitorCodexSidecarRunResult> {
   return runMonitorCodexSidecarPrompt({
     stackConfig: input.stackConfig,
@@ -276,7 +275,6 @@ function monitorCodexWakePrompt(input: {
   priorEvents: StackThreadMetaEvent[]
   pendingEvents: StackThreadMetaEvent[]
   goalContext: CodexGoalSnapshot
-  deterministicSummary: string
 }): string {
   return JSON.stringify(
     {
@@ -284,7 +282,6 @@ function monitorCodexWakePrompt(input: {
       wake_reason: input.wakeReason,
       trigger_event_ids: input.triggerEventIds,
       current_goal: input.goalContext,
-      deterministic_baseline_summary: input.deterministicSummary,
       pending_events: input.pendingEvents.map(serializableEvent),
       recent_context_events: input.priorEvents.slice(-20).map(serializableEvent),
       instruction:

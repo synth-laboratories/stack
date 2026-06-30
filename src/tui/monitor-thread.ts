@@ -815,7 +815,7 @@ function emptyGoalShutterSnapshot(): StackMonitorSnapshot {
     enabled: true,
     actorId: "monitor",
     label: "Monitor",
-    runtime: "deterministic",
+    runtime: "codex-app-server",
     model: "monitor",
     reasoningEffort: "medium",
     strictness: "passive",

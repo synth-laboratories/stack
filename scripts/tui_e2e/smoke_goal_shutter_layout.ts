@@ -35,7 +35,7 @@ try {
   await waitForScreenText(term, "Goal ·", 15_000)
   await waitForScreenText(term, "Sidecar thread", 15_000)
 
-  // Wait for monitor activity when sidecar is enabled (deterministic profile).
+  // Wait for monitor activity when sidecar is enabled.
   await waitForScreenText(term, "monitor", 30_000).catch(() => undefined)
 
   await waitForGoalShutterLayout(term, 10_000)

@@ -108,7 +108,8 @@ try {
   await stackdApproveMetaThreadArtifact(created.id, artifact.id, { thread_id: threadId })
 
   process.env.STACK_MONITOR_PROFILE = "progress-narrator"
-  process.env.STACK_MONITOR_MODEL_WORKER = "deterministic"
+  process.env.STACK_CODEX_COMMAND = join(appRoot, "scripts/fake_codex_jsonl.ts")
+  delete process.env.STACK_CODEX_ARGS
 
   const config = await loadConfig(appRoot)
   const boundSession: StackLocalSession = {
