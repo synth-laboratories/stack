@@ -4,6 +4,7 @@ import type { StackConfig } from "../config.js"
 import { STACK_HARNESS_NAME } from "../harness.js"
 import type { LocalContextFile } from "../local/workspace.js"
 import type { StackCodexTurn } from "../session.js"
+import { emitFirstAgentTurn } from "../telemetry/funnel.js"
 import { stackVersion } from "../version.js"
 import {
   CodexAppServerClient,
@@ -24,6 +25,7 @@ export type CodexRunOptions = {
 
 export async function runCodexTurn(options: CodexRunOptions): Promise<StackCodexTurn> {
   const startedAt = new Date().toISOString()
+  void emitFirstAgentTurn("codex")
   const prompt = await buildStackHarnessPrompt(options)
   const args = [...options.config.codexArgs, "-C", options.config.workspaceRoot, "-"]
   const proc = Bun.spawn([options.config.codexCommand, ...args], {

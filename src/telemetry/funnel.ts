@@ -47,3 +47,16 @@ export async function emitSessionFunnel(): Promise<void> {
     await emitFunnelEvent("stack_synth_authenticated", { environment: "configured", org_present: false })
   }
 }
+
+// The activation moment: the first agent turn of the process. Fires at most once.
+let firstTurnEmitted = false
+export async function emitFirstAgentTurn(agentBackend = "codex"): Promise<void> {
+  if (firstTurnEmitted) return
+  firstTurnEmitted = true
+  await emitFunnelEvent("stack_first_agent_turn", { agent_backend: agentBackend })
+}
+
+// Repeat-usage signal: an optimizer run kicked off.
+export async function emitOptimizerRunStarted(optimizer: string, mode: string): Promise<void> {
+  await emitFunnelEvent("stack_optimizer_run_started", { optimizer, mode })
+}

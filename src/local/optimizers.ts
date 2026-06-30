@@ -3,6 +3,7 @@ import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync
 import { dirname } from "node:path"
 import type { StackConfig } from "../config.js"
 import { stackdRuntimeAppendEvent } from "../client/stackd.js"
+import { emitOptimizerRunStarted } from "../telemetry/funnel.js"
 
 export type OptimizerServiceStatus = "running" | "stopped" | "starting" | "error"
 
@@ -105,6 +106,8 @@ export async function readOptimizerSnapshot(config: StackConfig): Promise<Optimi
 export async function startOptimizerService(config: StackConfig): Promise<OptimizerSnapshot> {
   const current = await readOptimizerSnapshot(config)
   if (current.status === "running") return current
+
+  void emitOptimizerRunStarted("local_gepa", "service")
 
   mkdirSync(dirname(config.optimizerDbPath), { recursive: true })
   mkdirSync(dirname(config.optimizerLogPath), { recursive: true })
