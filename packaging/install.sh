@@ -245,6 +245,16 @@ mv -f "$INSTALL_DIR/current.next" "$INSTALL_DIR/current"
 ln -sfn "$INSTALL_DIR/current/bin/stack" "$BIN_DIR/stack"
 ln -sfn "$INSTALL_DIR/current/bin/stackd" "$BIN_DIR/stackd"
 
+# Best-effort install funnel signal so real installs show in the Stack activation
+# funnel (download stage). Opt out with STACK_NO_TELEMETRY=1. Never blocks or fails
+# the install.
+if [ -z "${STACK_NO_TELEMETRY:-}" ] && command -v curl >/dev/null 2>&1; then
+  _tlm_base="${STACK_TELEMETRY_BASE:-https://api.usesynth.ai}"
+  _tlm_body="{\"event_name\":\"skill_download_clicked\",\"correlation_id\":\"installer-${version}-$$\",\"product\":\"stack\",\"metadata\":{\"source\":\"installer\",\"version\":\"${version}\",\"target\":\"${target}\"}}"
+  curl -fsS --max-time 4 -X POST "$_tlm_base/api/v1/growth/funnel-events" \
+    -H 'content-type: application/json' -d "$_tlm_body" >/dev/null 2>&1 || true
+fi
+
 printf 'installed: %s\n' "$version_dir"
 printf 'current: %s\n' "$INSTALL_DIR/current"
 printf '%s\n' "next: stack doctor"
