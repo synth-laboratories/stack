@@ -30,6 +30,7 @@ export type CodexRunOptions = {
   selectedFiles: LocalContextFile[]
   priorTurns: StackCodexTurn[]
   goalContext?: CodexGoalSnapshot
+  timeoutMs?: number
   onOutput: (chunk: string) => void
 }
 
@@ -48,11 +49,22 @@ export async function runCodexTurn(options: CodexRunOptions): Promise<StackCodex
   proc.stdin.write(prompt)
   proc.stdin.end()
 
+  let timedOut = false
+  const timeoutMs = options.timeoutMs && options.timeoutMs > 0 ? options.timeoutMs : undefined
+  const timeout = timeoutMs
+    ? setTimeout(() => {
+        timedOut = true
+        proc.kill("SIGTERM")
+      }, timeoutMs)
+    : undefined
+
   const [stdout, stderr, exitCode] = await Promise.all([
     collectStream(proc.stdout, options.onOutput),
     collectStream(proc.stderr, (chunk) => options.onOutput(`\n[stderr] ${chunk}`)),
     proc.exited,
-  ])
+  ]).finally(() => {
+    if (timeout) clearTimeout(timeout)
+  })
 
   return {
     id: randomUUID(),
@@ -60,9 +72,9 @@ export async function runCodexTurn(options: CodexRunOptions): Promise<StackCodex
     selectedPaths: options.selectedFiles.map((file) => file.path),
     startedAt,
     finishedAt: new Date().toISOString(),
-    exitCode,
+    exitCode: timedOut && exitCode === 0 ? 124 : exitCode,
     stdout,
-    stderr,
+    stderr: timedOut ? `${stderr}\n[stack] worker timed out after ${timeoutMs}ms` : stderr,
   }
 }
 

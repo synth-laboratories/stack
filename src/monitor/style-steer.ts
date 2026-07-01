@@ -54,16 +54,31 @@ export function detectSynthStyleViolations(turn: StackCodexTurn): SynthStyleViol
   const text = `${turn.prompt}\n${turn.stdout}\n${turn.stderr}`
   const hits: SynthStyleViolation[] = []
   for (const entry of VIOLATION_PATTERNS) {
-    const match = text.match(entry.pattern)
+    const match = firstActionableViolationMatch(text, entry.pattern)
     if (!match) continue
     hits.push({
       id: entry.id,
       summary: entry.summary,
       guidanceQuery: entry.guidanceQuery,
-      match: match[0],
+      match,
     })
   }
   return hits
+}
+
+function firstActionableViolationMatch(text: string, pattern: RegExp): string | undefined {
+  for (const line of text.split(/\r?\n/)) {
+    const match = line.match(pattern)
+    if (!match) continue
+    if (isNegatedGuidanceLine(line)) continue
+    return match[0]
+  }
+  return undefined
+}
+
+function isNegatedGuidanceLine(line: string): boolean {
+  const normalized = line.trim().toLowerCase()
+  return /\b(do not|don't|never|avoid|must not|should not|cannot|can't|forbidden|disallowed)\b/.test(normalized)
 }
 
 export function hasSteeredViolationRule(events: StackThreadMetaEvent[], ruleId: string): boolean {

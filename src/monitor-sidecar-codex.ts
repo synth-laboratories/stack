@@ -199,7 +199,7 @@ async function runMonitorCodexSidecarPrompt(input: {
       effort: input.monitorConfig.model.reasoningEffort,
       input: textTurnInput(input.prompt),
     })
-    const final = await client.waitForTurnEnd(turnId, 900_000)
+    const final = await client.waitForTurnEnd(turnId, sidecarTurnTimeoutMs())
     const exitCode = final.method === "turn/completed" ? 0 : 1
     const usage = readUsageFromStdout(stdout)
     const turn: StackMonitorSidecarTurn = {
@@ -267,6 +267,8 @@ function monitorCodexDeveloperPrompt(input: {
     "Steer ONCE per issue: if `recent_context_events` shows you already steered the same unresolved problem, do NOT steer again — stay silent on it unless it materially changed.",
     "The events feed is the human's window into the run — it must explain WHAT THE WORKER IS DOING and WHAT PROGRESS TOWARD THE GOAL is being made. Emit a line exactly like `PROGRESS_UPDATE: <concise update>` when ANY of these occur: (a) a goal acceptance-criterion transitions — it is met, newly blocked, or a worker's done-claim is confirmed/refuted; (b) a milestone lands, e.g. a baseline is established or a candidate is produced (report the concrete result/number); (c) the verdict is a concern (stalled, stuck, off-goal, blocked); (d) you steered or paused the worker (say what and why); (e) the worker SHIFTS to a meaningfully new phase of work — e.g. from locating the setting, to running the baseline, to grinding a candidate — say what it is now doing.",
     "For (e), narrate the CURRENT ACTIVITY at the phase level, ONE line per phase, NOT per tool call. Do not narrate routine reads/listings/greps within a phase — only the shift to a new kind of work.",
+    "For GameBench goals, the first task-specific phase is NOT routine. When the worker reads lane instructions/contracts, finds trace files, inspects staged artifacts, starts baseline/scoring, or starts scenario/parity work, emit `PROGRESS_UPDATE` plus `stack_monitor_goal_status` with `working` even if no gate has landed yet.",
+    "For GameBench puzzle_diagnosis specifically, reading TASK_INSTRUCTIONS, verifier rubrics, diagnosis artifacts, or trace files is milestone work: report that the worker is in trace-backed diagnosis, and keep goal_met impossible until the verifier pass exists.",
     "When a criterion completes or a baseline/candidate result appears, cite the concrete outcome (the score/number/artifact), not a vague 'progress made'.",
     "If `current_goal.gamebenchTask` is present, treat it as authoritative task metadata: use `taskType`, `doneBar`, `milestoneChain`, `honestyPitfalls`, and `gates` to decide what progress and completion mean. Do not downgrade to generic vibes.",
     "GameBench policy_opt: baseline and candidate scores must be on the same requested suite; a user-requested 2x candidate requires ratio >= 2 even if the ReportBench low pass threshold only requires positive score/best policy.",
@@ -274,6 +276,7 @@ function monitorCodexDeveloperPrompt(input: {
     "GameBench puzzle_diagnosis: diagnosis.json or a written hypothesis is only a milestone. Completion requires the judge/verifier pass gate; if verifier credentials/traces are missing, inform the human and steer without inventing a verdict.",
     "The worker owns the completion verdict; you AUDIT it. If the worker claims a criterion is done, confirm it against cited proof before treating it as done — refute in a PROGRESS_UPDATE if the proof is missing or does not meet the bar.",
     "In ADDITION to the PROGRESS_UPDATE prose, record a STRUCTURED signal the UI visualizes: call the Stack MCP tool `stack_monitor_goal_status` with `status` ∈ {advancing, working, blocked, stalled, goal_met, goal_failed}, a one-sentence `note`, and a `metric` object when there is a number (e.g. {value, baseline, ratio, target}). Call it on real status changes, not every wake.",
+    "Hard invariant for goal runs: if you emit `PROGRESS_UPDATE`, you MUST call `stack_monitor_goal_status` in the same wake before pausing. Use `working` for a phase shift, `advancing` for concrete progress/milestones, `stalled` for no-progress loops, `blocked` for a concrete blocker, `goal_failed` for an audited failed done-claim, and `goal_met` only for audited completion.",
     "Emit `stack_monitor_goal_status` with `status: \"goal_met\"` ONLY after you have AUDITED the worker's completion claim and the cited proof clears the target — this flips the goal to done. If the worker declares completion but the proof is missing or short, emit `blocked` or leave it advancing and refute in a PROGRESS_UPDATE, do NOT emit goal_met.",
     "If `current_goal.gamebenchTask` is present, it is authoritative: apply its `doneBar` EXACTLY (that is the real bar for this task type — do not emit goal_met unless the doneBar is met), frame progress against its `milestoneChain`, and actively watch for its `honestyPitfalls` (refute a worker claim that hits one). E.g. engine-rebuild is NOT done at 'service up' — it needs the canonical all-scenarios score of 1.0; puzzle-diagnosis is NOT done when diagnosis.json merely exists — it needs the verifier verdict.",
     "Otherwise — routine tool completions (reads, listings, greps), trivial batches, or when there is simply no new goal progress — reply with EXACTLY `NO_USER_UPDATE` and nothing else. NEVER announce the absence of progress and NEVER restate prior status; a PROGRESS_UPDATE that says 'no new progress' or re-summarizes what you already reported is a defect.",
@@ -300,14 +303,97 @@ function monitorCodexWakePrompt(input: {
       wake_reason: input.wakeReason,
       trigger_event_ids: input.triggerEventIds,
       current_goal: input.goalContext,
+      monitor_contract: monitorWakeContract(input),
       pending_events: input.pendingEvents.map(serializableEvent),
       recent_context_events: input.priorEvents.slice(-20).map(serializableEvent),
       instruction:
-        "Review the pending events as the persistent sidecar monitor. Decide if progress was made, whether the human needs a concise update, and whether the worker needs steering. Use PROGRESS_UPDATE/NO_USER_UPDATE and STEER_WORKER when applicable. Reply with what matters now, then pause for restart when done.",
+        "Review the pending events as the persistent sidecar monitor. Decide if progress was made, whether the human needs a concise update, and whether the worker needs steering. Use PROGRESS_UPDATE/NO_USER_UPDATE and STEER_WORKER when applicable. If monitor_contract.must_emit_progress_update is true, do not reply NO_USER_UPDATE; emit the requested progress update and call stack_monitor_goal_status. Reply with what matters now, then pause for restart when done.",
     },
     null,
     2,
   )
+}
+
+function monitorWakeContract(input: {
+  priorEvents: StackThreadMetaEvent[]
+  pendingEvents: StackThreadMetaEvent[]
+  goalContext: CodexGoalSnapshot
+}): Record<string, unknown> {
+  const task = input.goalContext.gamebenchTask
+  if (!task) return { quiet_default: true }
+  const alreadyNarrated = input.priorEvents.some(
+    (event) => event.type === "monitor.progress" || event.type === "monitor.goal_status",
+  )
+  const phase = gamebenchPhaseFromEvents(task.taskType, input.pendingEvents)
+  const mustEmit = Boolean(phase && !alreadyNarrated)
+  return {
+    quiet_default: true,
+    gamebench_task_type: task.taskType,
+    done_bar: task.doneBar,
+    milestone_chain: task.milestoneChain ?? [],
+    must_emit_progress_update: mustEmit,
+    must_call_goal_status_if_progress_update: true,
+    suggested_goal_status: mustEmit ? "working" : undefined,
+    phase: phase?.phase,
+    reason: phase?.reason,
+    suggested_update: phase?.suggestedUpdate,
+  }
+}
+
+function gamebenchPhaseFromEvents(
+  taskType: NonNullable<CodexGoalSnapshot["gamebenchTask"]>["taskType"],
+  events: readonly StackThreadMetaEvent[],
+): { phase: string; reason: string; suggestedUpdate: string } | undefined {
+  const text = events.map(eventSearchText).join("\n").toLowerCase()
+  if (!text.trim()) return undefined
+  if (taskType === "puzzle_diagnosis") {
+    if (/\b(task_instructions|verifier_rubric|rubric|task_contract|trace|traces|diagnosis|verifier_review|workproduct|puzzle_)/i.test(text)) {
+      return {
+        phase: "trace-backed diagnosis",
+        reason: "worker is reading puzzle instructions, traces, or diagnosis/verifier artifacts",
+        suggestedUpdate:
+          "Worker is in the puzzle diagnosis phase: reading the lane instructions/traces/artifacts to build or audit a trace-backed causal hypothesis.",
+      }
+    }
+  }
+  if (taskType === "policy_opt") {
+    if (/\b(task_instructions|baseline|candidate|leaderboard|policy|score|hillclimb|run_policy|reportbench_output)/i.test(text)) {
+      return {
+        phase: "policy optimization evidence gathering",
+        reason: "worker is locating the policy lane, baseline, candidate, or leaderboard evidence",
+        suggestedUpdate:
+          "Worker is in the policy-optimization phase: locating the lane evidence and preparing to compare baseline and candidate scores.",
+      }
+    }
+  }
+  if (taskType === "engine_rebuild") {
+    if (/\b(task_instructions|scenario|harbor|engine|service|reward|nev|public_state|resolved|parity)/i.test(text)) {
+      return {
+        phase: "engine rebuild parity work",
+        reason: "worker is reading engine instructions or scenario/parity evidence",
+        suggestedUpdate:
+          "Worker is in the engine-rebuild phase: reading the specs/scenarios and looking for canonical parity evidence.",
+      }
+    }
+  }
+  if (/\b(task_instructions|reportbench|gamebench|score|artifact|workspace)/i.test(text)) {
+    return {
+      phase: "gamebench lane discovery",
+      reason: "worker is reading GameBench lane files or artifacts",
+      suggestedUpdate: "Worker is in GameBench lane discovery: reading task files and artifacts to establish the current milestone.",
+    }
+  }
+  return undefined
+}
+
+function eventSearchText(event: StackThreadMetaEvent): string {
+  const payload = event.payload as Record<string, unknown>
+  const parts: string[] = [event.type]
+  for (const key of ["text", "command", "output", "summary", "message", "note", "stdout", "stderr"]) {
+    const value = payload[key]
+    if (typeof value === "string") parts.push(value.slice(0, 2000))
+  }
+  return parts.join("\n")
 }
 
 function monitorCodexChatPrompt(input: {
@@ -399,6 +485,13 @@ function readUsageFromStdout(stdout: string): StackCodexUsage | undefined {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function sidecarTurnTimeoutMs(): number {
+  const raw = process.env.STACK_MONITOR_CODEX_TIMEOUT_MS
+  if (!raw) return 900_000
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 900_000
 }
 
 function safePathSegment(value: string): string {

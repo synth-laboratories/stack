@@ -33,6 +33,8 @@ const appRoot = resolve(import.meta.dir, "..")
 const workspaceRoot = "/Users/joshpurtell/Documents/GitHub"
 const lanesRoot = join(workspaceRoot, "evals/reportbench/lanes")
 const config = { ...(await loadConfig(appRoot)), workspaceRoot }
+const workerTimeoutMs = readPositiveInt(process.env.STACK_GAMEBENCH_LANE_TIMEOUT_MS) ?? 120_000
+process.env.STACK_MONITOR_CODEX_TIMEOUT_MS ??= String(workerTimeoutMs)
 
 const POLICY_OPT_LANES = [
   "craftax_gamebench_code_policy_deo_hillclimb_1cand",
@@ -61,7 +63,7 @@ const PUZZLE_DIAGNOSIS_LANES = [
 const args = process.argv.slice(2)
 const presetIndex = args.indexOf("--preset")
 const preset = presetIndex >= 0 ? args[presetIndex + 1] : undefined
-const laneArgs = args.filter((arg, index) => arg !== "--preset" && index !== presetIndex + 1)
+const laneArgs = args.filter((arg, index) => arg !== "--preset" && (presetIndex < 0 || index !== presetIndex + 1))
 const lanes = lanesFor(preset, laneArgs)
 if (lanes.length === 0) {
   console.error("usage: bun run scripts/eval_gamebench_lane.ts --preset smoke|core-5x3 OR <lane_name> [<lane_name> ...]")
@@ -129,6 +131,7 @@ for (const lane of lanes) {
   let wakes = 0
 
   console.log(`\n=== ${lane} ===\nobjective: ${objective.slice(0, 140)}…`)
+  console.log(`worker_timeout_ms=${workerTimeoutMs}`)
 
   const wakeMonitor = () => {
     const last = readThreadMetaEvents(config.stackDataRoot, threadId).at(-1)
@@ -144,6 +147,7 @@ for (const lane of lanes) {
     selectedFiles: [],
     priorTurns: [],
     goalContext,
+    timeoutMs: workerTimeoutMs,
     onOutput: (chunk) => {
       buffer += chunk
       const lines = buffer.split("\n")
@@ -266,4 +270,10 @@ function summarizeByType(rowsToSummarize: Row[]): Record<string, { total: number
 function feedEventText(event: StackThreadMetaEvent): string {
   const payload = event.payload as Record<string, unknown>
   return String(payload.summary ?? payload.message ?? payload.note ?? "")
+}
+
+function readPositiveInt(raw: string | undefined): number | undefined {
+  if (!raw) return undefined
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : undefined
 }
