@@ -73,12 +73,12 @@ function buildGardenerChatPrompt(
   const target = input.workerTargetId?.slice(0, 8)
   const systemPrompt = resolveGardenerSystemPrompt(input.config.stackDataRoot, gardenerConfig)
   return [
-    message,
-    "",
-    "---",
     systemPrompt,
     ...(target ? [`Default worker target for explicit routing: ${target}`] : []),
     ...(workerLines.length > 0 ? ["Live worker threads:", ...workerLines] : []),
+    "",
+    "Operator message:",
+    message,
   ].join("\n")
 }
 
