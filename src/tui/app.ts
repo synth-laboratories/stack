@@ -1830,7 +1830,12 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     existing: MountedView | undefined,
   ): MountedView {
     if (existing) {
+      // Detach AND destroy the old subtree. remove() only unlinks it from the parent; without
+      // destroyRecursively() its native OptimizedBuffers are never freed. A goal run remounts on
+      // every monitor event, so the leak accumulates until native buffer allocation fails and
+      // OpenTUI throws "Failed to create optimized buffer", killing the TUI mid-run.
       renderer.root.remove("stack-root")
+      existing.root.destroyRecursively()
     }
 
     const nextView = createView(
