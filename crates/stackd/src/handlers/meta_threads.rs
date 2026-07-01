@@ -91,6 +91,19 @@ pub struct UpdateLifecycleRequest {
     pub actor_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct UpdateTitleRequest {
+    pub title: String,
+    pub reason: Option<String>,
+    pub actor_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateTitleResponse {
+    pub manifest: MetaThreadManifest,
+    pub event_id: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ContinueHandoffResponse {
     pub manifest: MetaThreadManifest,
@@ -195,6 +208,76 @@ pub async fn update_lifecycle(
     Ok(Json(manifest))
 }
 
+pub async fn update_title(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateTitleRequest>,
+) -> Result<Json<UpdateTitleResponse>, ApiError> {
+    let title = normalized_title(&request.title)?;
+    let mut manifest = read_manifest(&state.paths.stack_dir, &id)
+        .await
+        .map_err(ApiError::from)?;
+    let previous = manifest.title.clone();
+    if previous == title {
+        return Ok(Json(UpdateTitleResponse {
+            manifest,
+            event_id: None,
+        }));
+    }
+
+    let actor_id = request
+        .actor_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("operator")
+        .to_string();
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    manifest.title = title.clone();
+    manifest.updated_at = now();
+    write_manifest(&state.paths.stack_dir, &manifest)
+        .await
+        .map_err(ApiError::from)?;
+
+    if let Ok(mut session) =
+        read_session_by_id(&state.paths.session_log_dir, &manifest.head_thread_id).await
+    {
+        session.display_name = Some(title.clone());
+        if let Err(error) = write_session(&state.paths.session_log_dir, &session).await {
+            tracing::warn!(
+                status = %error.status,
+                message = %error.message,
+                "meta-thread title updated but head session displayName sync failed"
+            );
+        }
+    }
+
+    let event_id = append_meta_event(
+        &state,
+        &manifest.id,
+        "meta_thread.title_updated",
+        &manifest.head_thread_id,
+        Some(&manifest.head_segment_id),
+        None,
+        json!({
+            "previous_title": previous,
+            "title": title,
+            "reason": reason,
+            "actor_id": actor_id,
+        }),
+    )
+    .await?;
+    Ok(Json(UpdateTitleResponse {
+        manifest,
+        event_id: Some(event_id),
+    }))
+}
+
 pub async fn get_meta_thread(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -204,6 +287,34 @@ pub async fn get_meta_thread(
         .map_err(ApiError::from)?;
     enrich_monitor_headline(&state, &mut manifest).await;
     Ok(Json(manifest))
+}
+
+fn normalized_title(raw: &str) -> Result<String, ApiError> {
+    let title = raw.trim();
+    if title.is_empty() {
+        return Err(ApiError::bad_request("title is required"));
+    }
+    if title.chars().count() > 48 {
+        return Err(ApiError::bad_request("title must be 48 characters or fewer"));
+    }
+    Ok(title.to_string())
+}
+
+/// Clamps an auto-derived title (from a goal objective) to the 48-char max instead of rejecting
+/// it. `create_meta_thread` receives the objective as its title, so it must never fail just
+/// because the objective is longer than a display title — that would silently break `/goal`.
+/// Adds an ellipsis when truncated; falls back to a placeholder for an empty objective. Explicit
+/// renames still go through `normalized_title`, which errors past the limit.
+fn clamped_title(raw: &str) -> String {
+    let title = raw.trim();
+    if title.is_empty() {
+        return "untitled goal".to_string();
+    }
+    if title.chars().count() <= 48 {
+        return title.to_string();
+    }
+    let truncated: String = title.chars().take(47).collect();
+    format!("{}…", truncated.trim_end())
 }
 
 pub async fn get_handoff(
@@ -221,9 +332,10 @@ pub async fn create_meta_thread(
     State(state): State<Arc<AppState>>,
     Json(request): Json<CreateMetaThreadRequest>,
 ) -> Result<Json<MetaThreadManifest>, ApiError> {
-    if request.title.trim().is_empty() {
-        return Err(ApiError::bad_request("title is required"));
-    }
+    // Clamp (never reject) the auto-derived title: create receives the goal objective as its
+    // title, which is routinely longer than the 48-char display cap. Rejecting it here silently
+    // broke `/goal` (meta-thread never created, worker never started).
+    let title = clamped_title(&request.title);
     let mut session = read_session_by_id(&state.paths.session_log_dir, &request.thread_id).await?;
     let now = now();
     let meta_thread_id = format!("mt_{}", unique_suffix());
@@ -261,7 +373,7 @@ pub async fn create_meta_thread(
     let mut manifest = MetaThreadManifest {
         schema: META_THREAD_SCHEMA.to_string(),
         id: meta_thread_id.clone(),
-        title: request.title.trim().to_string(),
+        title,
         lifecycle_status: "live".to_string(),
         archived_at: None,
         archived_by: None,
@@ -823,9 +935,10 @@ async fn append_meta_event(
     segment_id: Option<&str>,
     artifact_id: Option<&str>,
     payload: Value,
-) -> Result<(), ApiError> {
+) -> Result<String, ApiError> {
+    let event_id = format!("{}_{}", event_type.replace('.', "_"), unique_suffix());
     let event = json!({
-        "event_id": format!("{}_{}", event_type.replace('.', "_"), unique_suffix()),
+        "event_id": event_id.clone(),
         "type": event_type,
         "thread_id": thread_id,
         "observed_at": now(),
@@ -860,7 +973,7 @@ async fn append_meta_event(
         .await
         .map_err(|error| ApiError::internal(error.to_string()))?;
     append_thread_event_projected(&state.paths.stack_dir, thread_id, &event).await?;
-    Ok(())
+    Ok(event_id)
 }
 
 fn parse_lifecycle_filter(value: Option<&str>) -> Result<Option<&'static str>, ApiError> {
