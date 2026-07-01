@@ -21,7 +21,7 @@ export type RemountCoordinator = {
   dispose: () => void
 }
 
-const DEFAULT_DEBOUNCE_MS = 24
+const DEFAULT_DEBOUNCE_MS = 120
 
 export function readRemountDebounceMs(): number {
   const raw = process.env.STACK_TUI_REMOUNT_DEBOUNCE_MS?.trim()
@@ -35,6 +35,7 @@ export function createRemountCoordinator(debounceMs = readRemountDebounceMs()): 
   let handlers: RemountCoordinatorBind | undefined
   let debounceTimer: ReturnType<typeof setTimeout> | undefined
   let renderScheduled = false
+  let mountScheduled = false
   let mountInFlight = false
   let remountQueued = false
 
@@ -63,6 +64,18 @@ export function createRemountCoordinator(debounceMs = readRemountDebounceMs()): 
     }
   }
 
+  const scheduleMountMicrotask = () => {
+    if (mountScheduled) {
+      remountQueued = true
+      return
+    }
+    mountScheduled = true
+    queueMicrotask(() => {
+      mountScheduled = false
+      runMount()
+    })
+  }
+
   const scheduleRender = () => {
     if (!handlers) return
     if (renderScheduled) return
@@ -75,7 +88,7 @@ export function createRemountCoordinator(debounceMs = readRemountDebounceMs()): 
 
   const remountNow = () => {
     clearDebounce()
-    runMount()
+    scheduleMountMicrotask()
   }
 
   const scheduleRemount = () => {
