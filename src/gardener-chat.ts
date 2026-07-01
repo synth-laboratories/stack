@@ -92,9 +92,18 @@ async function liveMetaThreadLines(stackDataRoot: string): Promise<string[]> {
     const goalLabel = goal?.objective?.trim()
       ? `goal ${goal.status || "active"}`
       : "no goal"
-    const monitor = manifest.monitor_profile ? ` · monitor ${manifest.monitor_profile}` : ""
+    const profile = manifest.monitor_profile ? ` · monitor ${manifest.monitor_profile}` : ""
+    const headline = monitorHeadlineLine(manifest.monitor_headline)
+    const monitor = headline ? ` · sidecar ${headline}` : profile
     return `- ${manifest.id.slice(0, 10)} · ${truncateOneLine(manifest.title, 48)} · ${goalLabel} · head ${manifest.head_thread_id.slice(0, 8)}${monitor}`
   })
+}
+
+function monitorHeadlineLine(headline: { status?: string; headline?: string; note?: string } | undefined): string | undefined {
+  if (!headline) return undefined
+  const status = headline.status?.trim() ? headline.status.trim().replace(/_/g, " ") : "update"
+  const label = headline.headline?.trim() || headline.note?.trim() || "monitor update"
+  return truncateOneLine(`${status}: ${label}`, 72)
 }
 
 function extractTurnAssistantText(turn: StackCodexTurn): string | undefined {

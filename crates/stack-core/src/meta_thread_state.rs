@@ -270,6 +270,7 @@ mod tests {
             decisions: Vec::new(),
             gardener_thread_id: None,
             monitor_profile: None,
+            monitor_headline: None,
             active_goal: Some(MetaThreadActiveGoal {
                 objective: "ship resume".to_string(),
                 status: "active".to_string(),

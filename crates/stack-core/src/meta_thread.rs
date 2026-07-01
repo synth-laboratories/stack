@@ -230,9 +230,20 @@ pub struct MetaThreadManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub monitor_profile: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub monitor_headline: Option<MonitorHeadline>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub active_goal: Option<MetaThreadActiveGoal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_summary: Option<StackSessionUsageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MonitorHeadline {
+    pub status: String,
+    pub headline: String,
+    pub note: String,
+    pub observed_at: String,
+    pub event_id: String,
 }
 
 pub fn default_lifecycle_status() -> String {

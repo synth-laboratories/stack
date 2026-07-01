@@ -7,10 +7,11 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use stack_core::codex_path::resolve_for_session;
+use stack_core::events::read_thread_events;
 use stack_core::meta_thread::{
     build_meta_thread_usage_summary, handoff_ref, meta_events_path, normalize_lifecycle_status,
     read_handoff, read_manifest, safe_segment, write_handoff, write_manifest, AgentConfig, Handoff,
-    MetaThreadActiveGoal, MetaThreadArtifactRef, MetaThreadManifest, MetaThreadSegment,
+    MetaThreadActiveGoal, MetaThreadArtifactRef, MetaThreadManifest, MetaThreadSegment, MonitorHeadline,
     META_THREAD_SCHEMA,
 };
 use stack_core::session::{
@@ -118,8 +119,9 @@ pub async fn list_meta_threads(
     {
         let path = entry.path().join("manifest.json");
         if let Ok(text) = fs::read_to_string(&path).await {
-            if let Ok(manifest) = serde_json::from_str::<MetaThreadManifest>(&text) {
+            if let Ok(mut manifest) = serde_json::from_str::<MetaThreadManifest>(&text) {
                 if lifecycle_matches(&manifest, lifecycle) {
+                    enrich_monitor_headline(&state, &mut manifest).await;
                     manifests.push(manifest);
                 }
             }
@@ -197,11 +199,11 @@ pub async fn get_meta_thread(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<MetaThreadManifest>, ApiError> {
-    Ok(Json(
-        read_manifest(&state.paths.stack_dir, &id)
-            .await
-            .map_err(ApiError::from)?,
-    ))
+    let mut manifest = read_manifest(&state.paths.stack_dir, &id)
+        .await
+        .map_err(ApiError::from)?;
+    enrich_monitor_headline(&state, &mut manifest).await;
+    Ok(Json(manifest))
 }
 
 pub async fn get_handoff(
@@ -282,6 +284,7 @@ pub async fn create_meta_thread(
         decisions: Vec::new(),
         gardener_thread_id: request.gardener_thread_id,
         monitor_profile: request.monitor_profile,
+        monitor_headline: None,
         active_goal: request.active_goal,
         usage_summary: None,
     };
@@ -884,6 +887,51 @@ fn lifecycle_matches(manifest: &MetaThreadManifest, filter: Option<&str>) -> boo
         return true;
     };
     normalize_lifecycle_status(&manifest.lifecycle_status).unwrap_or("live") == filter
+}
+
+async fn enrich_monitor_headline(state: &AppState, manifest: &mut MetaThreadManifest) {
+    let Ok(events) = read_thread_events(&state.paths.stack_dir, &manifest.head_thread_id).await else {
+        return;
+    };
+    for event in events.iter().rev() {
+        if event.get("type").and_then(Value::as_str) != Some("monitor.goal_status") {
+            continue;
+        }
+        let Some(payload) = event.get("payload").and_then(Value::as_object) else {
+            continue;
+        };
+        if payload.get("for_human").and_then(Value::as_bool) != Some(true) {
+            continue;
+        }
+        manifest.monitor_headline = Some(MonitorHeadline {
+            status: payload
+                .get("status")
+                .and_then(Value::as_str)
+                .unwrap_or("working")
+                .to_string(),
+            headline: payload
+                .get("headline")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            note: payload
+                .get("note")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            observed_at: event
+                .get("observed_at")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+            event_id: event
+                .get("event_id")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_string(),
+        });
+        return;
+    }
 }
 
 fn bind_session(

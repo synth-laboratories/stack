@@ -310,6 +310,14 @@ export type StackdMetaThreadActiveGoal = {
   blockers: string[]
 }
 
+export type StackdMonitorHeadline = {
+  status: string
+  headline: string
+  note: string
+  observed_at: string
+  event_id: string
+}
+
 export type StackdMetaThreadManifest = {
   schema: "stack/meta-thread/v1"
   id: string
@@ -332,6 +340,7 @@ export type StackdMetaThreadManifest = {
   decisions: unknown[]
   gardener_thread_id?: string
   monitor_profile?: string
+  monitor_headline?: StackdMonitorHeadline
   active_goal?: StackdMetaThreadActiveGoal
   usage_summary?: StackSessionUsageSummary
 }
