@@ -89,6 +89,10 @@ export type StackMonitorConfig = {
     onTurnCompleted: boolean
     onToolCompleted: boolean
     onToolFailed: boolean
+    eventBatchSize: number
+    eventBatchMinIntervalMs: number
+    defaultIntervalMs: number
+    staleWorkerIntervalMs: number
     deltaEvents: number
     cooldownMs: number
     weightThreshold: number
@@ -225,6 +229,10 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
     onTurnCompleted: true,
     onToolCompleted: true,
     onToolFailed: true,
+    eventBatchSize: 8,
+    eventBatchMinIntervalMs: 30_000,
+    defaultIntervalMs: 180_000,
+    staleWorkerIntervalMs: 300_000,
     deltaEvents: 12,
     cooldownMs: 15_000,
     weightThreshold: 8,
@@ -666,6 +674,51 @@ export async function runMonitorAfterTurn(input: {
   })
 }
 
+export async function runGoalMonitorCadenceTick(input: {
+  config: StackConfig
+  session: StackLocalSession
+  agentContext: AgentContextSnapshot
+  goalContext: CodexGoalSnapshot
+}): Promise<StackMonitorSnapshot | undefined> {
+  if (!goalContextActive(input.goalContext)) return undefined
+  const monitorConfig = loadMonitorConfig(input.config.appRoot)
+  const threadId = input.session.id
+  const events = readThreadMetaEvents(input.config.appRoot, threadId)
+  const actorId = monitorActorId(monitorConfig)
+  const actorState = readMonitorActorState(input.config.appRoot, threadId, actorId)
+  if (actorState?.state === "running" && hasQueuedTriggerAfterLatestWake(events)) return undefined
+  const cadence = cadenceWakeReason(monitorConfig, events, actorState)
+  if (!cadence) return undefined
+  const now = new Date().toISOString()
+  const event: StackThreadMetaEvent = {
+    event_id: stackEventId("agent_worker_heartbeat"),
+    type: "agent.worker_heartbeat",
+    thread_id: threadId,
+    observed_at: now,
+    actor_id: "primary_codex",
+    actor_role: "primary",
+    meta_thread_id: input.session.metaThreadId,
+    segment_id: input.session.segmentId,
+    payload: {
+      reason: cadence.reason,
+      worker_status: "running",
+      pending_worker_event_count: cadence.pendingWorkerEventCount,
+      elapsed_since_last_worker_event_ms: cadence.elapsedSinceLastWorkerEventMs,
+      elapsed_since_last_monitor_wake_ms: cadence.elapsedSinceLastMonitorWakeMs,
+      source: "tui-cadence",
+    },
+  }
+  appendThreadMetaEvent(input.config.appRoot, event)
+  return await runMonitorForNewEvents({
+    config: input.config,
+    session: input.session,
+    agentContext: input.agentContext,
+    goalContext: input.goalContext,
+    wakeReason: cadence.reason,
+    triggerEventIds: [event.event_id],
+  })
+}
+
 export async function runMonitorForNewEvents(input: {
   config: StackConfig
   session: StackLocalSession
@@ -674,6 +727,7 @@ export async function runMonitorForNewEvents(input: {
   goalContext: CodexGoalSnapshot
   wakeReason?: string
   triggerEventIds?: string[]
+  drainQueued?: boolean
 }): Promise<StackMonitorSnapshot> {
   const monitorConfig = loadMonitorConfig(input.config.appRoot)
   const threadId = input.session.id
@@ -871,6 +925,26 @@ export async function runMonitorForNewEvents(input: {
       })),
     },
   })
+  if (pass.userProgressUpdate || pass.workerSteerMessage || pass.severity !== "none") {
+    appendThreadMetaEvent(input.config.appRoot, {
+      event_id: stackEventId("monitor_progress"),
+      type: "monitor.progress",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: actorId,
+      actor_role: "monitor",
+      payload: {
+        wake_id: wakeId,
+        wake_reason: candidate.reason,
+        summary: pass.userProgressUpdate ?? pass.operatorUpdate?.progress_note ?? pass.summary,
+        severity: pass.severity,
+        operator_update: pass.operatorUpdate ?? null,
+        trigger_event_ids: candidate.triggerEventIds,
+        pending_event_count: candidate.pendingEvents.length,
+        source: pass.source,
+      },
+    })
+  }
 
   const suggestedThreadName =
     pass.threadName ??
@@ -931,6 +1005,28 @@ export async function runMonitorForNewEvents(input: {
   }
 
   let steerDelta = 0
+  if (
+    pass.workerSteerMessage &&
+    monitorConfig.permissions.steer &&
+    actorToolAllowed(monitorConfig.tools, "monitor.steer")
+  ) {
+    appendThreadMetaEvent(input.config.appRoot, {
+      event_id: stackEventId("monitor_steer"),
+      type: "monitor.steer",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: actorId,
+      actor_role: "monitor",
+      payload: {
+        wake_id: wakeId,
+        message: pass.workerSteerMessage,
+        severity: pass.severity === "none" ? "low" : pass.severity,
+        focus: "goal_progress",
+        source: "sidecar_codex",
+      },
+    })
+    steerDelta += 1
+  }
   const turnForSteer = input.turn ?? syntheticTurnFromEvents(input.session, candidate.pendingEvents)
   const violations = detectSynthStyleViolations(turnForSteer)
   const violation = violations.find((entry) => !hasSteeredViolationRule(priorEvents, entry.id))
@@ -989,7 +1085,7 @@ export async function runMonitorForNewEvents(input: {
             focus: "style",
           },
         })
-        steerDelta = 1
+        steerDelta += 1
       }
     }
   }
@@ -1057,6 +1153,23 @@ export async function runMonitorForNewEvents(input: {
       monitor_codex_thread_id: pass.monitorCodexThreadId ?? null,
     },
   })
+
+  if (input.drainQueued !== false) {
+    const eventsAfterCheckpoint = readThreadMetaEvents(input.config.appRoot, threadId)
+    const queuedTriggerIds = queuedTriggerEventIdsAfterWake(eventsAfterCheckpoint, wakeId)
+      .filter((id) => id !== completedState.last_event_id)
+    if (queuedTriggerIds.length > 0) {
+      return await runMonitorForNewEvents({
+        config: input.config,
+        session: input.session,
+        agentContext: input.agentContext,
+        goalContext: input.goalContext,
+        wakeReason: "queued_trigger",
+        triggerEventIds: queuedTriggerIds,
+        drainQueued: false,
+      })
+    }
+  }
 
   return snapshotFromEvents(
     monitorConfig,
@@ -1225,6 +1338,21 @@ function nextWakeCandidate(input: {
   if (triggers.length > 0) {
     return {
       reason: input.wakeReason ?? wakeReasonFromEvent(triggers[0]),
+      triggerEventIds: triggers.map((event) => event.event_id),
+      pendingEvents,
+    }
+  }
+
+  const workerEvents = pendingEvents.filter(isWorkerProgressEvent)
+  if (
+    input.config.wake.eventBatchSize > 0 &&
+    workerEvents.length >= input.config.wake.eventBatchSize &&
+    monitorIntervalElapsed(input.actorState?.last_completed_at ?? input.actorState?.last_started_at, input.config.wake.eventBatchMinIntervalMs)
+  ) {
+    triggers = [workerEvents.at(-1)].filter((event): event is StackThreadMetaEvent => Boolean(event))
+    if (triggers.some((event) => alreadyTriggered.has(event.event_id))) return undefined
+    return {
+      reason: "event_batch",
       triggerEventIds: triggers.map((event) => event.event_id),
       pendingEvents,
     }
@@ -1432,12 +1560,47 @@ function queuedTriggerEventIds(events: StackThreadMetaEvent[]): Set<string> {
   return ids
 }
 
+function queuedTriggerEventIdsAfterWake(events: StackThreadMetaEvent[], wakeId: string): string[] {
+  const wakeIndex = events.findIndex((event) => event.event_id === wakeId)
+  if (wakeIndex < 0) return []
+  const ids: string[] = []
+  for (const event of events.slice(wakeIndex + 1)) {
+    if (event.type !== "monitor.trigger_queued") continue
+    const triggerIds = event.payload.trigger_event_ids
+    if (!Array.isArray(triggerIds)) continue
+    for (const id of triggerIds) {
+      if (typeof id === "string" && !ids.includes(id)) ids.push(id)
+    }
+  }
+  return ids
+}
+
 function isWakeTrigger(config: StackMonitorConfig, event: StackThreadMetaEvent): boolean {
   if (event.type === "agent.tool.failed") return config.wake.onToolFailed
   if (event.type === "agent.tool.completed") return config.wake.onToolCompleted
   if (event.type === "agent.turn.completed") return config.wake.onTurnCompleted
+  if (event.type === "agent.worker_heartbeat") return true
   if (event.type === "agent.error") return true
+  if (isGoalChangeEvent(event)) return true
   return false
+}
+
+function isWorkerProgressEvent(event: StackThreadMetaEvent): boolean {
+  if (event.actor_role === "monitor") return false
+  if (event.type.startsWith("monitor.")) return false
+  return (
+    event.type === "agent.turn.started" ||
+    event.type === "agent.turn.completed" ||
+    event.type === "agent.tool.started" ||
+    event.type === "agent.tool.completed" ||
+    event.type === "agent.tool.failed" ||
+    event.type === "agent.error" ||
+    event.type === "agent.usage" ||
+    event.type === "agent.message" ||
+    event.type === "agent.message.delta" ||
+    event.type === "agent.message.completed" ||
+    event.type === "agent.worker_heartbeat"
+  )
 }
 
 function wakeReasonFromEvent(event: StackThreadMetaEvent | undefined): string {
@@ -1445,8 +1608,92 @@ function wakeReasonFromEvent(event: StackThreadMetaEvent | undefined): string {
   if (event.type === "agent.tool.failed") return "tool_failed"
   if (event.type === "agent.tool.completed") return "tool_completed"
   if (event.type === "agent.turn.completed") return "turn_completed"
+  if (event.type === "agent.worker_heartbeat") return readString(event.payload.reason) ?? "cadence_tick"
   if (event.type === "agent.error") return "error"
+  if (isGoalChangeEvent(event)) return "goal_change"
   return event.type.replace(/^agent\./, "")
+}
+
+function isGoalChangeEvent(event: StackThreadMetaEvent): boolean {
+  return (
+    event.type === "meta_thread.goal_updated" ||
+    event.type === "goal.started" ||
+    event.type === "goal.paused" ||
+    event.type === "goal.resumed" ||
+    event.type === "goal.cleared"
+  )
+}
+
+function goalContextActive(goal: CodexGoalSnapshot): boolean {
+  if (!goal.objective?.trim()) return false
+  const status = goal.status?.trim().toLowerCase()
+  return !status || status === "active" || status === "in_progress" || status === "running" || status === "blocked"
+}
+
+function cadenceWakeReason(
+  config: StackMonitorConfig,
+  events: StackThreadMetaEvent[],
+  actorState: StackMonitorActorRuntimeState | undefined,
+): {
+  reason: "cadence_tick" | "stale_worker"
+  pendingWorkerEventCount: number
+  elapsedSinceLastWorkerEventMs: number | null
+  elapsedSinceLastMonitorWakeMs: number | null
+} | undefined {
+  const now = Date.now()
+  const pendingWorkerEventCount = processableEventsAfterCursor(events, actorState?.last_event_id)
+    .filter(isWorkerProgressEvent)
+    .length
+  const lastWorkerAt = latestObservedAt(events, (event) => isWorkerProgressEvent(event))
+  const lastMonitorWakeAt = latestObservedAt(events, (event) => event.type === "monitor.wake")
+  const elapsedSinceLastWorkerEventMs = lastWorkerAt ? now - lastWorkerAt : null
+  const elapsedSinceLastMonitorWakeMs = lastMonitorWakeAt ? now - lastMonitorWakeAt : null
+  if (
+    config.wake.staleWorkerIntervalMs > 0 &&
+    elapsedSinceLastWorkerEventMs !== null &&
+    elapsedSinceLastWorkerEventMs >= config.wake.staleWorkerIntervalMs &&
+    monitorIntervalElapsed(actorState?.last_completed_at ?? actorState?.last_started_at, config.wake.staleWorkerIntervalMs)
+  ) {
+    return {
+      reason: "stale_worker",
+      pendingWorkerEventCount,
+      elapsedSinceLastWorkerEventMs,
+      elapsedSinceLastMonitorWakeMs,
+    }
+  }
+  if (
+    config.wake.defaultIntervalMs > 0 &&
+    monitorIntervalElapsed(actorState?.last_completed_at ?? actorState?.last_started_at, config.wake.defaultIntervalMs)
+  ) {
+    return {
+      reason: "cadence_tick",
+      pendingWorkerEventCount,
+      elapsedSinceLastWorkerEventMs,
+      elapsedSinceLastMonitorWakeMs,
+    }
+  }
+  return undefined
+}
+
+function latestObservedAt(
+  events: StackThreadMetaEvent[],
+  predicate: (event: StackThreadMetaEvent) => boolean,
+): number | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (!event || !predicate(event)) continue
+    const parsed = Date.parse(event.observed_at)
+    if (Number.isFinite(parsed)) return parsed
+  }
+  return undefined
+}
+
+function monitorIntervalElapsed(previousIso: string | undefined, intervalMs: number): boolean {
+  if (intervalMs <= 0) return true
+  if (!previousIso) return true
+  const previous = Date.parse(previousIso)
+  if (!Number.isFinite(previous)) return true
+  return Date.now() - previous >= intervalMs
 }
 
 function syntheticTurnFromEvents(session: StackLocalSession, events: StackThreadMetaEvent[]): StackCodexTurn {
@@ -1484,6 +1731,8 @@ type MonitorPassResult = {
   queueItems: Record<string, unknown>[]
   checkpointSummary?: string
   operatorUpdate?: MonitorOperatorUpdate
+  workerSteerMessage?: string
+  userProgressUpdate?: string
   source: "codex-app-server"
   monitorThreadId?: string
   monitorCodexThreadId?: string
@@ -1564,12 +1813,23 @@ async function runMonitorPass(input: {
   if (!summary) {
     throw new Error("Codex sidecar monitor completed without an assistant message")
   }
+  const directives = parseSidecarDirectives(summary)
   return {
     checks: input.checks,
     severity: combineSeverity(input.config, input.checks),
     summary,
     queueItems: queueItemsFor(input.config, input.checks),
     checkpointSummary: summary,
+    operatorUpdate: directives.progressUpdate
+      ? {
+          working_on: input.goalContext.objective,
+          progress_note: directives.progressUpdate,
+          goal_status: input.goalContext.status ?? "active",
+          criteria_progress: criteriaProgressFromGoal(input.goalContext),
+        }
+      : undefined,
+    workerSteerMessage: directives.steerMessage,
+    userProgressUpdate: directives.progressUpdate,
     source: "codex-app-server",
     monitorCodexThreadId: codex.codexThreadId,
     usage: codexUsageEstimate(codex.usage, summary),
@@ -1611,6 +1871,19 @@ function estimateMonitorUsage(events: StackThreadMetaEvent[], summary: string): 
     inputTokens: Math.max(1, Math.ceil(inputChars / 4)),
     outputTokens: Math.max(1, Math.ceil(summary.length / 4)),
   }
+}
+
+function parseSidecarDirectives(text: string): { progressUpdate?: string; steerMessage?: string } {
+  const progressUpdate = directiveLine(text, "PROGRESS_UPDATE")
+  const steerMessage = directiveLine(text, "STEER_WORKER")
+  return { progressUpdate, steerMessage }
+}
+
+function directiveLine(text: string, label: string): string | undefined {
+  const pattern = new RegExp(`^\\s*${label}\\s*:\\s*(.+?)\\s*$`, "im")
+  const match = text.match(pattern)
+  const value = match?.[1]?.trim()
+  return value || undefined
 }
 
 function actorStateFromConfig(
@@ -2218,6 +2491,11 @@ function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Rec
       onTurnCompleted: readBoolean(parsed.wake?.on_turn_completed) ?? base.wake.onTurnCompleted,
       onToolCompleted: readBoolean(parsed.wake?.on_tool_completed) ?? base.wake.onToolCompleted,
       onToolFailed: readBoolean(parsed.wake?.on_tool_failed) ?? base.wake.onToolFailed,
+      eventBatchSize: readNumber(parsed.wake?.event_batch_size) ?? base.wake.eventBatchSize,
+      eventBatchMinIntervalMs:
+        readNumber(parsed.wake?.event_batch_min_interval_ms) ?? base.wake.eventBatchMinIntervalMs,
+      defaultIntervalMs: readNumber(parsed.wake?.default_interval_ms) ?? base.wake.defaultIntervalMs,
+      staleWorkerIntervalMs: readNumber(parsed.wake?.stale_worker_interval_ms) ?? base.wake.staleWorkerIntervalMs,
       deltaEvents: readNumber(parsed.wake?.delta_events) ?? base.wake.deltaEvents,
       cooldownMs: readNumber(parsed.wake?.cooldown_ms) ?? base.wake.cooldownMs,
       weightThreshold: readNumber(parsed.wake?.weight_threshold) ?? base.wake.weightThreshold,
@@ -2313,6 +2591,10 @@ function defaultMonitorToml(): string {
     "on_turn_completed = true",
     "on_tool_completed = true",
     "on_tool_failed = true",
+    "event_batch_size = 8",
+    "event_batch_min_interval_ms = 30000",
+    "default_interval_ms = 180000",
+    "stale_worker_interval_ms = 300000",
     "delta_events = 12",
     "weight_threshold = 8",
     "cooldown_ms = 15000",

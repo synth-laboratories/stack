@@ -529,7 +529,9 @@ function formatNarrativeEvent(
     case "monitor.steer":
       return [
         oneLine(
-          `  steer  ${readString(payload.rule_id) ?? "rule"} · ${readString(payload.guidance_id) ?? "guide"}`,
+          readString(payload.rule_id) || readString(payload.guidance_id)
+            ? `  steer  ${readString(payload.rule_id) ?? "rule"} · ${readString(payload.guidance_id) ?? "guide"}`
+            : `  steer  ${readString(payload.focus) ?? "worker"}`,
           width,
         ),
         ...(readString(payload.message) ? [oneLine(`         ${readString(payload.message)!}`, width)] : []),
@@ -641,6 +643,17 @@ function monitorRuntimeWakeMessage(wake: StackThreadMetaEvent, allEvents: StackT
         return `process ${pendingCount} worker event${pendingCount === 1 ? "" : "s"}`
       }
       return triggerDetail ? `process worker delta · ${triggerDetail}` : "process worker event delta"
+    case "event_batch":
+      if (pendingCount !== undefined) {
+        return `review ${pendingCount} worker event${pendingCount === 1 ? "" : "s"}`
+      }
+      return triggerDetail ? `review worker event batch · ${triggerDetail}` : "review worker event batch"
+    case "cadence_tick":
+      return triggerDetail ? `scheduled progress check · ${triggerDetail}` : "scheduled progress check"
+    case "stale_worker":
+      return triggerDetail ? `check silent worker · ${triggerDetail}` : "check silent worker"
+    case "queued_trigger":
+      return triggerDetail ? `drain queued trigger · ${triggerDetail}` : "drain queued trigger"
     default:
       return triggerDetail ? `${reason.replace(/_/g, " ")} · ${triggerDetail}` : reason.replace(/_/g, " ")
   }

@@ -230,6 +230,8 @@ export type AnnotatedTranscriptLine = {
   text: string
 }
 
+const TRANSCRIPT_RENDER_LINE_BUDGET = 2_000
+
 export function renderTranscriptView(
   blocks: readonly TranscriptBlock[],
   toolLogs: readonly ToolLog[],
@@ -339,9 +341,28 @@ function blocksToAnnotatedLines(
   options: TranscriptRenderOptions,
 ): AnnotatedTranscriptLine[] {
   const lines: AnnotatedTranscriptLine[] = []
-  for (const block of blocks) {
+  const visibleBlocks = blocks.length > 256 ? blocks.slice(-256) : blocks
+  const omittedBlockCount = blocks.length - visibleBlocks.length
+  if (omittedBlockCount > 0) {
+    lines.push({
+      kind: "meta",
+      part: "meta",
+      text: `[${omittedBlockCount} older transcript blocks hidden from TUI render]`,
+    })
+  }
+  for (const block of visibleBlocks) {
     if (block.kind === "thinking") continue
     lines.push(...blockToAnnotatedLines(block, toolLogs, subagentLogs, columns, options))
+    if (lines.length > TRANSCRIPT_RENDER_LINE_BUDGET) {
+      return [
+        {
+          kind: "meta",
+          part: "meta",
+          text: `[transcript render capped: showing latest ${TRANSCRIPT_RENDER_LINE_BUDGET} lines]`,
+        },
+        ...lines.slice(-TRANSCRIPT_RENDER_LINE_BUDGET),
+      ]
+    }
   }
   return lines.length > 0 ? lines : [{ kind: "meta", part: "meta", text: " " }]
 }

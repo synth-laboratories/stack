@@ -141,6 +141,7 @@ import {
   refreshMonitorSnapshot,
   runMonitorAfterTurn,
   runMonitorAfterOperatorMessage,
+  runGoalMonitorCadenceTick,
   runMonitorForNewEvents,
   setMonitorEnabled,
   isExplicitMonitorPrefix,
@@ -538,6 +539,8 @@ type AppState = {
   gardenerLiveThinking?: string
   workerHarnessSnapshot?: WorkerHarnessSnapshot
   lastSteerHint?: string
+  monitorCadenceInFlight?: boolean
+  lastMonitorCadenceCheckAt?: number
   monitorSnapshot: StackMonitorSnapshot
   metaEvents: StackThreadMetaEvent[]
 }
@@ -1384,8 +1387,37 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
   spinnerInterval = setInterval(() => {
     if (state.status !== "running") return
-    if (isRecentAgentScroll(state)) return
     state.spinnerFrame += 1
+    const now = Date.now()
+    if (
+      isGoalMode(state) &&
+      !isGardenerSession(options, state) &&
+      !state.monitorCadenceInFlight &&
+      now - (state.lastMonitorCadenceCheckAt ?? 0) >= 5_000
+    ) {
+      state.lastMonitorCadenceCheckAt = now
+      state.monitorCadenceInFlight = true
+      void runGoalMonitorCadenceTick({
+        config: options.config,
+        session: options.session,
+        agentContext: state.agentContext,
+        goalContext: mergeMetaThreadGoalContext(state.goalContext, state.metaThreadManifest),
+      })
+        .then((snapshot) => {
+          if (snapshot) {
+            state.monitorSnapshot = snapshot
+            refreshMetaEvents()
+          }
+        })
+        .catch((error) => {
+          appendStackBlock(state.blocks, `monitor cadence error: ${errorMessage(error)}`)
+        })
+        .finally(() => {
+          state.monitorCadenceInFlight = false
+          remount()
+        })
+    }
+    if (isRecentAgentScroll(state)) return
     view?.root.requestRender()
   }, 120)
 
@@ -10063,7 +10095,7 @@ function renderTurns(turns: StackCodexTurn[]): {
   const tools: ToolLog[] = []
   const subagents: SubagentLog[] = []
   let usage: StackCodexUsage | undefined
-  const renderWindow = turns.slice(-64)
+  const renderWindow = turns.slice(-24)
   const omittedTurnCount = turns.length - renderWindow.length
   if (omittedTurnCount > 0) {
     appendStackBlock(blocks, `restored transcript: ${omittedTurnCount} older turns hidden from TUI render`)

@@ -24,6 +24,10 @@ struct MonitorRuntimeConfig {
     on_turn_completed: bool,
     on_tool_completed: bool,
     on_tool_failed: bool,
+    event_batch_size: u64,
+    event_batch_min_interval_ms: u64,
+    default_interval_ms: u64,
+    stale_worker_interval_ms: u64,
     delta_events: u64,
     cooldown_ms: u64,
     weight_threshold: f64,
@@ -189,13 +193,38 @@ async fn select_wake_candidate<'a>(
         .filter(|event| is_trigger_event(config, event))
         .filter(|event| event_id(event).is_some_and(|id| !triggered.contains(id)))
         .collect();
-    if triggers.is_empty() {
-        return None;
+    if !triggers.is_empty() {
+        return Some(WakeSelection {
+            reason: wake_reason(triggers.first().copied()).to_string(),
+            triggers,
+        });
     }
-    Some(WakeSelection {
-        reason: wake_reason(triggers.first().copied()).to_string(),
-        triggers,
-    })
+
+    if config.event_batch_size > 0 {
+        let worker_events: Vec<&Value> = pending
+            .iter()
+            .copied()
+            .filter(|event| is_worker_progress_event(event))
+            .filter(|event| event_id(event).is_some_and(|id| !triggered.contains(id)))
+            .collect();
+        if worker_events.len() as u64 >= config.event_batch_size
+            && interval_elapsed(
+                actor
+                    .and_then(|value| value.get("last_completed_at"))
+                    .and_then(Value::as_str),
+                config.event_batch_min_interval_ms,
+            )
+        {
+            if let Some(last) = worker_events.last().copied() {
+                return Some(WakeSelection {
+                    reason: "event_batch".to_string(),
+                    triggers: vec![last],
+                });
+            }
+        }
+    }
+
+    None
 }
 
 async fn select_monty_wake_candidate<'a>(
@@ -220,6 +249,10 @@ async fn select_monty_wake_candidate<'a>(
             "on_turn_completed": config.on_turn_completed,
             "on_tool_completed": config.on_tool_completed,
             "on_tool_failed": config.on_tool_failed,
+            "event_batch_size": config.event_batch_size,
+            "event_batch_min_interval_ms": config.event_batch_min_interval_ms,
+            "default_interval_ms": config.default_interval_ms,
+            "stale_worker_interval_ms": config.stale_worker_interval_ms,
             "delta_events": config.delta_events,
             "cooldown_ms": config.cooldown_ms,
             "weight_threshold": config.weight_threshold,
@@ -475,6 +508,12 @@ async fn read_monitor_config(state: &AppState) -> MonitorRuntimeConfig {
         on_turn_completed: toml_bool(&text, "wake", "on_turn_completed").unwrap_or(true),
         on_tool_completed: toml_bool(&text, "wake", "on_tool_completed").unwrap_or(true),
         on_tool_failed: toml_bool(&text, "wake", "on_tool_failed").unwrap_or(true),
+        event_batch_size: toml_u64(&text, "wake", "event_batch_size").unwrap_or(8),
+        event_batch_min_interval_ms: toml_u64(&text, "wake", "event_batch_min_interval_ms")
+            .unwrap_or(30_000),
+        default_interval_ms: toml_u64(&text, "wake", "default_interval_ms").unwrap_or(180_000),
+        stale_worker_interval_ms: toml_u64(&text, "wake", "stale_worker_interval_ms")
+            .unwrap_or(300_000),
         delta_events: toml_u64(&text, "wake", "delta_events").unwrap_or(12),
         cooldown_ms: toml_u64(&text, "wake", "cooldown_ms").unwrap_or(250),
         weight_threshold: toml_f64(&text, "wake", "weight_threshold")
@@ -551,9 +590,36 @@ fn is_trigger_event(config: &MonitorRuntimeConfig, event: &Value) -> bool {
         Some("agent.tool.failed") => config.on_tool_failed,
         Some("agent.tool.completed") => config.on_tool_completed,
         Some("agent.turn.completed") => config.on_turn_completed,
+        Some("agent.worker_heartbeat") => true,
         Some("agent.error") => true,
+        Some("meta_thread.goal_updated" | "goal.started" | "goal.paused" | "goal.resumed" | "goal.cleared") => true,
         _ => false,
     }
+}
+
+fn is_worker_progress_event(event: &Value) -> bool {
+    if event.get("actor_role").and_then(Value::as_str) == Some("monitor") {
+        return false;
+    }
+    if event_type(event).is_some_and(|kind| kind.starts_with("monitor.")) {
+        return false;
+    }
+    matches!(
+        event_type(event),
+        Some(
+            "agent.turn.started"
+                | "agent.turn.completed"
+                | "agent.tool.started"
+                | "agent.tool.completed"
+                | "agent.tool.failed"
+                | "agent.error"
+                | "agent.usage"
+                | "agent.message"
+                | "agent.message.delta"
+                | "agent.message.completed"
+                | "agent.worker_heartbeat"
+        )
+    )
 }
 
 fn effective_strictness(
@@ -591,9 +657,29 @@ fn wake_reason(event: Option<&Value>) -> &'static str {
         Some("agent.tool.failed") => "tool_failed",
         Some("agent.tool.completed") => "tool_completed",
         Some("agent.turn.completed") => "turn_completed",
+        Some("agent.worker_heartbeat") => "cadence_tick",
         Some("agent.error") => "error",
+        Some("meta_thread.goal_updated" | "goal.started" | "goal.paused" | "goal.resumed" | "goal.cleared") => {
+            "goal_change"
+        }
         _ => "delta_events",
     }
+}
+
+fn interval_elapsed(previous_iso: Option<&str>, interval_ms: u64) -> bool {
+    if interval_ms == 0 {
+        return true;
+    }
+    let Some(previous_iso) = previous_iso else {
+        return true;
+    };
+    let Ok(previous) = chrono::DateTime::parse_from_rfc3339(previous_iso) else {
+        return true;
+    };
+    let elapsed_ms = Utc::now()
+        .signed_duration_since(previous.with_timezone(&Utc))
+        .num_milliseconds();
+    elapsed_ms >= 0 && elapsed_ms as u64 >= interval_ms
 }
 
 fn event_id(event: &Value) -> Option<&str> {

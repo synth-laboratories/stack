@@ -156,7 +156,9 @@ function appendMonitorChatEvent(blocks: TranscriptBlock[], event: StackThreadMet
     case "monitor.steer":
       appendStackBlock(
         blocks,
-        `steer · ${readString(payload.rule_id) ?? "rule"} · ${readString(payload.guidance_id) ?? "guide"}${readString(payload.message) ? `\n${readString(payload.message)}` : ""}`,
+        readString(payload.rule_id) || readString(payload.guidance_id)
+          ? `steer · ${readString(payload.rule_id) ?? "rule"} · ${readString(payload.guidance_id) ?? "guide"}${readString(payload.message) ? `\n${readString(payload.message)}` : ""}`
+          : `steer · ${readString(payload.focus) ?? "worker"}${readString(payload.message) ? `\n${readString(payload.message)}` : ""}`,
       )
       return
     case "monitor.skill_context_push":

@@ -10,7 +10,16 @@ import re
 from typing import Any
 
 
-IMMEDIATE_TYPES = {"agent.tool.failed", "agent.error", "monitor.operator_message"}
+IMMEDIATE_TYPES = {
+    "agent.tool.failed",
+    "agent.error",
+    "monitor.operator_message",
+    "meta_thread.goal_updated",
+    "goal.started",
+    "goal.paused",
+    "goal.resumed",
+    "goal.cleared",
+}
 LOW_SIGNAL_TOOLS = {
     "read",
     "grep",
@@ -82,6 +91,14 @@ def _pick_trigger(
     turn = [candidate for candidate in candidates if candidate["priority"] == "turn_checkpoint"]
     if turn and _cooldown_elapsed(actor, wake, now_ms, "turn_checkpoint"):
         return _decision(turn[0], pending, wake, actor, now_ms)
+
+    event_batch_size = _to_int(wake.get("event_batch_size"), 0)
+    batch_candidates = [candidate for candidate in candidates if candidate["priority"] == "batch" and candidate["event_id"]]
+    if event_batch_size > 0 and len(batch_candidates) >= event_batch_size:
+        candidate = batch_candidates[-1].copy()
+        candidate["reason"] = "event_batch"
+        candidate["score"] = len(batch_candidates)
+        return _decision(candidate, pending, wake, actor, now_ms)
 
     threshold = _to_float(wake.get("weight_threshold"), _to_float(wake.get("delta_events"), 12.0))
     weight = sum(candidate["weight"] for candidate in candidates)
@@ -185,7 +202,10 @@ def _cooldown_elapsed(actor: dict[str, Any], wake: dict[str, Any], now_ms: int, 
     if priority == "turn_checkpoint":
         cooldown_ms = _to_int(wake.get("turn_cooldown_ms"), cooldown_ms)
     if priority == "batch":
-        cooldown_ms = _to_int(wake.get("batch_cooldown_ms"), cooldown_ms)
+        cooldown_ms = _to_int(
+            wake.get("event_batch_min_interval_ms"),
+            _to_int(wake.get("batch_cooldown_ms"), cooldown_ms),
+        )
     if cooldown_ms <= 0:
         return True
     last_ms = _timestamp_ms(actor.get("last_completed_at"))
@@ -217,6 +237,8 @@ def _matches(text: str, patterns: list[str]) -> bool:
 
 
 def _reason_from_type(event_type: str) -> str:
+    if event_type.startswith("meta_thread.") or event_type.startswith("goal."):
+        return "goal_change"
     return event_type.replace("agent.", "").replace(".", "_").replace("monitor_", "")
 
 
