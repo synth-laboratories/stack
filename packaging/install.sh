@@ -2,6 +2,7 @@
 set -eu
 
 CHANNEL="stable"
+CHANNEL_EXPLICIT="0"
 MANIFEST=""
 DRY_RUN="0"
 ROLLBACK="0"
@@ -23,6 +24,7 @@ while [ "$#" -gt 0 ]; do
     --channel)
       [ "$#" -ge 2 ] || fail "missing value for --channel"
       CHANNEL="$2"
+      CHANNEL_EXPLICIT="1"
       shift 2
       ;;
     --manifest)
@@ -170,13 +172,26 @@ runtime="$(require_json_runtime)"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/stack-install.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT INT TERM HUP
 
-manifest_source="$MANIFEST"
-if [ -z "$manifest_source" ]; then
-  manifest_source="${RELEASE_BASE}/${CHANNEL}.json"
-fi
-
 manifest_file="$tmp_dir/manifest.json"
-download "$manifest_source" "$manifest_file"
+if [ -n "$MANIFEST" ]; then
+  manifest_source="$MANIFEST"
+  download "$manifest_source" "$manifest_file"
+else
+  manifest_source="${RELEASE_BASE}/${CHANNEL}.json"
+  if ! download "$manifest_source" "$manifest_file" 2>/dev/null; then
+    # The default channel (stable) has no published manifest yet — e.g. only nightlies are
+    # out. Fall back to nightly so the bare `curl … | sh` one-liner still installs, instead of
+    # failing on a 404. An explicit --channel is never silently overridden.
+    if [ "$CHANNEL_EXPLICIT" = "0" ] && [ "$CHANNEL" = "stable" ]; then
+      CHANNEL="nightly"
+      manifest_source="${RELEASE_BASE}/${CHANNEL}.json"
+      printf 'no stable release is published yet; falling back to the nightly channel\n' >&2
+      download "$manifest_source" "$manifest_file"
+    else
+      fail "could not download release manifest: $manifest_source"
+    fi
+  fi
+fi
 
 schema_version="$(json_top "$runtime" "$manifest_file" "schema_version")"
 [ "$schema_version" = "1" ] || fail "unsupported manifest schema $schema_version"
