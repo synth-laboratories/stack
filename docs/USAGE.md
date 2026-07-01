@@ -449,61 +449,16 @@ That command wraps the current scroll smoke as `AT-STACK-BOMBADIL-B0` and writes
 a ship-readable proof JSON at `/tmp/stack-bombadil-b0-proof.json` by default.
 Override with `STACK_BOMBADIL_B0_PROOF=/path/to/proof.json`.
 
-Prepare the first human dogfood packet (interactive TUI):
-
-```bash
-bun run stackeval:banking77-local-gepa
-```
-
 **StackEval lives in the `evals` repo** (`synth-laboratories/evals`) at
-`evals/stackeval/`, a sibling checkout of this repo. Task catalog —
-**`banking77-local-gepa`**, `crafter-local-gepa`, `tictactoe-harbor-env-rebuild` —
-is defined in `evals/stackeval/tasks/`. Presets `smoke`, `dev`, and `gate` are
-variants of each id. The `bun run stackeval:*` scripts here delegate to that
-checkout and set `STACK_REPO_ROOT` to this repo automatically.
-
-For the **full TOML + shell pipeline** (pinned GEPA harness, harvest, stackd export,
-Codex grader + reviewer):
+`evals/stackeval/` and is driven from that checkout, not from Stack:
 
 ```bash
-bun run stackeval:run                # -> evals/stackeval banking77-local-gepa
-bun run stackeval:run:prepare        # packet only
-# or drive the sibling checkout directly:
-STACK_REPO_ROOT="$PWD" ../evals/stackeval/bin/stackeval run banking77-local-gepa --preset smoke
+cd ../evals
+STACK_REPO_ROOT=/path/to/stack stackeval/bin/stackeval run banking77-local-gepa --preset smoke
 ```
 
-**Agent-driven TUI harness (StackEval programmatic replay v0):** tmux + stackd
-receipts + pane capture for Codex (ncode-style). Prepares a packet, starts
-`stack-stackeval` tmux session, and writes `harness/OPERATOR.md`:
-
-```bash
-export SE="STACK_REPO_ROOT=$PWD ../evals/stackeval/bin/stackeval"
-$SE harness prepare banking77-local-gepa --preset smoke
-export STACKEVAL_PACKET="<packet-from-output>"
-
-$SE harness status --capture-pane -o "${STACKEVAL_PACKET}/harness.debug.json"
-$SE harness capture -o "${STACKEVAL_PACKET}/harness.capture.json"
-$SE harness export-thread --packet-dir "${STACKEVAL_PACKET}" -o "${STACKEVAL_PACKET}/harness.export.json"
-
-# after operator/agent work, resume automated pipeline from harvest:
-$SE run banking77-local-gepa --preset smoke --packet-dir "${STACKEVAL_PACKET}" --from-stage harvest
-```
-
-StackEval run packets land under `evals/stackeval/_runs/`; the pipeline
-implementation lives in `evals/stackeval/engine/`.
-During harness runs, StackEval creates a stackd session for the packet, records
-live `skill.read`/`skill.used` and `agent.tool.*` events, waits for monitor
-checkpoint evidence before export, and copies `/trace` plus the stackd export
-bundle into the packet. Use `STACK_API_URL=<url>` to point the pipeline at an
-isolated stackd instance, and set `STACKEVAL_REQUIRE_STACKD=1` when trace capture
-is an acceptance requirement.
-
-Legacy interactive prep (`bun run stackeval:banking77-local-gepa:prepare`) writes
-a Stack-owned packet with the starting prompt, metadata, preflight, operator
-pickup, acceptance, model policy, waste ledger, and release guard files. The task
-root also gets `latest.json` pointing at the newest packet.
-The default StackEval model is `gpt-5.5-low`; override only with
-`STACKEVAL_MODEL` and record why in the packet.
+Stack ships no eval tasks, wrappers, or launch scripts; see the evals repo for
+the task catalog, presets, harness, and run packets.
 
 For local dev, export `SYNTH_API_KEY` (from [usesynth.ai/keys](https://usesynth.ai/keys))
 before using hosted MCP tools. The server does not read SMR databases, raw Redis

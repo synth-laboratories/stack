@@ -252,7 +252,7 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
   },
   skills: {
     enabled: true,
-    allowedSkillIds: ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack", "stackeval"],
+    allowedSkillIds: ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack"],
     pushWhenConfident: false,
   },
   tools: {
@@ -2770,14 +2770,14 @@ function checkGoalProgress(config: StackMonitorConfig, goal: CodexGoalSnapshot):
 function checkSkills(config: StackMonitorConfig, context: AgentContextSnapshot, turn: StackCodexTurn): FocusCheck {
   if (!config.focus.skills || !config.skills.enabled) return disabled("skills")
   const text = `${turn.prompt}\n${turn.stdout}`.toLowerCase()
-  const likelyNeedsSkill = text.includes("stackeval") || text.includes("gepa") || text.includes("synth")
+  const likelyNeedsSkill = text.includes("gepa") || text.includes("synth")
   if (likelyNeedsSkill && context.usedSkills.length === 0) {
     return {
       focus: "skills",
       status: "warn",
       severity: config.strictness === "aggressive" ? "medium" : "low",
       summary: "turn appears to need Stack/Synth skills but no skill use was detected (load oss-gepa or gepa)",
-      evidence: "StackEval/GEPA/Synth keyword without used skill event",
+      evidence: "GEPA/Synth keyword without used skill event",
     }
   }
   return pass("skills", context.usedSkills.length > 0 ? "skill use detected" : "no skill need detected")
@@ -2926,7 +2926,7 @@ function recommendedSkillForMonitorPush(
   if (text.includes("gepa") && allowed.includes("gepa")) {
     return "gepa"
   }
-  if ((text.includes("stackeval") || text.includes("synth")) && allowed.includes("synth-via-stack")) {
+  if (text.includes("synth") && allowed.includes("synth-via-stack")) {
     return "synth-via-stack"
   }
   if (allowed.includes("stack-agent-bridge")) return "stack-agent-bridge"
@@ -3315,7 +3315,7 @@ function defaultMonitorToml(): string {
     "",
     "[skills]",
     "enabled = true",
-    'allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack", "stackeval"]',
+    'allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack"]',
     "push_when_confident = false",
     "",
     "[tools]",

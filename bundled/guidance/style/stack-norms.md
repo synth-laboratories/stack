@@ -8,7 +8,7 @@ STACK_MEMORY|ts=2026-06-28T23:10:00Z|kind=learning|file=.stack/guidance/style/st
 ## Boundaries
 
 - Use Stack MCP for live SMR, Factory, hosted optimizer, local optimizer, and
-  StackEval operator work.
+  eval-harness operator work.
 - Do not use `git stash` to preserve work. Use explicit commits, patch files,
   worktrees, or another operator-approved path.
 - Do not run destructive git cleanup such as `git reset --hard` unless the
@@ -26,5 +26,5 @@ STACK_MEMORY|ts=2026-06-28T23:10:00Z|kind=learning|file=.stack/guidance/style/st
 1. Start with `stack_status` and choose `local`, `remote`, or `all`.
 2. Load the relevant Stack skill before acting.
 3. Search guidance for known friction ids before re-diagnosing a repeated issue.
-4. Record useful skill/guidance reads with a `thread_id` so StackEval packets can
+4. Record useful skill/guidance reads with a `thread_id` so eval-harness packets can
    prove the harness had the right context.

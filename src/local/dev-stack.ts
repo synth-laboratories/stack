@@ -106,7 +106,7 @@ export function startDevSlotInBackground(config: StackConfig): { ok: boolean; me
   }
 
   const logPath = devSlotLogPath(config)
-  const instance = config.readmeSmokeInstance
+  const instance = config.devSlotInstance
   const existing = readDevSlotLaunchRecord(config)
   if (existing && isRecentLaunch(existing.startedAt) && existing.instance === instance) {
     return { ok: true, message: "dev slot launch already in progress" }
@@ -140,7 +140,7 @@ export function emptyLocalBootstrapSnapshot(config: StackConfig): LocalBootstrap
   return {
     dockerAvailable: false,
     devApiStatus: config.environmentName === "dev" ? "offline" : "skipped",
-    devSlotInstance: config.readmeSmokeInstance,
+    devSlotInstance: config.devSlotInstance,
     devSlotLogPath: devSlotLogPath(config),
     checkedAt: new Date().toISOString(),
   }

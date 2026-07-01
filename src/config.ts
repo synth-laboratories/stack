@@ -95,10 +95,7 @@ export type StackConfig = {
   optimizerLogPath: string
   optimizerPidPath: string
   optimizerServiceUrl: string
-  evalCommand: string
-  readmeSmokeSuite: string
-  readmeSmokeTarget: string
-  readmeSmokeInstance: string
+  devSlotInstance: string
   initialPromptFile?: string
   autoSubmitInitialPrompt: boolean
   voice: StackVoiceConfig
@@ -109,11 +106,7 @@ type StackConfigFile = {
   synthDevRoot?: string
   defaultEnvironment?: string
   environments?: Partial<Record<StackEnvironmentName, Partial<Omit<StackEnvironmentConfig, "name">>>>
-  readmeSmoke?: {
-    suite?: string
-    target?: string
-    instance?: string
-  }
+  devSlotInstance?: string
   codexPricing?: Array<{
     model?: string
     inputPerMillion?: number
@@ -250,19 +243,9 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
       process.env.STACK_OPTIMIZER_PID ?? join(appRoot, ".stack", "optimizers", "gepa-service.pid"),
     optimizerServiceUrl:
       process.env.STACK_OPTIMIZER_SERVICE_URL ?? environment.optimizerServiceUrl ?? optimizerServiceUrl(optimizerBind),
-    evalCommand:
-      process.env.STACK_EVAL_COMMAND ?? join(synthDevRoot, "scripts", "eval.sh"),
-    readmeSmokeSuite:
-      process.env.STACK_README_SMOKE_SUITE ??
-      fileConfig.readmeSmoke?.suite ??
-      "smr/suites/readme_smoke_docker_codex.toml",
-    readmeSmokeTarget:
-      process.env.STACK_README_SMOKE_TARGET ??
-      fileConfig.readmeSmoke?.target ??
-      "local-dockerized",
-    readmeSmokeInstance:
-      process.env.STACK_README_SMOKE_INSTANCE ??
-      fileConfig.readmeSmoke?.instance ??
+    devSlotInstance:
+      process.env.STACK_DEV_SLOT_INSTANCE ??
+      fileConfig.devSlotInstance ??
       "slot1",
     initialPromptFile: process.env.STACK_INITIAL_PROMPT_FILE
       ? resolveConfigPath(appRoot, process.env.STACK_INITIAL_PROMPT_FILE)

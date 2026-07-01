@@ -38,7 +38,6 @@ IMPORTANT_COMMAND_PATTERNS = [
     r"\bpytest\b",
     r"\bbun\s+run\s+check\b",
     r"\bcargo\s+(test|check|build)\b",
-    r"\bstackeval\b",
     r"\bgepa\b",
     r"\beval\b",
     r"\bdeploy\b",

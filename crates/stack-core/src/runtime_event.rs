@@ -38,8 +38,6 @@ pub struct RuntimeCorrelation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub stack_session_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub stackeval_packet_id: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
     pub project_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub run_id: Option<String>,

@@ -53,8 +53,6 @@ import {
 } from "../client/stackd.js"
 import { projectLogDocumentToVictoriaLogs, queryStackLogs } from "../observability/victorialogs.js"
 import { readCrashReportsView } from "../crash-reports.js"
-import { readReadmeSmokeEvalLaunch, startReadmeSmokeEval, type StackEvalLaunch } from "../local/evals.js"
-import { readActiveStackevalPacket } from "../stackeval/packet.js"
 import { readOptimizerSnapshot } from "../local/optimizers.js"
 import { loadGardenerConfig } from "../gardener-config.js"
 import {
@@ -119,7 +117,6 @@ const SERVER_NAME = STACK_MCP_SERVER_NAME
 
 export class StackMcpServer {
   private readonly tools: Map<string, ToolDefinition>
-  private evalLaunch: StackEvalLaunch | undefined
   private httpMode = false
 
   constructor(private readonly appRoot: string) {
@@ -308,11 +305,6 @@ export class StackMcpServer {
       readRemoteResearchSnapshot(config),
       readHostedOptimizerSnapshot(config),
     ])
-    const readmeSmoke = correlateReadmeSmokeRun(
-      this.evalLaunch ?? readReadmeSmokeEvalLaunch(config),
-      research.jobs,
-    )
-    this.evalLaunch = readmeSmoke
     return {
       environment: config.environmentName,
       apiBaseUrl: config.environment.apiBaseUrl,
@@ -321,7 +313,6 @@ export class StackMcpServer {
       hasAuth: auth.hasAuth,
       remoteResearch: research,
       hostedOptimizers: hosted,
-      readmeSmoke,
     } satisfies JsonObject
   }
 
@@ -432,12 +423,6 @@ export class StackMcpServer {
           readHostedOptimizerSnapshot(config),
         ])
       : [undefined, undefined] as const
-    const readmeSmoke = mode === "local" || !research
-      ? readReadmeSmokeEvalLaunch(config)
-      : correlateReadmeSmokeRun(this.evalLaunch ?? readReadmeSmokeEvalLaunch(config), research.jobs)
-    this.evalLaunch = readmeSmoke
-    const stackevalPacket = readActiveStackevalPacket(config.appRoot)
-
     return toJsonValue({
       bridge: "stack-agent-bridge",
       mode,
@@ -502,24 +487,6 @@ export class StackMcpServer {
             status: "unavailable",
             snapshot: null,
           },
-      readme_smoke: {
-        status: readmeSmoke.status,
-        run_id: readmeSmoke.runId,
-        project_id: readmeSmoke.projectId,
-        message: readmeSmoke.message,
-        verification_state: readmeSmoke.verificationState,
-        verification_failures: readmeSmoke.verificationFailures ?? [],
-      },
-      stackeval_packet: stackevalPacket
-        ? {
-            task_id: stackevalPacket.taskId,
-            packet_dir: stackevalPacket.packetDir,
-            stamp: stackevalPacket.stamp,
-            preset: stackevalPacket.preset,
-            status: stackevalPacket.status,
-            updated_at: stackevalPacket.updatedAt ?? null,
-          }
-        : null,
       crash_reporting: telemetry?.crash_reporting
         ? {
             enabled: telemetry.crash_reporting.enabled,
@@ -739,11 +706,9 @@ export class StackMcpServer {
         source: "lever.stack_mcp",
         subject: {
           kind: "cloud_promotion_packet",
-          id: packet.stackeval_packet?.task_id ?? packet.created_at,
+          id: packet.task_id ?? packet.created_at,
         },
-        correlation: {
-          stackeval_packet_id: packet.stackeval_packet?.task_id ?? undefined,
-        },
+        correlation: {},
         payload: {
           environment: config.environmentName,
           api_base_url: config.environment.apiBaseUrl,
@@ -767,7 +732,7 @@ export class StackMcpServer {
         message: "confirm=true is required when dry_run=false",
       }
     }
-    const taskId = optionalString(args, "task_id") ?? packet.stackeval_packet?.task_id
+    const taskId = optionalString(args, "task_id") ?? packet.task_id ?? undefined
     const objective = optionalString(args, "objective")
     if (!taskId && !objective) {
       throw new RpcError(-32602, "task_id or objective is required when dry_run=false")
@@ -794,7 +759,6 @@ export class StackMcpServer {
       correlation: {
         project_id: optionalString(args, "project_id") ?? undefined,
         run_id: remoteLaunchRunId(result) ?? undefined,
-        stackeval_packet_id: packet.stackeval_packet?.task_id ?? undefined,
       },
       payload: {
         environment: config.environmentName,
@@ -874,14 +838,6 @@ export class StackMcpServer {
       objective: string | null
       runbook: string | null
       metadata: Record<string, unknown>
-      stackeval_packet: {
-        task_id: string
-        packet_dir: string
-        stamp: string
-        preset?: string
-        status?: string
-        updated_at?: string
-      } | null
       runtime: {
         status: string
         snapshot: unknown
@@ -889,9 +845,8 @@ export class StackMcpServer {
     }
   }> {
     const config = await this.config(args)
-    const stackevalPacket = readActiveStackevalPacket(config.appRoot)
     const runtime = await readStackRuntimeFactory()
-    const taskId = optionalString(args, "task_id") ?? stackevalPacket?.taskId ?? null
+    const taskId = optionalString(args, "task_id") ?? null
     return {
       config,
       packet: {
@@ -907,16 +862,6 @@ export class StackMcpServer {
         objective: optionalString(args, "objective") ?? null,
         runbook: optionalString(args, "runbook") ?? null,
         metadata: optionalJsonObject(args, "metadata") ?? {},
-        stackeval_packet: stackevalPacket
-          ? {
-              task_id: stackevalPacket.taskId,
-              packet_dir: stackevalPacket.packetDir,
-              stamp: stackevalPacket.stamp,
-              ...(stackevalPacket.preset ? { preset: stackevalPacket.preset } : {}),
-              ...(stackevalPacket.status ? { status: stackevalPacket.status } : {}),
-              ...(stackevalPacket.updatedAt ? { updated_at: stackevalPacket.updatedAt } : {}),
-            }
-          : null,
         runtime: {
           status: runtime?.status ?? "unavailable",
           snapshot: runtime?.snapshot ?? null,
@@ -1034,10 +979,6 @@ export class StackMcpServer {
         }
       }),
     }) ?? null
-  }
-
-  async launchReadmeSmoke(args: JsonObject): Promise<JsonValue> {
-    return this.startReadmeSmoke(args)
   }
 
   async messageLiveRun(args: JsonObject): Promise<JsonValue> {
@@ -1472,22 +1413,6 @@ export class StackMcpServer {
     }) ?? null
   }
 
-  async startReadmeSmoke(args: JsonObject): Promise<JsonValue> {
-    const config = await this.config(args)
-    this.evalLaunch = startReadmeSmokeEval(config, this.evalLaunch ?? readReadmeSmokeEvalLaunch(config), (snapshot) => {
-      this.evalLaunch = snapshot
-    })
-    return this.evalLaunch as unknown as JsonValue
-  }
-
-  async readmeSmokeStatus(args: JsonObject): Promise<JsonValue> {
-    const config = await this.config(args)
-    this.evalLaunch = this.evalLaunch ?? readReadmeSmokeEvalLaunch(config)
-    const snapshot = await readRemoteResearchSnapshot(config)
-    this.evalLaunch = correlateReadmeSmokeRun(this.evalLaunch, snapshot.jobs)
-    return this.evalLaunch as unknown as JsonValue
-  }
-
   async listSkills(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const query = optionalString(args, "query")
@@ -1802,15 +1727,6 @@ export class StackMcpServer {
       thread_event_log_path: threadEventLogPath,
     }) ?? null
   }
-}
-
-function correlateReadmeSmokeRun(
-  launch: StackEvalLaunch,
-  jobs: RemoteSmrRunSummary[],
-): StackEvalLaunch {
-  if (launch.runId || !launch.projectId) return launch
-  const run = jobs.find((item) => item.projectId === launch.projectId)
-  return run ? { ...launch, runId: run.runId } : launch
 }
 
 function runDetailToMcp(detail: RemoteRunDetail): JsonObject {
@@ -2281,11 +2197,11 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_prepare_cloud_promotion_packet",
-      description: "Prepare a local-to-cloud promotion packet from the active StackEval packet and stackd runtime snapshot. Does not create cloud work.",
+      description: "Prepare a local-to-cloud promotion packet from the stackd runtime snapshot. Does not create cloud work.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         project_id: stringProperty("Optional target Synth project id."),
-        task_id: stringProperty("Optional task id. Defaults to the active StackEval packet task id when present."),
+        task_id: stringProperty("Optional task id for the promotion packet."),
         objective: stringProperty("Optional cloud launch objective."),
         runbook: stringProperty("Optional runbook or launch mode hint."),
         metadata: jsonObjectProperty("Optional structured metadata to carry into the promotion packet."),
@@ -2298,7 +2214,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema({
         environment: environmentProperty(),
         project_id: stringProperty("Optional target Synth project id."),
-        task_id: stringProperty("Optional task id. Defaults to the active StackEval packet task id when present."),
+        task_id: stringProperty("Optional task id for the promotion packet."),
         objective: stringProperty("Optional cloud launch objective. Required when no task_id is available and dry_run=false."),
         runbook: stringProperty("Optional runbook or launch mode hint."),
         metadata: jsonObjectProperty("Optional structured metadata to carry into the launch request."),
@@ -2407,7 +2323,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         slot: stringProperty("Local synth-dev slot id. Defaults to STACK_VL_SLOT or slot1."),
         query: stringProperty("Optional LogSQL query expression. Defaults to * plus supplied field filters."),
         event_domain: enumProperty(["cloud_sdk", "local_optimizer", "meta_harness"], "Optional event_domain filter."),
-        service: stringProperty("Optional service filter, e.g. gepa, stackeval, stackd, backend-api."),
+        service: stringProperty("Optional service filter, e.g. gepa, stackd, backend-api."),
         run_id: stringProperty("Optional run/job id filter."),
         thread_id: stringProperty("Optional Stack thread/session id filter."),
         minutes: numberProperty("Lookback window in minutes. Defaults to 60, max 10080."),
@@ -2473,14 +2389,8 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.listHostedOptimizerRuns(args),
     },
     {
-      name: "stack_launch_read_smoke",
-      description: "Launch the configured README-smoke SMR eval via synth-dev's canonical wrapper. Alias for stack_start_readme_smoke_eval.",
-      inputSchema: objectSchema({ environment: environmentProperty() }),
-      handler: (args) => server.launchReadmeSmoke(args),
-    },
-    {
       name: "stack_live_status",
-      description: "Read Stack live operations status: recent SMR runs, factories, hosted optimizer runs, and README-smoke launcher state.",
+      description: "Read Stack live operations status: recent SMR runs, factories, and hosted optimizer runs.",
       inputSchema: objectSchema({ environment: environmentProperty() }),
       handler: (args) => server.liveStatus(args),
     },
@@ -2691,18 +2601,6 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["run_id", "local_path"],
       ),
       handler: (args) => server.uploadRunFile(args),
-    },
-    {
-      name: "stack_start_readme_smoke_eval",
-      description: "Start the configured local README-smoke SMR eval via synth-dev's canonical eval wrapper.",
-      inputSchema: objectSchema({ environment: environmentProperty() }),
-      handler: (args) => server.startReadmeSmoke(args),
-    },
-    {
-      name: "stack_readme_smoke_eval_status",
-      description: "Read the MCP server's current README-smoke launch status and output tail.",
-      inputSchema: objectSchema({ environment: environmentProperty() }),
-      handler: (args) => server.readmeSmokeStatus(args),
     },
     {
       name: "stack_skills_list",

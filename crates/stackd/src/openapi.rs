@@ -227,7 +227,7 @@ pub async fn doc() -> Json<Value> {
             },
             "/threads/{stackSessionId}/export": {
                 "get": {
-                    "summary": "Write a redacted StackEval-ready export bundle",
+                    "summary": "Write a redacted thread export bundle",
                     "parameters": [{ "name": "stackSessionId", "in": "path", "required": true }],
                     "responses": { "200": { "description": "export directory" }, "404": { "description": "missing session" } }
                 }

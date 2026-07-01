@@ -31,6 +31,18 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   status serialization key `gamebench_task` → `task_context`.
 - The fake-codex goal-shutter fixture no longer ships in the product artifact; the
   testing harness owns it.
+- **StackEval moved out of the product — it lives in the `evals` repo.** Removed the
+  StackEval evidence-packet reader (`stack_status`/promotion packets no longer carry
+  `stackeval_packet`), the README-smoke eval launcher (MCP tools
+  `stack_start_readme_smoke_eval`, `stack_readme_smoke_eval_status`,
+  `stack_launch_read_smoke`, the TUI "Read Smoke Eval" panel and `e` action), the 12
+  `stackeval:*` package scripts that reached into a sibling checkout, the
+  `STACK_EVAL_COMMAND`/README-smoke config defaults that pointed at synth-dev, and
+  the `stackeval` seed dir and monitor skill hints. stackd: `RuntimeCorrelation`
+  drops `stackeval_packet_id`; local thread export manifest schema is now
+  `stack/export/v1`. Config: `readmeSmoke.instance` → top-level `devSlotInstance`
+  (`STACK_DEV_SLOT_INSTANCE`). Drive evals from the evals checkout:
+  `evals/stackeval/bin/stackeval`.
 
 ## [0.2.0-dev.20260701.1] - 2026-07-01
 

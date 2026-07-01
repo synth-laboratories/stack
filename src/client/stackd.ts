@@ -95,7 +95,6 @@ export type StackdRuntimeEvent = {
 
 export type StackdRuntimeCorrelation = {
   stack_session_id?: string | null
-  stackeval_packet_id?: string | null
   project_id?: string | null
   run_id?: string | null
   factory_id?: string | null

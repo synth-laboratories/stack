@@ -154,7 +154,6 @@ import { startVoiceRecording, type VoiceRecordingHandle } from "../voice/recordi
 import { isLikelyJunkVoiceTranscript, MIN_VOICE_HOLD_MS, voiceHoldElapsedMs } from "../voice/hold.js"
 import { transcribeAudio, voiceSttConfigFromStack } from "../voice/providers/resolve.js"
 import { readVoiceStatus, voiceInputHintLine, type VoiceStatusSnapshot } from "../voice/status.js"
-import { readActiveStackevalPacket, stackevalPacketStatusLine } from "../stackeval/packet.js"
 import {
   CodexAppServerSession,
   probeCodexAppServerAvailability,
@@ -176,12 +175,6 @@ import {
   registerRendererShutdown,
 } from "./terminal-cleanup.js"
 import { createRemountCoordinator } from "./remount-coordinator.js"
-import {
-  isEvalLaunchActive,
-  readReadmeSmokeEvalLaunch,
-  startReadmeSmokeEval,
-  type StackEvalLaunch,
-} from "../local/evals.js"
 import {
   ensureLocalStackBootstrap,
   isOptimizerCliAvailable,
@@ -406,7 +399,7 @@ type MonitorPanelMode = "chat" | "events"
 type GardenerPanelMode = "chat" | "events"
 type HostedOptimizerActionKind = "cancel-run" | "preview-artifact" | "download-artifact"
 type MediationTargetKind = "remote-run" | "factory" | "hosted-optimizer"
-type LiveActionKind = RemoteActionKind | "start-readme-smoke"
+type LiveActionKind = RemoteActionKind
 
 export type StackAppOptions = {
   config: StackConfig
@@ -494,7 +487,6 @@ type AppState = {
   monitorWatchScrollOffset: number
   monitorWatchScrollPinned: boolean
   hostedOptimizerSnapshot: HostedOptimizerSnapshot
-  evalLaunch: StackEvalLaunch
   recentRemoteDownloads: RemoteDownloadRecord[]
   recentRemoteOutputPreview?: RemoteOutputPreview
   recentRemoteDownloadPreview?: RemoteSavedDownloadPreview
@@ -845,7 +837,6 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     monitorWatchScrollOffset: 0,
     monitorWatchScrollPinned: true,
     hostedOptimizerSnapshot,
-    evalLaunch: readReadmeSmokeEvalLaunch(options.config),
     recentRemoteDownloads,
     selectedRemoteJobIndex: 0,
     selectedRemoteFactoryIndex: 0,
@@ -912,7 +903,6 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   }
   await openHarnessSession(options, state, codexSessionHandle, options.session.codexThreadId, { probe: true })
   refreshSessionThroughput(state, options.session.turns)
-  selectEvalRunIfKnown(state)
   const currentThreadIndex = state.history.findIndex((summary) => summary.id === options.session.id)
   state.selectedHistoryIndex =
     currentThreadIndex >= 0 ? currentThreadIndex : clampIndex(state.selectedHistoryIndex, state.history.length)
@@ -1045,7 +1035,6 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       state.selectedRemoteOutputIndex,
       currentRemoteOutputCount(state),
     )
-    selectEvalRunIfKnown(state)
   }
 
   const refreshRemoteOpsPanel = async () => {
@@ -1094,10 +1083,6 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     )
   }
 
-  const refreshEvalLaunch = () => {
-    state.evalLaunch = readReadmeSmokeEvalLaunch(options.config)
-    selectEvalRunIfKnown(state)
-  }
 
   const refreshAfterEnvironmentChange = async (environmentName: StackEnvironmentName) => {
     await applyStackEnvironment(options, state, environmentName, remount, async () => {
@@ -1442,7 +1427,6 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   }, 120)
 
   optimizerInterval = setInterval(() => {
-    refreshEvalLaunch()
     void refreshOptimizers().finally(scheduleRemount)
   }, 2500)
 
@@ -6589,13 +6573,10 @@ function statusLine(options: StackAppOptions, state: AppState): string {
 function mediationTopStrip(options: StackAppOptions, state: AppState): string {
   if (state.liveOpsMode === "local") {
     const optimizerCounts = optimizerJobCounts(state.optimizerSnapshot)
-    const stackevalLine = stackevalPacketStatusLine(readActiveStackevalPacket(options.config.stackDataRoot))
     return [
       "bridge local",
       `tool ${bridgeStatusToolName(state)}`,
       `mcp ${stackMcpStatusLabel(options.config)}`,
-      `eval ${state.evalLaunch.status}`,
-      stackevalLine ? inlineText(stackevalLine, 48) : "",
       `optimizers ${state.optimizerSnapshot.status} ${optimizerCounts.active}/${optimizerCounts.total} active`,
       "x remote bridge",
     ]
@@ -6629,10 +6610,6 @@ function liveOperationsRailText(options: StackAppOptions, state: AppState): stri
     `mcp ${stackMcpStatusLabel(options.config)}`,
     recentSkillRailLine(state),
     `x switches remote bridge`,
-    "",
-    "Read Smoke Eval",
-    evalLaunchRailLine(state.evalLaunch),
-    evalLaunchTailLine(state.evalLaunch),
     "",
     "Local Optimizers",
     `${state.optimizerSnapshot.status} jobs ${optimizerCounts.total} active ${optimizerCounts.active}`,
@@ -6765,25 +6742,7 @@ function shortAuthPath(config: StackConfig, path: string): string {
   return rel.startsWith("..") ? path : rel
 }
 
-function evalLaunchRailLine(launch: StackEvalLaunch): string {
-  return [
-    launch.status,
-    launch.pid ? `pid ${launch.pid}` : "",
-    launch.runId ? `run ${inlineText(launch.runId, 10)}` : "",
-    `${launch.instance}/${launch.target}`,
-  ].filter((part) => part.length > 0).join(" ")
-}
 
-function evalLaunchTailLine(launch: StackEvalLaunch): string {
-  if (launch.verificationFailures?.length) {
-    return oneLine(`verify failed ${launch.verificationFailures.join(", ")}`, 36)
-  }
-  if (launch.failureLines?.length) return oneLine(`fail ${launch.failureLines.at(-1) ?? ""}`, 36)
-  if (launch.verificationState) return oneLine(`verify ${launch.verificationState}`, 36)
-  if (launch.smrState) return oneLine(`smr ${launch.smrState}`, 36)
-  if (launch.message) return oneLine(launch.message, 36)
-  return oneLine(launch.suite, 36)
-}
 
 function mediationTargetLabel(state: AppState): string {
   switch (state.mediationTargetKind) {
@@ -6838,17 +6797,6 @@ async function openSelectedRemoteHostedArtifact(
   refresh()
 }
 
-function selectEvalRunIfKnown(state: AppState): void {
-  const index = state.remoteResearchSnapshot.jobs.findIndex((run) => {
-    if (state.evalLaunch.runId) return run.runId === state.evalLaunch.runId
-    return Boolean(state.evalLaunch.projectId && run.projectId === state.evalLaunch.projectId)
-  })
-  if (index < 0) return
-  state.evalLaunch.runId = state.remoteResearchSnapshot.jobs[index]?.runId ?? state.evalLaunch.runId
-  state.selectedRemoteJobIndex = index
-  state.selectedRemoteOutputIndex = clampIndex(state.selectedRemoteOutputIndex, currentRemoteOutputCount(state))
-  state.mediationTargetKind = "remote-run"
-}
 
 function selectedRemoteRunRailLine(state: AppState): string {
   const run = state.remoteResearchSnapshot.jobs[state.selectedRemoteJobIndex]
@@ -7020,12 +6968,11 @@ function remoteResearchText(state: AppState): string[] {
   return [
     `env: ${snapshot.environmentName}  ${snapshot.status}`,
     snapshot.message ? oneLine(snapshot.message, 40) : "",
-    state.focusMode === "remote" ? "r refresh | e eval | j/k jobs | f factory | o output | O open-artifact | t target" : "tab here for remote SMR",
+    state.focusMode === "remote" ? "r refresh | j/k jobs | f factory | o output | O open-artifact | t target" : "tab here for remote SMR",
     state.focusMode === "remote" ? "m message | a attach | p pause | u resume | s stop | w wake | d download | v remote | l saved" : "",
     state.focusMode === "remote" ? "attach draft: local/path -> optional/remote/path" : "",
     state.pendingRemoteAction ? `pending: ${remoteActionLabel(state.pendingRemoteAction)}` : "",
     state.remoteActionMessage ? `action: ${oneLine(state.remoteActionMessage, 40)}` : "",
-    ...evalLaunchDetailText(state.evalLaunch),
     "",
     `jobs: ${snapshot.jobs.length} recent  active ${jobCounts.active}`,
     "  state     at     run",
@@ -7042,37 +6989,7 @@ function remoteResearchText(state: AppState): string[] {
   ].filter((line) => line.length > 0)
 }
 
-function evalLaunchDetailText(launch: StackEvalLaunch): string[] {
-  return [
-    `eval: ${launch.status} ${launch.pid ? `pid ${launch.pid}` : launch.instance}`,
-    launch.exitCode !== undefined ? `eval exit ${launch.exitCode ?? launch.signal ?? "-"}` : "",
-    launch.runId ? `eval run ${inlineText(launch.runId, 34)}` : "",
-    launch.projectId ? `eval project ${inlineText(launch.projectId, 30)}` : "",
-    launch.smrState ? `eval smr ${launch.smrState}` : "",
-    launch.verificationState ? `eval verify ${inlineText(launch.verificationState, 30)}` : "",
-    launch.verificationFailures?.length
-      ? `eval failures ${inlineText(launch.verificationFailures.join(", "), 28)}`
-      : "",
-    launch.reward !== undefined || launch.gradeCost !== undefined
-      ? `eval score ${launch.reward ?? "-"} cost ${launch.gradeCost ?? "-"}`
-      : "",
-    launch.actualCostCents !== undefined ? `eval spend ${launch.actualCostCents}c` : "",
-    launch.outputRoot ? `eval output ${inlineText(launch.outputRoot, 30)}` : "",
-    launch.runlog ? `eval runlog ${inlineText(launch.runlog, 30)}` : "",
-    launch.phaseLog ? `eval phase log ${inlineText(launch.phaseLog, 26)}` : "",
-    ...evalFailureText(launch),
-    launch.message ? `eval note: ${oneLine(launch.message, 36)}` : "",
-  ].filter((line) => line.length > 0)
-}
 
-function evalFailureText(launch: StackEvalLaunch): string[] {
-  const lines = launch.failureLines ?? []
-  if (lines.length === 0) return []
-  return [
-    "Eval Failure Context",
-    ...lines.slice(-3).map((line) => `  ${oneLine(line, 38)}`),
-  ]
-}
 
 function hostedOptimizerText(state: AppState): string[] {
   const snapshot = state.hostedOptimizerSnapshot
@@ -8407,11 +8324,6 @@ async function handleRemoteKey(
     refresh()
     return
   }
-  if (key.name === "e") {
-    setPendingRemoteAction(state, "start-readme-smoke")
-    refresh()
-    return
-  }
   if (key.name === "t") {
     cycleMediationTarget(state)
     state.pendingRemoteAction = undefined
@@ -8643,10 +8555,7 @@ async function executePendingRemoteAction(
   state.remoteActionMessage = `running ${remoteActionLabel(action)}`
   refresh()
 
-  const result =
-    action === "start-readme-smoke"
-      ? startReadmeSmokeFromTui(options, state, refresh, refreshRemoteResearch)
-      : await executeRemoteActionResult(options, action, { run, factory, output, download, draft })
+  const result = await executeRemoteActionResult(options, action, { run, factory, output, download, draft })
   await recordRemoteTuiLeverEvent(options.config, action, { run, factory, draft, result })
 
   state.pendingRemoteAction = undefined
@@ -9009,37 +8918,9 @@ function parseRunFileUploadDraft(
   }
 }
 
-function startReadmeSmokeFromTui(
-  options: StackAppOptions,
-  state: AppState,
-  refresh: () => void,
-  refreshRemoteResearch: () => Promise<void>,
-): RemoteActionResult {
-  state.evalLaunch = startReadmeSmokeEval(options.config, state.evalLaunch, (snapshot) => {
-    state.evalLaunch = snapshot
-    const runNeedsRefresh = Boolean(
-      snapshot.runId && !state.remoteResearchSnapshot.jobs.some((run) => run.runId === snapshot.runId),
-    )
-    selectEvalRunIfKnown(state)
-    if (runNeedsRefresh || !isEvalLaunchActive(snapshot)) {
-      void refreshRemoteResearch()
-        .then(() => selectEvalRunIfKnown(state))
-        .finally(refresh)
-      return
-    }
-    refresh()
-  })
-  return {
-    ok: state.evalLaunch.status !== "failed",
-    status: 0,
-    message: state.evalLaunch.message ?? "readme smoke launch requested",
-  }
-}
 
 function remoteActionLabel(action: LiveActionKind): string {
   switch (action) {
-    case "start-readme-smoke":
-      return "start README smoke SMR eval"
     case "pause-run":
       return "pause selected run"
     case "resume-run":
