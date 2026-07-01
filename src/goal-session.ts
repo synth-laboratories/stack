@@ -1,4 +1,5 @@
 import { parseCriterionEntry } from "./meta-thread-goal-criteria.js"
+import { deriveCriteriaStates, type CriterionStatus } from "./goal-criteria-state.js"
 import type { CriteriaProgress, EtaBand, MonitorOperatorUpdate, SpendSnapshot } from "./monitor.js"
 import {
   appendThreadMetaEvent,
@@ -23,6 +24,7 @@ export type GoalSessionSnapshot = {
   paused_at?: string
   status: GoalSessionStatus
   criteria_progress: CriteriaProgress
+  criteria_states: CriterionStatus[]
   spend: SpendSnapshot
   last_operator_update?: MonitorOperatorUpdate
   last_eta?: EtaBand
@@ -104,6 +106,7 @@ export function reduceGoalSessionSnapshot(input: {
     paused_at: lifecycle.paused_at,
     status: normalizeGoalSessionStatus(input.goal.status, lifecycle.status),
     criteria_progress: operatorUpdate?.criteria_progress ?? criteria,
+    criteria_states: deriveCriteriaStates(input.goal.acceptanceCriteria, input.events),
     spend: { ...spend, elapsed_s },
     last_operator_update: operatorUpdate,
     last_eta: operatorUpdate?.eta,

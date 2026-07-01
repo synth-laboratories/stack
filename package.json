@@ -75,6 +75,7 @@
     "smoke:slash:errors": "bun run scripts/smoke_slash_errors.ts",
     "smoke:goal:progress": "bun run scripts/smoke_goal_progress.ts",
     "smoke:gamebench:task": "bun run scripts/smoke_gamebench_task.ts",
+    "smoke:p2:monitor": "bun run scripts/smoke_p2_monitor.ts",
     "smoke:goal:status-tool": "bun run scripts/accept_goal_status_tool.ts",
     "eval:gamebench:lane": "bun run scripts/eval_gamebench_lane.ts",
     "smoke:meta-threads:goal": "bun run scripts/smoke_meta_threads_goal.ts",
