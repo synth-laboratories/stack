@@ -16,6 +16,7 @@ import { ensureStackDefaults } from "./seed/defaults.js"
 import { stackAppRoot } from "./version.js"
 import { estimateUsageSpendUsd, formatEstimatedSpend } from "./codex/usage-cost.js"
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
+import { detectRiskyPending, riskyPendingSummary } from "./risky-action.js"
 import { enrichGameBenchGoalContext } from "./gamebench-goal.js"
 import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
@@ -1042,6 +1043,39 @@ export async function runMonitorForNewEvents(input: {
         focus: "goal_progress",
         source: "sidecar_codex",
         trigger_signature: steerSignature,
+      },
+    })
+    steerDelta += 1
+  }
+  // Risky-pending → pause + escalate (locked decision #1). Deterministic: if the worker's recent
+  // tool stream shows an imminent irreversible/destructive action, surface it ONCE as a high-severity
+  // steer for human confirmation — code owns this hard-safety signal, not the LLM.
+  const riskyPending = detectRiskyPending(candidate.pendingEvents)
+  const riskySummary = riskyPendingSummary(riskyPending)
+  const riskySignature = `risky:${riskyPending[0]?.category ?? ""}`
+  const alreadyEscalated = priorEvents
+    .slice(-30)
+    .some((e) => e.type === "monitor.steer" && (e.payload as Record<string, unknown>).trigger_signature === riskySignature)
+  if (
+    riskySummary &&
+    monitorConfig.permissions.steer &&
+    actorToolAllowed(monitorConfig.tools, "monitor.steer") &&
+    !alreadyEscalated
+  ) {
+    appendThreadMetaEvent(runtimeRoot, {
+      event_id: stackEventId("monitor_steer"),
+      type: "monitor.steer",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: actorId,
+      actor_role: "monitor",
+      payload: {
+        wake_id: wakeId,
+        message: riskySummary,
+        severity: "high",
+        focus: "risky_pending",
+        source: "monitor_runtime",
+        trigger_signature: riskySignature,
       },
     })
     steerDelta += 1
