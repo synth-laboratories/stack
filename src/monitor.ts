@@ -936,11 +936,31 @@ export async function runMonitorForNewEvents(input: {
   // monitor.progress is the HUMAN-facing narration event. It carries ONLY a real update the
   // operator should read — never the generic per-pass checkpoint text and never NO_USER_UPDATE.
   // (monitor.summary above is the internal per-pass checkpoint record; steers ride monitor.steer.)
+  const eventsAfterPass = readThreadMetaEvents(runtimeRoot, threadId)
+  const directiveProgress = pass.userProgressUpdate ?? pass.operatorUpdate?.progress_note
   const humanProgress =
-    pass.userProgressUpdate ??
-    pass.operatorUpdate?.progress_note ??
-    goalStatusProgressUpdate(readThreadMetaEvents(runtimeRoot, threadId), observedAt)
+    directiveProgress ??
+    goalStatusProgressUpdate(eventsAfterPass, observedAt)
   if (humanProgress && !isNoUserUpdateText(humanProgress)) {
+    const progressSummary = taskAwareProgressSummary(humanProgress, goalContext)
+    if (directiveProgress && goalContext.objective && !hasGoalStatusSince(eventsAfterPass, observedAt)) {
+      appendThreadMetaEvent(runtimeRoot, {
+        event_id: stackEventId("monitor_goal_status"),
+        type: "monitor.goal_status",
+        thread_id: threadId,
+        observed_at: new Date().toISOString(),
+        actor_id: actorId,
+        actor_role: "monitor",
+        payload: {
+          status: conservativeGoalStatusForProgress(progressSummary),
+          note: progressSummary,
+          metric: null,
+          evidence_event_ids: candidate.triggerEventIds,
+          wake_id: wakeId,
+          source: "sidecar_codex_directive_guard",
+        },
+      })
+    }
     appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId("monitor_progress"),
       type: "monitor.progress",
@@ -951,7 +971,7 @@ export async function runMonitorForNewEvents(input: {
       payload: {
         wake_id: wakeId,
         wake_reason: candidate.reason,
-        summary: humanProgress,
+        summary: progressSummary,
         severity: pass.severity,
         operator_update: pass.operatorUpdate ?? null,
         trigger_event_ids: candidate.triggerEventIds,
@@ -2030,6 +2050,51 @@ function goalStatusProgressUpdate(events: StackThreadMetaEvent[], wakeObservedAt
   const label = status.replace(/_/g, " ")
   const metricText = metric ? compactGoalMetric(metric) : undefined
   return [label, note, metricText].filter(Boolean).join(" · ")
+}
+
+function hasGoalStatusSince(events: StackThreadMetaEvent[], wakeObservedAt: string): boolean {
+  const wakeMs = Date.parse(wakeObservedAt)
+  return events.some((event) => {
+    if (event.type !== "monitor.goal_status") return false
+    const eventMs = Date.parse(event.observed_at)
+    return !Number.isFinite(wakeMs) || !Number.isFinite(eventMs) || eventMs >= wakeMs
+  })
+}
+
+function taskAwareProgressSummary(text: string, goalContext: CodexGoalSnapshot): string {
+  const clean = stripDirectivePrefix(text)
+  const taskType = goalContext.gamebenchTask?.taskType
+  if (taskType === "policy_opt" && !/\b(policy|baseline|candidate|score|leaderboard|hillclimb)\b/i.test(clean)) {
+    return `Worker is in the policy-optimization phase: ${lowercaseFirst(clean)}`
+  }
+  if (taskType === "engine_rebuild" && !/\b(engine|scenario|parity|canonical|reward|nev|public state)\b/i.test(clean)) {
+    return `Worker is in the engine-rebuild phase: ${lowercaseFirst(clean)} It is establishing scenario/parity evidence before any canonical score can be audited.`
+  }
+  if (taskType === "puzzle_diagnosis" && !/\b(trace|verifier|puzzle|causal hypothesis)\b/i.test(clean)) {
+    return `Worker is in the puzzle-diagnosis phase: ${lowercaseFirst(clean)} It must build trace-backed diagnosis evidence before verifier pass can be audited.`
+  }
+  return clean
+}
+
+function conservativeGoalStatusForProgress(text: string): string {
+  const normalized = text.toLowerCase()
+  if (/\b(stall(?:ed|ing)?|stuck|loop(?:ing)?|no progress|same failure|repeat(?:ed|ing) failure)\b/.test(normalized)) {
+    return "stalled"
+  }
+  if (/\b(advanced|advancing|found|located|confirmed|score|baseline|candidate|leaderboard|scenario|parity|trace evidence|verifier)\b/.test(normalized)) {
+    return "advancing"
+  }
+  return "working"
+}
+
+function stripDirectivePrefix(text: string): string {
+  return text.replace(/^\s*PROGRESS_UPDATE\s*:\s*/i, "").trim()
+}
+
+function lowercaseFirst(text: string): string {
+  const trimmed = text.trim()
+  if (!trimmed) return trimmed
+  return `${trimmed.slice(0, 1).toLowerCase()}${trimmed.slice(1)}`
 }
 
 function compactGoalMetric(metric: Record<string, unknown>): string | undefined {

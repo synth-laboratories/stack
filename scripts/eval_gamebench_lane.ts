@@ -187,6 +187,7 @@ for (const lane of lanes) {
     taskType: goalContext.gamebenchTask?.taskType,
     feed,
     milestones,
+    finalStatus,
     narrates,
     mechanicsHidden,
   })
@@ -244,6 +245,7 @@ function rowFailures(input: {
   taskType: string | undefined
   feed: StackThreadMetaEvent[]
   milestones: ReturnType<typeof goalMilestonesFromEvents>
+  finalStatus: string | undefined
   narrates: boolean
   mechanicsHidden: boolean
 }): string[] {
@@ -252,6 +254,7 @@ function rowFailures(input: {
   if (input.feed.length === 0) out.push("monitor produced no human-facing feed")
   if (!input.narrates) out.push("feed did not narrate lane-relevant work/progress")
   if (input.milestones.length === 0) out.push("monitor produced no structured goal_status milestone")
+  if (input.finalStatus === "blocked") out.push("nonterminal monitor status reduced the goal session to blocked")
   if (!input.mechanicsHidden) out.push("feed leaked runtime mechanics")
   return out
 }

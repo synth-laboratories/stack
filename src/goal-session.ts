@@ -129,7 +129,10 @@ function goalLifecycleState(
       const monitorStatus = readString(event.payload.status)
       if (monitorStatus === "goal_met") status = "done"
       else if (monitorStatus === "goal_failed" || monitorStatus === "blocked" || monitorStatus === "stalled") {
-        if (status !== "done") status = "blocked"
+        // These are monitor milestones for the strip/timeline, not lifecycle ownership.
+        // Only the human/operator lifecycle can pause/stop a goal; the monitor keeps the run active
+        // while surfacing the concern for steering.
+        if (status !== "done") status = "active"
       } else if (monitorStatus === "advancing" || monitorStatus === "working") {
         if (status !== "done") status = "active"
       }
@@ -241,7 +244,7 @@ function normalizeGoalSessionStatus(
   if (lifecycleStatus === "cleared") return "cleared"
   if (lifecycleStatus === "paused") return "paused"
   const normalized = goalStatus?.trim().toLowerCase()
-  if (normalized === "blocked") return "blocked"
+  if (normalized === "blocked") return "active"
   if (normalized === "done") return "done"
   if (normalized === "paused") return "paused"
   if (normalized === "cleared") return "cleared"

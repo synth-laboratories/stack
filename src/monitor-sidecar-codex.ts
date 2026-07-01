@@ -267,7 +267,8 @@ function monitorCodexDeveloperPrompt(input: {
     "Steer ONCE per issue: if `recent_context_events` shows you already steered the same unresolved problem, do NOT steer again — stay silent on it unless it materially changed.",
     "The events feed is the human's window into the run — it must explain WHAT THE WORKER IS DOING and WHAT PROGRESS TOWARD THE GOAL is being made. Emit a line exactly like `PROGRESS_UPDATE: <concise update>` when ANY of these occur: (a) a goal acceptance-criterion transitions — it is met, newly blocked, or a worker's done-claim is confirmed/refuted; (b) a milestone lands, e.g. a baseline is established or a candidate is produced (report the concrete result/number); (c) the verdict is a concern (stalled, stuck, off-goal, blocked); (d) you steered or paused the worker (say what and why); (e) the worker SHIFTS to a meaningfully new phase of work — e.g. from locating the setting, to running the baseline, to grinding a candidate — say what it is now doing.",
     "For (e), narrate the CURRENT ACTIVITY at the phase level, ONE line per phase, NOT per tool call. Do not narrate routine reads/listings/greps within a phase — only the shift to a new kind of work.",
-    "For GameBench goals, the first task-specific phase is NOT routine. When the worker reads lane instructions/contracts, finds trace files, inspects staged artifacts, starts baseline/scoring, or starts scenario/parity work, emit `PROGRESS_UPDATE` plus `stack_monitor_goal_status` with `working` even if no gate has landed yet.",
+    "For GameBench goals, the first task-specific phase is NOT routine. When the worker reads lane instructions/contracts, finds trace files, inspects staged artifacts, starts baseline/scoring, or starts scenario/parity work, emit `PROGRESS_UPDATE` plus `stack_monitor_goal_status` with `working` even if no gate has landed yet. The update must name the task type's work, not generic 'task files'.",
+    "For GameBench policy_opt, updates must mention policy/baseline/candidate/score/leaderboard as applicable. For engine_rebuild, updates must mention engine/scenario/parity/canonical score as applicable. For puzzle_diagnosis, updates must mention trace/diagnosis/verifier as applicable.",
     "For GameBench puzzle_diagnosis specifically, reading TASK_INSTRUCTIONS, verifier rubrics, diagnosis artifacts, or trace files is milestone work: report that the worker is in trace-backed diagnosis, and keep goal_met impossible until the verifier pass exists.",
     "When a criterion completes or a baseline/candidate result appears, cite the concrete outcome (the score/number/artifact), not a vague 'progress made'.",
     "If `current_goal.gamebenchTask` is present, treat it as authoritative task metadata: use `taskType`, `doneBar`, `milestoneChain`, `honestyPitfalls`, and `gates` to decide what progress and completion mean. Do not downgrade to generic vibes.",
@@ -307,7 +308,7 @@ function monitorCodexWakePrompt(input: {
       pending_events: input.pendingEvents.map(serializableEvent),
       recent_context_events: input.priorEvents.slice(-20).map(serializableEvent),
       instruction:
-        "Review the pending events as the persistent sidecar monitor. Decide if progress was made, whether the human needs a concise update, and whether the worker needs steering. Use PROGRESS_UPDATE/NO_USER_UPDATE and STEER_WORKER when applicable. If monitor_contract.must_emit_progress_update is true, do not reply NO_USER_UPDATE; emit the requested progress update and call stack_monitor_goal_status. Reply with what matters now, then pause for restart when done.",
+        "Review the pending events as the persistent sidecar monitor. Decide if progress was made, whether the human needs a concise update, and whether the worker needs steering. Use PROGRESS_UPDATE/NO_USER_UPDATE and STEER_WORKER when applicable. If monitor_contract.must_emit_progress_update is true, do not reply NO_USER_UPDATE; use monitor_contract.suggested_update unless factually wrong, include at least one of monitor_contract.required_update_terms, and call stack_monitor_goal_status. Reply with what matters now, then pause for restart when done.",
     },
     null,
     2,
@@ -334,6 +335,7 @@ function monitorWakeContract(input: {
     must_emit_progress_update: mustEmit,
     must_call_goal_status_if_progress_update: true,
     suggested_goal_status: mustEmit ? "working" : undefined,
+    required_update_terms: phase?.requiredTerms ?? [],
     phase: phase?.phase,
     reason: phase?.reason,
     suggested_update: phase?.suggestedUpdate,
@@ -343,7 +345,7 @@ function monitorWakeContract(input: {
 function gamebenchPhaseFromEvents(
   taskType: NonNullable<CodexGoalSnapshot["gamebenchTask"]>["taskType"],
   events: readonly StackThreadMetaEvent[],
-): { phase: string; reason: string; suggestedUpdate: string } | undefined {
+): { phase: string; reason: string; suggestedUpdate: string; requiredTerms: string[] } | undefined {
   const text = events.map(eventSearchText).join("\n").toLowerCase()
   if (!text.trim()) return undefined
   if (taskType === "puzzle_diagnosis") {
@@ -353,6 +355,7 @@ function gamebenchPhaseFromEvents(
         reason: "worker is reading puzzle instructions, traces, or diagnosis/verifier artifacts",
         suggestedUpdate:
           "Worker is in the puzzle diagnosis phase: reading the lane instructions/traces/artifacts to build or audit a trace-backed causal hypothesis.",
+        requiredTerms: ["trace", "diagnosis", "verifier"],
       }
     }
   }
@@ -363,6 +366,7 @@ function gamebenchPhaseFromEvents(
         reason: "worker is locating the policy lane, baseline, candidate, or leaderboard evidence",
         suggestedUpdate:
           "Worker is in the policy-optimization phase: locating the lane evidence and preparing to compare baseline and candidate scores.",
+        requiredTerms: ["policy", "baseline", "candidate", "score", "leaderboard"],
       }
     }
   }
@@ -373,6 +377,7 @@ function gamebenchPhaseFromEvents(
         reason: "worker is reading engine instructions or scenario/parity evidence",
         suggestedUpdate:
           "Worker is in the engine-rebuild phase: reading the specs/scenarios and looking for canonical parity evidence.",
+        requiredTerms: ["engine", "scenario", "parity", "canonical", "score"],
       }
     }
   }
@@ -381,6 +386,7 @@ function gamebenchPhaseFromEvents(
       phase: "gamebench lane discovery",
       reason: "worker is reading GameBench lane files or artifacts",
       suggestedUpdate: "Worker is in GameBench lane discovery: reading task files and artifacts to establish the current milestone.",
+      requiredTerms: ["GameBench", "lane", "artifact"],
     }
   }
   return undefined
