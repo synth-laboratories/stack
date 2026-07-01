@@ -196,6 +196,10 @@ stack --version
 **Dev bump**
 
 - [ ] `make bump-dev`
+- [ ] **`CHANGELOG.md`** — move bullets into dated `## [0.x.y-dev.YYYYMMDD.N] - YYYY-MM-DD` matching `version.json` (never ship with only `[Unreleased]`)
+- [ ] **`docs/USAGE.md`** — update operator-visible behavior, keys, and commands; add a **`Changed`** bullet in CHANGELOG pointing here when relevant
+- [ ] **Jstack** `daily_notes/YYYY-MM-DD/stack_release_notes_<version>.md` — external release copy + internal caveats for ship packet
+- [ ] **Blog / Mintlify** — publish or record **WAIVED** in `release_ship_*.md` (not a silent skip)
 - [ ] `make quality-static`
 - [ ] `make launch-readiness`
 - [ ] `make launch-nightly1`
