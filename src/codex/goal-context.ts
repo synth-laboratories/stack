@@ -7,11 +7,38 @@ export type CodexGoalSnapshot = {
   status?: string
   acceptanceCriteria?: string[]
   blockers?: string[]
+  gamebenchTask?: CodexGoalTaskContext
   tokensUsed?: number
   tokenBudget?: string
   tokensRemaining?: string
   timeUsedSeconds?: number
   source: "none" | "tool" | "context" | "meta_thread"
+}
+
+export type CodexGoalTaskContext = {
+  kind: "gamebench"
+  taskType: "policy_opt" | "engine_rebuild" | "puzzle_diagnosis" | "unknown"
+  source: "task_toml" | "objective"
+  laneId?: string
+  lanePath?: string
+  title?: string
+  family?: string
+  method?: string
+  benchmarkFamily?: string
+  primaryScorePath?: string
+  passThreshold?: number
+  doneBar?: string
+  milestoneChain?: string[]
+  honestyPitfalls?: string[]
+  gates?: Array<{
+    id: string
+    path?: string
+    equals?: string | number | boolean
+    minValue?: number
+    maxValue?: number
+    required?: boolean
+    reason?: string
+  }>
 }
 
 const GOAL_CONTEXT_MARKER = '<codex_internal_context source="goal">'
@@ -43,6 +70,7 @@ export function mergeGoalContext(current: CodexGoalSnapshot, incoming: CodexGoal
     status: incoming.status ?? current.status,
     acceptanceCriteria: incoming.acceptanceCriteria ?? current.acceptanceCriteria,
     blockers: incoming.blockers ?? current.blockers,
+    gamebenchTask: incoming.gamebenchTask ?? current.gamebenchTask,
     tokensUsed: incoming.tokensUsed ?? current.tokensUsed,
     tokenBudget: incoming.tokenBudget ?? current.tokenBudget,
     tokensRemaining: incoming.tokensRemaining ?? current.tokensRemaining,

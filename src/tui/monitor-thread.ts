@@ -363,10 +363,16 @@ function formatGoalMetric(metric?: Record<string, unknown>): string {
   const baseline = readNumber(metric.baseline)
   const target = readNumber(metric.target)
   const ratio = readNumber(metric.ratio) ?? (value !== undefined && baseline ? value / baseline : undefined)
+  // A target can be a RATIO (be 2× better → "target 2×") or an absolute SCORE ("target ≥ 0.17").
+  // Prefer explicit target_ratio/target_value; else disambiguate `target` by magnitude — ratios are
+  // ≥ 1.5, absolute score bars here are < 1. This stops the "target 0.1742×" mislabel.
+  const targetRatio = readNumber(metric.target_ratio) ?? (target !== undefined && target >= 1.5 ? target : undefined)
+  const targetValue = readNumber(metric.target_value) ?? (target !== undefined && target < 1.5 ? target : undefined)
   const parts: string[] = []
   if (ratio !== undefined) parts.push(`${ratio.toFixed(2)}×`)
   if (value !== undefined) parts.push(baseline !== undefined ? `${value} vs ${baseline}` : `${value}`)
-  if (target !== undefined) parts.push(`target ${target}×`)
+  if (targetRatio !== undefined) parts.push(`target ${targetRatio}×`)
+  else if (targetValue !== undefined) parts.push(`target ≥ ${targetValue}`)
   return parts.join(" · ")
 }
 

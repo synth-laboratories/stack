@@ -43,6 +43,10 @@ const strip = goalProgressStripLine(events, 120) ?? ""
 check(strip.includes("advancing"), "strip shows the latest status")
 check(strip.includes("2.53×"), `strip shows the ratio metric, got: ${strip}`)
 check(strip.includes("0.22 vs 0.0871"), "strip shows value vs baseline")
+check(strip.includes("target 2×"), `ratio target renders as N×, got: ${strip}`)
+// an ABSOLUTE score target (< 1.5) must NOT be mislabelled as a ratio ("target 0.17×")
+const absStrip = goalProgressStripLine([status("advancing", "below bar", { value: 0.11, baseline: 0.0871, target: 0.17 })], 120) ?? ""
+check(absStrip.includes("target ≥ 0.17") && !absStrip.includes("0.17×"), `absolute target renders as ≥ value, got: ${absStrip}`)
 check(goalProgressStripLine([], 120) === undefined, "no strip before any goal_status")
 
 // --- reducer: goal_met flips the goal to done ---

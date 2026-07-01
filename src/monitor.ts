@@ -16,6 +16,7 @@ import { ensureStackDefaults } from "./seed/defaults.js"
 import { stackAppRoot } from "./version.js"
 import { estimateUsageSpendUsd, formatEstimatedSpend } from "./codex/usage-cost.js"
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
+import { enrichGameBenchGoalContext } from "./gamebench-goal.js"
 import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import {
@@ -403,13 +404,14 @@ export async function runMonitorAfterOperatorMessage(input: {
   goalContext: CodexGoalSnapshot
 }): Promise<{ event: StackThreadMetaEvent; snapshot: StackMonitorSnapshot }> {
   const runtimeRoot = monitorRuntimeRoot(input.config)
+  const goalContext = enrichGameBenchGoalContext(input.goalContext, input.config.workspaceRoot)
   const operatorEvent = appendMonitorOperatorMessage(runtimeRoot, input.session.id, input.message)
-  if (shouldUseSidecarGoalChat(input.goalContext)) {
+  if (shouldUseSidecarGoalChat(goalContext)) {
     const requestEvent = appendMonitorChatRequest({
       stackRoot: runtimeRoot,
       session: input.session,
       message: input.message,
-      goalContext: input.goalContext,
+      goalContext,
       operatorEventId: operatorEvent.event_id,
     })
     await appendMonitorChatReply({
@@ -417,7 +419,7 @@ export async function runMonitorAfterOperatorMessage(input: {
       stackRoot: runtimeRoot,
       session: input.session,
       message: input.message,
-      goalContext: input.goalContext,
+      goalContext,
       requestEvent,
     })
     return {
@@ -429,7 +431,7 @@ export async function runMonitorAfterOperatorMessage(input: {
     config: input.config,
     session: input.session,
     agentContext: input.agentContext,
-    goalContext: input.goalContext,
+    goalContext,
     wakeReason: "operator_message",
     triggerEventIds: [operatorEvent.event_id],
   })
@@ -735,6 +737,7 @@ export async function runMonitorForNewEvents(input: {
   const runtimeRoot = monitorRuntimeRoot(input.config)
   const monitorConfig = loadMonitorConfig(input.config.appRoot)
   const threadId = input.session.id
+  const goalContext = enrichGameBenchGoalContext(input.goalContext, input.config.workspaceRoot)
   const priorEvents = readThreadMetaEvents(runtimeRoot, threadId)
   const effective = effectiveMonitorState(monitorConfig, priorEvents)
   const actorId = monitorActorId(monitorConfig)
@@ -857,7 +860,7 @@ export async function runMonitorForNewEvents(input: {
     const checks = runFocusChecks(monitorConfig, {
       turn: input.turn ?? syntheticTurnFromEvents(input.session, candidate.pendingEvents),
       agentContext: input.agentContext,
-      goalContext: input.goalContext,
+      goalContext,
     })
     pass = await runMonitorPass({
       stackConfig: input.config,
@@ -872,7 +875,7 @@ export async function runMonitorForNewEvents(input: {
       pendingEvents: candidate.pendingEvents,
       turn,
       agentContext: input.agentContext,
-      goalContext: input.goalContext,
+      goalContext,
       checks,
     })
   } catch (error) {
@@ -917,7 +920,7 @@ export async function runMonitorForNewEvents(input: {
       severity: pass.severity,
       summary: pass.summary,
       operator_update: pass.operatorUpdate ?? null,
-      goal_snapshot: goalSnapshotFromContext(input.goalContext),
+      goal_snapshot: goalSnapshotFromContext(goalContext),
       focus_results: focusResults(pass.checks),
       source: pass.source,
       model_thread_id: pass.monitorThreadId ?? null,
@@ -932,7 +935,10 @@ export async function runMonitorForNewEvents(input: {
   // monitor.progress is the HUMAN-facing narration event. It carries ONLY a real update the
   // operator should read — never the generic per-pass checkpoint text and never NO_USER_UPDATE.
   // (monitor.summary above is the internal per-pass checkpoint record; steers ride monitor.steer.)
-  const humanProgress = pass.userProgressUpdate ?? pass.operatorUpdate?.progress_note
+  const humanProgress =
+    pass.userProgressUpdate ??
+    pass.operatorUpdate?.progress_note ??
+    goalStatusProgressUpdate(readThreadMetaEvents(runtimeRoot, threadId), observedAt)
   if (humanProgress && !isNoUserUpdateText(humanProgress)) {
     appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId("monitor_progress"),
@@ -1176,7 +1182,7 @@ export async function runMonitorForNewEvents(input: {
         config: input.config,
         session: input.session,
         agentContext: input.agentContext,
-        goalContext: input.goalContext,
+        goalContext,
         wakeReason: "queued_trigger",
         triggerEventIds: queuedTriggerIds,
         drainQueued: false,
@@ -1972,6 +1978,40 @@ export function isNoUserUpdateText(text: string): boolean {
   return trimmed.length === 0 || /^NO_USER_UPDATE\b/i.test(trimmed)
 }
 
+function goalStatusProgressUpdate(events: StackThreadMetaEvent[], wakeObservedAt: string): string | undefined {
+  const wakeMs = Date.parse(wakeObservedAt)
+  const recent = [...events].reverse().find((event) => {
+    if (event.type !== "monitor.goal_status") return false
+    const eventMs = Date.parse(event.observed_at)
+    return !Number.isFinite(wakeMs) || !Number.isFinite(eventMs) || eventMs >= wakeMs
+  })
+  if (!recent) return undefined
+  const payload = recent.payload as Record<string, unknown>
+  const status = readString(payload.status) ?? "working"
+  const note = readString(payload.note)
+  const metric = payload.metric && typeof payload.metric === "object" && !Array.isArray(payload.metric)
+    ? (payload.metric as Record<string, unknown>)
+    : undefined
+  if (!note && !metric) return undefined
+  const label = status.replace(/_/g, " ")
+  const metricText = metric ? compactGoalMetric(metric) : undefined
+  return [label, note, metricText].filter(Boolean).join(" · ")
+}
+
+function compactGoalMetric(metric: Record<string, unknown>): string | undefined {
+  const value = readNumber(metric.value)
+  const baseline = readNumber(metric.baseline)
+  const ratio = readNumber(metric.ratio) ?? (value !== undefined && baseline ? value / baseline : undefined)
+  const targetRatio = readNumber(metric.target_ratio)
+  const targetValue = readNumber(metric.target_value)
+  const parts: string[] = []
+  if (ratio !== undefined) parts.push(`${ratio.toFixed(2)}x`)
+  if (value !== undefined) parts.push(baseline !== undefined ? `${value} vs ${baseline}` : String(value))
+  if (targetRatio !== undefined) parts.push(`target ${targetRatio}x`)
+  if (targetValue !== undefined) parts.push(`target >= ${targetValue}`)
+  return parts.length > 0 ? parts.join(" · ") : undefined
+}
+
 export function isNoProgressAnnouncement(text: string): boolean {
   const t = text.trim().toLowerCase()
   const announcesNoProgress =
@@ -2358,6 +2398,7 @@ function goalSnapshotFromContext(goal: CodexGoalSnapshot): Record<string, unknow
     token_budget: goal.tokenBudget ?? null,
     acceptance_criteria: goal.acceptanceCriteria ?? [],
     blockers: goal.blockers ?? [],
+    gamebench_task: goal.gamebenchTask ?? null,
     criteria_done: criteria.done,
     criteria_total: criteria.total,
     criteria_pct: criteria.pct,

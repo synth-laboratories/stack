@@ -25,6 +25,7 @@ import {
   appendGoalLifecycleEvent,
   shouldAppendGoalStarted,
 } from "../goal-session.js"
+import { enrichGameBenchGoalContext } from "../gamebench-goal.js"
 import { mergeMetaThreadGoalContext, readMetaThreadManifest } from "../meta-thread-goal.js"
 import { readThreadMetaEvents } from "../thread-events.js"
 import { writeSessionLog, type StackLocalSession } from "../session.js"
@@ -103,12 +104,23 @@ async function syncMetaThreadGoalFromObjective(
   objective: string,
   status = "active",
 ): Promise<void> {
+  const enriched = enrichGameBenchGoalContext(
+    {
+      objective,
+      status,
+      acceptanceCriteria: activeGoalCriteria(state),
+      blockers: activeGoalBlockers(state),
+      source: "meta_thread",
+    },
+    ctx.config.workspaceRoot,
+  )
   await syncMetaThreadGoalPatch(ctx, state, {
     objective,
     status,
-    acceptance_criteria: activeGoalCriteria(state),
+    acceptance_criteria: enriched.acceptanceCriteria ?? activeGoalCriteria(state),
     blockers: activeGoalBlockers(state),
   })
+  state.goalContext = mergeGoalContext(state.goalContext, enriched)
 }
 
 async function syncMetaThreadGoalStatus(
@@ -264,6 +276,7 @@ async function ensureMetaThreadBound(
 ): Promise<void> {
   if (ctx.session.metaThreadId) return
   const title = objective.length > 80 ? `${objective.slice(0, 77)}...` : objective
+  const enriched = enrichGameBenchGoalContext({ objective, status, source: "meta_thread" }, ctx.config.workspaceRoot)
   const created = await stackdCreateMetaThread({
     title,
     thread_id: ctx.session.id,
@@ -271,13 +284,13 @@ async function ensureMetaThreadBound(
     model: harnessModel(ctx.config),
     reasoning_effort: ctx.config.codexReasoningEffort,
     harness: ctx.config.harness,
-    active_goal: { objective, status, acceptance_criteria: [], blockers: [] },
+    active_goal: { objective, status, acceptance_criteria: enriched.acceptanceCriteria ?? [], blockers: [] },
   })
   ctx.session.metaThreadId = created.id
   ctx.session.segmentId = created.head_segment_id
   ctx.session.segmentRole = "implement"
   state.metaThreadManifest = created
-  state.goalContext = mergeMetaThreadGoalContext(state.goalContext, created)
+  state.goalContext = mergeGoalContext(mergeMetaThreadGoalContext(state.goalContext, created), enriched)
   await writeSessionLog(ctx.session, ctx.config.sessionLogDir, {
     codexModel: harnessModel(ctx.config),
     pricingRows: ctx.config.codexPricing,
