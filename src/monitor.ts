@@ -17,7 +17,7 @@ import { stackAppRoot } from "./version.js"
 import { estimateUsageSpendUsd, formatEstimatedSpend } from "./codex/usage-cost.js"
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
 import { detectRiskyPending, riskyPendingSummary } from "./risky-action.js"
-import { enrichGameBenchGoalContext } from "./gamebench-goal.js"
+import { enrichGoalTaskContext } from "./codex/goal-task-contract.js"
 import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import { readMetaThreadManifest } from "./meta-thread-goal.js"
@@ -407,7 +407,7 @@ export async function runMonitorAfterOperatorMessage(input: {
   goalContext: CodexGoalSnapshot
 }): Promise<{ event: StackThreadMetaEvent; snapshot: StackMonitorSnapshot }> {
   const runtimeRoot = monitorRuntimeRoot(input.config)
-  const goalContext = enrichGameBenchGoalContext(input.goalContext, input.config.workspaceRoot)
+  const goalContext = enrichGoalTaskContext(input.goalContext, input.config.workspaceRoot)
   const operatorEvent = appendMonitorOperatorMessage(runtimeRoot, input.session.id, input.message)
   if (shouldUseSidecarGoalChat(goalContext)) {
     const requestEvent = appendMonitorChatRequest({
@@ -746,7 +746,7 @@ export async function runMonitorForNewEvents(input: {
   const runtimeRoot = monitorRuntimeRoot(input.config)
   const monitorConfig = loadMonitorConfig(input.config.appRoot)
   const threadId = input.session.id
-  const goalContext = enrichGameBenchGoalContext(input.goalContext, input.config.workspaceRoot)
+  const goalContext = enrichGoalTaskContext(input.goalContext, input.config.workspaceRoot)
   const priorEvents = readThreadMetaEvents(runtimeRoot, threadId)
   const effective = effectiveMonitorState(monitorConfig, priorEvents)
   const actorId = monitorActorId(monitorConfig)
@@ -1405,9 +1405,6 @@ function repeatedFailureSteerMessage(pendingEvents: StackThreadMetaEvent[]): str
 }
 
 function repeatedFailureSteerForCommand(command: string): string {
-  if (/gamebench\.craftax\.run_candidate/.test(command)) {
-    return "Stop retrying the nonexistent `gamebench.craftax.run_candidate` module; find the real Craftax policy runner or importable entrypoint, then rerun the candidate."
-  }
   return `Stop retrying the failing command \`${truncate(command, 120)}\`; inspect the real entrypoint/path before rerunning.`
 }
 
@@ -2464,17 +2461,17 @@ function inferAuditedTerminalGoalStatus(text: string): "goal_met" | "goal_failed
 
 function taskAwareProgressSummary(text: string, goalContext: CodexGoalSnapshot): string {
   const clean = stripDirectivePrefix(text)
-  const taskType = goalContext.gamebenchTask?.taskType
-  if (taskType === "policy_opt" && !/\b(policy|baseline|candidate|score|leaderboard|hillclimb)\b/i.test(clean)) {
-    return `Worker is in the policy-optimization phase: ${lowercaseFirst(clean)}`
-  }
-  if (taskType === "engine_rebuild" && !/\b(engine|scenario|parity|canonical|reward|nev|public state)\b/i.test(clean)) {
-    return `Worker is in the engine-rebuild phase: ${lowercaseFirst(clean)} It is establishing scenario/parity evidence before any canonical score can be audited.`
-  }
-  if (taskType === "puzzle_diagnosis" && !/\b(trace|verifier|puzzle|causal hypothesis)\b/i.test(clean)) {
-    return `Worker is in the puzzle-diagnosis phase: ${lowercaseFirst(clean)} It must build trace-backed diagnosis evidence before verifier pass can be audited.`
-  }
-  return clean
+  const task = goalContext.taskContext
+  const terms = task?.updateTerms ?? []
+  if (terms.length === 0) return clean
+  const mentionsTask = terms.some((term) => new RegExp(`\\b${escapeRegExpTerm(term)}\\b`, "i").test(clean))
+  if (mentionsTask) return clean
+  const label = task?.title ?? task?.taskType ?? task?.kind ?? "task"
+  return `Worker is mid-task (${label}): ${lowercaseFirst(clean)}`
+}
+
+function escapeRegExpTerm(term: string): string {
+  return term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function headlineForProgress(text: string): string {
@@ -2956,7 +2953,7 @@ function goalSnapshotFromContext(goal: CodexGoalSnapshot): Record<string, unknow
     token_budget: goal.tokenBudget ?? null,
     acceptance_criteria: goal.acceptanceCriteria ?? [],
     blockers: goal.blockers ?? [],
-    gamebench_task: goal.gamebenchTask ?? null,
+    task_context: goal.taskContext ?? null,
     criteria_done: criteria.done,
     criteria_total: criteria.total,
     criteria_pct: criteria.pct,

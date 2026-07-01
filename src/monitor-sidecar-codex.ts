@@ -267,19 +267,16 @@ function monitorCodexDeveloperPrompt(input: {
     "Steer ONCE per issue: if `recent_context_events` shows you already steered the same unresolved problem, do NOT steer again — stay silent on it unless it materially changed.",
     "The events feed is the human's window into the run — it must explain WHAT THE WORKER IS DOING and WHAT PROGRESS TOWARD THE GOAL is being made. To post an update to that feed, call the Stack MCP tool `stack_monitor_goal_status` with `for_human: true`, a 1-5 word `headline` (the title the operator reads first), and a one-sentence `note` (the detail). Post one when ANY of these occur: (a) a goal acceptance-criterion transitions — it is met, newly blocked, or a worker's done-claim is confirmed/refuted; (b) a milestone lands, e.g. a baseline is established or a candidate is produced (put the concrete result/number in the note); (c) the verdict is a concern (stalled, stuck, off-goal, blocked); (d) you steered or paused the worker (say what and why); (e) the worker SHIFTS to a meaningfully new phase of work — e.g. from locating the setting, to running the baseline, to grinding a candidate — say what it is now doing.",
     "For (e), post the CURRENT ACTIVITY at the phase level, ONE update per phase, NOT per tool call. Do not narrate routine reads/listings/greps within a phase — only the shift to a new kind of work.",
-    "For GameBench goals, the first task-specific phase is NOT routine. When the worker reads lane instructions/contracts, finds trace files, inspects staged artifacts, starts baseline/scoring, or starts scenario/parity work, call `stack_monitor_goal_status` with `status: \"working\"` and `for_human: true` even if no gate has landed yet. The headline/note must name the task type's work, not generic 'task files'.",
-    "Apply that GameBench phase-update rule only when `current_goal.gamebenchTask` is present OR pending events contain concrete lane/task artifacts (task.toml, TASK_INSTRUCTIONS, verifier/rubric, reportbench output, traces, baseline/candidate/score/scenario files). If the objective mentions GameBench but the worker only lists a generic repo root or does setup, stay quiet.",
-    "For GameBench policy_opt, updates must mention policy/baseline/candidate/score/leaderboard as applicable. For engine_rebuild, updates must mention engine/scenario/parity/canonical score as applicable. For puzzle_diagnosis, updates must mention trace/diagnosis/verifier as applicable.",
-    "For GameBench puzzle_diagnosis specifically, reading TASK_INSTRUCTIONS, verifier rubrics, diagnosis artifacts, or trace files is milestone work: report that the worker is in trace-backed diagnosis, and keep goal_met impossible until the verifier pass exists.",
-    "When a criterion completes or a baseline/candidate result appears, cite the concrete outcome (the score/number/artifact), not a vague 'progress made'.",
-    "If `current_goal.gamebenchTask` is present, treat it as authoritative task metadata: use `taskType`, `doneBar`, `milestoneChain`, `honestyPitfalls`, and `gates` to decide what progress and completion mean. Do not downgrade to generic vibes.",
-    "GameBench policy_opt: baseline and candidate scores must be on the same requested suite; a user-requested 2x candidate requires ratio >= 2 even if the ReportBench low pass threshold only requires positive score/best policy.",
-    "GameBench engine_rebuild: service startup, local smoke, or a partial table is not done. Completion requires canonical Harbor/ReportBench evidence clearing all required strict gates such as perfect reward, scenario count, resolved rate, NEV, and public state.",
-    "GameBench puzzle_diagnosis: diagnosis.json or a written hypothesis is only a milestone. Completion requires the judge/verifier pass gate; if verifier credentials/traces are missing, inform the human and steer without inventing a verdict.",
+    "For goals with a task contract (`current_goal.taskContext`), the first task-specific phase is NOT routine. When the worker's activity matches one of the contract's declared phases, call `stack_monitor_goal_status` with `status: \"working\"` and `for_human: true` even if no gate has landed yet. The headline/note must name the phase's work, not generic 'task files'.",
+    "Apply that phase-update rule only when `current_goal.taskContext` is present and pending events match a declared phase. If the objective mentions a task but the worker only lists a generic repo root or does setup, stay quiet.",
+    "When a task phase declares update terms, human updates for that phase must use them so the operator can follow the task's own vocabulary.",
+    "When a criterion completes or a measured result appears, cite the concrete outcome (the score/number/artifact), not a vague 'progress made'.",
+    "If `current_goal.taskContext` is present, treat it as authoritative task metadata: use `taskType`, `doneBar`, `milestoneChain`, `honestyPitfalls`, and `gates` to decide what progress and completion mean. Do not downgrade to generic vibes.",
+    "If the contract requires a measured target (a ratio, threshold, or gate), the worker's claim must cite proof measured the way the contract demands — a claim that hits one of the contract's `honestyPitfalls` must be refuted, and missing credentials/inputs are a human/infra blocker to report, never a reason to invent a verdict.",
     "The worker owns the completion verdict; you AUDIT it. If the worker claims a criterion is done, confirm it against cited proof before treating it as done — refute it in a `stack_monitor_goal_status` update (`for_human: true`) if the proof is missing or does not meet the bar.",
     "`stack_monitor_goal_status` is the SOLE channel for the operator feed. Its fields: `status` ∈ {advancing, working, blocked, stalled, goal_met, goal_failed} (the update type), `headline` (1-5 word title), `note` (one concise sentence — cite the number), `for_human: true` to show it, and a `metric` object when there is a number (e.g. {value, baseline, ratio, target}). Call it on real status changes, not every wake. Use `working` for a phase shift, `advancing` for concrete progress/milestones, `stalled` for no-progress loops, `blocked` for a concrete blocker, `goal_failed` for an audited failed done-claim, and `goal_met` only for audited completion.",
     "Emit `stack_monitor_goal_status` with `status: \"goal_met\"` ONLY after you have AUDITED the worker's completion claim and the cited proof clears the target — this flips the goal to done. If the worker declares completion but the proof is missing or short, emit `blocked` or leave it advancing and refute it in a `for_human: true` update, do NOT emit goal_met.",
-    "If `current_goal.gamebenchTask` is present, it is authoritative: apply its `doneBar` EXACTLY (that is the real bar for this task type — do not emit goal_met unless the doneBar is met), frame progress against its `milestoneChain`, and actively watch for its `honestyPitfalls` (refute a worker claim that hits one). E.g. engine-rebuild is NOT done at 'service up' — it needs the canonical all-scenarios score of 1.0; puzzle-diagnosis is NOT done when diagnosis.json merely exists — it needs the verifier verdict.",
+    "If `current_goal.taskContext` is present, it is authoritative: apply its `doneBar` EXACTLY (that is the real bar for this task — do not emit goal_met unless the doneBar is met), frame progress against its `milestoneChain`, and actively watch for its `honestyPitfalls` (refute a worker claim that hits one). An artifact existing, a service starting, or a partial result table is not completion unless the doneBar says it is.",
     "Otherwise — routine tool completions (reads, listings, greps), trivial batches, or when there is simply no new goal progress — stay quiet: do NOT call `stack_monitor_goal_status` with `for_human: true`. NEVER post an update that announces the absence of progress or restates prior status; a for_human update that says 'no new progress' or re-summarizes what you already reported is a defect. The runtime emits a dim `monitor.checkin` row for quiet passes — you do not need to narrate 'no update' yourself.",
     "The Sidecar events panel renders each for_human update as `type · headline` over one content line, so keep headlines tight and put the detail in the note. Your own long-running transcript is shown in the Sidecar thread panel.",
     "When the worker is bound to a meta-thread and a concise portfolio label would help the operator find the run, you may call `stack_meta_thread_set_title` with `actor_role: \"monitor\"` and a max-48-char title. This is naming only; never change `meta_thread_id`, lifecycle, archive state, or durable ids through the title tool.",
@@ -321,16 +318,16 @@ function monitorWakeContract(input: {
   pendingEvents: StackThreadMetaEvent[]
   goalContext: CodexGoalSnapshot
 }): Record<string, unknown> {
-  const task = input.goalContext.gamebenchTask
+  const task = input.goalContext.taskContext
   if (!task) return { quiet_default: true }
   const alreadyNarrated = input.priorEvents.some(
     (event) => event.type === "monitor.progress" || event.type === "monitor.goal_status",
   )
-  const phase = gamebenchPhaseFromEvents(task.taskType, input.pendingEvents)
+  const phase = taskPhaseFromEvents(task, input.pendingEvents)
   const mustEmit = Boolean(phase && !alreadyNarrated)
   return {
     quiet_default: true,
-    gamebench_task_type: task.taskType,
+    task_type: task.taskType,
     done_bar: task.doneBar,
     milestone_chain: task.milestoneChain ?? [],
     must_post_human_update: mustEmit,
@@ -342,51 +339,27 @@ function monitorWakeContract(input: {
   }
 }
 
-function gamebenchPhaseFromEvents(
-  taskType: NonNullable<CodexGoalSnapshot["gamebenchTask"]>["taskType"],
+// Match worker activity against the phases the task contract declares. Detection terms,
+// update vocabulary, and suggested updates are all contract data — Stack has no built-in
+// notion of what any particular task's phases look like.
+function taskPhaseFromEvents(
+  task: NonNullable<CodexGoalSnapshot["taskContext"]>,
   events: readonly StackThreadMetaEvent[],
 ): { phase: string; reason: string; suggestedUpdate: string; requiredTerms: string[] } | undefined {
+  const declaredPhases = task.phases ?? []
+  if (declaredPhases.length === 0) return undefined
   const text = events.map(eventSearchText).join("\n").toLowerCase()
   if (!text.trim()) return undefined
-  if (taskType === "puzzle_diagnosis") {
-    if (/\b(task_instructions|verifier_rubric|rubric|task_contract|trace|traces|diagnosis|verifier_review|workproduct|puzzle_)/i.test(text)) {
-      return {
-        phase: "trace-backed diagnosis",
-        reason: "worker is reading puzzle instructions, traces, or diagnosis/verifier artifacts",
-        suggestedUpdate:
-          "Worker is in the puzzle diagnosis phase: reading the lane instructions/traces/artifacts to build or audit a trace-backed causal hypothesis.",
-        requiredTerms: ["trace", "diagnosis", "verifier"],
-      }
-    }
-  }
-  if (taskType === "policy_opt") {
-    if (/\b(task_instructions|baseline|candidate|leaderboard|policy|score|hillclimb|run_policy|reportbench_output)/i.test(text)) {
-      return {
-        phase: "policy optimization evidence gathering",
-        reason: "worker is locating the policy lane, baseline, candidate, or leaderboard evidence",
-        suggestedUpdate:
-          "Worker is in the policy-optimization phase: locating the lane evidence and preparing to compare baseline and candidate scores.",
-        requiredTerms: ["policy", "baseline", "candidate", "score", "leaderboard"],
-      }
-    }
-  }
-  if (taskType === "engine_rebuild") {
-    if (/\b(task_instructions|scenario|harbor|engine|service|reward|nev|public_state|resolved|parity)/i.test(text)) {
-      return {
-        phase: "engine rebuild parity work",
-        reason: "worker is reading engine instructions or scenario/parity evidence",
-        suggestedUpdate:
-          "Worker is in the engine-rebuild phase: reading the specs/scenarios and looking for canonical parity evidence.",
-        requiredTerms: ["engine", "scenario", "parity", "canonical", "score"],
-      }
-    }
-  }
-  if (/\b(task_instructions|reportbench|gamebench|score|artifact|workspace)/i.test(text)) {
+  for (const phase of declaredPhases) {
+    const matched = phase.detectTerms.some((term) => text.includes(term.toLowerCase()))
+    if (!matched) continue
     return {
-      phase: "gamebench lane discovery",
-      reason: "worker is reading GameBench lane files or artifacts",
-      suggestedUpdate: "Worker is in GameBench lane discovery: reading task files and artifacts to establish the current milestone.",
-      requiredTerms: ["GameBench", "lane", "artifact"],
+      phase: phase.id,
+      reason: `worker activity matches the contract phase "${phase.id}"`,
+      suggestedUpdate:
+        phase.suggestedUpdate ??
+        `Worker is in the ${phase.id} phase of the task contract.`,
+      requiredTerms: phase.updateTerms,
     }
   }
   return undefined

@@ -17,6 +17,21 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+### Changed
+
+- **Goal task context is now fully data-driven.** Stack no longer contains any
+  benchmark- or eval-specific goal logic (the GameBench task detector, family lists,
+  lane-name heuristics, and monitor prompt vocabulary are removed). A goal gains task
+  context only from an explicitly referenced task contract — a `task.toml` named by
+  path in the objective (sections `[goal]`, `[[goal.phases]]`, `[verdict]`,
+  `[[verdict.gates]]`) — or from context supplied at goal binding. Done bars,
+  milestone chains, honesty pitfalls, and phase hints are contract data; domain
+  content lives beside the tasks it describes (e.g. evals lane files), not in Stack.
+- `goalContext.gamebenchTask` → `goalContext.taskContext` (generic shape); monitor
+  status serialization key `gamebench_task` → `task_context`.
+- The fake-codex goal-shutter fixture no longer ships in the product artifact; the
+  testing harness owns it.
+
 ## [0.2.0-dev.20260701.1] - 2026-07-01
 
 Dev channel sidecar monitor release (`stack dev` @ `c55e68f`). Operator docs:

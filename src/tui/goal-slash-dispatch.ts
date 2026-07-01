@@ -25,7 +25,7 @@ import {
   appendGoalLifecycleEvent,
   shouldAppendGoalStarted,
 } from "../goal-session.js"
-import { enrichGameBenchGoalContext } from "../gamebench-goal.js"
+import { enrichGoalTaskContext } from "../codex/goal-task-contract.js"
 import { mergeMetaThreadGoalContext, readMetaThreadManifest } from "../meta-thread-goal.js"
 import { readThreadMetaEvents } from "../thread-events.js"
 import { writeSessionLog, type StackLocalSession } from "../session.js"
@@ -104,7 +104,7 @@ async function syncMetaThreadGoalFromObjective(
   objective: string,
   status = "active",
 ): Promise<void> {
-  const enriched = enrichGameBenchGoalContext(
+  const enriched = enrichGoalTaskContext(
     {
       objective,
       status,
@@ -276,7 +276,7 @@ async function ensureMetaThreadBound(
 ): Promise<void> {
   if (ctx.session.metaThreadId) return
   const title = objective.length > 80 ? `${objective.slice(0, 77)}...` : objective
-  const enriched = enrichGameBenchGoalContext({ objective, status, source: "meta_thread" }, ctx.config.workspaceRoot)
+  const enriched = enrichGoalTaskContext({ objective, status, source: "meta_thread" }, ctx.config.workspaceRoot)
   const created = await stackdCreateMetaThread({
     title,
     thread_id: ctx.session.id,
