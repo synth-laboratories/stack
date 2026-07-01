@@ -820,6 +820,7 @@ export async function runMonitorForNewEvents(input: {
     lastStartedAt: observedAt,
   })
   writeMonitorActorState(runtimeRoot, runningState)
+
   appendThreadMetaEvent(runtimeRoot, {
     event_id: wakeId,
     type: "monitor.wake",
@@ -906,6 +907,8 @@ export async function runMonitorForNewEvents(input: {
     )
   }
 
+  const monitorSummary = normalizedMonitorSummary(pass.summary)
+
   appendThreadMetaEvent(runtimeRoot, {
     event_id: stackEventId("monitor_summary"),
     type: "monitor.summary",
@@ -919,7 +922,7 @@ export async function runMonitorForNewEvents(input: {
       reasoning_effort: monitorConfig.model.reasoningEffort,
       strictness: monitorConfig.strictness,
       severity: pass.severity,
-      summary: pass.summary,
+      summary: monitorSummary,
       operator_update: pass.operatorUpdate ?? null,
       goal_snapshot: goalSnapshotFromContext(goalContext),
       focus_results: focusResults(pass.checks),
@@ -941,7 +944,7 @@ export async function runMonitorForNewEvents(input: {
   const humanProgress =
     directiveProgress ??
     goalStatusProgressUpdate(eventsAfterPass, observedAt)
-  if (humanProgress && !isNoUserUpdateText(humanProgress)) {
+  if (humanProgress && !isNoUserUpdateText(humanProgress) && !isNoProgressAnnouncement(humanProgress)) {
     const progressSummary = taskAwareProgressSummary(humanProgress, goalContext)
     if (directiveProgress && goalContext.objective && !hasGoalStatusSince(eventsAfterPass, observedAt)) {
       appendThreadMetaEvent(runtimeRoot, {
@@ -983,7 +986,7 @@ export async function runMonitorForNewEvents(input: {
 
   const suggestedThreadName =
     pass.threadName ??
-    parseThreadNameFromAgentResponse(pass.summary)
+    parseThreadNameFromAgentResponse(monitorSummary)
   if (suggestedThreadName) {
     await setThreadDisplayName({
       stackRoot: runtimeRoot,
@@ -1163,7 +1166,7 @@ export async function runMonitorForNewEvents(input: {
     }
   }
 
-  const usage = pass.usage ?? estimateMonitorUsage(candidate.pendingEvents, pass.summary)
+  const usage = pass.usage ?? estimateMonitorUsage(candidate.pendingEvents, monitorSummary)
   appendThreadMetaEvent(runtimeRoot, {
     event_id: stackEventId("monitor_usage"),
     type: "monitor.usage",
@@ -1197,8 +1200,8 @@ export async function runMonitorForNewEvents(input: {
     monitorThreadId: pass.monitorThreadId,
     monitorCodexThreadId: pass.monitorCodexThreadId,
     monitorCodexWaitingForRestart: pass.source === "codex-app-server",
-    monitorCodexLastPauseReason: pass.source === "codex-app-server" ? pass.checkpointSummary ?? pass.summary : undefined,
-    rollingSummary: pass.checkpointSummary ?? pass.summary,
+    monitorCodexLastPauseReason: pass.source === "codex-app-server" ? pass.checkpointSummary ?? monitorSummary : undefined,
+    rollingSummary: pass.checkpointSummary ?? monitorSummary,
     severity: pass.severity,
     wakeDelta: 1,
     queueDelta: queueItems.length,
@@ -1218,7 +1221,7 @@ export async function runMonitorForNewEvents(input: {
       last_turn_id: input.turn?.id ?? null,
       last_event_id: completedState.last_event_id ?? null,
       last_event_type: completedState.last_event_type ?? null,
-      summary: pass.summary,
+      summary: monitorSummary,
       severity: pass.severity,
       state: completedState.state,
       actor_state_path: relativeActorStatePath(threadId, actorId),
@@ -2125,6 +2128,10 @@ export function isNoProgressAnnouncement(text: string): boolean {
     /\brefut|done[- ]?claim|criterion|meets?\b|below|above|threshold|\d\.\d/.test(t) ||
     /\bblock|stuck|stall|off[- ]goal|error|fail|missing|unable|cannot|can.t|credential|permission|timeout|denied/.test(t)
   return !carriesSignal
+}
+
+function normalizedMonitorSummary(summary: string): string {
+  return isNoProgressAnnouncement(summary) ? "NO_USER_UPDATE" : summary
 }
 
 function directiveLine(text: string, label: string): string | undefined {
