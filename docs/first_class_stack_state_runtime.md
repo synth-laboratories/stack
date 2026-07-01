@@ -218,7 +218,7 @@ future correlation, but not force unimplemented systems into the codebase.
 ```
 
 The `correlation` object is the future-enabler. V1 should store it and set only
-the values it actually knows. Do not add fake impact sensors or placeholder
+the values it actually knows. Do not add invented impact sensors or placeholder
 experiment code just because these fields exist.
 
 ## Factory Snapshot
@@ -509,7 +509,7 @@ These are deliberate follow-ups, not hidden work in either push:
 - Generic sensor registration/plugin system.
 
 The later work should reuse the same event envelope, correlation fields, store,
-and reducer boundary. It should not force extra empty fields, fake data sources,
+and reducer boundary. It should not force extra empty fields, invented data sources,
 or placeholder UI into the V1 implementation.
 
 ## Not V1
@@ -1000,7 +1000,7 @@ Lever-event smoke, 2026-06-30:
 - `GET /runtime/events?source=lever.stack_mcp` returned the persisted lever
   receipt.
 - `GET /status` returned the same receipt in `runtime.factory.recent_events`.
-- A direct attempt to append `sensor.remote.fake` returned `400 Bad Request`.
+- A direct attempt to append an invalid remote sensor event returned `400 Bad Request`.
 - `stack_launch_cloud_promotion` now records best-effort runtime receipts for
   dry-run packet preparation and confirmed cloud launch attempts.
 - `startOptimizerService` now records best-effort `lever.local_gepa.service.*`
@@ -1131,7 +1131,7 @@ Lever-event smoke, 2026-06-30:
   passed with `events=4`, `stackeval_events=1`, and
   `local_gepa.service_status=running`.
 - Full real StackEval smoke ran `./bin/stackeval run banking77-local-gepa
-  --preset smoke --packet-dir /tmp/stack-real-gepa-e2e.e5tsD2/packet-real
+  --preset smoke --packet-dir /tmp/stack-real-gepa-endtoend.e5tsD2/packet-real
   --no-grade` against isolated stackd on `127.0.0.1:18893` and a real
   `synth-optimizers gepa service` on `127.0.0.1:19880`. The GEPA CLI completed
   40 Banking77 rollouts plus one Codex proposer job, accepted
@@ -1147,7 +1147,7 @@ Lever-event smoke, 2026-06-30:
   `gepa_3d7d640253c841f292c86dfed35a7162`, completed with
   `status=succeeded`, `best_candidate_id=gepa_1c284a9e221e`, heldout `0.75`,
   and 24 rollouts, and finalized
-  `/tmp/stack-service-gepa-e2e.JmhHH3/packet-service-v2`. The exported runtime
+  `/tmp/stack-service-gepa-endtoend.JmhHH3/packet-service-v2`. The exported runtime
   event tape had 15 events, including `sensor.local_gepa.run.discovered`,
   multiple `phase_changed`/`progress` events,
   `sensor.local_gepa.run.completed`, and matching StackEval lever

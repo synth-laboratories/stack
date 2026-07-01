@@ -14,7 +14,7 @@ An operator or agent in Stack should reach any Synth surface in **one environmen
 | --- | --- |
 | Local OSS GEPA | `pip install synth-optimizers` → Local Research panel live → job list + artifacts |
 | Container eval | synth-dev slot up → container `/rollout` smoke → synth-ai SDK list/create |
-| StackEval receipt | `./bin/stackeval run … --preset smoke` → packet with ids |
+| StackEval receipt | `bun run stackeval:run` → packet with ids |
 | Hosted optimize | Same container config → Hosted Optimizers panel → preview artifact |
 | Live SMR / Factory | `stack_status` remote → list → message/preview with run ids |
 | Auth | `SYNTH_API_KEY` from env file; signup/keys URLs in TUI; never leak secrets |
@@ -95,7 +95,7 @@ These are P0 for “Stack is hyper-productive with Synth” claims:
 | Gate | Proves |
 | --- | --- |
 | `smoke:install-skills` | oss-gepa + core skills (+ bridged gepa when present) |
-| `prove:goal-first-e2e` | meta-thread + monitor + handoff (long-horizon RE) |
+| Real goal acceptance in `../testing/stack/end_to_end/tui_goal/` | meta-thread + monitor + handoff (long-horizon RE) |
 | `stackeval:banking77-local-gepa --preset smoke` | OSS optimizer path through Stack |
 | `smoke:stackd` + MCP local threads | stackd + agent bridge substrate |
 | Hosted optimizer preview/download smoke | closed-stack artifact path (T1) |

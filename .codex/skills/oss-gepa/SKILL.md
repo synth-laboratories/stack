@@ -71,7 +71,7 @@ Override detection: `export STACK_SYNTH_OPTIMIZERS_ROOT=/path/to/optimizers`
 2. **Single rollout smoke** — prove scorer wiring before a search job.
 3. **Local GEPA job** — Local Research panel or `synth-optimizers` CLI; pick smoke vs
    dev vs gate profile by the claim you need (see `synth-via-stack`).
-4. **StackEval receipt** — `./bin/stackeval run banking77-local-gepa --preset smoke` when
+4. **StackEval receipt** — `bun run stackeval:run` when
    validating the Stack + optimizer path end-to-end.
 5. **Hosted optimizers** — same container config after local proof.
 

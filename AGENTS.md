@@ -1,5 +1,12 @@
 # Stack Agent Guide
 
+## Repo boundary (read first)
+
+**[`docs/DEVELOPERS.md`](docs/DEVELOPERS.md)** — the `stack` repo is **product-only**.
+No testing, linting, or evals code is ever permitted here. Put smokes, harnesses,
+graders, and lint gates in `evals/`, `testing/`, or `synth-dev/` and run them against
+Stack from outside this repo.
+
 You are often launched from **Stack** (`stack` TUI). On Synth/optimizer/container tasks, load
 these Codex skills **before substantial work** (read each `SKILL.md`):
 

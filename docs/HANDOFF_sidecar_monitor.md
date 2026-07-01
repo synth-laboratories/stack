@@ -133,8 +133,9 @@ The goal strip shows `status · criteria X/Y · elapsed · worker $ · monitor $
 - **Thread panel** rich render (worker-grade) + model display (§6a).
 - Better slash-command errors (a registered command is never "unknown"; typos get "did you mean").
 - Deterministic guardrail tests: `smoke:monitor:logic` (38), `smoke:sidecar:render` (19), `smoke:slash:errors` (11), `smoke:goal-shutter` — no LLM, milliseconds.
-- TUI acceptance: `smoke:tui:e2e:layout` verifies default events controls, switching into `Sidecar thread`, sidecar input placement, and no quiet/runtime leakage.
-- End-to-end GameBench UX acceptance: `smoke:goal-mode:ux` starts the Craftax code-policy goal, verifies the default monitor feed + goal summary, persisted sidecar transcript under `stackDataRoot`, and operator↔sidecar chat request/reply.
+- Full TUI goal acceptance has been moved out of Stack. Use
+  `../testing/stack/end_to_end/tui_goal/tmux_goal_craftax_real.ts` for the real
+  Craftax goal flow; Stack must not carry substituted Codex TUI acceptance scripts.
 
 **PENDING — do these next:**
 1. **Make the monitor narrate worker *activity* more richly, not only criterion transitions.** It now emits clean human-facing rows, but the prompt should keep improving toward *"worker is now searching for the baseline eval script"* level updates. Consider a dedicated `monitor_note` feed-write tool (§5) so the model writes typed feed entries with evidence instead of prefix-parsed message text.
@@ -160,7 +161,7 @@ The goal strip shows `status · criteria X/Y · elapsed · worker $ · monitor $
 | Sidecar options wiring | `src/tui/app.ts` (`sidecarTranscriptRenderOptions`) |
 | Monitor profiles (`[wake]`, permissions) | `.stack/monitors/*.toml` (`default`, `progress-narrator`, `handoff-preempt-gamebench`) |
 | Pause tool | `src/mcp/server.ts` (`stack_sidecar_pause_for_restart`) |
-| Tests | `scripts/smoke_monitor_logic.ts`, `scripts/smoke_sidecar_render.ts`, `scripts/accept_monitor_supervision.ts`, `scripts/accept_goal_mode_ux.ts` |
+| Tests | `scripts/smoke_monitor_logic.ts`, `scripts/smoke_sidecar_render.ts`, `scripts/accept_monitor_supervision.ts`; real TUI goal acceptance lives in `../testing/stack/end_to_end/tui_goal/` |
 
 ---
 
@@ -171,7 +172,7 @@ The goal strip shows `status · criteria X/Y · elapsed · worker $ · monitor $
 3. **Events feed vs thread panel division of labor:** confirm thread = monitor's reasoning, events = human narration. Should the events feed also surface a compact worker-activity line (from `agent.*` events) so the human sees worker actions even between monitor updates?
 4. **Model/effort routing:** the monitor runs `gpt-5.4-mini medium` by default; is that the right tier for narration quality, or bump for the audit/steer judgment?
 
-**How to validate any change:** `bunx tsc --noEmit` · `cargo check -p stackd` / `cargo build -p stackd` when touching TUI e2e · deterministic smokes (`smoke:monitor:logic`, `smoke:sidecar:render`, `smoke:slash:errors`, `smoke:goal-shutter`) · `smoke:tui:e2e:layout` (panel layout) · `smoke:goal-mode:ux` (full TUI GameBench flow) · `smoke:monitor:supervision` (real-brain behavior). Add a real-brain acceptance scenario for any new feed behavior — event *counts* from a faked sidecar prove plumbing, not supervision.
+**How to validate any change:** `bunx tsc --noEmit` · `cargo check -p stackd` / `cargo build -p stackd` when touching runtime/TUI code · deterministic smokes (`smoke:monitor:logic`, `smoke:sidecar:render`, `smoke:slash:errors`, `smoke:goal-shutter`) · `smoke:monitor:supervision` (real-brain behavior). Real TUI goal flows are validated from `../testing/stack/end_to_end/tui_goal/`; event *counts* alone prove plumbing, not supervision.
 
 ---
 
@@ -217,9 +218,8 @@ transcript user block (`src/tui/transcript.ts`).
 
 **Tests:** `scripts/smoke_goal_progress.ts` (deterministic: extraction + strip + reducer flip),
 `scripts/accept_goal_status_tool.ts` (real-brain: monitor calls the tool, emits goal_met),
-`scripts/accept_goal_status_negative.ts` (real-brain: refuses goal_met on a false claim),
-`scripts/accept_craftax_e2e.ts` / `accept_craftax_real_worker.ts` / `accept_craftax_midflight.ts`
-(real worker end-to-end + mid-flight feed).
+`scripts/accept_goal_status_negative.ts` (real-brain: refuses goal_met on a false claim).
+Real worker/TUI goal acceptance belongs in `../testing/stack/end_to_end/tui_goal/`.
 
 **Honest residual:** worker ACCURACY depends on what it finds in the repo (one run was misled by a
 stale evidence file). The monitor faithfully audits whatever the worker claims — that is its job, but a

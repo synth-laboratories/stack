@@ -18,7 +18,7 @@ Full reference: `stack/docs/SYNTH_PRODUCTIVITY.md`.
 
 | Lane | What | Stack entry |
 | --- | --- | --- |
-| **OSS / local** | `synth-optimizers`, optimizers repo, synth-dev slots, StackEval, local containers | Local Research · `./bin/stackeval` · `oss-gepa` skill |
+| **OSS / local** | `synth-optimizers`, optimizers repo, synth-dev slots, StackEval, local containers | Local Research · `evals/stackeval` · `oss-gepa` skill |
 | **Hosted / closed** | `synth-ai` SDK, `api.usesynth.ai`, usesynth.ai (keys, signup), SMR, Factory, hosted optimizers | Environment selector · Hosted/Remote panels · `stack-agent-bridge` MCP |
 
 **Graduation:** same container config locally → hosted job → cite both run ids in summaries.
@@ -55,7 +55,7 @@ stack   # Tab → Local Research · Enter starts GEPA if needed
 StackEval receipt:
 
 ```bash
-./bin/stackeval run banking77-local-gepa --preset smoke
+bun run stackeval:run
 ```
 
 ## Hosted fast path (usesynth.ai)
