@@ -32,6 +32,7 @@ import {
   type StackGuidanceImpact,
 } from "../codex/guidance-events.js"
 import { appendThreadMetaEvent, readThreadMetaEvents, stackEventId } from "../thread-events.js"
+import { isUiPanelId, panelOpenAllowed, panelViewAllowed, UI_PANEL_IDS, UI_PANELS, type UiPanelOpener } from "../ui/vocabulary.js"
 import {
   stackdExport,
   stackdMetaThread,
@@ -258,6 +259,92 @@ export class StackMcpServer {
     }
     const path = appendThreadMetaEvent(config.stackDataRoot, event)
     return { ok: true, event_id: event.event_id, status, thread_id: threadId, path }
+  }
+
+  // B1 — agents pull UI in front of the operator only at review moments. Authority
+  // comes from the vocabulary registry; every open is an audited ui.panel_opened.
+  async uiOpenPanel(args: JsonObject): Promise<JsonObject> {
+    const config = await this.config(args)
+    const threadId = requiredString(args, "thread_id")
+    const panel = requiredString(args, "panel")
+    if (!isUiPanelId(panel)) {
+      throw new RpcError(-32602, `unknown panel '${panel}' — registered panels: ${UI_PANEL_IDS.join(", ")}`)
+    }
+    const openedBy = (optionalString(args, "actor_role") ?? "operator") as UiPanelOpener
+    if (!["monitor", "gardener", "operator"].includes(openedBy)) {
+      throw new RpcError(-32602, `actor_role must be monitor, gardener, or operator; got '${openedBy}'`)
+    }
+    if (!panelOpenAllowed(panel, openedBy)) {
+      return { ok: false, status: 0, message: `panel '${panel}' is not openable by ${openedBy}` }
+    }
+    const view = optionalString(args, "view")
+    if (view && !panelViewAllowed(panel, view)) {
+      throw new RpcError(-32602, `panel '${panel}' has no view '${view}'`)
+    }
+    const reason = requiredString(args, "reason")
+    const event = {
+      event_id: stackEventId("ui_panel_opened"),
+      type: "ui.panel_opened",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: optionalString(args, "actor_id") ?? openedBy,
+      actor_role: openedBy === "operator" ? ("primary" as const) : openedBy,
+      payload: {
+        panel,
+        view: view ?? null,
+        opened_by: openedBy,
+        reason,
+        source: "stack_ui_tool",
+      },
+    }
+    const path = appendThreadMetaEvent(config.stackDataRoot, event)
+    return { ok: true, event_id: event.event_id, panel, view: view ?? null, thread_id: threadId, path }
+  }
+
+  // B2 — bounded close: monitor/gardener may close only panels they opened; the
+  // operator (Esc or slash) closes anything.
+  async uiClosePanel(args: JsonObject): Promise<JsonObject> {
+    const config = await this.config(args)
+    const threadId = requiredString(args, "thread_id")
+    const panel = requiredString(args, "panel")
+    if (!isUiPanelId(panel)) {
+      throw new RpcError(-32602, `unknown panel '${panel}' — registered panels: ${UI_PANEL_IDS.join(", ")}`)
+    }
+    const closer = (optionalString(args, "actor_role") ?? "operator") as UiPanelOpener
+    if (closer !== "operator") {
+      const events = readThreadMetaEvents(config.stackDataRoot, threadId)
+      let openPanel: { panel: string; openedBy: string } | undefined
+      for (const event of events) {
+        if (event.type === "ui.panel_opened") {
+          const payload = event.payload as Record<string, unknown>
+          openPanel = { panel: String(payload.panel ?? ""), openedBy: String(payload.opened_by ?? "operator") }
+        } else if (event.type === "ui.panel_closed") {
+          openPanel = undefined
+        }
+      }
+      if (!openPanel || openPanel.panel !== panel) {
+        return { ok: false, status: 0, message: `panel '${panel}' is not open` }
+      }
+      if (openPanel.openedBy !== closer) {
+        return { ok: false, status: 0, message: `${closer} may only close panels it opened; '${panel}' was opened by ${openPanel.openedBy}` }
+      }
+    }
+    const event = {
+      event_id: stackEventId("ui_panel_closed"),
+      type: "ui.panel_closed",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: optionalString(args, "actor_id") ?? closer,
+      actor_role: closer === "operator" ? ("primary" as const) : closer,
+      payload: {
+        panel,
+        closed_by: closer,
+        reason: optionalString(args, "reason") ?? null,
+        source: "stack_ui_tool",
+      },
+    }
+    const path = appendThreadMetaEvent(config.stackDataRoot, event)
+    return { ok: true, event_id: event.event_id, panel, thread_id: threadId, path }
   }
 
   private async handleMessage(message: ParsedMessage): Promise<JsonObject | undefined> {
@@ -2185,6 +2272,41 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["thread_id", "status"],
       ),
       handler: (args) => server.monitorGoalStatus(args),
+    },
+    {
+      name: "stack_ui_open_panel",
+      description:
+        "Open a side panel for human review. The agent panel always stays primary; use this ONLY at review moments (audited goal_met/goal_failed, blocked, a steer you issued, or a risky pending action) and at most once per distinct signature. panel: monitor (sidecar events/thread/tape), gardener (portfolio), ops, threads. Every open emits an audited ui.panel_opened event; the operator's Esc closes it and wins until your next open.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Worker Stack thread/session id the panel belongs to."),
+          panel: { type: "string", enum: [...UI_PANEL_IDS], description: "Registered panel id." },
+          view: stringProperty("Optional view within the panel (monitor: events|thread|tape; gardener: portfolio|chat)."),
+          reason: stringProperty("One short sentence: why this deserves the operator's eyes now."),
+          actor_role: stringProperty("Who is opening: monitor, gardener, or operator."),
+          actor_id: stringProperty("Optional concrete actor id for the audit event."),
+        },
+        ["thread_id", "panel", "reason"],
+      ),
+      handler: (args) => server.uiOpenPanel(args),
+    },
+    {
+      name: "stack_ui_close_panel",
+      description:
+        "Close a side panel. Monitor/gardener may close only panels they opened; the operator closes anything. Emits ui.panel_closed.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Worker Stack thread/session id."),
+          panel: { type: "string", enum: [...UI_PANEL_IDS], description: "Registered panel id." },
+          reason: stringProperty("Optional reason for the audit event."),
+          actor_role: stringProperty("Who is closing: monitor, gardener, or operator."),
+          actor_id: stringProperty("Optional concrete actor id for the audit event."),
+        },
+        ["thread_id", "panel"],
+      ),
+      handler: (args) => server.uiClosePanel(args),
     },
     {
       name: "stack_list_remote_projects",
