@@ -126,12 +126,22 @@ to tool/turn triggers, writes durable monitor actor checkpoints, emits
 thread-scoped `monitor.*` events, and shows the latest monitor status in the
 left rail.
 
-**Intended UX (not fully shipped):** the monitor is the **human-facing intermediary**
-between operator and core agent — it watches the full agent event stream, steers the
-primary as a human watcher would, and writes curated progress (`monitor.summary`,
-`monitor.queued`, etc.) to the shared thread event log. By default the center event
-stream shows those human-useful updates; **Agent view** (planned toggle) exposes the
-full interleaved `agent.*` + `monitor.*` tape for debug and calibration.
+**Sidecar (shipped):** in **`/goal` mode**, the default center view is **Sidecar
+events** — a curated feed of human-facing monitor updates, not the raw worker
+transcript. The worker tape is **thinking traces**; the sidecar is the higher-level
+stream: what the worker is doing, what milestone landed, what went wrong.
+
+| Key | View |
+| --- | --- |
+| `e` | **Sidecar events** (default) — `monitor.goal_status` rows with `for_human: true`, steers, errors |
+| `t` | **Sidecar thread** — monitor Codex reasoning (how it decided) |
+| `a` | **Agent tape** — full `agent.*` + `monitor.*` interleave for debug |
+
+Monitor posts operator-visible updates through the Stack MCP tool
+**`stack_monitor_goal_status`** (`status`, `headline`, `note`, `for_human`, optional
+`metric`). The goal shutter also shows a **headline strip** and **milestone timeline**
+from typed `monitor.goal_status` events. The monitor **audits** worker done-claims before
+emitting `goal_met`; bogus claims surface as `goal_failed` / `blocked`.
 
 Profiles (seeded into `.stack/monitors/` on first run from `bundled/monitors/`):
 
@@ -146,6 +156,10 @@ Useful overrides:
 - In the TUI, `M` cycles the current thread through
   `off -> passive -> conservative -> aggressive -> off` and records
   `monitor.paused`, `monitor.resumed`, or `monitor.mode_changed`.
+
+**Not yet shipped:** multi-goal portfolio view, ETA/progress rate, typed pause-before-risk
+escalation, gardener lifecycle archive. Sidecar pause (`stack_sidecar_pause_for_restart`)
+sleeps the monitor until the next wake — it does not archive threads.
 
 The monitor pass is event-backed: it checks enabled focus areas such as style,
 goal progress, skills, tool use, scope control, and acceptance.
@@ -166,12 +180,14 @@ guidance index includes app/repo/personal style plus org Synth Style when that
 workspace source is present; see `.stack/guidance/monitor-visible-context.md`
 for the exact monitor-visible sources and exclusions.
 
-Monitor proof commands:
+Monitor verification (run from `~/Documents/GitHub/testing`, not from `stack/`):
 
-- `bun run smoke:guidance:l2` proves guidance layers and rejects external
-  guidance roots.
-- `bun run smoke:monitor:style-steer` proves `app/style/stack-norms` steering
-  and conservative tool-failure summary without steer.
+```bash
+export STACK_REPO_ROOT=~/Documents/GitHub/stack
+bun run stack/smoke/smoke_goal_shutter.ts
+bun run stack/smoke/smoke_sidecar_render.ts
+bun run stack/end_to_end/monitor_feed/tmux_monitor_feed_proof.ts
+```
 
 ### Actors Preview
 
@@ -400,19 +416,14 @@ That smoke launches a real Codex turn with Stack MCP registered, invokes
 `stack_list_live_smrs`, checks the Codex JSONL event stream for those MCP tool
 calls, and writes proof artifacts under `/tmp/stack-agent-bridge-proof/`.
 
-Validate the OpenTUI agent pane end-to-end without manual dogfood:
+Validate OpenTUI goal flows from the sibling testing repo. These runs must use
+real Stack + real Codex; substituted Codex TUI acceptance scripts do not live in
+Stack.
 
 ```bash
-bun run smoke:tui:gepa          # mock Banking77 GEPA receipt through PTY (~15s, no API)
-bun run smoke:tui:resilience    # 196-col live-turn/spinner stress (OpenTUI crash regression)
-bun run smoke:tui:all           # submit + scroll + gepa + resilience
-bun run smoke:tui:gepa:live       # optional real run_acceptance.py (~50s; skips without key)
+cd ../testing
+bun run stack/end_to_end/tui_goal/tmux_goal_craftax_real.ts
 ```
-
-The GEPA smoke uses `scripts/fake_codex_banking77_gepa.ts` as `STACK_CODEX_COMMAND`,
-submits a Banking77 prompt, asserts uplift markers in the terminal, validates
-session JSON, and fails if raw Codex JSONL leaks or OpenTUI throws
-`Failed to create optimized buffer`.
 
 Validate the first release UI guard with Bombadil:
 
@@ -430,16 +441,21 @@ Prepare the first human dogfood packet (interactive TUI):
 bun run stackeval:banking77-local-gepa
 ```
 
-**StackEval task catalog:** **`banking77-local-gepa`** ships in `bundled/stackeval/`
-and is seeded into `.stack/stackeval/` on first run. Presets `smoke`, `dev`, and
-`gate` are variants of that id.
+**StackEval lives in the `evals` repo** (`synth-laboratories/evals`) at
+`evals/stackeval/`, a sibling checkout of this repo. Task catalog —
+**`banking77-local-gepa`**, `crafter-local-gepa`, `tictactoe-harbor-env-rebuild` —
+is defined in `evals/stackeval/tasks/`. Presets `smoke`, `dev`, and `gate` are
+variants of each id. The `bun run stackeval:*` scripts here delegate to that
+checkout and set `STACK_REPO_ROOT` to this repo automatically.
 
 For the **full TOML + shell pipeline** (pinned GEPA harness, harvest, stackd export,
 Codex grader + reviewer):
 
 ```bash
-./bin/stackeval run banking77-local-gepa --preset smoke
-./bin/stackeval prepare banking77-local-gepa --preset smoke   # packet only
+bun run stackeval:run                # -> evals/stackeval banking77-local-gepa
+bun run stackeval:run:prepare        # packet only
+# or drive the sibling checkout directly:
+STACK_REPO_ROOT="$PWD" ../evals/stackeval/bin/stackeval run banking77-local-gepa --preset smoke
 ```
 
 **Agent-driven TUI harness (StackEval programmatic replay v0):** tmux + stackd
@@ -447,19 +463,20 @@ receipts + pane capture for Codex (ncode-style). Prepares a packet, starts
 `stack-stackeval` tmux session, and writes `harness/OPERATOR.md`:
 
 ```bash
-./bin/stackeval harness prepare banking77-local-gepa --preset smoke
+export SE="STACK_REPO_ROOT=$PWD ../evals/stackeval/bin/stackeval"
+$SE harness prepare banking77-local-gepa --preset smoke
 export STACKEVAL_PACKET="<packet-from-output>"
 
-./bin/stackeval harness status --capture-pane -o "${STACKEVAL_PACKET}/harness.debug.json"
-./bin/stackeval harness capture -o "${STACKEVAL_PACKET}/harness.capture.json"
-./bin/stackeval harness export-thread --packet-dir "${STACKEVAL_PACKET}" -o "${STACKEVAL_PACKET}/harness.export.json"
+$SE harness status --capture-pane -o "${STACKEVAL_PACKET}/harness.debug.json"
+$SE harness capture -o "${STACKEVAL_PACKET}/harness.capture.json"
+$SE harness export-thread --packet-dir "${STACKEVAL_PACKET}" -o "${STACKEVAL_PACKET}/harness.export.json"
 
 # after operator/agent work, resume automated pipeline from harvest:
-./bin/stackeval run banking77-local-gepa --preset smoke --packet-dir "${STACKEVAL_PACKET}" --from-stage harvest
+$SE run banking77-local-gepa --preset smoke --packet-dir "${STACKEVAL_PACKET}" --from-stage harvest
 ```
 
-StackEval runtime state and acceptance notes live under `.stack/evals/`; the
-pipeline implementation lives in `scripts/stackeval/`.
+StackEval run packets land under `evals/stackeval/_runs/`; the pipeline
+implementation lives in `evals/stackeval/engine/`.
 During harness runs, StackEval creates a stackd session for the packet, records
 live `skill.read`/`skill.used` and `agent.tool.*` events, waits for monitor
 checkpoint evidence before export, and copies `/trace` plus the stackd export

@@ -231,7 +231,7 @@ stack --version
 - [ ] `make smoke-stackd-telemetry`
 - [ ] `make smoke-growth-ingestion`
 - [ ] `make quality-release`
-- [ ] `./bin/stackeval run banking77-local-gepa --preset smoke`
+- [ ] `bun run stackeval:run`
 - [ ] git tag `vX.Y.Z` + GitHub Release
 - [ ] installer points to signed/checksummed `vX.Y.Z` asset
 - [ ] clean install/update proof for the advertised channel

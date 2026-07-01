@@ -59,7 +59,7 @@ Every server/client feature should have two kinds of evidence:
 | Stable promote (before tag) | `bun run quality:release` | ~15–45m |
 | Launch inventory | `bun run launch:readiness` | ~1s |
 | Nightly 1 packet | `bun run launch:nightly1` | ~1s |
-| StackEval dogfood smoke | `./bin/stackeval run banking77-local-gepa --preset smoke` | ~10–30m |
+| StackEval dogfood smoke | `bun run stackeval:run` | ~10–30m |
 | GameBench handoff experiment | See §GameBench (P0 wiring pending) | hours |
 
 Makefile aliases: `make check`, `make release-check`, `make release-guard-b0`, `make launch-readiness`, `make launch-nightly1`, `make quality-dev`, `make quality-local`.
@@ -110,7 +110,7 @@ make release-guard-b0              # same as smoke:bombadil:b0
 - `STACK_BOMBADIL_BIN` — path to bombadil binary (default: `../synth-managed-research/tests/property/bombadil`)
 - `STACK_BOMBADIL_B0_PROOF` — output proof JSON path
 
-**Pass bar (B0):** scroll/focus/crash-cleanup scenarios pass; no OpenTUI buffer/mouse/memory crash signatures (`scripts/tui_crash_guard.ts`).
+**Pass bar (B0):** scroll/focus/crash-cleanup scenarios pass; no OpenTUI buffer/mouse/memory crash signatures (`testing/stack/scripts/tui_crash_guard.ts`).
 
 Bombadil should grow into the main terminal-UX confidence tool:
 
@@ -180,21 +180,15 @@ bun run release-check:observability   # AT-STACK-OBS-RETENTION
 
 | Command | ID / purpose |
 | --- | --- |
-| `bun run smoke:tui` | Submit path |
-| `bun run smoke:tui:scroll` | Scroll invariants |
-| `bun run smoke:tui:focus` | Focus rail |
-| `bun run smoke:tui:crash-cleanup` | Crash cleanup |
-| `bun run smoke:tui:gepa` | GEPA mock TUI |
-| `bun run smoke:tui:gepa:live` | GEPA live (keys) |
-| `bun run smoke:tui:resilience` | Resilience |
-| `bun run smoke:tui:all` | check + submit + scroll + gepa mock + resilience |
 | `bun run smoke:stackd` | Local API |
 | `bun run smoke:mcp:http` | HTTP MCP |
 | `bun run smoke:agent-bridge` | Codex bridge |
 | `bun run smoke:bootstrap` | Bootstrap |
 | `bun run smoke:install-skills` | Codex skills install |
 
-Expect scripts: `scripts/smoke_tui_*.expect`. Feature smokes: `scripts/smoke_*.ts`.
+Full TUI goal acceptance lives outside this repo under
+`../testing/stack/end_to_end/tui_goal/`. Stack does not carry substituted
+Codex TUI acceptance scripts.
 
 ### Registered but not implemented
 
@@ -219,16 +213,16 @@ StackEval is Stack’s **dogfood eval pipeline** — tmux harness + GEPA optimiz
 cd ~/Documents/GitHub/stack
 
 # Full pipeline (smoke = plumbing proof, no heldout lift claim)
-./bin/stackeval run banking77-local-gepa --preset smoke
+bun run stackeval:run
 
 # Prepare only (config + dirs, no optimizer run)
-./bin/stackeval prepare banking77-local-gepa --preset smoke
+bun run stackeval:run:prepare
 
 # Agent-driven TUI replay (Codex in tmux)
-./bin/stackeval harness prepare banking77-local-gepa --preset smoke
+bun run stackeval:harness
 
 # npm aliases
-bun run stackeval:run              # ./bin/stackeval run banking77-local-gepa
+bun run stackeval:run              # delegates to ../evals/stackeval (STACK_REPO_ROOT=$PWD)
 bun run stackeval:run:prepare
 bun run stackeval:harness
 bun run stackeval:banking77-local-gepa   # legacy TS wrapper
@@ -269,7 +263,7 @@ Documented in `.stack/stackeval/tasks/banking77-local-gepa.md`:
 
 ### Current state (2026-06-29)
 
-- **No** `./bin/stackeval run craftax-*` task registered in Stack.
+- **No** `craftax-*` stackeval task registered (see `evals/stackeval/tasks/`).
 - Handoff harness scripts (`smoke:handoff-harness:*`) **not committed**.
 - **Lane map (read this):** [`gamebench_lane_map_env_codegen.md`](../../Jstack/.jstack/daily_notes/2026-06-29/gamebench_lane_map_env_codegen.md)
 - Stack evidence `tictactoe-code-dev-real` ran **code_policy hillclimb** (91-line policy) — **not** env codegen.
@@ -367,7 +361,7 @@ See [`RELEASE.md`](RELEASE.md).
 # CHANGELOG section for X.Y.Z first
 make release-promote VERSION=X.Y.Z
 bun run quality:release          # static + T0 + T1 + obs retention check
-./bin/stackeval run banking77-local-gepa --preset smoke
+bun run stackeval:run
 make release-guard-b0            # redundant if quality:dev ran; required for ship citation
 git tag -a vX.Y.Z -m "Stack X.Y.Z"
 ```

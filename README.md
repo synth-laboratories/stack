@@ -53,6 +53,15 @@ install, update, and rollback proofs.
 
 </details>
 
+## What's new — sidecar monitor (dev)
+
+Long Codex goal runs produce a lot of output. Stack's **monitor sidecar** is a
+separate agent paired with your worker: it writes **Sidecar events** — short
+headlines and milestones — so you can skim progress without reading every tool call.
+
+In `/goal` mode, Sidecar events is the default view (`e`). Press `t` for the
+monitor thread, `a` for the raw worker tape. See [Usage § Stack Monitor](docs/USAGE.md).
+
 ## Docs
 
 - [Usage & reference](docs/USAGE.md) — controls, stackd API, monitor, workspace config, Stack MCP
