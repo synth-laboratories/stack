@@ -6,6 +6,7 @@ pub mod seed;
 pub mod meta_thread;
 pub mod meta_thread_state;
 pub mod redact;
+pub mod actor_runtime;
 pub mod runtime_event;
 pub mod runtime_state;
 pub mod session;

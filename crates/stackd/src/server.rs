@@ -1,5 +1,5 @@
 use crate::handlers::{
-    checkpoints, export, health, logs, mcp, meta_threads, runtime, skills, telemetry, threads,
+    checkpoints, export, health, logs, mcp, meta, meta_threads, runtime, skills, telemetry, threads,
 };
 use crate::mcp_sidecar::McpSidecar;
 use crate::monitor_scheduler;
@@ -25,6 +25,7 @@ pub struct AppState {
     pub mcp_sidecar: Option<McpSidecar>,
     pub http_client: reqwest::Client,
     pub runtime_write_lock: Mutex<()>,
+    pub meta_tick_lock: Mutex<()>,
 }
 
 pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
@@ -52,6 +53,7 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
         mcp_sidecar,
         http_client: reqwest::Client::new(),
         runtime_write_lock: Mutex::new(()),
+        meta_tick_lock: Mutex::new(()),
     });
 
     if let Err(error) = stack_core::seed::ensure_stack_defaults(&state.paths) {
@@ -108,6 +110,8 @@ fn router(state: Arc<AppState>) -> Router {
             get(runtime::get_runtime_events).post(runtime::post_runtime_event),
         )
         .route("/runtime/tick", post(runtime::post_runtime_tick))
+        .route("/meta/tick", post(meta::post_meta_tick))
+        .route("/meta/status", get(meta::get_meta_status))
         .route("/threads", get(threads::list_threads))
         .route("/threads/:id", get(threads::get_thread))
         .route("/threads/:id/status", get(threads::get_status))

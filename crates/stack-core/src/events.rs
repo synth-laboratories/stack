@@ -91,7 +91,7 @@ pub async fn read_thread_monitor_actor_states(
     Ok(actors)
 }
 
-fn safe_thread_id(thread_id: &str) -> Result<String, EventLogError> {
+pub(crate) fn safe_thread_id(thread_id: &str) -> Result<String, EventLogError> {
     let trimmed = thread_id.trim();
     if trimmed.is_empty() || trimmed == "." || trimmed == ".." {
         return Err(EventLogError::InvalidThreadId(thread_id.to_string()));

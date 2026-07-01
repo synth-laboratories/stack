@@ -1,4 +1,5 @@
 mod handlers;
+mod meta;
 mod mcp_sidecar;
 mod monitor_scheduler;
 mod openapi;
