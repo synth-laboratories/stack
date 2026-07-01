@@ -1,4 +1,5 @@
 import { StyledText, bold, dim, fg, type TextChunk } from "@opentui/core"
+import { randomUUID } from "node:crypto"
 import type { StackMonitorSnapshot } from "../monitor.js"
 import type { StackMonitorSidecarTurn } from "../monitor-sidecar-codex.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
@@ -7,6 +8,8 @@ import {
   blocksFromTurnStdout,
   maxTranscriptScrollOffset,
   renderTranscriptStyledView,
+  appendUserBlock,
+  type TranscriptBlock,
   type TranscriptRenderOptions,
 } from "./transcript.js"
 
@@ -25,13 +28,13 @@ const NARRATIVE_EVENT_TYPES = new Set([
 ])
 
 // The HUMAN-facing events feed. Deliberately excludes the internal per-pass mechanics —
-// monitor.summary (checkpoint), monitor.wake, monitor.checkpoint, monitor.pause_for_restart,
-// monitor.trigger_queued, monitor.usage — so the operator sees narration, not plumbing. The real
-// update rides monitor.progress; steers ride monitor.steer.
+// monitor.summary (checkpoint), monitor.progress (internal narration record), monitor.wake,
+// monitor.checkpoint, monitor.pause_for_restart, monitor.trigger_queued, monitor.usage — so the
+// operator sees deliberate updates, not plumbing. The real update rides monitor.goal_status with
+// for_human:true (type=status, headline=title, note=content); steers ride monitor.steer.
 const GOAL_SHUTTER_EVENT_TYPES = new Set([
   "monitor.chat.reply",
-  "monitor.summary",
-  "monitor.progress",
+  "monitor.goal_status",
   "monitor.steer",
   "monitor.skill_context_push",
   "monitor.error",
@@ -484,10 +487,14 @@ export function cleanSidecarStdout(stdout: string): string {
   return out.join("\n")
 }
 
-function buildSidecarBlocks(turns?: readonly StackMonitorSidecarTurn[]): SidecarBuild {
+function buildSidecarBlocks(
+  turns?: readonly StackMonitorSidecarTurn[],
+  events?: readonly StackThreadMetaEvent[],
+): SidecarBuild {
   const blocks: SidecarBuild["blocks"] = []
   const tools: SidecarBuild["tools"] = []
   const subagents: SidecarBuild["subagents"] = []
+  const renderedTurnText: string[] = []
   for (const turn of turns ?? []) {
     // The wake "user turn" comes from the RUNTIME (or the operator, for a sidecar message). Keep the
     // user-block style but label the true origin so it reads "› runtime  scheduled check".
@@ -499,21 +506,24 @@ function buildSidecarBlocks(turns?: readonly StackMonitorSidecarTurn[]): Sidecar
     // A quiet review yields only its wake-header block — skip it so the thread shows real activity.
     const hasContent = built.blocks.some((block) => block.kind !== "user") || built.tools.length > 0
     if (!hasContent) continue
+    renderedTurnText.push(sidecarTurnPromptLabel(turn.prompt), cleanSidecarStdout(turn.stdout))
     blocks.push(...built.blocks)
     tools.push(...built.tools)
     subagents.push(...built.subagents)
   }
+  appendSidecarChatEventBlocks(blocks, events ?? [], renderedTurnText.join("\n"))
   return { blocks, tools, subagents }
 }
 
 export function renderGoalSidecarThreadRich(input: {
   turns?: readonly StackMonitorSidecarTurn[]
+  events?: readonly StackThreadMetaEvent[]
   columns: number
   visibleRows?: number
   scrollOffset?: number
   options: TranscriptRenderOptions
 }): StyledText {
-  const { blocks, tools, subagents } = buildSidecarBlocks(input.turns)
+  const { blocks, tools, subagents } = buildSidecarBlocks(input.turns, input.events)
   if (blocks.length === 0) {
     return new StyledText([dim(fg(theme.fgMuted)("(monitor watching · no update yet)"))])
   }
@@ -532,13 +542,35 @@ export function renderGoalSidecarThreadRich(input: {
 // Total rendered line count (for scroll bounds); mirrors the rich render's block build.
 export function sidecarThreadRenderedLineCount(input: {
   turns?: readonly StackMonitorSidecarTurn[]
+  events?: readonly StackThreadMetaEvent[]
   columns: number
   options: TranscriptRenderOptions
 }): number {
-  const { blocks, tools, subagents } = buildSidecarBlocks(input.turns)
+  const { blocks, tools, subagents } = buildSidecarBlocks(input.turns, input.events)
   if (blocks.length === 0) return 1
   // A 0-line viewport makes maxTranscriptScrollOffset return the full annotated line count.
   return maxTranscriptScrollOffset(blocks, tools, subagents, Math.max(16, input.columns - 2), input.options, 0)
+}
+
+function appendSidecarChatEventBlocks(
+  blocks: TranscriptBlock[],
+  events: readonly StackThreadMetaEvent[],
+  renderedTurnText: string,
+): void {
+  const chatEvents = events
+    .filter((event) => event.type === "monitor.chat.request" || event.type === "monitor.chat.reply")
+    .sort((left, right) => left.observed_at.localeCompare(right.observed_at))
+  for (const event of chatEvents) {
+    if (event.type === "monitor.chat.request") {
+      const message = readString(event.payload.message)
+      if (!message || renderedTurnText.includes(message)) continue
+      appendUserBlock(blocks, message, "you")
+      continue
+    }
+    const answer = readString(event.payload.answer)
+    if (!answer || renderedTurnText.includes(answer)) continue
+    blocks.push({ id: randomUUID(), kind: "agent", text: answer })
+  }
 }
 
 function styledSidecarThreadLine(line: GoalSidecarThreadLine): TextChunk[] {
@@ -743,6 +775,44 @@ function renderMonitorLinesStyled(
   return new StyledText(chunks)
 }
 
+// The operator feed's primary entry: the monitor's `stack_monitor_goal_status` tool call, rendered
+// as `type · headline` on line 1 with one content line beneath. type is derived from `status`, the
+// title from `headline`, the content from `note`. Kept to two rows so events stay scannable.
+function formatGoalStatusEvent(event: StackThreadMetaEvent, width: number): string[] {
+  const payload = event.payload
+  const status = readString(payload.status) ?? "working"
+  const note = readString(payload.note)
+  const headline = readString(payload.headline) ?? note ?? goalStatusLabel(status)
+  const typeWord = goalStatusTypeWord(status)
+  const lines = [clampLine(`  ${typeWord} · ${headline}`, width)]
+  if (note && note !== headline) lines.push(clampLine(`    ${note}`, width))
+  return lines
+}
+
+// Maps the structured `status` onto the short feed type-word + drives its color in styledNarrativeLine.
+function goalStatusTypeWord(status: string): string {
+  switch (status) {
+    case "advancing":
+      return "progress"
+    case "working":
+      return "working"
+    case "blocked":
+      return "blocked"
+    case "stalled":
+      return "stalled"
+    case "goal_met":
+      return "done"
+    case "goal_failed":
+      return "failed"
+    default:
+      return "monitor"
+  }
+}
+
+function goalStatusLabel(status: string): string {
+  return status.replace(/_/g, " ")
+}
+
 function formatNarrativeEvent(
   event: StackThreadMetaEvent,
   width: number,
@@ -751,22 +821,22 @@ function formatNarrativeEvent(
   const payload = event.payload
   switch (event.type) {
     case "monitor.operator_message":
-      return [oneLine(`› you  ${readString(payload.message) ?? "(empty)"}`, width)]
+      return [clampLine(`› you  ${readString(payload.message) ?? "(empty)"}`, width)]
     case "monitor.chat.request":
-      return [oneLine(`› ask  ${readString(payload.message) ?? "(empty)"}`, width)]
+      return [clampLine(`› ask  ${readString(payload.message) ?? "(empty)"}`, width)]
     case "monitor.chat.reply": {
       const answer = readString(payload.answer) ?? "(empty reply)"
-      const lines = [oneLine(`  sidecar  ${answer}`, width)]
+      const lines = [clampLine(`  sidecar · ${answer}`, width)]
       const criteriaRefs = readNumberArray(payload.criteria_refs)
       const cited = readStringArray(payload.cited_event_ids)
-      if (criteriaRefs.length > 0) lines.push(oneLine(`           criteria · ${criteriaRefs.join(", ")}`, width))
-      if (cited.length > 0) lines.push(oneLine(`           evidence · ${cited.slice(0, 3).join(", ")}`, width))
+      if (criteriaRefs.length > 0) lines.push(clampLine(`      criteria · ${criteriaRefs.join(", ")}`, width))
+      if (cited.length > 0) lines.push(clampLine(`      evidence · ${cited.slice(0, 3).join(", ")}`, width))
       return lines
     }
     case "monitor.wake": {
       const reason = readString(payload.wake_reason) ?? "trigger"
       if (reason === "operator_message") return []
-      return [oneLine(`› runtime  ${monitorRuntimeWakeMessage(event, allEvents)}`, width)]
+      return [clampLine(`› runtime  ${monitorRuntimeWakeMessage(event, allEvents)}`, width)]
     }
     case "monitor.summary": {
       const summary = readString(payload.summary) ?? "(empty summary)"
@@ -776,46 +846,46 @@ function formatNarrativeEvent(
       const struggling = readString(operatorUpdate?.struggling_with)
       const progress = readString(operatorUpdate?.progress_note)
       const lead = struggling
-        ? `  concern  ${struggling}`
+        ? `  concern · ${struggling}`
         : progress
-          ? `  progress  ${progress}`
+          ? `  progress · ${progress}`
           : workingOn
-            ? `  working  ${workingOn}`
-            : `  monitor  ${severity} · ${summary}`
-      const lines = [oneLine(lead, width)]
-      if (progress && struggling && !struggling.includes(progress)) lines.push(oneLine(`           progress · ${progress}`, width))
-      if (workingOn && !lead.includes(workingOn)) lines.push(oneLine(`           working · ${workingOn}`, width))
-      if (summary && severity !== "none" && !lead.includes(summary)) lines.push(oneLine(`           summary · ${summary}`, width))
+            ? `  working · ${workingOn}`
+            : `  monitor · ${severity} · ${summary}`
+      const lines = [clampLine(lead, width)]
+      if (progress && struggling && !struggling.includes(progress)) lines.push(clampLine(`      progress · ${progress}`, width))
+      if (workingOn && !lead.includes(workingOn)) lines.push(clampLine(`      working · ${workingOn}`, width))
+      if (summary && severity !== "none" && !lead.includes(summary)) lines.push(clampLine(`      summary · ${summary}`, width))
       return lines
     }
     case "monitor.progress": {
       const text = (readString(payload.summary) ?? readString(payload.phase) ?? "").trim()
       if (!text || /^NO_USER_UPDATE\b/i.test(text)) return [] // defensive: never surface a quiet marker
-      return [oneLine(`  progress  ${text.replace(/^\s*PROGRESS_UPDATE\s*:\s*/i, "")}`, width)]
+      return [clampLine(`  progress · ${text.replace(/^\s*PROGRESS_UPDATE\s*:\s*/i, "")}`, width)]
     }
     case "monitor.queued":
       return [
-        oneLine(
-          `  queue  ${readString(payload.summary) ?? readString(payload.message) ?? readString(payload.reason) ?? "item"}`,
+        clampLine(
+          `  queue · ${readString(payload.summary) ?? readString(payload.message) ?? readString(payload.reason) ?? "item"}`,
           width,
         ),
       ]
     case "monitor.steer":
       return [
-        oneLine(
+        clampLine(
           readString(payload.rule_id) || readString(payload.guidance_id)
-            ? `  steer  ${readString(payload.rule_id) ?? "rule"} · ${readString(payload.guidance_id) ?? "guide"}`
-            : `  steer  ${readString(payload.focus) ?? "worker"}`,
+            ? `  steer · ${readString(payload.rule_id) ?? "rule"} · ${readString(payload.guidance_id) ?? "guide"}`
+            : `  steer · ${readString(payload.focus) ?? "worker"}`,
           width,
         ),
-        ...(readString(payload.message) ? [oneLine(`         ${readString(payload.message)!}`, width)] : []),
+        ...(readString(payload.message) ? [clampLine(`      ${readString(payload.message)!}`, width)] : []),
       ]
     case "monitor.skill_context_push":
       return [
-        oneLine(`  push  ${readString(payload.skill_id) ?? "skill"} · ${readString(payload.reason) ?? "context"}`, width),
+        clampLine(`  push · ${readString(payload.skill_id) ?? "skill"} · ${readString(payload.reason) ?? "context"}`, width),
       ]
     case "monitor.error":
-      return [oneLine(`  error  ${readString(payload.message) ?? "monitor failed"}`, width)]
+      return [clampLine(`  error · ${readString(payload.message) ?? "monitor failed"}`, width)]
     default:
       return []
   }
@@ -826,6 +896,7 @@ function formatGoalShutterEvent(
   width: number,
   allEvents: StackThreadMetaEvent[],
 ): string[] {
+  if (event.type === "monitor.goal_status") return formatGoalStatusEvent(event, width)
   if (event.type.startsWith("monitor.")) return formatNarrativeEvent(event, width, allEvents)
   if (event.type.startsWith("agent.")) return [oneLine(`  agent  ${formatAgentWatchLine(event.type, event.payload)}`, width)]
   const payload = event.payload
@@ -856,6 +927,13 @@ function sidecarPrefillPromptForEvent(event: StackThreadMetaEvent): string | und
       if (answer) return `Tell me more about: ${answer.slice(0, 72)}`
       return undefined
     }
+    case "monitor.goal_status": {
+      const headline = readString(payload.headline)
+      if (headline) return `Tell me more about: ${headline.slice(0, 72)}`
+      const note = readString(payload.note)
+      if (note) return `Explain this update: ${note.slice(0, 72)}`
+      return "What's the latest goal progress?"
+    }
     case "monitor.progress":
       return "What's the latest goal progress?"
     case "agent.tool.failed": {
@@ -880,28 +958,17 @@ function sidecarPrefillPromptForEvent(event: StackThreadMetaEvent): string | und
 
 function isHumanFacingGoalFeedEvent(event: StackThreadMetaEvent): boolean {
   switch (event.type) {
-    case "monitor.progress":
     case "monitor.steer":
     case "monitor.skill_context_push":
     case "monitor.error":
     case "monitor.chat.reply":
       return true
-    case "monitor.summary":
-      return isSubstantiveMonitorSummary(event.payload)
+    case "monitor.goal_status":
+      // The monitor opts an update into the operator feed by setting for_human on its tool call.
+      return event.payload.for_human === true
     default:
       return false
   }
-}
-
-function isSubstantiveMonitorSummary(payload: Record<string, unknown>): boolean {
-  const summary = readString(payload.summary)
-  const severity = readString(payload.severity) ?? "none"
-  const operatorUpdate = asRecord(payload.operator_update)
-  if (readString(operatorUpdate?.working_on)) return true
-  if (readString(operatorUpdate?.progress_note)) return true
-  if (readString(operatorUpdate?.struggling_with)) return true
-  if (severity !== "none") return true
-  return Boolean(summary && !isRuntimeOrQuietSummary(summary))
 }
 
 function substantiveSummaryLines(summary: string | undefined, width: number): string[] {
@@ -1063,12 +1130,18 @@ function styledNarrativeLine(line: string): TextChunk[] {
   if (line.startsWith("  sidecar")) return [fg("#3fb950")(line)]
   if (line.startsWith("  progress")) return [fg("#3fb950")(line)]
   if (line.startsWith("  working")) return [fg("#3fb950")(line)]
+  if (line.startsWith("  done")) return [fg("#3fb950")(line)]
   if (line.startsWith("  concern")) return [fg(theme.synth.red)(line)]
+  if (line.startsWith("  blocked")) return [fg(theme.synth.red)(line)]
+  if (line.startsWith("  stalled")) return [fg(theme.synth.red)(line)]
+  if (line.startsWith("  failed")) return [fg(theme.synth.red)(line)]
   if (line.startsWith("  steer")) return [fg("#3fb950")(line)]
   if (line.startsWith("  queue")) return [fg(theme.synth.amber)(line)]
   if (line.startsWith("  push")) return [fg(theme.synth.gold)(line)]
   if (line.startsWith("  error")) return [fg(theme.synth.red)(line)]
   if (line.startsWith("(no messages") || line.startsWith("(waiting") || line.startsWith("(monitor off)") || line.startsWith("(off)")) return [dim(fg(theme.fgMuted)(line))]
+  // Indented rows (>= 4 leading spaces) are content beneath a header — dim so the type · headline scans first.
+  if (/^\s{4,}\S/.test(line)) return [dim(fg(theme.fgSecondary)(line))]
   return [fg(theme.fgPrimary)(line)]
 }
 
@@ -1129,6 +1202,18 @@ function oneLine(value: string, maxLength: number): string {
   if (trimmed.length <= maxLength) return trimmed
   if (maxLength <= 3) return trimmed.slice(0, maxLength)
   return `${trimmed.slice(0, maxLength - 1)}…`
+}
+
+// Like oneLine, but PRESERVES the leading indent so the feed's prefix-based coloring/dimming
+// survives (a 2-space `  progress` header stays a header; a 4-space content line stays content).
+// oneLine's trim() strips those leads and flattens the whole feed to one color — clampLine keeps them.
+function clampLine(value: string, maxLength: number): string {
+  const lead = value.match(/^ */)?.[0] ?? ""
+  const body = value.slice(lead.length).replace(/\s+/g, " ").trimEnd()
+  const line = lead + body
+  if (line.length <= maxLength) return line
+  if (maxLength <= 3) return line.slice(0, maxLength)
+  return `${line.slice(0, maxLength - 1)}…`
 }
 
 function spinner(frame: number): string {

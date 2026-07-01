@@ -231,6 +231,33 @@ export type AnnotatedTranscriptLine = {
 }
 
 const TRANSCRIPT_RENDER_LINE_BUDGET = 2_000
+const TRANSCRIPT_RENDER_CHAR_BUDGET = readTranscriptRenderCharBudget()
+
+function readTranscriptRenderCharBudget(): number {
+  const raw = process.env.STACK_TUI_TRANSCRIPT_CHAR_BUDGET?.trim()
+  if (!raw) return 350_000
+  const parsed = Number.parseInt(raw, 10)
+  if (!Number.isFinite(parsed) || parsed < 10_000) return 350_000
+  return parsed
+}
+
+function capAnnotatedLines(lines: AnnotatedTranscriptLine[]): AnnotatedTranscriptLine[] {
+  let total = 0
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    total += lines[index]?.text.length ?? 0
+    if (total <= TRANSCRIPT_RENDER_CHAR_BUDGET) continue
+    const kept = lines.slice(index + 1)
+    return [
+      {
+        kind: "meta",
+        part: "meta",
+        text: `[transcript render capped: showing latest ~${TRANSCRIPT_RENDER_CHAR_BUDGET.toLocaleString()} chars for OpenTUI buffer safety]`,
+      },
+      ...kept,
+    ]
+  }
+  return lines
+}
 
 export function renderTranscriptView(
   blocks: readonly TranscriptBlock[],
@@ -355,17 +382,17 @@ function blocksToAnnotatedLines(
     if (block.kind === "thinking") continue
     lines.push(...blockToAnnotatedLines(block, toolLogs, subagentLogs, columns, options))
     if (lines.length > TRANSCRIPT_RENDER_LINE_BUDGET) {
-      return [
+      return capAnnotatedLines([
         {
           kind: "meta",
           part: "meta",
           text: `[transcript render capped: showing latest ${TRANSCRIPT_RENDER_LINE_BUDGET} lines]`,
         },
         ...lines.slice(-TRANSCRIPT_RENDER_LINE_BUDGET),
-      ]
+      ])
     }
   }
-  return lines.length > 0 ? lines : [{ kind: "meta", part: "meta", text: " " }]
+  return capAnnotatedLines(lines.length > 0 ? lines : [{ kind: "meta", part: "meta", text: " " }])
 }
 
 function blockToAnnotatedLines(

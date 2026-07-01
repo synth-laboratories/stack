@@ -110,7 +110,10 @@ def _pick_trigger(
 
     max_delay_ms = _to_int(wake.get("max_delay_ms"), 0)
     last_completed_ms = _timestamp_ms(actor.get("last_completed_at"))
-    if max_delay_ms > 0 and last_completed_ms > 0 and now_ms - last_completed_ms >= max_delay_ms and candidates:
+    pending_timestamps = [_timestamp_ms(event.get("observed_at")) for event in pending]
+    first_pending_ms = min((ts for ts in pending_timestamps if ts > 0), default=0)
+    delay_anchor_ms = last_completed_ms or first_pending_ms
+    if max_delay_ms > 0 and delay_anchor_ms > 0 and now_ms - delay_anchor_ms >= max_delay_ms and candidates:
         candidate = candidates[-1].copy()
         candidate["reason"] = "max_delay"
         candidate["score"] = weight

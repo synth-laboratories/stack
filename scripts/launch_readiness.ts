@@ -122,12 +122,12 @@ const gates: Gate[] = [
       : "Build manifest-backed installer/update path before public nightly or stable."),
   gate("S7_AUTH_GROWTH", "AT-STACK-AUTH-GROWTH-001", "frontend+backend+synth-dev", telemetryStatus(),
     growthIngestionStatus() === "partial"
-      ? "Privacy-safe telemetry allowlist, stackd status route, opt-in local outbox emission, and public Stack growth-ingestion payload contract are wired; live auth/growth E2E remains outside the public Stack repo."
+      ? "Privacy-safe telemetry allowlist, stackd status route, opt-in local outbox emission, and public Stack growth-ingestion payload contract are wired; live auth/growth end-to-end validation remains outside the public Stack repo."
       : stackdTelemetryStatus() === "partial"
-      ? "Privacy-safe telemetry allowlist, stackd status route, and opt-in local outbox emission are wired; public Stack growth-ingestion payload contract and auth/growth E2E remain open."
+      ? "Privacy-safe telemetry allowlist, stackd status route, and opt-in local outbox emission are wired; public Stack growth-ingestion payload contract and auth/growth end-to-end validation remain open."
       : telemetryContractStatus() === "partial"
-      ? "Privacy-safe telemetry event allowlist is wired; stackd status route and auth/growth E2E remain open."
-      : "Auth and growth E2E gates are planned outside the public Stack repo.",
+      ? "Privacy-safe telemetry event allowlist is wired; stackd status route and auth/growth end-to-end validation remain open."
+      : "Auth and growth end-to-end gates are planned outside the public Stack repo.",
     growthIngestionStatus() === "partial"
       ? "docs/TELEMETRY.md, docs/TELEMETRY_EVENTS.json, docs/GROWTH_INGESTION.md, smoke:telemetry:contract, smoke:stackd:telemetry, smoke:growth-ingestion, GET /telemetry/status, POST /telemetry/events, /api/v1/growth/funnel-events payload contract"
       : stackdTelemetryStatus() === "partial"

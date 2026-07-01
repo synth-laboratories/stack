@@ -154,6 +154,12 @@ async fn process_thread(
     else {
         return Ok(());
     };
+    if !next_wake_allows(&events, &config.actor_id, wake_class(&wake.reason)) {
+        return Ok(());
+    }
+    if monitor_wake_budget_exhausted(&events, config.max_wakes_per_primary_turn, &wake.reason) {
+        return Ok(());
+    }
 
     queue_monitor_trigger(
         state,
@@ -516,16 +522,16 @@ async fn read_monitor_config(state: &AppState) -> MonitorRuntimeConfig {
         on_turn_completed: toml_bool(&text, "wake", "on_turn_completed").unwrap_or(true),
         on_tool_completed: toml_bool(&text, "wake", "on_tool_completed").unwrap_or(true),
         on_tool_failed: toml_bool(&text, "wake", "on_tool_failed").unwrap_or(true),
-        event_batch_size: toml_u64(&text, "wake", "event_batch_size").unwrap_or(8),
+        event_batch_size: toml_u64(&text, "wake", "event_batch_size").unwrap_or(4),
         event_batch_min_interval_ms: toml_u64(&text, "wake", "event_batch_min_interval_ms")
-            .unwrap_or(30_000),
-        default_interval_ms: toml_u64(&text, "wake", "default_interval_ms").unwrap_or(180_000),
+            .unwrap_or(12_000),
+        default_interval_ms: toml_u64(&text, "wake", "default_interval_ms").unwrap_or(90_000),
         stale_worker_interval_ms: toml_u64(&text, "wake", "stale_worker_interval_ms")
             .unwrap_or(300_000),
-        delta_events: toml_u64(&text, "wake", "delta_events").unwrap_or(12),
+        delta_events: toml_u64(&text, "wake", "delta_events").unwrap_or(8),
         cooldown_ms: toml_u64(&text, "wake", "cooldown_ms").unwrap_or(250),
         weight_threshold: toml_f64(&text, "wake", "weight_threshold")
-            .unwrap_or_else(|| toml_u64(&text, "wake", "delta_events").unwrap_or(12) as f64),
+            .unwrap_or_else(|| toml_u64(&text, "wake", "delta_events").unwrap_or(6) as f64),
         max_delay_ms: toml_u64(&text, "wake", "max_delay_ms").unwrap_or(0),
         turn_cooldown_ms: toml_u64(&text, "wake", "turn_cooldown_ms")
             .unwrap_or_else(|| toml_u64(&text, "wake", "cooldown_ms").unwrap_or(250)),
@@ -658,6 +664,62 @@ fn has_monitor_events(events: &[Value]) -> bool {
     events
         .iter()
         .any(|event| event_type(event).is_some_and(|kind| kind.starts_with("monitor.")))
+}
+
+fn monitor_wake_budget_exhausted(events: &[Value], max_wakes: u64, reason: &str) -> bool {
+    if max_wakes == 0 || reason == "operator_message" || reason == "goal_change" {
+        return false;
+    }
+    let Some(turn_start_index) = events
+        .iter()
+        .rposition(|event| event_type(event) == Some("agent.turn.started"))
+    else {
+        return false;
+    };
+    let wake_count = events
+        .iter()
+        .skip(turn_start_index + 1)
+        .filter(|event| event_type(event) == Some("monitor.wake"))
+        .count() as u64;
+    wake_count >= max_wakes
+}
+
+fn next_wake_allows(events: &[Value], actor_id: &str, wake: &str) -> bool {
+    let Some(allowed) = latest_next_wake_on(events, actor_id) else {
+        return true;
+    };
+    allowed.iter().any(|value| value == wake)
+}
+
+fn latest_next_wake_on(events: &[Value], actor_id: &str) -> Option<Vec<String>> {
+    for event in events.iter().rev() {
+        if event_type(event) != Some("monitor.pause_for_restart") {
+            continue;
+        }
+        if event.get("actor_id").and_then(Value::as_str) != Some(actor_id) {
+            continue;
+        }
+        let values = event
+            .get("payload")
+            .and_then(|payload| payload.get("next_wake_on"))
+            .and_then(Value::as_array)?;
+        let allowed: Vec<String> = values
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|value| value.trim().to_ascii_lowercase())
+            .filter(|value| !value.is_empty())
+            .collect();
+        return if allowed.is_empty() { None } else { Some(allowed) };
+    }
+    None
+}
+
+fn wake_class(reason: &str) -> &'static str {
+    match reason {
+        "operator_message" => "operator_message",
+        "goal_change" => "goal_change",
+        _ => "worker_event",
+    }
 }
 
 fn wake_reason(event: Option<&Value>) -> &'static str {

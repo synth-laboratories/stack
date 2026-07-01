@@ -172,10 +172,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
       environment.optimizerDbPath ??
       join(appRoot, ".stack", "optimizers", "gepa-service.sqlite"),
   )
-  const stackMcpCommand = resolveConfigPath(
-    appRoot,
-    process.env.STACK_MCP_COMMAND ?? join(appRoot, "bin", "stack-mcp"),
-  )
+  const stackMcpCommand = resolveStackMcpCommand(appRoot)
   const stackMcpEnabled = process.env.STACK_CODEX_STACK_MCP !== "0"
   const codexSubagentsEnabled = readBooleanEnv(process.env.STACK_CODEX_SUBAGENTS, true)
   const codexSubagentModel = process.env.STACK_CODEX_SUBAGENT_MODEL ?? "gpt-5.4-mini"
@@ -317,6 +314,22 @@ function readConfigFile(appRoot: string): StackConfigFile {
 
 function resolveConfigPath(appRoot: string, path: string): string {
   return isAbsolute(path) ? path : resolve(appRoot, path)
+}
+
+function resolveStackMcpCommand(appRoot: string): string {
+  const primary = resolveConfigPath(
+    appRoot,
+    process.env.STACK_MCP_COMMAND ?? join("bin", "stack-mcp"),
+  )
+  if (existsSync(primary)) return primary
+  const fallbacks = [
+    resolve(appRoot, "..", "..", "stack", "bin", "stack-mcp"),
+    resolve(appRoot, "..", "stack", "bin", "stack-mcp"),
+  ]
+  for (const candidate of fallbacks) {
+    if (existsSync(candidate)) return candidate
+  }
+  return primary
 }
 
 function resolveEnvironmentAuthFiles(

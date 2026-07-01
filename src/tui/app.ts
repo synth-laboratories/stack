@@ -175,6 +175,7 @@ import {
   registerFatalProcessHandlers,
   registerRendererShutdown,
 } from "./terminal-cleanup.js"
+import { createRemountCoordinator } from "./remount-coordinator.js"
 import {
   isEvalLaunchActive,
   readReadmeSmokeEvalLaunch,
@@ -914,9 +915,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     currentThreadIndex >= 0 ? currentThreadIndex : clampIndex(state.selectedHistoryIndex, state.history.length)
 
   let view: MountedView | undefined
-  let remount = () => {
-    view?.root.requestRender()
-  }
+  const remountCoordinator = createRemountCoordinator()
+  let remount = () => remountCoordinator.remountNow()
+  let scheduleRemount = () => remountCoordinator.scheduleRemount()
+  let scheduleRender = () => remountCoordinator.scheduleRender()
 
   const refreshHistory = async () => {
     const selectedId = state.history[state.selectedHistoryIndex]?.id ?? options.session.id
@@ -1344,12 +1346,21 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const shutdown = createStackAppShutdown()
   const exitStack = () => shutdown.run(0)
 
-  view = mountView(renderer, options, state, undefined)
-  remount = () => {
-    view = mountView(renderer, options, state, view)
-  }
+  remountCoordinator.bind({
+    mount: () => {
+      view = mountView(renderer, options, state, view)
+    },
+    render: () => {
+      view?.root.requestRender()
+    },
+  })
+  remount = () => remountCoordinator.remountNow()
+  scheduleRemount = () => remountCoordinator.scheduleRemount()
+  scheduleRender = () => remountCoordinator.scheduleRender()
 
-  void refreshGardenerMaintenance(options, state, "manual").finally(remount)
+  view = mountView(renderer, options, state, undefined)
+
+  void refreshGardenerMaintenance(options, state, "manual").finally(scheduleRemount)
 
   void (async () => {
     try {
@@ -1420,26 +1431,26 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         })
         .finally(() => {
           state.monitorCadenceInFlight = false
-          remount()
+          scheduleRemount()
         })
     }
     if (isRecentAgentScroll(state)) return
-    view?.root.requestRender()
+    scheduleRender()
   }, 120)
 
   optimizerInterval = setInterval(() => {
     refreshEvalLaunch()
-    void refreshOptimizers().finally(remount)
+    void refreshOptimizers().finally(scheduleRemount)
   }, 2500)
 
   const projectsInterval = setInterval(() => {
     if (state.remoteAccountSnapshot.status !== "connected") return
-    void refreshRemoteOpsPanel().finally(remount)
+    void refreshRemoteOpsPanel().finally(scheduleRemount)
   }, 20_000)
 
-  void refreshCodexRateLimits().finally(remount)
+  void refreshCodexRateLimits().finally(scheduleRemount)
   rateLimitsInterval = setInterval(() => {
-    void refreshCodexRateLimits().finally(remount)
+    void refreshCodexRateLimits().finally(scheduleRemount)
   }, 120_000)
 
   registerFatalProcessHandlers(shutdown)
@@ -1459,6 +1470,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     }
   })
   registerRendererShutdown(shutdown, renderer, [spinnerInterval, optimizerInterval, projectsInterval, rateLimitsInterval], [
+    () => {
+      remountCoordinator.dispose()
+    },
     () => {
       void codexSessionHandle.session?.close()
     },
@@ -5395,7 +5409,12 @@ function tailGoalSidecarThreadScroll(
   columns: number,
   visibleRows: number,
 ): void {
-  const lineCount = sidecarThreadRenderedLineCount({ turns, columns, options: sidecarTranscriptRenderOptions(state) })
+  const lineCount = sidecarThreadRenderedLineCount({
+    turns,
+    events,
+    columns,
+    options: sidecarTranscriptRenderOptions(state),
+  })
   const maxOffset = Math.max(0, lineCount - visibleRows)
   if (state.goalShutterSidecarThreadScrollPinned) state.goalShutterSidecarThreadScrollOffset = maxOffset
   else if (state.goalShutterSidecarThreadScrollOffset > maxOffset) state.goalShutterSidecarThreadScrollOffset = maxOffset
@@ -5410,7 +5429,12 @@ function handleGoalSidecarThreadMouseScroll(
   visibleRows: number,
   refresh: () => void,
 ): void {
-  const lineCount = sidecarThreadRenderedLineCount({ turns, columns, options: sidecarTranscriptRenderOptions(state) })
+  const lineCount = sidecarThreadRenderedLineCount({
+    turns,
+    events,
+    columns,
+    options: sidecarTranscriptRenderOptions(state),
+  })
   const maxOffset = Math.max(0, lineCount - visibleRows)
   if (direction === "up") {
     state.goalShutterSidecarThreadScrollPinned = false

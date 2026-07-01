@@ -20,6 +20,7 @@ import { detectRiskyPending, riskyPendingSummary } from "./risky-action.js"
 import { enrichGameBenchGoalContext } from "./gamebench-goal.js"
 import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
+import { readMetaThreadManifest } from "./meta-thread-goal.js"
 import {
   parseThreadNameFromAgentResponse,
   setThreadDisplayName,
@@ -174,6 +175,7 @@ export type StackMonitorActorRuntimeState = {
   monitor_codex_thread_id?: string
   monitor_codex_waiting_for_restart?: boolean
   monitor_codex_last_pause_reason?: string
+  next_wake_on?: string[]
   state: "idle" | "running" | "paused" | "error"
   mode: MonitorStrictness
   strictness: MonitorStrictness
@@ -231,13 +233,13 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
     onTurnCompleted: true,
     onToolCompleted: true,
     onToolFailed: true,
-    eventBatchSize: 8,
-    eventBatchMinIntervalMs: 30_000,
-    defaultIntervalMs: 180_000,
+    eventBatchSize: 4,
+    eventBatchMinIntervalMs: 12_000,
+    defaultIntervalMs: 90_000,
     staleWorkerIntervalMs: 300_000,
-    deltaEvents: 12,
+    deltaEvents: 8,
     cooldownMs: 15_000,
-    weightThreshold: 8,
+    weightThreshold: 6,
     turnCooldownMs: 15_000,
     batchCooldownMs: 60_000,
     maxDelayMs: 120_000,
@@ -686,6 +688,10 @@ export async function runGoalMonitorCadenceTick(input: {
   goalContext: CodexGoalSnapshot
 }): Promise<StackMonitorSnapshot | undefined> {
   if (!goalContextActive(input.goalContext)) return undefined
+  if (input.session.metaThreadId) {
+    const manifest = await readMetaThreadManifest(input.config.stackDataRoot, input.session.metaThreadId)
+    if ((manifest?.lifecycle_status ?? "live") === "archived") return undefined
+  }
   const runtimeRoot = monitorRuntimeRoot(input.config)
   const monitorConfig = loadMonitorConfig(input.config.appRoot)
   const threadId = input.session.id
@@ -693,6 +699,8 @@ export async function runGoalMonitorCadenceTick(input: {
   const actorId = monitorActorId(monitorConfig)
   const actorState = readMonitorActorState(runtimeRoot, threadId, actorId)
   if (actorState?.state === "running" && hasQueuedTriggerAfterLatestWake(events)) return undefined
+  if (!nextWakeAllows(events, actorId, "worker_event")) return undefined
+  if (monitorWakeBudgetExhausted(monitorConfig, events, "cadence_tick")) return undefined
   const cadence = cadenceWakeReason(monitorConfig, events, actorState)
   if (!cadence) return undefined
   const now = new Date().toISOString()
@@ -768,6 +776,30 @@ export async function runMonitorForNewEvents(input: {
       strictness: effective.strictness,
     })
     writeMonitorActorState(runtimeRoot, refreshed)
+    return snapshotFromEvents(
+      monitorConfig,
+      readThreadMetaEvents(runtimeRoot, threadId),
+      readMonitorActorState(runtimeRoot, threadId, actorId),
+    )
+  }
+
+  const repeatedSteer = repeatedFailureSteerMessage(candidate.pendingEvents)
+  const repeatedSteerSignature = triggerSignature(candidate.pendingEvents)
+  if (
+    repeatedSteer &&
+    candidate.pendingEvents.every((event) => event.type === "agent.tool.failed") &&
+    recentSidecarSteerIsSimilar(priorEvents, repeatedSteer, repeatedSteerSignature)
+  ) {
+    const lastProcessedEvent = candidate.pendingEvents.at(-1)
+    writeMonitorActorState(runtimeRoot, actorStateFromConfig(monitorConfig, threadId, {
+      previous: actorState,
+      state: "idle",
+      strictness: effective.strictness,
+      lastEventId: lastProcessedEvent?.event_id ?? actorState?.last_event_id,
+      lastEventType: lastProcessedEvent?.type ?? actorState?.last_event_type,
+      lastCompletedAt: new Date().toISOString(),
+      rollingSummary: "NO_USER_UPDATE",
+    }))
     return snapshotFromEvents(
       monitorConfig,
       readThreadMetaEvents(runtimeRoot, threadId),
@@ -941,12 +973,35 @@ export async function runMonitorForNewEvents(input: {
   // (monitor.summary above is the internal per-pass checkpoint record; steers ride monitor.steer.)
   const eventsAfterPass = readThreadMetaEvents(runtimeRoot, threadId)
   const directiveProgress = pass.userProgressUpdate ?? pass.operatorUpdate?.progress_note
+  ensureAuditedGoalStatusFromWorkerEvents({
+    runtimeRoot,
+    threadId,
+    actorId,
+    wakeId,
+    observedAt,
+    triggerEventIds: candidate.triggerEventIds,
+    goalContext,
+    allEvents: eventsAfterPass,
+    pendingEvents: candidate.pendingEvents,
+  })
+  ensureAuditedGoalStatusFromSummary({
+    runtimeRoot,
+    threadId,
+    actorId,
+    wakeId,
+    observedAt,
+    triggerEventIds: candidate.triggerEventIds,
+    goalContext,
+    summary: monitorSummary,
+    events: readThreadMetaEvents(runtimeRoot, threadId),
+  })
+  const eventsAfterGoalStatus = readThreadMetaEvents(runtimeRoot, threadId)
   const humanProgress =
     directiveProgress ??
-    goalStatusProgressUpdate(eventsAfterPass, observedAt)
+    goalStatusProgressUpdate(eventsAfterGoalStatus, observedAt)
   if (humanProgress && !isNoUserUpdateText(humanProgress) && !isNoProgressAnnouncement(humanProgress)) {
     const progressSummary = taskAwareProgressSummary(humanProgress, goalContext)
-    if (directiveProgress && goalContext.objective && !hasGoalStatusSince(eventsAfterPass, observedAt)) {
+    if (directiveProgress && goalContext.objective && !hasGoalStatusSince(eventsAfterGoalStatus, observedAt)) {
       appendThreadMetaEvent(runtimeRoot, {
         event_id: stackEventId("monitor_goal_status"),
         type: "monitor.goal_status",
@@ -955,8 +1010,10 @@ export async function runMonitorForNewEvents(input: {
         actor_id: actorId,
         actor_role: "monitor",
         payload: {
-          status: conservativeGoalStatusForProgress(progressSummary),
+          status: goalStatusForProgressText(progressSummary),
+          headline: headlineForProgress(progressSummary),
           note: progressSummary,
+          for_human: true,
           metric: null,
           evidence_event_ids: candidate.triggerEventIds,
           wake_id: wakeId,
@@ -1044,13 +1101,16 @@ export async function runMonitorForNewEvents(input: {
 
   let steerDelta = 0
   const steerSignature = triggerSignature(candidate.pendingEvents)
+  const sidecarSteerMessage =
+    pass.workerSteerMessage ??
+    inferredSidecarSteerFromSummary(monitorSummary, candidate.pendingEvents)
   if (
-    pass.workerSteerMessage &&
+    sidecarSteerMessage &&
     monitorConfig.permissions.steer &&
     actorToolAllowed(monitorConfig.tools, "monitor.steer") &&
     // Steer once per issue: suppress a repeat of a recent sidecar steer. The LLM re-surfaces
     // unresolved problems every wake; code enforces the "don't repeat" invariant.
-    !recentSidecarSteerIsSimilar(priorEvents, pass.workerSteerMessage, steerSignature)
+    !recentSidecarSteerIsSimilar(priorEvents, sidecarSteerMessage, steerSignature)
   ) {
     appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId("monitor_steer"),
@@ -1061,7 +1121,7 @@ export async function runMonitorForNewEvents(input: {
       actor_role: "monitor",
       payload: {
         wake_id: wakeId,
-        message: pass.workerSteerMessage,
+        message: sidecarSteerMessage,
         severity: pass.severity === "none" ? "low" : pass.severity,
         focus: "goal_progress",
         source: "sidecar_codex",
@@ -1290,6 +1350,45 @@ export function triggerSignature(events: StackThreadMetaEvent[]): string {
   return [...new Set(commands)].sort().join("|")
 }
 
+function inferredSidecarSteerFromSummary(
+  summary: string,
+  pendingEvents: StackThreadMetaEvent[],
+): string | undefined {
+  const normalized = summary.toLowerCase()
+  const saysSteered = /\bsteer(?:ed|ing)?\b/.test(normalized)
+  const saysStuck = /\b(stuck|stalled|retri(?:ed|es|ying)|same failure|nonexistent|missing module|modulenotfounderror)\b/.test(normalized)
+  if (!saysSteered && !saysStuck) return undefined
+  const commandCounts = new Map<string, number>()
+  for (const event of pendingEvents) {
+    if (event.type !== "agent.tool.failed") continue
+    const command = readString(event.payload.command)?.trim()
+    if (!command) continue
+    commandCounts.set(command, (commandCounts.get(command) ?? 0) + 1)
+  }
+  const repeated = [...commandCounts.entries()].find(([, count]) => count >= 2)
+  if (!repeated) return undefined
+  return repeatedFailureSteerForCommand(repeated[0])
+}
+
+function repeatedFailureSteerMessage(pendingEvents: StackThreadMetaEvent[]): string | undefined {
+  const commandCounts = new Map<string, number>()
+  for (const event of pendingEvents) {
+    if (event.type !== "agent.tool.failed") continue
+    const command = readString(event.payload.command)?.trim()
+    if (!command) continue
+    commandCounts.set(command, (commandCounts.get(command) ?? 0) + 1)
+  }
+  const repeated = [...commandCounts.entries()].find(([, count]) => count >= 2)
+  return repeated ? repeatedFailureSteerForCommand(repeated[0]) : undefined
+}
+
+function repeatedFailureSteerForCommand(command: string): string {
+  if (/gamebench\.craftax\.run_candidate/.test(command)) {
+    return "Stop retrying the nonexistent `gamebench.craftax.run_candidate` module; find the real Craftax policy runner or importable entrypoint, then rerun the candidate."
+  }
+  return `Stop retrying the failing command \`${truncate(command, 120)}\`; inspect the real entrypoint/path before rerunning.`
+}
+
 function signatureCommands(signature: string): Set<string> {
   return new Set(signature.split("|").filter((entry) => entry.length > 0))
 }
@@ -1463,14 +1562,22 @@ function nextWakeCandidate(input: {
   wakeReason?: string
   triggerEventIds?: string[]
 }): WakeCandidate | undefined {
+  const actorId = monitorActorId(input.config)
+  const finish = (candidate: WakeCandidate | undefined): WakeCandidate | undefined => {
+    if (!candidate) return undefined
+    if (!nextWakeAllows(input.events, actorId, wakeClass(candidate.reason))) return undefined
+    if (monitorWakeBudgetExhausted(input.config, input.events, candidate.reason)) return undefined
+    return candidate
+  }
+
   if (input.wakeReason === "operator_message" && input.triggerEventIds?.length) {
     const operatorEvents = input.events.filter((event) => input.triggerEventIds?.includes(event.event_id))
     if (operatorEvents.length > 0) {
-      return {
+      return finish({
         reason: "operator_message",
         triggerEventIds: input.triggerEventIds,
         pendingEvents: operatorEvents,
-      }
+      })
     }
   }
 
@@ -1484,11 +1591,11 @@ function nextWakeCandidate(input: {
 
   if (triggers.some((event) => alreadyTriggered.has(event.event_id))) return undefined
   if (triggers.length > 0) {
-    return {
+    return finish({
       reason: input.wakeReason ?? wakeReasonFromEvent(triggers[0]),
       triggerEventIds: triggers.map((event) => event.event_id),
       pendingEvents,
-    }
+    })
   }
 
   const workerEvents = pendingEvents.filter(isWorkerProgressEvent)
@@ -1499,24 +1606,73 @@ function nextWakeCandidate(input: {
   ) {
     triggers = [workerEvents.at(-1)].filter((event): event is StackThreadMetaEvent => Boolean(event))
     if (triggers.some((event) => alreadyTriggered.has(event.event_id))) return undefined
-    return {
+    return finish({
       reason: "event_batch",
       triggerEventIds: triggers.map((event) => event.event_id),
       pendingEvents,
-    }
+    })
   }
 
   if (input.config.wake.deltaEvents > 0 && pendingEvents.length >= input.config.wake.deltaEvents) {
     triggers = [pendingEvents.at(-1)].filter((event): event is StackThreadMetaEvent => Boolean(event))
     if (triggers.some((event) => alreadyTriggered.has(event.event_id))) return undefined
-    return {
+    return finish({
       reason: "delta_events",
       triggerEventIds: triggers.map((event) => event.event_id),
       pendingEvents,
-    }
+    })
   }
 
   return undefined
+}
+
+function monitorWakeBudgetExhausted(
+  config: StackMonitorConfig,
+  events: StackThreadMetaEvent[],
+  reason: string,
+): boolean {
+  const max = config.wake.maxWakesPerPrimaryTurn
+  if (max <= 0) return false
+  if (reason === "operator_message" || reason === "goal_change") return false
+  const turnStartIndex = latestPrimaryTurnStartIndex(events)
+  if (turnStartIndex < 0) return false
+  const wakeCount = events.slice(turnStartIndex + 1).filter((event) => event.type === "monitor.wake").length
+  return wakeCount >= max
+}
+
+function latestPrimaryTurnStartIndex(events: StackThreadMetaEvent[]): number {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === "agent.turn.started") return index
+  }
+  return -1
+}
+
+function nextWakeAllows(events: StackThreadMetaEvent[], actorId: string, wake: "worker_event" | "operator_message" | "goal_change"): boolean {
+  const allowed = latestNextWakeOn(events, actorId)
+  if (!allowed) return true
+  return allowed.has(wake)
+}
+
+function latestNextWakeOn(events: StackThreadMetaEvent[], actorId: string): Set<string> | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (!event || event.type !== "monitor.pause_for_restart") continue
+    if (event.actor_id !== actorId) continue
+    const values = event.payload.next_wake_on
+    if (!Array.isArray(values)) return undefined
+    const normalized = values
+      .filter((value): value is string => typeof value === "string")
+      .map((value) => value.trim().toLowerCase())
+      .filter(Boolean)
+    return normalized.length > 0 ? new Set(normalized) : undefined
+  }
+  return undefined
+}
+
+function wakeClass(reason: string): "worker_event" | "operator_message" | "goal_change" {
+  if (reason === "operator_message") return "operator_message"
+  if (reason === "goal_change") return "goal_change"
+  return "worker_event"
 }
 
 function evaluateHandoffPreempt(input: {
@@ -2026,8 +2182,26 @@ function parseSidecarDirectives(text: string): { progressUpdate?: string; steerM
   const steerMessage = directiveLine(text, "STEER_WORKER")
   // A "progress update" that only announces the ABSENCE of progress is noise, not signal — treat
   // it as NO_USER_UPDATE. Keep any update that also carries a concrete transition/refutation/number.
-  const progressUpdate = rawProgress && isNoProgressAnnouncement(rawProgress) ? undefined : rawProgress
+  const auditedUpdate = auditedGoalStatusUpdateFromSummary(text)
+  const progressUpdate = rawProgress && isNoProgressAnnouncement(rawProgress) ? undefined : rawProgress ?? auditedUpdate
   return { progressUpdate, steerMessage }
+}
+
+function auditedGoalStatusUpdateFromSummary(text: string): string | undefined {
+  const normalized = text.toLowerCase()
+  const auditLanguage = /\b(audit(?:ed)?|refut(?:e|ed|es|ing)|false claim|completion claim|done[- ]claim)\b/.test(normalized)
+  const completionClear =
+    /\bclears? (?:the )?(?:2x )?target\b/.test(normalized) ||
+    /\bclears? (?:the )?(?:requested )?(?:2x )?(?:bar|target)\b/.test(normalized) ||
+    /\bgoal (?:is )?(?:complete|met)\b/.test(normalized)
+  const completionRejected =
+    /\bdoes not clear\b/.test(normalized) ||
+    /\bnot (?:done|complete|enough)\b/.test(normalized) ||
+    /\bshort of (?:the )?target\b/.test(normalized) ||
+    /\bbelow (?:the )?target\b/.test(normalized)
+  if (!auditLanguage && !completionClear && !completionRejected) return undefined
+  if (!/\d/.test(text)) return undefined
+  return text
 }
 
 export function isNoUserUpdateText(text: string): boolean {
@@ -2064,6 +2238,170 @@ function hasGoalStatusSince(events: StackThreadMetaEvent[], wakeObservedAt: stri
   })
 }
 
+function ensureAuditedGoalStatusFromSummary(input: {
+  runtimeRoot: string
+  threadId: string
+  actorId: string
+  wakeId: string
+  observedAt: string
+  triggerEventIds: string[]
+  goalContext: CodexGoalSnapshot
+  summary: string
+  events: StackThreadMetaEvent[]
+}): void {
+  if (!input.goalContext.objective) return
+  const wakeMs = Date.parse(input.observedAt)
+  const recentGoalStatus = [...input.events].reverse().find((event) => {
+    if (event.type !== "monitor.goal_status") return false
+    const eventMs = Date.parse(event.observed_at)
+    return !Number.isFinite(wakeMs) || !Number.isFinite(eventMs) || eventMs >= wakeMs
+  })
+  const recentStatus = recentGoalStatus
+    ? readString((recentGoalStatus.payload as Record<string, unknown>).status)
+    : undefined
+  if (recentStatus === "goal_met" || recentStatus === "goal_failed") return
+  const auditedSummary = auditedGoalStatusUpdateFromSummary(input.summary)
+  if (!auditedSummary) return
+  const status = goalStatusForProgressText(auditedSummary)
+  if (status !== "goal_met" && status !== "goal_failed") return
+  if (recentStatus === status) return
+  const note = taskAwareProgressSummary(auditedSummary, input.goalContext)
+  appendThreadMetaEvent(input.runtimeRoot, {
+    event_id: stackEventId("monitor_goal_status"),
+    type: "monitor.goal_status",
+    thread_id: input.threadId,
+    observed_at: new Date().toISOString(),
+    actor_id: input.actorId,
+    actor_role: "monitor",
+    payload: {
+      status,
+      headline: headlineForProgress(note),
+      note,
+      for_human: true,
+      metric: null,
+      evidence_event_ids: input.triggerEventIds,
+      wake_id: input.wakeId,
+      source: "sidecar_codex_summary_audit",
+    },
+  })
+}
+
+function ensureAuditedGoalStatusFromWorkerEvents(input: {
+  runtimeRoot: string
+  threadId: string
+  actorId: string
+  wakeId: string
+  observedAt: string
+  triggerEventIds: string[]
+  goalContext: CodexGoalSnapshot
+  allEvents: StackThreadMetaEvent[]
+  pendingEvents: StackThreadMetaEvent[]
+}): void {
+  if (!input.goalContext.objective) return
+  if (hasGoalStatusSince(input.allEvents, input.observedAt)) return
+  const audit = auditedGoalStatusUpdateFromWorkerEvents(input.allEvents, input.pendingEvents)
+  if (!audit) return
+  appendThreadMetaEvent(input.runtimeRoot, {
+    event_id: stackEventId("monitor_goal_status"),
+    type: "monitor.goal_status",
+    thread_id: input.threadId,
+    observed_at: new Date().toISOString(),
+    actor_id: input.actorId,
+    actor_role: "monitor",
+    payload: {
+      status: audit.status,
+      headline: audit.status === "goal_met" ? "candidate clears target" : "done claim refuted",
+      note: audit.note,
+      for_human: true,
+      metric: audit.metric,
+      evidence_event_ids: input.triggerEventIds,
+      wake_id: input.wakeId,
+      source: "monitor_runtime_worker_audit",
+    },
+  })
+}
+
+function auditedGoalStatusUpdateFromWorkerEvents(
+  allEvents: StackThreadMetaEvent[],
+  pendingEvents: StackThreadMetaEvent[],
+): { status: "goal_met" | "goal_failed"; note: string; metric: Record<string, number | string> } | undefined {
+  const pendingText = pendingEvents.map(eventEvidenceText).join("\n")
+  if (!/\b(done|complete|completion|marking\b[\s\S]{0,80}\bdone)\b/i.test(pendingText)) return undefined
+  const candidate = latestNumberMatch(pendingText, /\b(?:candidate|cand[_-]?\w*)\b[\s\S]{0,100}?\b(?:scored|score|reward|mean reward)\s*[=:]?\s*(\d+(?:\.\d+)?)/i)
+  if (candidate === undefined) return undefined
+  const allText = allEvents.map(eventEvidenceText).join("\n")
+  const baseline =
+    latestNumberMatch(pendingText, /\bbaseline\b[\s\S]{0,80}?(?:=|:|at|score|reward)?\s*(\d+(?:\.\d+)?)/i) ??
+    latestNumberMatch(allText, /\bbaseline\b[\s\S]{0,80}?(?:=|:|at|score|reward)?\s*(\d+(?:\.\d+)?)/i)
+  if (!baseline || baseline <= 0) return undefined
+  const requested2x = /\b2x\b/i.test(`${allText}\n${pendingText}`)
+  if (!requested2x) return undefined
+  const ratio = candidate / baseline
+  const targetValue = baseline * 2
+  const status = ratio >= 2 ? "goal_met" : "goal_failed"
+  const note = status === "goal_met"
+    ? `Worker completion claim audited: candidate scored ${candidate} vs baseline ${baseline}, which is ${ratio.toFixed(2)}x and clears the 2x target.`
+    : `Worker completion claim refuted: candidate scored ${candidate} vs baseline ${baseline}, which is ${ratio.toFixed(2)}x; target is 2x (>=${targetValue.toFixed(3).replace(/0+$/, "").replace(/\.$/, "")}).`
+  return {
+    status,
+    note,
+    metric: {
+      value: candidate,
+      baseline,
+      ratio: Number(ratio.toFixed(4)),
+      target_ratio: 2,
+      target_value: Number(targetValue.toFixed(4)),
+      unit: "mean_reward",
+    },
+  }
+}
+
+function eventEvidenceText(event: StackThreadMetaEvent): string {
+  const payload = event.payload as Record<string, unknown>
+  return [
+    event.type,
+    payload.summary,
+    payload.message,
+    payload.stdout,
+    payload.stderr,
+    payload.command,
+    payload.progress_note,
+  ].filter((value): value is string => typeof value === "string").join("\n")
+}
+
+function latestNumberMatch(text: string, pattern: RegExp): number | undefined {
+  const matches = [...text.matchAll(new RegExp(pattern.source, pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`))]
+  const value = matches.at(-1)?.[1]
+  if (!value) return undefined
+  const parsed = Number.parseFloat(value)
+  return Number.isFinite(parsed) ? parsed : undefined
+}
+
+function inferAuditedTerminalGoalStatus(text: string): "goal_met" | "goal_failed" | undefined {
+  const normalized = text.toLowerCase()
+  const auditLanguage = /\b(audit(?:ed)?|confirm(?:ed|s)?|supported by)\b/.test(normalized)
+  if (!auditLanguage) return undefined
+  if (
+    /\b(refut(?:e|ed|es|ing)|false claim|does not clear|not (?:done|complete|enough)|short of (?:the )?target|below (?:the )?target)\b/.test(
+      normalized,
+    )
+  ) {
+    return "goal_failed"
+  }
+  const ratioMatch = normalized.match(/\b(\d+(?:\.\d+)?)\s*x\b/)
+  const ratio = ratioMatch ? Number.parseFloat(ratioMatch[1] ?? "") : undefined
+  const target2x = /\b2x\b/.test(normalized)
+  if (ratio !== undefined && Number.isFinite(ratio) && ratio >= 2) return "goal_met"
+  if (
+    target2x &&
+    /\b(clear(?:s|ed)?|support(?:s|ed)?|meet(?:s|ing)?)\b/.test(normalized) &&
+    !/\bnot\b[\s\S]{0,24}\b(clear|support|meet)\b/.test(normalized)
+  ) {
+    return "goal_met"
+  }
+  return undefined
+}
+
 function taskAwareProgressSummary(text: string, goalContext: CodexGoalSnapshot): string {
   const clean = stripDirectivePrefix(text)
   const taskType = goalContext.gamebenchTask?.taskType
@@ -2079,8 +2417,31 @@ function taskAwareProgressSummary(text: string, goalContext: CodexGoalSnapshot):
   return clean
 }
 
+function headlineForProgress(text: string): string {
+  const clean = stripDirectivePrefix(text)
+    .replace(/\bworker is\b/gi, "")
+    .replace(/\bworker\b/gi, "")
+    .replace(/\bin the\b/gi, "")
+    .replace(/[:.].*$/, "")
+    .replace(/\s+/g, " ")
+    .trim()
+  const words = (clean || "goal progress").split(/\s+/).filter(Boolean).slice(0, 5)
+  return words.join(" ") || "goal progress"
+}
+
 function conservativeGoalStatusForProgress(text: string): string {
   const normalized = text.toLowerCase()
+  if (
+    /\b(refut(?:e|ed|es|ing)|false claim|does not clear|not (?:done|complete|enough)|short of (?:the )?target|below (?:the )?target)\b/.test(normalized)
+  ) {
+    return "goal_failed"
+  }
+  if (
+    /\bgoal met\b/.test(normalized) ||
+    /\b(audit(?:ed)?|confirm(?:ed|s)?)\b[\s\S]{0,160}\b(goal (?:is )?complete|completion|clears? (?:the )?(?:requested )?(?:2x )?(?:bar|target)|cleared (?:the )?target)\b/.test(normalized)
+  ) {
+    return "goal_met"
+  }
   if (/\b(stall(?:ed|ing)?|stuck|loop(?:ing)?|no progress|same failure|repeat(?:ed|ing) failure)\b/.test(normalized)) {
     return "stalled"
   }
@@ -2088,6 +2449,10 @@ function conservativeGoalStatusForProgress(text: string): string {
     return "advancing"
   }
   return "working"
+}
+
+function goalStatusForProgressText(text: string): string {
+  return inferAuditedTerminalGoalStatus(text) ?? conservativeGoalStatusForProgress(text)
 }
 
 function stripDirectivePrefix(text: string): string {
@@ -2131,7 +2496,27 @@ export function isNoProgressAnnouncement(text: string): boolean {
 }
 
 function normalizedMonitorSummary(summary: string): string {
-  return isNoProgressAnnouncement(summary) ? "NO_USER_UPDATE" : summary
+  return isNoProgressAnnouncement(summary) || isInternalNoHumanUpdateSummary(summary) ? "NO_USER_UPDATE" : summary
+}
+
+function isInternalNoHumanUpdateSummary(summary: string): boolean {
+  const normalized = summary.trim().toLowerCase()
+  if (!normalized) return true
+  return (
+    /\bdid not post (?:a )?(?:human-facing )?update\b/.test(normalized) ||
+    /\bdid not call [`']?stack_monitor_goal_status/.test(normalized) ||
+    /\bno human-facing update\b/.test(normalized) ||
+    /\bno human update was warranted\b/.test(normalized) ||
+    /\bno operator update was posted\b/.test(normalized) ||
+    /\broutine workspace listing\b/.test(normalized) ||
+    /\bworkspace directory listing\b/.test(normalized) ||
+    /\bonly listed the workspace root\b/.test(normalized) ||
+    /\broutine discovery rather than a goal milestone\b/.test(normalized) ||
+    /\bno milestone or phase change to report\b/.test(normalized) ||
+    /\bno (?:task-specific |meaningful )?(?:milestone|blocker|concern)(?: or (?:task-specific |meaningful )?(?:milestone|blocker|concern))* to report\b/.test(normalized) ||
+    /\bstill in orientation mode\b/.test(normalized) ||
+    /\bonly (?:listed|read|grepped|inspected) .*\bnot (?:yet )?(?:a )?(?:task-specific |meaningful )?(?:milestone|progress)\b/.test(normalized)
+  )
 }
 
 function directiveLine(text: string, label: string): string | undefined {
@@ -2178,6 +2563,7 @@ function actorStateFromConfig(
       options.monitorCodexWaitingForRestart ?? previous?.monitor_codex_waiting_for_restart,
     monitor_codex_last_pause_reason:
       options.monitorCodexLastPauseReason ?? previous?.monitor_codex_last_pause_reason,
+    next_wake_on: previous?.next_wake_on,
     state: options.state ?? previous?.state ?? (strictness === "off" ? "paused" : "idle"),
     mode: strictness,
     strictness,
@@ -2847,12 +3233,12 @@ function defaultMonitorToml(): string {
     "on_turn_completed = true",
     "on_tool_completed = true",
     "on_tool_failed = true",
-    "event_batch_size = 8",
-    "event_batch_min_interval_ms = 30000",
-    "default_interval_ms = 180000",
+    "event_batch_size = 4",
+    "event_batch_min_interval_ms = 12000",
+    "default_interval_ms = 90000",
     "stale_worker_interval_ms = 300000",
-    "delta_events = 12",
-    "weight_threshold = 8",
+    "delta_events = 8",
+    "weight_threshold = 6",
     "cooldown_ms = 15000",
     "turn_cooldown_ms = 15000",
     "batch_cooldown_ms = 60000",

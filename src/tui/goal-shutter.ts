@@ -340,6 +340,7 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
             content: renderGoalSidecarThreadRich(
               {
                 turns: input.sidecarTurns,
+                events: input.events,
                 columns: sidecarColumns,
                 visibleRows: sidecarThreadRows,
                 scrollOffset: input.sidecarThreadScrollOffset,

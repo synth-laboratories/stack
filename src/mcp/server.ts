@@ -31,7 +31,7 @@ import {
   type StackGuidanceEventType,
   type StackGuidanceImpact,
 } from "../codex/guidance-events.js"
-import { appendThreadMetaEvent, stackEventId } from "../thread-events.js"
+import { appendThreadMetaEvent, readThreadMetaEvents, stackEventId } from "../thread-events.js"
 import {
   stackdExport,
   stackdMetaThread,
@@ -232,6 +232,8 @@ export class StackMcpServer {
     const actorId = optionalString(args, "actor_id") ?? "monitor"
     const status = requiredString(args, "status")
     const note = optionalString(args, "note") ?? ""
+    const headline = optionalString(args, "headline") ?? ""
+    const forHuman = optionalBoolean(args, "for_human") ?? false
     const metric =
       args.metric && typeof args.metric === "object" && !Array.isArray(args.metric)
         ? (args.metric as JsonObject)
@@ -246,7 +248,9 @@ export class StackMcpServer {
       actor_role: "monitor" as const,
       payload: {
         status,
+        headline,
         note,
+        for_human: forHuman,
         metric: metric ?? null,
         evidence_event_ids: evidence,
         source: "sidecar_codex_tool",
@@ -319,24 +323,26 @@ export class StackMcpServer {
   }
 
   async listMetaThreads(args: JsonObject): Promise<JsonValue> {
-    await this.config(args)
+    const config = await this.config(args)
     const lifecycle = optionalMetaThreadLifecycle(args, "lifecycle") ?? "live"
     const limit = optionalInteger(args, "limit") ?? 50
     const manifests = await stackdMetaThreads({ lifecycle })
     return toJsonValue({
       lifecycle,
       count: manifests.length,
-      meta_threads: manifests.slice(0, Math.max(1, Math.min(limit, 200))).map(metaThreadListItem),
+      meta_threads: manifests.slice(0, Math.max(1, Math.min(limit, 200))).map((manifest) =>
+        metaThreadListItem(config.stackDataRoot, manifest)
+      ),
     }) ?? null
   }
 
   async getMetaThread(args: JsonObject): Promise<JsonValue> {
-    await this.config(args)
+    const config = await this.config(args)
     const metaThreadId = requiredString(args, "meta_thread_id")
     const manifest = await stackdMetaThread(metaThreadId)
     return toJsonValue({
       manifest,
-      derived: metaThreadListItem(manifest),
+      derived: metaThreadListItem(config.stackDataRoot, manifest),
     }) ?? null
   }
 
@@ -2176,14 +2182,16 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     {
       name: "stack_monitor_goal_status",
       description:
-        "Sidecar monitor tool: record a STRUCTURED goal-progress signal that the human UI visualizes (a timeline + status strip), instead of only free-text narration. Call it on a MEANINGFUL status change: `advancing` (with the concrete metric), `blocked`/`stalled`, `goal_failed`, or `goal_met` once you have AUDITED the worker's completion claim against cited proof. `goal_met` flips the goal to done, so only emit it when the proof clears the target.",
+        "Sidecar monitor tool: record a goal-progress update. This is the SOLE source of the operator's events feed — set `for_human: true` with a short `headline` (title) and one-sentence `note` (content) whenever the operator should see this update; the UI renders it as `type · headline` over one content line. Call it on a MEANINGFUL status change: `advancing` (with the concrete metric), `blocked`/`stalled`, `goal_failed`, or `goal_met` once you have AUDITED the worker's completion claim against cited proof. `goal_met` flips the goal to done, so only emit it when the proof clears the target. For a structured signal the operator does not need to read, omit `for_human` (or set it false).",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
           thread_id: stringProperty("Worker Stack thread/session id this sidecar monitors."),
           actor_id: stringProperty("Optional sidecar actor id. Defaults to monitor."),
-          status: stringProperty("One of: advancing, working, blocked, stalled, goal_met, goal_failed."),
-          note: stringProperty("One concise human sentence: what the worker is doing or the milestone reached."),
+          status: stringProperty("The update type. One of: advancing, working, blocked, stalled, goal_met, goal_failed."),
+          headline: stringProperty("A 1-5 word title for this update, shown as the events-feed header (e.g. 'baseline established', 'candidate beats 2x')."),
+          note: stringProperty("One concise human sentence: what the worker is doing or the milestone reached — cite the concrete number when there is one."),
+          for_human: { type: "boolean", description: "true to surface this update in the operator's events feed. Omit/false for a structured-only signal the operator should not be shown." },
           metric: {
             type: "object",
             description: "Optional concrete metric, e.g. {value, baseline, ratio, target_ratio, target_value, unit} — cite the number.",
@@ -2931,7 +2939,7 @@ function requiredMetaThreadLifecycle(args: JsonObject, key: string): StackdMetaT
   throw new RpcError(-32602, `${key} must be live or archived`)
 }
 
-function metaThreadListItem(manifest: {
+function metaThreadListItem(stackRoot: string, manifest: {
   id: string
   title: string
   lifecycle_status?: string
@@ -2944,6 +2952,9 @@ function metaThreadListItem(manifest: {
   monitor_profile?: string
   updated_at?: string
 }): JsonObject {
+  const monitorHeadline = manifest.head_thread_id
+    ? latestMonitorHeadline(stackRoot, manifest.head_thread_id)
+    : undefined
   return {
     id: manifest.id,
     title: manifest.title,
@@ -2960,7 +2971,22 @@ function metaThreadListItem(manifest: {
     head_thread_id: manifest.head_thread_id ?? null,
     head_segment_id: manifest.head_segment_id ?? null,
     monitor_profile: manifest.monitor_profile ?? null,
+    monitor_headline: monitorHeadline ?? null,
     updated_at: manifest.updated_at ?? null,
+  }
+}
+
+function latestMonitorHeadline(stackRoot: string, threadId: string): JsonObject | undefined {
+  const event = [...readThreadMetaEvents(stackRoot, threadId)]
+    .reverse()
+    .find((entry) => entry.type === "monitor.goal_status" && entry.payload.for_human === true)
+  if (!event) return undefined
+  return {
+    status: typeof event.payload.status === "string" ? event.payload.status : "working",
+    headline: typeof event.payload.headline === "string" ? event.payload.headline : "",
+    note: typeof event.payload.note === "string" ? event.payload.note : "",
+    observed_at: event.observed_at,
+    event_id: event.event_id,
   }
 }
 

@@ -87,8 +87,6 @@ const reviewPrefixes = [
   "src/tui/",
   "scripts/smoke_bombadil",
   "scripts/smoke_meta_threads",
-  "scripts/smoke_tui_",
-  "scripts/prove_goal_first_e2e.ts",
   "scripts/tui_smoke_common.tcl",
 ]
 
@@ -242,8 +240,8 @@ function classify(path: string): Bucket {
 function classifyReviewGroup(path: string): ReviewGroup {
   if (path.startsWith("crates/") || path === "Cargo.toml" || path === "Cargo.lock") return "rust_server_runtime"
   if (path.startsWith("src/client/") || path.startsWith("src/mcp/")) return "ts_client_mcp"
-  if (path.startsWith("src/tui/") || path.startsWith("scripts/smoke_tui_") || path.startsWith("scripts/tui_smoke_common") || path.startsWith("scripts/smoke_bombadil")) return "tui_bombadil"
-  if (path.startsWith("scripts/prove_goal_first_e2e") || path.startsWith("scripts/smoke_meta_threads")) return "proof_smokes"
+  if (path.startsWith("src/tui/") || path.startsWith("scripts/tui_smoke_common") || path.startsWith("scripts/smoke_bombadil")) return "tui_bombadil"
+  if (path.startsWith("scripts/smoke_meta_threads")) return "proof_smokes"
   return "other_review"
 }
 
