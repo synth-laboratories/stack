@@ -177,3 +177,25 @@ Visibility:
 - Prod summary/list: `GET /api/v1/product/stack-crashes/summary` and `/stack-crashes` (Bearer)
 
 See `docs/CRASH_INGESTION.md` for operator triage and smokes (`make smoke-stackd-crash-report`, `make smoke-crash-ingestion`).
+
+## Daily operator digest (CLI)
+
+Agents and operators can summarize **local + remote** telemetry for a UTC day:
+
+```bash
+# Today (UTC) — local outbox counts + stackd posture
+stack telemetry digest
+
+# JSON for scripts / ship evidence
+stack telemetry digest --json
+
+# Include prod growth funnel + cloud crash summary (needs SYNTH_API_KEY)
+STACK_ENVIRONMENT=prod stack telemetry digest --remote --window-days 1
+
+# Specific date + write evidence under .stack/evidence/telemetry-digest/
+stack telemetry digest --date 2026-07-01 --remote --write-evidence --json
+```
+
+Flags: `--date YYYY-MM-DD` · `--remote` · `--window-days N` (default 1 for remote rollup) · `--env dev|staging|prod` · `--write-evidence` · `--json`.
+
+Jstack inventory: `Jstack/.jstack/daily_notes/2026-07-01/stack_telemetry_20260701.md`.

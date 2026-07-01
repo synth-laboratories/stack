@@ -76,6 +76,7 @@ bun run smoke:stackd:telemetry
 bun run smoke:stackd:crash-report
 stack crashes --json
 stack crashes --remote --json
+stack telemetry digest --remote --json
 ```
 
 When `stackd` is healthy it also hosts **live Stack MCP** at `http://127.0.0.1:8792/mcp`

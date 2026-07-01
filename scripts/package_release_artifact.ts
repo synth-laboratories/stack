@@ -34,7 +34,7 @@ mkdirSync(join(payloadRoot, "bin"), { recursive: true })
 mkdirSync(appPayload, { recursive: true })
 mkdirSync(binaryPayload, { recursive: true })
 
-for (const path of ["src", "crates", "bin", "docs", "packaging", "bundled", ".codex"]) copyIfExists(path)
+for (const path of ["src", "crates", "bin", "docs", "packaging", "bundled", ".codex", "scripts"]) copyIfExists(path)
 for (const path of [
   "package.json",
   "bun.lock",

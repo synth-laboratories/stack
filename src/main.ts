@@ -17,6 +17,7 @@ import {
 } from "./resume-checkpoint.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
 import { emitSessionFunnel } from "./telemetry/funnel.js"
+import { resolveEnvironmentFromArgv, runTelemetryDigest } from "./telemetry-digest.js"
 import { runStackApp } from "./tui/app.js"
 import { resetTerminalAfterTui } from "./tui/terminal-cleanup.js"
 import { runUpdate } from "./update.js"
@@ -29,12 +30,20 @@ if (wantsVersionFlag(process.argv)) {
 }
 
 try {
+  if (process.argv[2] === "telemetry" && process.argv[3] === "digest") {
+    const env = resolveEnvironmentFromArgv(process.argv.slice(4))
+    if (env) process.env.STACK_ENVIRONMENT = env
+  }
+
   const config = await loadConfig(stackAppRoot())
   if (process.argv[2] === "doctor") {
     process.exit(await runDoctor(config, process.argv.slice(3)))
   }
   if (process.argv[2] === "crashes") {
     process.exit(await runCrashReports(config, process.argv.slice(3)))
+  }
+  if (process.argv[2] === "telemetry" && process.argv[3] === "digest") {
+    process.exit(await runTelemetryDigest(config, process.argv.slice(4)))
   }
   if (process.argv[2] === "demo") {
     process.exit(await runLocalDemo(config, process.argv.slice(3)))
