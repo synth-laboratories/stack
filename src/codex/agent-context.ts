@@ -330,19 +330,45 @@ function mergeUsedSkills(current: AgentSkillRef[], session: AgentSkillRef[]): Ag
   return merged
 }
 
+/**
+ * Codex persists each session as `<sessionsRoot>/YYYY/MM/DD/rollout-<ISO>-<threadId>.jsonl`.
+ * We resolve by walking the date-partitioned tree newest-first and matching the rollout file
+ * whose name ends in `-<threadId>.jsonl`. Newest-first means a freshly-resumed thread matches
+ * on the first day directory; a genuinely-absent rollout only returns undefined after the whole
+ * tree has been searched — there is no silent recent-days cliff that drops older sessions.
+ */
 export async function resolveCodexSessionPath(threadId: string, sessionsRoot = defaultCodexSessionsRoot()): Promise<string | undefined> {
-  const suffix = `${threadId}.jsonl`
-  for (const dir of recentSessionDirs(sessionsRoot)) {
+  const suffix = `-${threadId}.jsonl`
+  for (const dir of await sessionDateDirs(sessionsRoot)) {
     let entries: string[]
     try {
       entries = await readdir(dir)
     } catch {
       continue
     }
-    const match = entries.find((entry) => entry.endsWith(suffix))
+    const match = entries.find((entry) => entry.startsWith("rollout-") && entry.endsWith(suffix))
     if (match) return join(dir, match)
   }
   return undefined
+}
+
+/**
+ * Strict resolver for call sites where the session MUST exist — e.g. rehydrating a resumed
+ * worker thread's transcript. Throws an error naming the thread and the searched root instead
+ * of letting the caller silently render an empty chat when a rollout cannot be located.
+ */
+export async function requireCodexSessionPath(
+  threadId: string,
+  sessionsRoot = defaultCodexSessionsRoot(),
+): Promise<string> {
+  const path = await resolveCodexSessionPath(threadId, sessionsRoot)
+  if (!path) {
+    throw new Error(
+      `codex rollout not found for thread ${threadId} under ${sessionsRoot} ` +
+        `(expected <YYYY/MM/DD>/rollout-*-${threadId}.jsonl)`,
+    )
+  }
+  return path
 }
 
 export async function readAgentContextFromSession(
@@ -478,26 +504,45 @@ function truncateText(text: string, maxWidth: number): string {
   return `${text.slice(0, Math.max(0, maxWidth - 1))}…`
 }
 
-function defaultCodexSessionsRoot(): string {
-  return join(homedir(), ".codex", "sessions")
+/**
+ * Codex sessions live under `<codexHome>/sessions`. Derived from `defaultCodexHome()` so it
+ * honors `CODEX_HOME` — never hardcode `~/.codex`, or resolution breaks whenever a caller runs
+ * with a relocated codex home.
+ */
+export function defaultCodexSessionsRoot(): string {
+  return join(defaultCodexHome(), "sessions")
 }
 
-function recentSessionDirs(sessionsRoot: string): string[] {
+/**
+ * Every `YYYY/MM/DD` session directory under the codex sessions root, newest date first.
+ * Numeric (not lexical) sort on year/month/day keeps ordering correct across zero-padding.
+ */
+async function sessionDateDirs(sessionsRoot: string): Promise<string[]> {
   const dirs: string[] = []
-  const now = new Date()
-  for (let dayOffset = 0; dayOffset < 3; dayOffset += 1) {
-    const date = new Date(now)
-    date.setDate(now.getDate() - dayOffset)
-    dirs.push(
-      join(
-        sessionsRoot,
-        String(date.getFullYear()),
-        String(date.getMonth() + 1).padStart(2, "0"),
-        String(date.getDate()).padStart(2, "0"),
-      ),
-    )
+  for (const year of await numericChildDirs(sessionsRoot)) {
+    const yearDir = join(sessionsRoot, year)
+    for (const month of await numericChildDirs(yearDir)) {
+      const monthDir = join(yearDir, month)
+      for (const day of await numericChildDirs(monthDir)) {
+        dirs.push(join(monthDir, day))
+      }
+    }
   }
   return dirs
+}
+
+/** Immediate child directories whose names are all digits (year/month/day), sorted descending. */
+async function numericChildDirs(dir: string): Promise<string[]> {
+  let entries: Dirent[]
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return []
+  }
+  return entries
+    .filter((entry) => entry.isDirectory() && /^\d+$/.test(entry.name))
+    .map((entry) => entry.name)
+    .sort((left, right) => Number(right) - Number(left))
 }
 
 function sleep(ms: number): Promise<void> {

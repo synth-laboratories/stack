@@ -1,7 +1,6 @@
 import { readdir, readFile, stat } from "node:fs/promises"
-import { homedir } from "node:os"
 import { join } from "node:path"
-import { resolveCodexSessionPath } from "./agent-context.js"
+import { defaultCodexSessionsRoot, resolveCodexSessionPath } from "./agent-context.js"
 import { CodexAppServerClient, codexAppServerArgs } from "./app-server-client.js"
 
 export type CodexRateLimitWindow = {
@@ -298,10 +297,6 @@ async function recentSessionPaths(sessionsRoot: string, maxFiles: number): Promi
     .sort((left, right) => right.mtimeMs - left.mtimeMs)
     .slice(0, maxFiles)
     .map((entry) => entry.path)
-}
-
-function defaultCodexSessionsRoot(): string {
-  return join(homedir(), ".codex", "sessions")
 }
 
 function readString(value: unknown): string | undefined {

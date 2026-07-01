@@ -1,5 +1,5 @@
 import { readFile } from "node:fs/promises"
-import { resolveCodexSessionPath } from "../codex/agent-context.js"
+import { requireCodexSessionPath, resolveCodexSessionPath } from "../codex/agent-context.js"
 import type { MultiAgentCallMeta, SubagentLog } from "./subagents.js"
 import {
   appendUserBlock,
@@ -35,6 +35,20 @@ export async function readRolloutTranscript(
   } catch {
     return undefined
   }
+  return parseRolloutTranscript(text, opts.maxItems)
+}
+
+/**
+ * Strict variant for the resume path, where a worker thread's rollout MUST be present: it
+ * locates the rollout via {@link requireCodexSessionPath} and reads it, letting a missing file
+ * or read error surface as a thrown, informative failure instead of a silently-empty chat.
+ */
+export async function readRequiredRolloutTranscript(
+  threadId: string,
+  opts: { maxItems?: number } = {},
+): Promise<RolloutTranscript> {
+  const path = await requireCodexSessionPath(threadId)
+  const text = await readFile(path, "utf8")
   return parseRolloutTranscript(text, opts.maxItems)
 }
 
