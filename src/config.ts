@@ -63,7 +63,8 @@ export type StackConfig = {
   stackDataRoot: string
   workspaceRoot: string
   workingDir: string
-  synthDevRoot: string
+  // Local synth dev-stack checkout; dev-slot management is off unless explicitly configured.
+  synthDevRoot?: string
   environmentName: StackEnvironmentName
   environment: StackEnvironmentConfig
   environments: Record<StackEnvironmentName, StackEnvironmentConfig>
@@ -128,10 +129,8 @@ const loadedAuthEnvFiles = new Map<string, string>()
 
 export async function loadConfig(appRoot: string): Promise<StackConfig> {
   const fileConfig = readConfigFile(appRoot)
-  const synthDevRoot = resolveConfigPath(
-    appRoot,
-    process.env.STACK_SYNTH_DEV_ROOT ?? fileConfig.synthDevRoot ?? join(appRoot, "..", "synth-dev"),
-  )
+  const synthDevRootRaw = process.env.STACK_SYNTH_DEV_ROOT ?? fileConfig.synthDevRoot
+  const synthDevRoot = synthDevRootRaw ? resolveConfigPath(appRoot, synthDevRootRaw) : undefined
   const workingDir = resolveConfigPath(
     appRoot,
     process.env.STACK_WORKING_DIR ?? fileConfig.workingDir ?? appRoot,

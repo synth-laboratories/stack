@@ -100,6 +100,9 @@ export function writeDevSlotLaunchRecord(config: StackConfig, record: DevSlotLau
 }
 
 export function startDevSlotInBackground(config: StackConfig): { ok: boolean; message?: string } {
+  if (!config.synthDevRoot) {
+    return { ok: false, message: "synth dev stack not configured; set STACK_SYNTH_DEV_ROOT or config synthDevRoot" }
+  }
   const scriptPath = join(config.synthDevRoot, "scripts", "local.sh")
   if (!existsSync(scriptPath)) {
     return { ok: false, message: `missing ${scriptPath}` }
