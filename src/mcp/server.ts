@@ -2122,7 +2122,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           note: stringProperty("One concise human sentence: what the worker is doing or the milestone reached."),
           metric: {
             type: "object",
-            description: "Optional concrete metric, e.g. {value, baseline, ratio, target, unit} — cite the number.",
+            description: "Optional concrete metric, e.g. {value, baseline, ratio, target_ratio, target_value, unit} — cite the number.",
           },
           evidence_event_ids: arrayProperty("Optional event ids that substantiate this status."),
         },
