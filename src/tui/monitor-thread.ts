@@ -34,6 +34,7 @@ const NARRATIVE_EVENT_TYPES = new Set([
 // for_human:true (type=status, headline=title, note=content); steers ride monitor.steer.
 const GOAL_SHUTTER_EVENT_TYPES = new Set([
   "monitor.chat.reply",
+  "monitor.checkin",
   "monitor.goal_status",
   "monitor.steer",
   "monitor.skill_context_push",
@@ -789,6 +790,15 @@ function formatGoalStatusEvent(event: StackThreadMetaEvent, width: number): stri
   return lines
 }
 
+// Quiet-pass heartbeat: runtime emits monitor.checkin when the sidecar reviewed a batch but had
+// nothing new for the operator. One dim row — proof of life, not faux progress.
+function formatCheckinEvent(event: StackThreadMetaEvent, width: number): string[] {
+  const payload = event.payload
+  const note = readString(payload.note) ?? "no change"
+  const time = shortTime(event.observed_at)
+  return [clampLine(`  · ${note} · ${time}`, width)]
+}
+
 // Maps the structured `status` onto the short feed type-word + drives its color in styledNarrativeLine.
 function goalStatusTypeWord(status: string): string {
   switch (status) {
@@ -896,6 +906,7 @@ function formatGoalShutterEvent(
   width: number,
   allEvents: StackThreadMetaEvent[],
 ): string[] {
+  if (event.type === "monitor.checkin") return formatCheckinEvent(event, width)
   if (event.type === "monitor.goal_status") return formatGoalStatusEvent(event, width)
   if (event.type.startsWith("monitor.")) return formatNarrativeEvent(event, width, allEvents)
   if (event.type.startsWith("agent.")) return [oneLine(`  agent  ${formatAgentWatchLine(event.type, event.payload)}`, width)]
@@ -958,6 +969,7 @@ function sidecarPrefillPromptForEvent(event: StackThreadMetaEvent): string | und
 
 function isHumanFacingGoalFeedEvent(event: StackThreadMetaEvent): boolean {
   switch (event.type) {
+    case "monitor.checkin":
     case "monitor.steer":
     case "monitor.skill_context_push":
     case "monitor.error":
@@ -1139,6 +1151,7 @@ function styledNarrativeLine(line: string): TextChunk[] {
   if (line.startsWith("  queue")) return [fg(theme.synth.amber)(line)]
   if (line.startsWith("  push")) return [fg(theme.synth.gold)(line)]
   if (line.startsWith("  error")) return [fg(theme.synth.red)(line)]
+  if (line.startsWith("  ·")) return [dim(fg(theme.fgMuted)(line))]
   if (line.startsWith("(no messages") || line.startsWith("(waiting") || line.startsWith("(monitor off)") || line.startsWith("(off)")) return [dim(fg(theme.fgMuted)(line))]
   // Indented rows (>= 4 leading spaces) are content beneath a header — dim so the type · headline scans first.
   if (/^\s{4,}\S/.test(line)) return [dim(fg(theme.fgSecondary)(line))]
@@ -1147,6 +1160,7 @@ function styledNarrativeLine(line: string): TextChunk[] {
 
 function styledGoalShutterLine(line: string): TextChunk[] {
   if (line.includes(" ✗") || line.includes(" error") || line.includes("failed")) return [fg(theme.synth.red)(line)]
+  if (line.startsWith("  ·")) return [dim(fg(theme.fgMuted)(line))]
   if (line.startsWith("  agent")) return [dim(fg(theme.transcript.toolLabel)(line))]
   return styledNarrativeLine(line)
 }

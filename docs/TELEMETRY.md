@@ -138,3 +138,42 @@ Telemetry off
 
 Hosted-only features ask for login at point of need. Basic local launch, local
 demo, doctor, update check, and local receipts must not require login.
+
+## Client crash reporting
+
+Stack reports fatal TUI/runtime crashes to Synth cloud by default so operator
+crashes (for example OpenTUI `Failed to create optimized buffer`) are visible in
+prod without opt-in product telemetry.
+
+Flow:
+
+```text
+Stack TUI fatal handler
+  -> POST stackd /telemetry/crashes
+  -> local `.stack/telemetry/crashes.jsonl`
+  -> POST {apiBaseUrl}/api/v1/product/stack-crashes
+```
+
+Cloud ingest stores:
+
+- `observed_at` from the client
+- `recorded_at` server timestamp
+- `source_ip` and `source_ip_hash` derived server-side from the outbound request
+- coarse metadata only (`goal_mode`, `terminal_rows`, `crash_class`, `surface`, …)
+
+Disable with `STACK_CRASH_REPORT=0`. Override cloud URL with
+`STACK_CRASH_REPORT_URL`. Local-only proof path:
+`STACK_CRASH_REPORT_OUTBOX=<path>`.
+
+Crash payloads never include prompts, transcripts, raw paths, secrets, or command
+bodies. Error messages are path-redacted before upload.
+
+Visibility:
+
+- Local outbox tail: `GET stackd /telemetry/crashes?limit=N`
+- Local status: `GET stackd /telemetry/status` → `crash_reporting`
+- CLI: `stack crashes [--json] [--remote]`
+- MCP: `stack_crash_reports`
+- Prod summary/list: `GET /api/v1/product/stack-crashes/summary` and `/stack-crashes` (Bearer)
+
+See `docs/CRASH_INGESTION.md` for operator triage and smokes (`make smoke-stackd-crash-report`, `make smoke-crash-ingestion`).

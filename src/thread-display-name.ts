@@ -49,10 +49,13 @@ export function parseThreadNameFromOperatorMessage(message: string): string | un
 
 export function resolveThreadDisplayLabel(
   summary: StackSessionSummary | undefined,
-  options?: { isGardener?: boolean; maxLength?: number; fallbackId?: string },
+  options?: { isGardener?: boolean; maxLength?: number; fallbackId?: string; metaThreadTitle?: string },
 ): string {
   if (options?.isGardener) return "gardener"
   const maxLength = options?.maxLength ?? 28
+  if (summary?.metaThreadId && options?.metaThreadTitle?.trim()) {
+    return oneLine(options.metaThreadTitle.trim(), maxLength)
+  }
   if (summary?.displayName?.trim()) return oneLine(summary.displayName.trim(), maxLength)
   if (summary?.lastPrompt?.trim()) return oneLine(summary.lastPrompt.trim(), maxLength)
   if (options?.fallbackId) return options.fallbackId.slice(0, 8)

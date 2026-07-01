@@ -19,7 +19,7 @@ reasoning_effort = "low"
 worker = "auto"
 
 [tools]
-allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]
+allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]
 deny = ["codex.interrupt"]
 
 [handoff]
@@ -44,6 +44,7 @@ queue = true
 papercut_mirror = true
 pause_worker = false
 meta_thread_lifecycle = true
+meta_thread_title = true
 
 [wake]
 on_turn_completed = true

@@ -29,6 +29,8 @@ These were decided explicitly. Do not silently change them.
 
 > **The volume bar, restated for the feed:** emit when the worker (a) starts a distinct new phase of work, (b) hits a milestone / criterion transition (with the concrete result — the number/artifact), (c) is stuck/blocked/off-goal (a concern), or (d) you steered/paused it (say what and why). Suppress routine tool churn, "no new progress," and repeats.
 
+> **Check-ins (2026-07-01):** when a pass completes with nothing new for the operator, the **runtime** (not the LLM) emits `monitor.checkin` — one dim `· no change · reviewed N events · HH:MM:SS` row in Sidecar events. This proves the sidecar woke and reviewed without the model posting faux progress or raw `NO_USER_UPDATE` text.
+
 ---
 
 ## 3. Behavior during goal-seeking — the per-wake contract
@@ -59,11 +61,11 @@ The monitor decides, in order:
 The monitor is a **self-scheduling agent**: it wakes on a cursor, does a pass, sleeps. Two parallel implementations share the on-disk actor-state schema (`stack/monitor-actor-state/v1`) and delegate the wake decision to one hot-swappable Python policy (`scripts/monitor_wake_policy.py`).
 
 - **TS in-process:** `src/monitor.ts` (`nextWakeCandidate`, `runMonitorForNewEvents`), driven by the TUI.
-- **Rust scheduler:** `crates/stackd/src/monitor_scheduler.rs`, polls ~500ms, **only queues** (`monitor.trigger_queued`) — the TUI/JS runs the actual LLM pass. (A headless self-scheduling monitor would need a server-side pass runner — noted gap.)
+- **Rust scheduler:** `crates/stackd/src/monitor_scheduler.rs`, polls ~500ms, **queues** (`monitor.trigger_queued`) for attached runs. Headless/event-log supervision now has a JS runner (`src/monitor-daemon.ts`, `scripts/monitor_daemon.ts`) that drives monitor passes without the TUI attached; stackd still does not run the LLM pass itself.
 
-**Wake layers** (all in `[wake]` config, `.stack/monitors/*.toml`): immediate (tool_failed / error / turn_completed / operator_message / goal_change) · event-batch (every K worker events, K=4, min-interval 12s) · time cadence (≥ every 90s while goal active + worker running) · staleness (5m of worker silence). Dedup: already-running → merge into one queued trigger. (Cadence tightened 2026-07-01 for a live-feeling feed — see §11.)
+**Wake layers** (all in `[wake]` config, `.stack/monitors/*.toml`): immediate (tool_failed / error / turn_completed / operator_message / goal_change) · event-batch (every K worker events, K=4, min-interval 12s) · time cadence (≥ every 90s while goal active + worker running) · staleness (5m of worker silence). Dedup: already-running → merge into one queued trigger. Automatic cadence honors `next_wake_on`, skips archived meta-threads, and enforces `max_wakes_per_primary_turn` for routine wakes while preserving operator messages and goal changes. (Cadence tightened 2026-07-01 for a live-feeling feed — see §11.)
 
-**Sleep:** `stack_sidecar_pause_for_restart` (`src/mcp/server.ts`) appends `monitor.pause_for_restart` and yields. Note `next_wake_on` is currently written and **not read** — the monitor cannot yet choose its own next-wake time (gap).
+**Sleep:** `stack_sidecar_pause_for_restart` (`src/mcp/server.ts`) appends `monitor.pause_for_restart` and yields. A model-supplied `next_wake_on` is read by both the TS runtime and stackd scheduler before routine cadence wakes.
 
 **Event-sync:** per-actor cursor `last_event_id` on `.stack/actors/<threadId>/monitors/<actorId>.json`; a classifier drops the monitor's own `monitor.*` events so it never wakes on its own noise.
 
@@ -77,7 +79,8 @@ The monitor's LLM emits three markers in its message text — `PROGRESS_UPDATE: 
 | --- | --- | --- |
 | **`monitor.progress`** | a human-facing progress narration | **HUMAN — the feed** |
 | **`monitor.steer`** | a nudge sent to the worker (payload: message, `trigger_signature`, source) | **HUMAN — the feed** (say what + why) |
-| **`monitor.summary`** | per-pass checkpoint summary; carries `summary`/`goal_snapshot`/`focus_results`. Sometimes just `NO_USER_UPDATE` | **MIXED** — show only when substantive |
+| **`monitor.checkin`** | runtime heartbeat when a pass reviewed events but had no new signal for the operator | **HUMAN — dim check-in** (`· no change · reviewed N events · time`) |
+| **`monitor.summary`** | per-pass checkpoint summary; carries `summary`/`goal_snapshot`/`focus_results`. Sometimes just `NO_USER_UPDATE` | **INTERNAL** — never surface raw text; quiet passes become `monitor.checkin` |
 | `monitor.wake` | the runtime woke the monitor (reason + wake_id) | INTERNAL |
 | `monitor.trigger_queued` | a wake merged while the monitor was busy | INTERNAL |
 | `monitor.checkpoint` | cursor advanced after review | INTERNAL |
@@ -89,7 +92,7 @@ The monitor's LLM emits three markers in its message text — `PROGRESS_UPDATE: 
 | `monitor.error` | a monitor pass failed | HUMAN (surface the failure class) |
 | `monitor.paused` / `monitor.resumed` / `monitor.mode_changed` | monitor lifecycle | INTERNAL |
 
-**Design rule for the feed:** the human-facing events feed shows the **HUMAN** rows (progress, steer, substantive summary, concerns, chat, errors) and **suppresses the INTERNAL mechanics** (wake, trigger_queued, checkpoint, pause_for_restart, usage) and the empty `NO_USER_UPDATE` summaries. Today it does NOT — that's the main open task (§8).
+**Design rule for the feed:** the human-facing events feed shows the **HUMAN** rows (progress, steer, substantive summary, concerns, audit, chat, errors, **check-ins**) and **suppresses the INTERNAL mechanics** (wake, trigger_queued, checkpoint, pause_for_restart, usage) and the empty `NO_USER_UPDATE` summaries. Quiet passes surface as dim `monitor.checkin` rows instead of silence.
 
 **Future consideration:** the monitor currently narrates only via its final message markers. A cleaner model is a **dedicated feed-write tool** the monitor calls explicitly (e.g. `monitor_note(kind, text, evidence)`) so a feed entry is a deliberate typed action with evidence ids, not a parsed prefix. Consider this when you touch the prompt.
 
@@ -106,7 +109,7 @@ Renders the monitor's Codex conversation **exactly like the worker chat**: inter
 - **shows the monitor's model** on a line inside the box (`monitor · gpt-5.4-mini · medium`). (Kept out of the border title on purpose — a long title gets truncated in the narrow split layout and clips the "Sidecar thread" anchor.)
 
 ### 6b. `Sidecar events` — the human-facing narration FEED (the "what")
-This is the feed the human reads to follow the run: **what the worker is doing + progress toward goal.** Renderer: `renderGoalShutterStreamStyled` (`src/tui/monitor-thread.ts`). The goal shutter now defaults here, not to the raw sidecar thread. It shows only the HUMAN-facing events from §5 (progress / steer / concern / audit / chat reply / errors) and suppresses internal mechanics: `NO_USER_UPDATE`, wake/checkpoint/pause/usage rows, raw worker tool churn, and repetitive "checkpoint advanced" filler. The raw worker/monitor event tape remains available through `a agent tape`; the sidecar's own reasoning remains available through `t thread`.
+This is the feed the human reads to follow the run: **what the worker is doing + progress toward goal.** Renderer: `renderGoalShutterStreamStyled` (`src/tui/monitor-thread.ts`). The goal shutter now defaults here, not to the raw sidecar thread. It shows only the HUMAN-facing events from §5 (progress / steer / concern / audit / chat reply / errors / **check-ins**) and suppresses internal mechanics: raw `NO_USER_UPDATE`, wake/checkpoint/pause/usage rows, raw worker tool churn, and repetitive "checkpoint advanced" filler. Quiet passes show a dim `· no change · reviewed N events · time` check-in so the operator knows the sidecar is alive. The raw worker/monitor event tape remains available through `a agent tape`; the sidecar's own reasoning remains available through `t thread`.
 
 ### 6c. Header / cost
 The goal strip shows `status · criteria X/Y · elapsed · worker $ · monitor $` (consolidated to one line to give the thread room). Monitor cost comes from `monitor.usage`.
@@ -116,7 +119,7 @@ The goal strip shows `status · criteria X/Y · elapsed · worker $ · monitor $
 ## 7. Invariants (musts / must-nots)
 
 **Musts:** feed narrates real worker activity + progress · every assessment cites evidence · `done` needs `audit-clean` proof · steer once per issue (code-enforced via `trigger_signature` dedup) · a pause always escalates · the monitor's own events never wake it or count as worker progress · secrets in worker output are redacted before entering the event log (`redactSecrets`, `src/core-agent-events.ts`).
-**Must-nots:** not a logger (interprets, never transcribes) · not a second worker · never hard-blocks except via the granted `pause_worker` · never redirects the goal · never forces a handoff · never a code-level quality verdict · never shows runtime mechanics (pause tool, checkpoints) or `NO_USER_UPDATE` in the human feed.
+**Must-nots:** not a logger (interprets, never transcribes) · not a second worker · never hard-blocks except via the granted `pause_worker` · never redirects the goal · never forces a handoff · never a code-level quality verdict · never shows runtime mechanics (pause tool, checkpoints) or raw `NO_USER_UPDATE` text in the human feed (use `monitor.checkin` instead).
 
 **Monitor grant set** (its `[tools] allow` under the locked decisions): `{ progress_update, steer, pause_worker, block_before_action, escalate, audit, wake-gardener }` — explicitly **not** `{ mark_done, redirect_goal, handoff.force, edit_criteria }`. Widening this grant is an autonomy-ladder move, gated.
 
@@ -126,22 +129,27 @@ The goal strip shows `status · criteria X/Y · elapsed · worker $ · monitor $
 
 **Built + tested this session:**
 - Goal mode defaults to the clean `Sidecar events` feed + compact goal summary; `t` opens the persistent sidecar Codex thread/chat, `e` returns to events, `a` toggles the raw agent/monitor tape, and resume no longer forces the worker chat open just because prior turns exist.
-- The default events feed filters runtime mechanics and quiet markers (`NO_USER_UPDATE`, checkpoint/pause/wake/usage rows, raw worker tool churn) while preserving human-facing `monitor.progress`, `monitor.steer`, substantive summaries, chat replies, skill pushes, and errors.
+- The default events feed filters runtime mechanics and quiet markers (`NO_USER_UPDATE`, checkpoint/pause/wake/usage rows, raw worker tool churn) while preserving human-facing `monitor.progress`, `monitor.steer`, substantive summaries, chat replies, skill pushes, errors, and **dim `monitor.checkin` heartbeats on quiet passes**.
 - Real supervision proven with a real brain (not canned): progress-with-specifics, steer-on-stuck, audit-refutes-bogus-done-claim, quiet-on-trivia — `scripts/accept_monitor_supervision.ts` (`smoke:monitor:supervision`, real gpt-5.4-mini, 5 scenarios, stable).
 - Layered wake cadence (event-batch + time + staleness); steer-once dedup keyed on the failing-command **`trigger_signature`** (robust to rewording); no-progress-announcement suppression; secret redaction across the whole event pipeline (JWT/Stripe/Google/AWS/PEM/URL-creds/JSON-form, redact-before-truncate).
+- Wake hygiene: routine wakes honor `next_wake_on`, cap automatic wake volume per primary turn, and skip archived meta-threads.
+- Gardener live meta-thread rollup includes the latest human-facing monitor headline/status for each live meta-thread.
+- Task-aware GameBench context: `task.toml` gates and task type feed the monitor, so policy-opt, engine-rebuild, and puzzle-diagnosis goals audit against the correct done bar and honesty pitfalls.
+- Structural criterion state: goal snapshots include `criteria_states` (`open` → `worker_marked` → `audit_clean|audit_failed`) derived from worker claims plus monitor audit events.
+- Risky-pending supervision: the monitor runtime detects imminent destructive/prod-affecting commands and emits a high-severity `monitor.steer` with `focus=risky_pending` once per category for pause/escalation.
+- Headless pass loop: `monitor-daemon` can run monitor passes from the event log without the TUI attached.
 - Two root-split bug fixes: `monitorRuntimeRoot` fails loud instead of silently falling back to `appRoot`; the sidecar transcript co-locates with events/actor-state under `stackDataRoot`.
 - **Thread panel** rich render (worker-grade) + model display (§6a).
 - Better slash-command errors (a registered command is never "unknown"; typos get "did you mean").
-- Deterministic guardrail tests: `smoke:monitor:logic` (38), `smoke:sidecar:render` (19), `smoke:slash:errors` (11), `smoke:goal-shutter` — no LLM, milliseconds.
+- Deterministic guardrail tests: `smoke:monitor:logic` (47), `smoke:sidecar:render` (23), `smoke:slash:errors` (11), `smoke:goal-shutter` — no LLM, milliseconds.
 - Full TUI goal acceptance has been moved out of Stack. Use
   `../testing/stack/end_to_end/tui_goal/tmux_goal_craftax_real.ts` for the real
   Craftax goal flow; Stack must not carry substituted Codex TUI acceptance scripts.
 
 **PENDING — do these next:**
 1. **Make the monitor narrate worker *activity* more richly, not only criterion transitions.** It now emits clean human-facing rows, but the prompt should keep improving toward *"worker is now searching for the baseline eval script"* level updates. Consider a dedicated `monitor_note` feed-write tool (§5) so the model writes typed feed entries with evidence instead of prefix-parsed message text.
-2. **Structural per-criterion state machine** (`open → worker-marked-done → audit-clean|failed`) — criteria are still a flat `done/total` count; the audit is prompt-level, not typed.
-3. **`risky-pending` → pause+escalate** is prompt-level only; `pause_worker` exists as a permission/flag but there's no wired "pause before irreversible action" emission path.
-4. **Self-scheduling gaps:** honor a model-supplied next-wake (`next_wake_on` is dead data); server-side pass runner so wake→run doesn't require the TUI attached; enforce `max_wakes_per_primary_turn` (written, not enforced).
+2. **Cross-actor wake-gardener orchestration** is still not fully wired as a typed handoff path. The monitor can detect and signal; gardener owns lifecycle/handoff action.
+3. **Scale proof:** the GameBench harness exists, but the full N≥5 lanes per task type run is a clean-environment operation, not yet a completed release gate.
 
 ---
 
@@ -152,6 +160,10 @@ The goal strip shows `status · criteria X/Y · elapsed · worker $ · monitor $
 | Monitor pass / wake / dedup / audit-parse | `src/monitor.ts` |
 | Sidecar Codex runner + developer prompt | `src/monitor-sidecar-codex.ts` |
 | Worker→event pipeline + redaction | `src/core-agent-events.ts` |
+| Task-aware GameBench context | `src/gamebench-goal.ts`, `src/codex/goal-context.ts` |
+| Criterion state machine | `src/goal-criteria-state.ts`, `src/goal-session.ts` |
+| Risky-pending detector | `src/risky-action.ts`, `src/monitor.ts` |
+| Headless monitor pass loop | `src/monitor-daemon.ts`, `scripts/monitor_daemon.ts` |
 | Wake policy (hot-swappable) | `scripts/monitor_wake_policy.py` |
 | Rust scheduler (queues triggers) | `crates/stackd/src/monitor_scheduler.rs` |
 | Monitor actor state / cursor | `crates/stack-core/src/meta_thread_state.rs`, `.stack/actors/<t>/monitors/<a>.json` |

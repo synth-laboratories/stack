@@ -41,6 +41,7 @@ export type ActiveThreadsRenderInput = {
   threadGoalStatus?: ReadonlyMap<string, ThreadGoalStatus>
   threadLifecycleStatus?: ReadonlyMap<string, ThreadLifecycleStatus>
   threadMetaThreadIds?: ReadonlyMap<string, string>
+  threadMetaThreadTitles?: ReadonlyMap<string, string>
 }
 
 /** Gardener focus → gardener stream; worker/agent focus → monitor + actor stream. */
@@ -424,6 +425,7 @@ function activeThreadRowSpecs(
       prompt: resolveThreadDisplayLabel(summary, {
         isGardener: input.gardenerThreadIds.has(summary.id),
         maxLength: Math.max(12, input.columns - 14),
+        metaThreadTitle: input.threadMetaThreadTitles?.get(summary.id),
       }),
       resumeToken: threadResumeToken(summary),
     })

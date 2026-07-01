@@ -15,6 +15,7 @@ private release ledgers.
 
 ### Added
 
+- **Client crash reporting** — fatal TUI/runtime crashes report to stackd and Synth cloud by default (`STACK_CRASH_REPORT=0` to disable). Local outbox at `.stack/telemetry/crashes.jsonl`; prod query via `stack crashes --remote`, MCP `stack_crash_reports`, and `GET /api/v1/product/stack-crashes/summary`. See `docs/CRASH_INGESTION.md`.
 - **Sidecar monitor (goal mode)** — default **Sidecar events** feed in `/goal` mode; worker
   transcript is debug (`a`), not the primary view. Monitor posts human updates via
   `stack_monitor_goal_status` (`for_human`, headline, note, metric) → `monitor.goal_status`
@@ -22,47 +23,52 @@ private release ledgers.
 - **Goal completion audit** — monitor may flip a goal to `done` with audited `goal_met`, or
   `blocked`/`goal_failed` when a worker done-claim fails proof; steer-once dedup via
   `trigger_signature`.
+- **Task-aware GameBench monitor context** — policy-opt, engine-rebuild, and puzzle-diagnosis
+  goals carry task type, milestone chain, done bar, and honesty pitfalls into the monitor so
+  `goal_met` is audited against the right bar instead of objective-text vibes.
+- **Risky action supervision** — monitor detects imminent irreversible actions such as hard
+  resets, destructive deletes, force pushes, prod-affecting commands, and schema drops, then
+  emits a high-severity steer/pause-escalation signal once per category.
+- **Headless monitor loop** — `monitor-daemon` can run monitor passes without the TUI attached,
+  enabling server-side/event-log driven supervision loops.
 - **Gardener bundled defaults** — `bundled/gardeners/default.system.md` + `default.toml` seeded
   on first run; prompt states portfolio conductor role, routes per-run progress to the monitor
   Sidecar feed, and forbids using sidecar pause as thread archive.
 - **Gardener meta-thread lifecycle** — `lifecycle_status` on stackd manifests,
   `PATCH /meta-threads/:id/lifecycle`, MCP `stack_meta_threads_list` / `stack_meta_thread_get` /
   `stack_meta_thread_set_lifecycle` (gardener-gated; monitor rejected), live meta-thread table in
-  gardener chat, TUI lifecycle badges, monitor scheduler skips archived heads (`c364e2a`).
+  gardener chat with latest monitor headline/status, TUI lifecycle badges, monitor scheduler skips
+  archived heads (`c364e2a`).
 - **TUI remount coordinator** — coalesces OpenTUI full-tree remounts to reduce TextBuffer /
   SyntaxStyle allocation crashes during dev refresh and poll overlap.
-- **Developer policy** — `docs/DEVELOPERS.md`: product-only `stack/` repo; verification lives in
-  `testing/` and `evals/stackeval/`.
+- **Meta-thread title owner path** — `PATCH /meta-threads/:id/title` and MCP
+  `stack_meta_thread_set_title` let gardener, monitor, and operator actors rename the
+  human-editable meta-thread title while durable ids remain immutable.
 - **Release channels** — `version.json` with `stable` (public tags) and `dev` (nightly) channels
 - **`make bump-dev`** — frequent dev version bumps (`0.2.0-dev.YYYYMMDD.N`)
 - **`make release-promote VERSION=x.y.z`** — cut stable and reopen dev line
 - **Homebrew** — `packaging/homebrew/stack.rb` (stable) and `stack-dev.rb` (HEAD main)
 - **`make install-brew`** — libexec install path for Homebrew
-- **StackEval 1 packet prep** — `bun run stackeval:banking77-local-gepa` creates
-  the Banking77 local GEPA dogfood packet with prompt, metadata, model policy,
-  waste ledger, and release guard placeholders
 
 ### Changed
 
 - Goal shutter defaults to **Sidecar events** (`e`) instead of worker chat on resume in goal mode.
+- Active thread rows prefer a bound meta-thread title or active-goal objective before falling
+  back to session prompt text, eliminating `(empty)` labels for titled meta-thread sessions.
 - Monitor wake cadence tightened for live-feeling feed during long runs (event batch + time +
-  staleness layers in `.stack/monitors/default.toml`).
-- Verification scripts canonical home: `~/Documents/GitHub/testing/stack/` (smokes, Bombadil B0,
-  tmux E2E, acceptance). See `testing_stack.txt` in Jstack daily notes.
+  staleness layers in `.stack/monitors/default.toml`); routine wakes now honor `next_wake_on` and
+  enforce `max_wakes_per_primary_turn`.
 
 ### Known limitations
 
-- Sidecar feed quality depends on monitor model + prompt; full GE-MON acceptance matrix not yet
-  green on all environments. When sidecar MCP is unavailable, runtime synthesizes audited
+- Sidecar feed quality depends on monitor model + prompt. When sidecar MCP is unavailable, runtime synthesizes audited
   `goal_met` / `goal_failed` from the sidecar summary text.
-- `pause_worker`, `block_before_action`, and typed **wake-gardener** escalation are not fully
-  wired — do not rely on pause-before-irreversible in production.
-- Gardener bulk lifecycle (`stack_meta_threads_set_lifecycle`), typed **wake-gardener** escalation,
-  and monitor headline rollup in gardener context are partial or follow-on (headline WIP unstaged).
+- `pause_worker` / risky-action escalation now emits monitor signals, but typed
+  **wake-gardener** escalation is not fully wired as a cross-actor path.
+- Gardener bulk lifecycle (`stack_meta_threads_set_lifecycle`) and typed **wake-gardener**
+  escalation are partial or follow-on.
 - Sidecar pause is not archive; use `stack_meta_thread_set_lifecycle` to park meta-threads.
-- No multi-goal portfolio rollup, ETA range, or headless monitor pass without the TUI attached.
-- Bombadil B0 runner default timeout is 420s (sequential scroll/focus/crash scenarios); slow hosts
-  may still need `STACK_BOMBADIL_B0_TIMEOUT_MS`.
+- No full multi-goal portfolio rollup or ETA range.
 
 ## [0.1.0] - 2026-06-26
 

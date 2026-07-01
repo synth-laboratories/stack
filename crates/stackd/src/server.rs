@@ -121,6 +121,10 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/telemetry/status", get(telemetry::telemetry_status))
         .route("/telemetry/events", post(telemetry::record_telemetry_event))
         .route(
+            "/telemetry/crashes",
+            get(telemetry::list_crash_reports).post(telemetry::record_crash_report),
+        )
+        .route(
             "/threads/:id/monitors/:monitor_id/pause",
             post(threads::pause_monitor),
         )
@@ -147,6 +151,7 @@ fn router(state: Arc<AppState>) -> Router {
             get(meta_threads::list_meta_threads).post(meta_threads::create_meta_thread),
         )
         .route("/meta-threads/:id", get(meta_threads::get_meta_thread))
+        .route("/meta-threads/:id/title", patch(meta_threads::update_title))
         .route(
             "/meta-threads/:id/lifecycle",
             patch(meta_threads::update_lifecycle),

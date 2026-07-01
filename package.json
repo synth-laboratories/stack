@@ -20,6 +20,11 @@
   "scripts": {
     "start": "bun run src/main.ts",
     "check": "tsc --noEmit && cargo build -p stackd",
+    "smoke:stackd:telemetry": "STACK_REPO_ROOT=\"$PWD\" bun run ../testing/stack/smoke/smoke_stackd_telemetry.ts",
+    "smoke:stackd:crash-report": "STACK_REPO_ROOT=\"$PWD\" bun run ../testing/stack/smoke/smoke_stackd_crash_report.ts",
+    "smoke:crash-ingestion": "STACK_REPO_ROOT=\"$PWD\" bun run ../testing/stack/smoke/smoke_stack_crash_ingestion.ts",
+    "smoke:telemetry:contract": "STACK_REPO_ROOT=\"$PWD\" bun run ../testing/stack/smoke/smoke_telemetry_contract.ts",
+    "smoke:growth-ingestion": "STACK_REPO_ROOT=\"$PWD\" bun run ../testing/stack/smoke/smoke_growth_ingestion.ts",
     "smoke:release-artifact:local": "bun run scripts/package_release_artifact.ts",
     "quality:static": "bun run check && bun run release-check",
     "launch:readiness": "bun run scripts/launch_readiness.ts",

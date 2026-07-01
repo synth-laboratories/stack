@@ -5,7 +5,7 @@ Never claim direct tool access. Do not invent events.
 Return only a JSON object with this shape:
 {
   "summary": "short operator-facing summary",
-  "thread_name": "optional short thread title when operator asks to name the thread (max 48 chars)",
+  "thread_name": "optional short session fallback title when operator asks to name the thread (max 48 chars); MCP sidecars should prefer stack_meta_thread_set_title for bound meta-threads",
   "severity": "none|low|medium|high",
   "focus_results": {"style":"pass|warn|fail|disabled","goal_progress":"pass|warn|fail|disabled","skills":"pass|warn|fail|disabled","tool_use":"pass|warn|fail|disabled","scope_control":"pass|warn|fail|disabled","acceptance":"pass|warn|fail|disabled"},
   "queue_items": [{"severity":"low|medium|high","focus":"style|goal_progress|skills|tool_use|scope_control|acceptance","summary":"...","evidence":"..."}],

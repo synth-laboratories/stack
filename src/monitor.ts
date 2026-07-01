@@ -1226,6 +1226,28 @@ export async function runMonitorForNewEvents(input: {
     }
   }
 
+  const eventsBeforeCheckin = readThreadMetaEvents(runtimeRoot, threadId)
+  if (!wakeEmittedHumanFeedEvent(eventsBeforeCheckin, wakeId, observedAt)) {
+    appendThreadMetaEvent(runtimeRoot, {
+      event_id: stackEventId("monitor_checkin"),
+      type: "monitor.checkin",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: actorId,
+      actor_role: "monitor",
+      payload: {
+        wake_id: wakeId,
+        wake_reason: candidate.reason,
+        pending_event_count: candidate.pendingEvents.length,
+        note: monitorCheckinNote({
+          wakeReason: candidate.reason,
+          pendingEventCount: candidate.pendingEvents.length,
+        }),
+        status: "watching",
+      },
+    })
+  }
+
   const usage = pass.usage ?? estimateMonitorUsage(candidate.pendingEvents, monitorSummary)
   appendThreadMetaEvent(runtimeRoot, {
     event_id: stackEventId("monitor_usage"),
@@ -2193,7 +2215,7 @@ function auditedGoalStatusUpdateFromSummary(text: string): string | undefined {
   const completionClear =
     /\bclears? (?:the )?(?:2x )?target\b/.test(normalized) ||
     /\bclears? (?:the )?(?:requested )?(?:2x )?(?:bar|target)\b/.test(normalized) ||
-    /\bgoal (?:is )?(?:complete|met)\b/.test(normalized)
+    /\bgoal[_ ](?:is[_ ]?)?(?:complete|met)\b/.test(normalized)
   const completionRejected =
     /\bdoes not clear\b/.test(normalized) ||
     /\bnot (?:done|complete|enough)\b/.test(normalized) ||
@@ -2207,6 +2229,44 @@ function auditedGoalStatusUpdateFromSummary(text: string): string | undefined {
 export function isNoUserUpdateText(text: string): boolean {
   const trimmed = text.trim()
   return trimmed.length === 0 || /^NO_USER_UPDATE\b/i.test(trimmed)
+}
+
+/** True when this wake already produced a human-facing Sidecar events row (not a check-in). */
+export function wakeEmittedHumanFeedEvent(
+  events: StackThreadMetaEvent[],
+  wakeId: string,
+  wakeObservedAt: string,
+): boolean {
+  const wakeMs = Date.parse(wakeObservedAt)
+  for (const event of events) {
+    const payload = (event.payload ?? {}) as Record<string, unknown>
+    const eventWakeId = readString(payload.wake_id)
+    if (eventWakeId && eventWakeId !== wakeId) continue
+    const eventMs = Date.parse(event.observed_at)
+    if (!eventWakeId && Number.isFinite(wakeMs) && Number.isFinite(eventMs) && eventMs < wakeMs) continue
+    switch (event.type) {
+      case "monitor.goal_status":
+        if (payload.for_human === true) return true
+        break
+      case "monitor.progress":
+      case "monitor.steer":
+        return true
+      case "monitor.skill_context_push":
+        if (!eventWakeId || eventWakeId === wakeId) return true
+        break
+      default:
+        break
+    }
+  }
+  return false
+}
+
+export function monitorCheckinNote(input: { wakeReason: string; pendingEventCount: number }): string {
+  const reviewed =
+    input.pendingEventCount > 0
+      ? `reviewed ${input.pendingEventCount} event${input.pendingEventCount === 1 ? "" : "s"}`
+      : "no new worker events"
+  return `no change · ${reviewed}`
 }
 
 function goalStatusProgressUpdate(events: StackThreadMetaEvent[], wakeObservedAt: string): string | undefined {
@@ -2327,7 +2387,7 @@ function auditedGoalStatusUpdateFromWorkerEvents(
 ): { status: "goal_met" | "goal_failed"; note: string; metric: Record<string, number | string> } | undefined {
   const pendingText = pendingEvents.map(eventEvidenceText).join("\n")
   if (!/\b(done|complete|completion|marking\b[\s\S]{0,80}\bdone)\b/i.test(pendingText)) return undefined
-  const candidate = latestNumberMatch(pendingText, /\b(?:candidate|cand[_-]?\w*)\b[\s\S]{0,100}?\b(?:scored|score|reward|mean reward)\s*[=:]?\s*(\d+(?:\.\d+)?)/i)
+  const candidate = latestNumberMatch(pendingText, /\b(?:candidate|cand[_-]?\w*)\b[\s\S]{0,120}?\b(?:scored|score|mean reward)\b[^\d]{0,40}(\d+(?:\.\d+)?)/i)
   if (candidate === undefined) return undefined
   const allText = allEvents.map(eventEvidenceText).join("\n")
   const baseline =
@@ -2437,7 +2497,7 @@ function conservativeGoalStatusForProgress(text: string): string {
     return "goal_failed"
   }
   if (
-    /\bgoal met\b/.test(normalized) ||
+    /\bgoal[_ ]met\b/.test(normalized) ||
     /\b(audit(?:ed)?|confirm(?:ed|s)?)\b[\s\S]{0,160}\b(goal (?:is )?complete|completion|clears? (?:the )?(?:requested )?(?:2x )?(?:bar|target)|cleared (?:the )?target)\b/.test(normalized)
   ) {
     return "goal_met"
@@ -2505,10 +2565,16 @@ function isInternalNoHumanUpdateSummary(summary: string): boolean {
   return (
     /\bdid not post (?:a )?(?:human-facing )?update\b/.test(normalized) ||
     /\bdid not call [`']?stack_monitor_goal_status/.test(normalized) ||
+    /\breviewing the worker.?s last turn\b/.test(normalized) ||
+    /\bcheckpoint (?:the )?sidecar state\b/.test(normalized) ||
+    /\bpause this wake\b/.test(normalized) ||
     /\bno human-facing update\b/.test(normalized) ||
     /\bno human update was warranted\b/.test(normalized) ||
+    /\bno operator update was needed\b/.test(normalized) ||
     /\bno operator update was posted\b/.test(normalized) ||
+    /\bno update was needed\b/.test(normalized) ||
     /\broutine workspace listing\b/.test(normalized) ||
+    /\broutine repo-root listing\b/.test(normalized) ||
     /\bworkspace directory listing\b/.test(normalized) ||
     /\bonly listed the workspace root\b/.test(normalized) ||
     /\broutine discovery rather than a goal milestone\b/.test(normalized) ||

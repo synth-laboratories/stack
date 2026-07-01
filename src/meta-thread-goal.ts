@@ -162,8 +162,9 @@ export function metaThreadGoalStripLines(
   if (!goal?.objective?.trim()) return []
 
   const width = Math.max(24, columns - 2)
+  const title = manifest?.title?.trim() || goal.objective.replace(/\s+/g, " ").trim()
   const lines: string[] = [
-    truncateMetaGoalLine(`mt · ${goal.status} · ${goal.objective.replace(/\s+/g, " ").trim()}`, width),
+    truncateMetaGoalLine(`mt · ${goal.status} · ${title}`, width),
   ]
 
   for (const criterion of goal.acceptance_criteria.slice(0, 4)) {

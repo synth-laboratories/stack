@@ -326,7 +326,8 @@ import {
   monitorEventStreamLineCount,
 } from "./monitor-thread.js"
 import { activeGoalModeSnapshot, isGoalMode } from "./goal-mode.js"
-import { goalShutterLineCount, renderGoalPanelTabBar, renderGoalShutter, renderGoalWorkerPeekPanel, goalShutterCardLineCount, goalShutterStreamVisibleRows, goalWorkerPeekTranscriptRows } from "./goal-shutter.js"
+import { goalShutterLineCount, renderGoalPanelTabBar, renderGoalShutter, renderGoalWorkerPeekPanel, goalShutterCardLineCount, goalShutterProgressChromeRows, goalShutterStreamVisibleRows, goalWorkerPeekTranscriptRows } from "./goal-shutter.js"
+import { setCrashRuntimeContext } from "../telemetry/crash-report.js"
 import { sidecarAgentActive, sidecarInputStatusLine } from "./sidecar-queue.js"
 import {
   consumeBracketedPasteSequences,
@@ -462,6 +463,7 @@ type AppState = {
   threadGoalStatus: Map<string, ThreadGoalStatus>
   threadLifecycleStatus: Map<string, ThreadLifecycleStatus>
   threadMetaThreadIds: Map<string, string>
+  threadMetaThreadTitles: Map<string, string>
   lastSessionLogPath?: string
   optimizerSnapshot: OptimizerSnapshot
   selectedOptimizerRunIndex: number
@@ -813,6 +815,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     threadGoalStatus: new Map(),
     threadLifecycleStatus: new Map(),
     threadMetaThreadIds: new Map(),
+    threadMetaThreadTitles: new Map(),
     optimizerSnapshot: localStackBoot.optimizer ?? optimizerSnapshot,
     optimizerCliAvailable,
     localBootstrapSnapshot: localStackBoot.bootstrap,
@@ -1870,6 +1873,20 @@ function createView(
   const switcher = switcherPanel(options, state, refresh, applyStackEnvironmentFromUi)
   const goalModeActive = isGoalMode(state)
   const showGoalShutter = goalModeActive && !state.goalShutterWorkerPeek
+  const metaThreadTitle =
+    state.metaThreadManifest?.title?.trim() ||
+    state.metaThreadManifest?.active_goal?.objective?.trim() ||
+    state.goalContext.objective?.trim()
+  setCrashRuntimeContext({
+    surface: showGoalShutter ? "goal_shutter" : "tui",
+    goalMode: goalModeActive,
+    monitorEnabled: state.monitorSnapshot.enabled,
+    sidecarView: state.goalShutterSidecarView,
+    focusMode: state.focusMode,
+    environment: options.config.environmentName,
+    terminalRows: renderer.terminalHeight,
+    terminalCols: renderer.terminalWidth,
+  })
   const baseTranscriptViewport = transcriptViewportMetrics(renderer, state)
   const goalStripLines =
     state.metaThreadManifest?.active_goal?.objective?.trim() ||
@@ -1977,7 +1994,8 @@ function createView(
           columns: transcriptViewport.columns,
           metaThreadId: options.session.metaThreadId,
         }),
-        sidecarMenuElements.length > 0 ? 1 : 0,
+        (sidecarMenuElements.length > 0 ? 1 : 0) +
+          goalShutterProgressChromeRows(workerMetaEvents, transcriptViewport.columns),
       )
     : 0
   if (showGoalShutter) {
@@ -2032,6 +2050,7 @@ function createView(
             scrollOffset: state.goalShutterScrollOffset,
             sidecarThreadScrollOffset: state.goalShutterSidecarThreadScrollOffset,
             metaThreadId: options.session.metaThreadId,
+            metaThreadTitle,
             sidecarMenuElements,
             onFocusSidecar: () => focusGoalSidecarChat(options, state, refresh),
             onPrefillSidecar: (prompt) => {
@@ -2060,6 +2079,7 @@ function createView(
                   objective:
                     state.metaThreadManifest?.active_goal?.objective?.trim() ||
                     state.goalContext.objective?.trim(),
+                  metaThreadTitle,
                 }),
               ]
             : [transcriptPane(renderTranscriptPanel(state, transcriptViewport))]),
@@ -2227,6 +2247,7 @@ function createView(
                 threadGoalStatus: state.threadGoalStatus,
                 threadLifecycleStatus: state.threadLifecycleStatus,
                 threadMetaThreadIds: state.threadMetaThreadIds,
+                threadMetaThreadTitles: state.threadMetaThreadTitles,
               },
               options,
               state,
@@ -3078,10 +3099,12 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
   const metaThreadIds = new Set(
     state.history.map((summary) => summary.metaThreadId).filter((id): id is string => Boolean(id)),
   )
+  if (options.session.metaThreadId) metaThreadIds.add(options.session.metaThreadId)
   if (metaThreadIds.size === 0) {
     if (state.threadGoalStatus.size > 0) state.threadGoalStatus = new Map()
     if (state.threadLifecycleStatus.size > 0) state.threadLifecycleStatus = new Map()
     if (state.threadMetaThreadIds.size > 0) state.threadMetaThreadIds = new Map()
+    if (state.threadMetaThreadTitles.size > 0) state.threadMetaThreadTitles = new Map()
     return
   }
   const manifests = new Map(
@@ -3095,12 +3118,15 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
   const next = new Map<string, ThreadGoalStatus>()
   const nextLifecycle = new Map<string, ThreadLifecycleStatus>()
   const nextMetaThreadIds = new Map<string, string>()
+  const nextMetaThreadTitles = new Map<string, string>()
   for (const summary of state.history) {
     if (!summary.metaThreadId) continue
     const manifest = manifests.get(summary.metaThreadId)
     if (manifest) {
       nextMetaThreadIds.set(summary.id, manifest.id)
       nextLifecycle.set(summary.id, manifest.lifecycle_status === "archived" ? "archived" : "live")
+      const title = manifest.title?.trim() || manifest.active_goal?.objective?.trim()
+      if (title) nextMetaThreadTitles.set(summary.id, title)
     }
     const goal = manifest?.active_goal
     if (goal?.objective?.trim()) {
@@ -3108,9 +3134,17 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
       if (status) next.set(summary.id, status)
     }
   }
+  if (options.session.metaThreadId) {
+    const activeManifest = manifests.get(options.session.metaThreadId)
+    if (activeManifest) {
+      state.metaThreadManifest = activeManifest
+      state.goalContext = mergeMetaThreadGoalContext(state.goalContext, activeManifest)
+    }
+  }
   state.threadGoalStatus = next
   state.threadLifecycleStatus = nextLifecycle
   state.threadMetaThreadIds = nextMetaThreadIds
+  state.threadMetaThreadTitles = nextMetaThreadTitles
 }
 
 /**
@@ -4808,7 +4842,7 @@ function handleRawInputInner(
     }
     if (
       !state.gardenerInputBuffer &&
-      (sequence === "p" || sequence === "w" || sequence === "j" || sequence === "k" || sequence === "d" || sequence === "a")
+      (sequence === "w" || sequence === "j" || sequence === "k" || sequence === "d" || sequence === "a")
     ) {
       return false
     }
@@ -5829,6 +5863,7 @@ function buildThreadsRailInput(options: StackAppOptions, state: AppState, visibl
     gardenerThreadIds,
     gardenerInboxCount,
     gardenerTalkMode: state.talkToGardener,
+    threadMetaThreadTitles: state.threadMetaThreadTitles,
     usageForSummary: (summary: StackSessionSummary) => threadUsageSummary(options, summary),
   }
 }
@@ -8138,12 +8173,12 @@ async function handleGardenerKey(
   refreshMetaEvents: () => void,
   visibleRows: number,
 ): Promise<void> {
+  if (state.gardenerInputBuffer.length > 0) return
   if (key.name === "p") {
     toggleLeftPanelRails(state)
     refresh()
     return
   }
-  if (state.gardenerInputBuffer.length > 0) return
   const inbox = readGardenerInbox(options.config.stackDataRoot, gardenerThreadId(state))
   state.gardenerInboxSelectedIndex = clampIndex(state.gardenerInboxSelectedIndex, inbox.length)
   if (key.name === "w") {

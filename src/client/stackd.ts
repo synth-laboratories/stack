@@ -240,6 +240,14 @@ export type StackdTelemetryStatus = {
     reason: string
     endpoint_configured: boolean
   }
+  crash_reporting: {
+    enabled: boolean
+    default: string
+    reason: string
+    outbox_path: string
+    endpoint_configured: boolean
+    local_record_count: number
+  }
   event_count: number
   events: Array<{
     name: string
@@ -262,6 +270,35 @@ export type StackdTelemetryEventResponse = {
   reason: string
   outbox_path?: string
   event?: unknown
+}
+
+export type StackdCrashReportRequest = {
+  client_event_id: string
+  observed_at: string
+  crash_class: string
+  surface: string
+  message: string
+  version?: string
+  channel?: string
+  target?: string
+  metadata?: Record<string, string | number | boolean | null>
+}
+
+export type StackdCrashReportResponse = {
+  ok: boolean
+  recorded: boolean
+  forwarded: boolean
+  reason: string
+  local_path?: string | null
+  cloud_event_id?: string | null
+}
+
+export type StackdCrashReportListResponse = {
+  ok: boolean
+  outbox_path: string
+  total: number
+  returned: number
+  items: Array<Record<string, unknown>>
 }
 
 export type StackdMetaThreadSegment = {
@@ -403,6 +440,17 @@ export type StackdUpdateMetaThreadLifecycleRequest = {
   status: StackdMetaThreadLifecycleStatus
   reason?: string
   actor_id?: string
+}
+
+export type StackdUpdateMetaThreadTitleRequest = {
+  title: string
+  reason?: string
+  actor_id?: string
+}
+
+export type StackdUpdateMetaThreadTitleResponse = {
+  manifest: StackdMetaThreadManifest
+  event_id?: string | null
 }
 
 export type StackdMetaThreadSealRequest = {
@@ -555,6 +603,22 @@ export async function stackdRecordTelemetryEvent(
   return requestJson<StackdTelemetryEventResponse>(baseUrl, "/telemetry/events", jsonPost(request))
 }
 
+export async function stackdRecordCrashReport(
+  request: StackdCrashReportRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdCrashReportResponse> {
+  return requestJson<StackdCrashReportResponse>(baseUrl, "/telemetry/crashes", jsonPost(request))
+}
+
+export async function stackdListCrashReports(
+  query: { limit?: number } = {},
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdCrashReportListResponse> {
+  const url = new URL("/telemetry/crashes", ensureTrailingSlash(baseUrl))
+  if (typeof query.limit === "number") url.searchParams.set("limit", String(query.limit))
+  return requestJson<StackdCrashReportListResponse>(baseUrl, `${url.pathname}${url.search}`)
+}
+
 export async function stackdMetaThreads(
   query: { lifecycle?: StackdMetaThreadLifecycleStatus | "all" } = {},
   baseUrl = stackdBaseUrl(),
@@ -644,6 +708,18 @@ export async function stackdUpdateMetaThreadLifecycle(
   return requestJson<StackdMetaThreadManifest>(
     baseUrl,
     `/meta-threads/${encodeURIComponent(metaThreadId)}/lifecycle`,
+    jsonPatch(request),
+  )
+}
+
+export async function stackdUpdateMetaThreadTitle(
+  metaThreadId: string,
+  request: StackdUpdateMetaThreadTitleRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdUpdateMetaThreadTitleResponse> {
+  return requestJson<StackdUpdateMetaThreadTitleResponse>(
+    baseUrl,
+    `/meta-threads/${encodeURIComponent(metaThreadId)}/title`,
     jsonPatch(request),
   )
 }

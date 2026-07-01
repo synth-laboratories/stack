@@ -121,6 +121,8 @@ function drainReadableInput(): void {
   }
 }
 
+import { reportStackCrash } from "../telemetry/crash-report.js"
+
 export function registerFatalProcessHandlers(shutdown: StackAppShutdown): void {
   const onFatal = (error: unknown) => {
     if (error instanceof Error) {
@@ -128,7 +130,9 @@ export function registerFatalProcessHandlers(shutdown: StackAppShutdown): void {
     } else {
       console.error(`stack fatal: ${String(error)}`)
     }
-    shutdown.run(1)
+    void reportStackCrash(error, "tui_fatal").finally(() => {
+      shutdown.run(1)
+    })
   }
 
   process.once("uncaughtException", onFatal)

@@ -40,6 +40,7 @@ export type GoalShutterRenderInput = {
   streamRows?: number
   scrollOffset: number
   metaThreadId?: string
+  metaThreadTitle?: string
   sidecarMenuElements?: ReturnType<typeof Text>[]
   onFocusSidecar?: () => void
   onPrefillSidecar?: (prompt: string) => void
@@ -105,7 +106,9 @@ export function renderGoalWorkerPeekPanel(input: {
   onSelectProgress: () => void
   transcript: StyledText
   objective?: string
+  metaThreadTitle?: string
 }): ReturnType<typeof Box> {
+  const title = input.metaThreadTitle?.trim() || (input.objective ? deriveMetaGoalName(input.objective) : undefined)
   return Box(
     {
       flexDirection: "column",
@@ -113,10 +116,10 @@ export function renderGoalWorkerPeekPanel(input: {
       minHeight: 0,
       gap: 1,
     },
-    ...(input.objective
+    ...(title
       ? [
           Text({
-            content: `Goal · ${deriveMetaGoalName(input.objective)}`,
+            content: `Goal · ${title}`,
             fg: theme.synth.amber,
             width: "100%",
             flexShrink: 0,
@@ -189,18 +192,25 @@ export function renderSidecarQueuedMessages(
   )
 }
 
+export function goalShutterProgressChromeRows(events: StackThreadMetaEvent[], columns: number): number {
+  return renderGoalProgressStripStyled(events, Math.max(24, columns - 4)) ? 4 : 0
+}
+
 export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typeof Box> {
   const goal = activeGoalModeSnapshot(input.state)
   const cardLines = goalCardLines(input)
   const sidecarMenuRows = input.sidecarMenuElements?.length ? 1 : 0
+  const progressWidth = Math.max(24, input.columns - 4)
+  const progressStrip = renderGoalProgressStripStyled(input.events, progressWidth)
+  const progressChromeRows = progressStrip ? 4 : 0
   const streamRows =
     input.streamRows ??
-    // The goal card is now a single compact strip (1 row), not the full multi-line card.
-    goalShutterStreamVisibleRows(input.visibleRows, 1, sidecarMenuRows)
+    goalShutterStreamVisibleRows(input.visibleRows, 1, sidecarMenuRows + progressChromeRows)
   const sidecarColumns = Math.max(20, input.columns - 4)
   const sidecarThreadRows = Math.max(3, streamRows)
-  const title = goal.objective
-    ? `Goal · ${oneLine(goal.objective, Math.max(24, input.columns - 10))}`
+  const titleText = input.metaThreadTitle?.trim() || goal.objective
+  const title = titleText
+    ? `Goal · ${oneLine(titleText, Math.max(24, input.columns - 10))}`
     : "Goal shutter"
   const monitorModel = input.state.monitorSnapshot.model
   const monitorEffort = input.state.monitorSnapshot.reasoningEffort
@@ -213,10 +223,6 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
     ? input.state.agentViewEnabled ? "Agent tape" : "Sidecar events"
     : "Sidecar thread"
 
-  // Structured goal-progress visualization from the monitor's typed `monitor.goal_status` signal:
-  // a headline strip + milestone timeline. Simple beats the free-text feed for tracking progress.
-  const progressWidth = Math.max(24, input.columns - 4)
-  const progressStrip = renderGoalProgressStripStyled(input.events, progressWidth)
   const goalProgressElements = progressStrip
     ? [
         Text({ content: progressStrip, width: "100%", flexShrink: 0 }),
@@ -313,18 +319,27 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
         : []),
       ...(input.sidecarView === "events"
         ? [
-            Text({
-              content: renderGoalShutterStreamStyled(
-                input.events,
-                input.state.monitorSnapshot,
-                sidecarColumns,
-                streamRows,
-                input.scrollOffset,
-                input.state.agentViewEnabled,
+            Box(
+              {
+                flexDirection: "column",
+                flexGrow: 1,
+                flexShrink: 1,
+                minHeight: 0,
+                overflow: "hidden",
+                width: "100%",
+              },
+              anchorTranscriptBox(
+                renderGoalShutterStreamStyled(
+                  input.events,
+                  input.state.monitorSnapshot,
+                  sidecarColumns,
+                  streamRows,
+                  input.scrollOffset,
+                  input.state.agentViewEnabled,
+                ),
+                1,
               ),
-              flexShrink: 0,
-              width: "100%",
-            }),
+            ),
           ]
         : [
         Box(

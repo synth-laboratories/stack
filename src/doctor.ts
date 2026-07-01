@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { environmentAuthStatus, type StackConfig } from "./config.js"
+import { stackdListCrashReports, stackdTelemetryStatus } from "./client/stackd.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
 import { stackChannel, stackReleaseVersion, stackVersion } from "./version.js"
 
@@ -33,6 +34,7 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
     check("telemetry", "pass", "Local product telemetry is treated as off unless explicitly configured"),
     check("auth", auth.hasAuth ? "pass" : "warn", auth.hasAuth ? `${auth.authEnv} is present` : `${auth.authEnv} is not set; hosted features will ask for sign-in`),
     await stackdCheck(),
+    await crashReportingCheck(config),
     await commandCheck("git", ["git", "--version"], "git"),
     fileCheck("telemetry-doc", join(config.appRoot, "docs", "TELEMETRY.md"), "telemetry/privacy doc exists"),
     fileCheck("distribution-doc", join(config.appRoot, "docs", "DISTRIBUTION.md"), "distribution/download doc exists"),
@@ -63,6 +65,82 @@ function check(id: string, level: DoctorLevel, summary: string, detail?: string)
 
 function fileCheck(id: string, path: string, summary: string): DoctorCheck {
   return existsSync(path) ? check(id, "pass", summary) : check(id, "warn", `${summary} missing`)
+}
+
+async function crashReportingCheck(config: StackConfig): Promise<DoctorCheck> {
+  const disabled = ["0", "false", "off", "no"].includes(
+    (process.env.STACK_CRASH_REPORT ?? "").trim().toLowerCase(),
+  )
+  if (disabled) {
+    return check(
+      "crash-reporting",
+      "warn",
+      "Client crash reporting disabled by STACK_CRASH_REPORT=0",
+    )
+  }
+
+  const url = process.env.STACK_API_URL?.trim() || "http://127.0.0.1:8792"
+  try {
+    const status = await stackdTelemetryStatus(url)
+    const crash = status.crash_reporting
+    if (!crash.enabled) {
+      return check("crash-reporting", "warn", "stackd reports crash reporting disabled")
+    }
+    const detail = [
+      `outbox=${crash.outbox_path}`,
+      `records=${crash.local_record_count}`,
+      crash.endpoint_configured ? "cloud endpoint configured" : "cloud endpoint not configured",
+      status.local_product_telemetry.reason.includes("unavailable")
+        ? "product telemetry contract unavailable on stackd app_root"
+        : undefined,
+    ]
+      .filter(Boolean)
+      .join("; ")
+    return check(
+      "crash-reporting",
+      crash.endpoint_configured ? "pass" : "warn",
+      `Crash reporting on by default; ${crash.local_record_count} local record(s)`,
+      detail,
+    )
+  } catch (statusFailure) {
+    const statusError =
+      statusFailure instanceof Error ? statusFailure.message : String(statusFailure)
+    try {
+      const listed = await stackdListCrashReports({ limit: 1 }, url)
+      return check(
+        "crash-reporting",
+        "warn",
+        `stackd crash list reachable (${listed.total} record(s)); telemetry status unavailable`,
+        listed.outbox_path,
+      )
+    } catch (listFailure) {
+      const listError = listFailure instanceof Error ? listFailure.message : String(listFailure)
+      const fallbackOutbox = readLocalCrashOutboxPath(config)
+      return check(
+        "crash-reporting",
+        "warn",
+        "stackd crash status unavailable (stale binary?)",
+        [
+          statusError,
+          listError,
+          fallbackOutbox ? `local outbox candidate: ${fallbackOutbox}` : undefined,
+          "Rebuild stackd (cargo build -p stackd) and restart with STACK_ROOT set to your Stack checkout.",
+        ]
+          .filter(Boolean)
+          .join("; "),
+      )
+    }
+  }
+}
+
+function readLocalCrashOutboxPath(config: StackConfig): string | undefined {
+  const envOutbox = process.env.STACK_CRASH_REPORT_OUTBOX?.trim()
+  const candidates = [
+    envOutbox,
+    join(config.stackDataRoot, "telemetry", "crashes.jsonl"),
+    join(config.appRoot, ".stack", "telemetry", "crashes.jsonl"),
+  ].filter((value): value is string => Boolean(value && value.trim().length > 0))
+  return candidates.find((path) => existsSync(path))
 }
 
 async function stackdCheck(): Promise<DoctorCheck> {

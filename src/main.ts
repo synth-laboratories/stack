@@ -4,6 +4,7 @@ import { hydrateCodexPricing, harnessSessionCommand, loadConfig } from "./config
 import { ensureStackCodexSkills } from "./codex/install-skills.js"
 import { runLocalDemo } from "./demo.js"
 import { runDoctor } from "./doctor.js"
+import { runCrashReports } from "./crash-reports.js"
 import { detectWorkspace } from "./local/workspace.js"
 import { readMetaThreadManifest } from "./meta-thread-goal.js"
 import { createSession, type StackLocalSession } from "./session.js"
@@ -31,6 +32,9 @@ try {
   const config = await loadConfig(stackAppRoot())
   if (process.argv[2] === "doctor") {
     process.exit(await runDoctor(config, process.argv.slice(3)))
+  }
+  if (process.argv[2] === "crashes") {
+    process.exit(await runCrashReports(config, process.argv.slice(3)))
   }
   if (process.argv[2] === "demo") {
     process.exit(await runLocalDemo(config, process.argv.slice(3)))

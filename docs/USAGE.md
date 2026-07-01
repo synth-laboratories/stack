@@ -66,10 +66,14 @@ owner.
 ./bin/stackd serve
 curl -s http://127.0.0.1:8792/health
 curl -s http://127.0.0.1:8792/telemetry/status
+curl -s "http://127.0.0.1:8792/telemetry/crashes?limit=5"
 curl -s http://127.0.0.1:8792/.well-known/mcp.json
 bun run smoke:stackd
 bun run smoke:mcp:http
 bun run smoke:stackd:telemetry
+bun run smoke:stackd:crash-report
+stack crashes --json
+stack crashes --remote --json
 ```
 
 When `stackd` is healthy it also hosts **live Stack MCP** at `http://127.0.0.1:8792/mcp`
@@ -95,7 +99,7 @@ Routes in L1: `/health`, `/mcp`, `/.well-known/mcp.json`, `/threads`, `/threads/
 `/threads/:id/monitors/:monitorId/resume`,
 `/threads/:id/monitors/:monitorId/mode`, `/threads/:id/trace`,
 `/threads/:id/export`, `/logs/query`, `/telemetry/status`,
-`/telemetry/events`, and
+`/telemetry/events`, `/telemetry/crashes`, and
 `/doc` (`/openapi.json`). Export writes
 `.stack/exports/<session-id>/<stamp>/` with `manifest.json`, redacted
 `session.json`, `metadata.json`, optional `codex.jsonl`, and optional
@@ -157,9 +161,12 @@ Useful overrides:
   `off -> passive -> conservative -> aggressive -> off` and records
   `monitor.paused`, `monitor.resumed`, or `monitor.mode_changed`.
 
-**Not yet shipped:** multi-goal portfolio view, ETA/progress rate, typed pause-before-risk
-escalation, gardener lifecycle archive. Sidecar pause (`stack_sidecar_pause_for_restart`)
-sleeps the monitor until the next wake — it does not archive threads.
+**Not yet shipped:** full multi-goal portfolio view, ETA/progress rate, bulk archive,
+and cross-actor wake-gardener escalation. Risky-pending actions are surfaced as
+high-severity monitor signals for pause/escalation; sidecar pause
+(`stack_sidecar_pause_for_restart`) sleeps the monitor until the next wake — it
+does not archive threads. Use gardener-owned meta-thread lifecycle controls to
+archive or revive threads.
 
 The monitor pass is event-backed: it checks enabled focus areas such as style,
 goal progress, skills, tool use, scope control, and acceptance.

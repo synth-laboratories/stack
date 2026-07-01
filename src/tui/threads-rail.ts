@@ -15,6 +15,7 @@ export type ThreadsRailRenderInput = {
   gardenerThreadIds: ReadonlySet<string>
   gardenerInboxCount: number
   gardenerTalkMode: boolean
+  threadMetaThreadTitles?: ReadonlyMap<string, string>
   usageForSummary: (summary: StackSessionSummary) => StackSessionUsageSummary | undefined
 }
 
@@ -80,6 +81,7 @@ function threadRowSpecs(input: ThreadsRailRenderInput): ThreadRowSpec[] {
       prompt: resolveThreadDisplayLabel(summary, {
         isGardener,
         maxLength: 22,
+        metaThreadTitle: input.threadMetaThreadTitles?.get(summary.id),
       }),
       usage: usageParts?.combined,
       usageTokens: usageParts?.tokens,

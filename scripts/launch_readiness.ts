@@ -121,21 +121,27 @@ const gates: Gate[] = [
       ? "Build installer download/apply/rollback path and publish signed/checksummed artifacts before public nightly or stable."
       : "Build manifest-backed installer/update path before public nightly or stable."),
   gate("S7_AUTH_GROWTH", "AT-STACK-AUTH-GROWTH-001", "frontend+backend+synth-dev", telemetryStatus(),
-    growthIngestionStatus() === "partial"
+    crashReportingStatus() === "partial"
+      ? "Privacy-safe telemetry allowlist, stackd status route, opt-in local outbox emission, public Stack growth-ingestion payload contract, and client crash ingest/query visibility are wired; live auth/growth end-to-end validation remains outside the public Stack repo."
+      : growthIngestionStatus() === "partial"
       ? "Privacy-safe telemetry allowlist, stackd status route, opt-in local outbox emission, and public Stack growth-ingestion payload contract are wired; live auth/growth end-to-end validation remains outside the public Stack repo."
       : stackdTelemetryStatus() === "partial"
       ? "Privacy-safe telemetry allowlist, stackd status route, and opt-in local outbox emission are wired; public Stack growth-ingestion payload contract and auth/growth end-to-end validation remain open."
       : telemetryContractStatus() === "partial"
       ? "Privacy-safe telemetry event allowlist is wired; stackd status route and auth/growth end-to-end validation remain open."
       : "Auth and growth end-to-end gates are planned outside the public Stack repo.",
-    growthIngestionStatus() === "partial"
-      ? "docs/TELEMETRY.md, docs/TELEMETRY_EVENTS.json, docs/GROWTH_INGESTION.md, smoke:telemetry:contract, smoke:stackd:telemetry, smoke:growth-ingestion, GET /telemetry/status, POST /telemetry/events, /api/v1/growth/funnel-events payload contract"
+    crashReportingStatus() === "partial"
+      ? "docs/TELEMETRY.md, docs/CRASH_INGESTION.md, docs/TELEMETRY_EVENTS.json, docs/GROWTH_INGESTION.md, smoke:telemetry:contract, smoke:stackd:telemetry, smoke:stackd:crash-report, smoke:crash-ingestion, smoke:growth-ingestion, GET /telemetry/status, POST /telemetry/events, GET/POST /api/v1/product/stack-crashes"
+      : growthIngestionStatus() === "partial"
+      ? "docs/TELEMETRY.md, docs/TELEMETRY_EVENTS.json, docs/GROWTH_INGESTION.md, smoke:telemetry:contract, smoke:stackd:telemetry, smoke:growth-ingestion, GET /telemetry/status, POST /telemetry/events, /api/v1/product/stack-crashes payload contract"
       : stackdTelemetryStatus() === "partial"
       ? "docs/TELEMETRY.md, docs/TELEMETRY_EVENTS.json, smoke:telemetry:contract, smoke:stackd:telemetry, GET /telemetry/status, POST /telemetry/events"
       : telemetryContractStatus() === "partial"
       ? "docs/TELEMETRY.md, docs/TELEMETRY_EVENTS.json, smoke:telemetry:contract"
       : "docs/TELEMETRY.md and Jstack ship pipeline S7",
-    growthIngestionStatus() === "partial"
+    crashReportingStatus() === "partial"
+      ? "Run staging then prod live POST proof for crash and growth ingest; use stack crashes --remote or stack_crash_reports MCP for prod triage."
+      : growthIngestionStatus() === "partial"
       ? "Run staging then prod live POST proof for download/signup/use flows against the growth endpoint."
       : stackdTelemetryStatus() === "partial"
       ? "Wire Stack growth-ingestion payload mapping, then run staging/prod download/signup/use flows against this allowlist."
@@ -294,6 +300,26 @@ function stackdTelemetryStatus(): Status {
 function growthIngestionStatus(): Status {
   if (stackdTelemetryStatus() !== "partial" || !scriptExists("smoke:growth-ingestion")) return "not_started"
   return latestOkSummary("growth-ingestion") ? "partial" : "not_started"
+}
+
+function crashReportingStatus(): Status {
+  if (!scriptExists("smoke:stackd:crash-report") || !scriptExists("smoke:crash-ingestion")) return "not_started"
+  if (!existsSync(join(stackRoot, "docs", "CRASH_INGESTION.md"))) return "not_started"
+  const localProof = latestOkSummary("stackd-crash-report") ?? latestOkEvidence("stackd-crash-report")
+  const contractProof = latestOkSummary("crash-ingestion")
+  if (localProof && contractProof) return "partial"
+  return "not_started"
+}
+
+function latestOkEvidence(area: string): string | undefined {
+  const latestPath = join(stackRoot, ".stack", "evidence", area, "latest.json")
+  if (!existsSync(latestPath)) return undefined
+  try {
+    const proof = JSON.parse(readFileSync(latestPath, "utf8")) as { ok?: unknown }
+    return proof.ok === true ? latestPath : undefined
+  } catch {
+    return undefined
+  }
 }
 
 function latestOkSummary(area: string): string | undefined {

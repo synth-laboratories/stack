@@ -36,6 +36,7 @@ export type StackGardenerConfig = {
     papercutMirror: boolean
     pauseWorker: boolean
     metaThreadLifecycle: boolean
+    metaThreadTitle: boolean
   }
   wake: {
     onTurnCompleted: boolean
@@ -78,11 +79,11 @@ const DEFAULT_GARDENER_BUILTIN_PROMPT = [
   "",
   "Never use sidecar pause, monitor pause, or any monitor control as an archive or parking mechanism. Sidecar pause is a live-run safety/attention lever only.",
   "",
-  "Use stack_meta_threads_list and stack_meta_thread_get for authoritative meta-thread state. To park, archive, or make a meta-thread non-active, call stack_meta_thread_set_lifecycle with status=archived and confirm=true. Archive is reversible via status=live. Do not delete meta-threads, session logs, checkpoints, handoffs, or garden docs.",
+  "Use stack_meta_threads_list and stack_meta_thread_get for authoritative meta-thread state. To rename a meta-thread, call stack_meta_thread_set_title with a short title (max 48 chars). To park, archive, or make a meta-thread non-active, call stack_meta_thread_set_lifecycle with status=archived and confirm=true. Archive is reversible via status=live. Do not delete meta-threads, session logs, checkpoints, handoffs, or garden docs.",
   "",
   "If the operator asks whether a named worker is on track, prefer that worker's Sidecar events feed or sidecar thread for the live per-run answer. Give portfolio-level orientation, not a raw worker tape dump.",
   "",
-  "When the operator asks you to name or label a worker thread, pick a short title (max 48 chars) and end your reply with exactly one line: thread.name: <title>",
+  "When the operator asks you to name or label a bound meta-thread, prefer stack_meta_thread_set_title. Keep thread.name: <title> only as the head-session fallback. Never attempt to change meta_thread_id.",
   "",
   "Skills are first-class in stackd. Preinstalled: oss-gepa, hosted-gepa, synth-ai. You may always register or suggest skills (not permission-gated for gardener):",
   "  skill register <id> from <path>",
@@ -116,6 +117,7 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
       "stack_meta_threads_list",
       "stack_meta_thread_get",
       "stack_meta_thread_set_lifecycle",
+      "stack_meta_thread_set_title",
       "jsk.papercut",
       "handoff.force",
       "handoff.seal",
@@ -132,6 +134,7 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
     papercutMirror: true,
     pauseWorker: false,
     metaThreadLifecycle: true,
+    metaThreadTitle: true,
   },
   wake: {
     onTurnCompleted: true,
@@ -223,6 +226,7 @@ function mergeGardenerConfig(base: StackGardenerConfig, parsed: ParsedTomlSectio
       pauseWorker: readBoolean(parsed.permissions?.pause_worker) ?? base.permissions.pauseWorker,
       metaThreadLifecycle:
         readBoolean(parsed.permissions?.meta_thread_lifecycle) ?? base.permissions.metaThreadLifecycle,
+      metaThreadTitle: readBoolean(parsed.permissions?.meta_thread_title) ?? base.permissions.metaThreadTitle,
     },
     wake: {
       onTurnCompleted: readBoolean(parsed.wake?.on_turn_completed) ?? base.wake.onTurnCompleted,
@@ -304,6 +308,7 @@ function defaultGardenerToml(): string {
     "papercut_mirror = true",
     "pause_worker = false",
     "meta_thread_lifecycle = true",
+    "meta_thread_title = true",
     "",
     "[wake]",
     "on_turn_completed = true",

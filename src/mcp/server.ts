@@ -40,16 +40,19 @@ import {
   stackdRuntimeEvents,
   stackdRuntimeFactory,
   stackdRuntimeTick,
+  stackdTelemetryStatus,
   stackdThread,
   stackdThreads,
   stackdTrace,
   stackdUpdateMetaThreadLifecycle,
+  stackdUpdateMetaThreadTitle,
   type StackdFactorySnapshot,
   type StackdMetaThreadLifecycleStatus,
   type StackdRuntimeEventAppendRequest,
   type StackdRuntimeFactoryResponse,
 } from "../client/stackd.js"
 import { projectLogDocumentToVictoriaLogs, queryStackLogs } from "../observability/victorialogs.js"
+import { readCrashReportsView } from "../crash-reports.js"
 import { readReadmeSmokeEvalLaunch, startReadmeSmokeEval, type StackEvalLaunch } from "../local/evals.js"
 import { readActiveStackevalPacket } from "../stackeval/packet.js"
 import { readOptimizerSnapshot } from "../local/optimizers.js"
@@ -383,13 +386,43 @@ export class StackMcpServer {
     }) ?? null
   }
 
+  async setMetaThreadTitle(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const actorRole = optionalString(args, "actor_role") ?? "gardener"
+    if (actorRole !== "gardener" && actorRole !== "operator" && actorRole !== "monitor") {
+      throw new RpcError(-32602, "actor_role must be gardener, monitor, or operator")
+    }
+    if (actorRole === "gardener" && !loadGardenerConfig(config.stackDataRoot).permissions.metaThreadTitle) {
+      throw new RpcError(-32602, "gardener meta-thread title permission is disabled")
+    }
+    const metaThreadId = requiredString(args, "meta_thread_id")
+    const title = requiredString(args, "title")
+    const reason = optionalString(args, "reason")
+    const actorId = optionalString(args, "actor_id") ?? actorRole
+    const response = await stackdUpdateMetaThreadTitle(metaThreadId, {
+      title,
+      reason,
+      actor_id: actorId,
+    })
+    const manifest = response.manifest
+    return toJsonValue({
+      ok: true,
+      meta_thread_id: manifest.id,
+      title: manifest.title,
+      event_id: response.event_id ?? null,
+      manifest,
+      receipt: "lever.stack_mcp meta_thread.title_updated",
+    }) ?? null
+  }
+
   async agentStatus(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const mode = optionalBridgeMode(args) ?? "all"
     const auth = environmentAuthStatus(config.environment)
-    const [local, runtime] = await Promise.all([
+    const [local, runtime, telemetry] = await Promise.all([
       mode === "remote" ? Promise.resolve(undefined) : readOptimizerSnapshot(config),
       readStackRuntimeFactory(),
+      stackdTelemetryStatus().catch(() => undefined),
     ])
     const runtimeSummary = runtimeSummaryFromFactory(runtime?.snapshot, config)
     const shouldReadDirectRemote = mode !== "local" && !runtimeSummary
@@ -487,6 +520,17 @@ export class StackMcpServer {
             updated_at: stackevalPacket.updatedAt ?? null,
           }
         : null,
+      crash_reporting: telemetry?.crash_reporting
+        ? {
+            enabled: telemetry.crash_reporting.enabled,
+            default: telemetry.crash_reporting.default,
+            outbox_path: telemetry.crash_reporting.outbox_path,
+            local_record_count: telemetry.crash_reporting.local_record_count,
+            endpoint_configured: telemetry.crash_reporting.endpoint_configured,
+          }
+        : {
+            status: "unavailable",
+          },
       next_actions: bridgeNextActions(
         mode,
         auth.hasAuth,
@@ -494,6 +538,15 @@ export class StackMcpServer {
         runtimeSummary?.hostedOptimizers.active_runs ?? hosted?.runs.length ?? 0,
       ),
     }) ?? null
+  }
+
+  async crashReports(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const limit = optionalInteger(args, "limit") ?? 20
+    const remote = optionalBoolean(args, "remote") ?? true
+    const windowDays = optionalInteger(args, "window_days") ?? 7
+    const view = await readCrashReportsView(config, { limit, remote, windowDays })
+    return toJsonValue(view) ?? null
   }
 
   async listLiveSmrs(args: JsonObject): Promise<JsonValue> {
@@ -2153,6 +2206,21 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.agentStatus(args),
     },
     {
+      name: "stack_crash_reports",
+      description:
+        "Read Stack client crash visibility: local stackd outbox tail plus optional Synth cloud summary (requires auth). Use after TUI/runtime fatals or when triaging opentui_buffer and related crash classes in prod.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        limit: numberProperty("Maximum local outbox rows to return. Defaults to 20."),
+        window_days: numberProperty("Remote summary window in days. Defaults to 7."),
+        remote: {
+          type: "boolean",
+          description: "When true (default), also fetch remote /api/v1/product/stack-crashes/summary when auth is present.",
+        },
+      }),
+      handler: (args) => server.crashReports(args),
+    },
+    {
       name: "stack_runtime_status",
       description: "Read stackd runtime factory snapshot and recent runtime sensor events. Check events_status before treating an empty events list as authoritative. Optionally force one runtime tick.",
       inputSchema: objectSchema({
@@ -2454,6 +2522,22 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["meta_thread_id", "status"],
       ),
       handler: (args) => server.setMetaThreadLifecycle(args),
+    },
+    {
+      name: "stack_meta_thread_set_title",
+      description: "Set the human-editable Stack meta-thread title through the stackd owner route. Gardener, monitor, and operator may rename; durable ids never change.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          meta_thread_id: stringProperty("Stack meta-thread id."),
+          title: stringProperty("New short title, max 48 characters."),
+          reason: stringProperty("Optional short rename reason."),
+          actor_id: stringProperty("Optional actor id. Defaults to actor_role."),
+          actor_role: enumProperty(["gardener", "operator", "monitor"], "Actor role. Defaults to gardener."),
+        },
+        ["meta_thread_id", "title"],
+      ),
+      handler: (args) => server.setMetaThreadTitle(args),
     },
     {
       name: "stack_message_live_run",
