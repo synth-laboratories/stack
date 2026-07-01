@@ -12,9 +12,84 @@ use tokio::io::AsyncWriteExt;
 #[derive(Debug, Deserialize)]
 struct TelemetryContract {
     schema_version: u32,
-    default_local_product_telemetry: String,
     forbidden_fields: Vec<String>,
     events: Vec<TelemetryEventContract>,
+}
+
+/// Durable operator choice per telemetry tier — stackd is the authority.
+/// basic_dau: "on" (default) | "off". advanced_product: "unset" | "accepted" | "declined".
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TelemetryTierConfig {
+    pub basic_dau: String,
+    pub advanced_product: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked_at: Option<String>,
+    pub install_id: String,
+}
+
+impl Default for TelemetryTierConfig {
+    fn default() -> Self {
+        Self {
+            basic_dau: "on".to_string(),
+            advanced_product: "unset".to_string(),
+            asked_at: None,
+            install_id: format!("ins_{:x}", std::time::UNIX_EPOCH.elapsed().map(|d| d.as_nanos()).unwrap_or_default()),
+        }
+    }
+}
+
+fn telemetry_config_path(state: &AppState) -> PathBuf {
+    state.paths.stack_dir.join("config").join("telemetry.json")
+}
+
+/// Read the tier config, creating it with defaults (basic DAU on, advanced unset,
+/// fresh pseudonymous install_id) on first touch.
+async fn read_tier_config(state: &AppState) -> TelemetryTierConfig {
+    let path = telemetry_config_path(state);
+    if let Ok(text) = tokio::fs::read_to_string(&path).await {
+        if let Ok(config) = serde_json::from_str::<TelemetryTierConfig>(&text) {
+            return config;
+        }
+    }
+    let config = TelemetryTierConfig::default();
+    if let Some(parent) = path.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    if let Ok(text) = serde_json::to_string_pretty(&config) {
+        let _ = tokio::fs::write(&path, format!("{text}\n")).await;
+    }
+    config
+}
+
+/// Tier gate: is this event class emitted under the current config? The
+/// STACK_TELEMETRY env is a dev override: 0 forces everything off, 1 forces
+/// both local tiers on. crash reporting is a separate pipeline.
+fn tier_emits(class: &str, config: &TelemetryTierConfig) -> (bool, String) {
+    match env::var("STACK_TELEMETRY").ok().as_deref() {
+        Some("0") => return (false, "local telemetry disabled by STACK_TELEMETRY=0".to_string()),
+        Some("1") => return (true, "local telemetry forced on by STACK_TELEMETRY=1".to_string()),
+        _ => {}
+    }
+    match class {
+        "local_basic_dau" => {
+            if config.basic_dau == "on" {
+                (true, "basic DAU tier is on".to_string())
+            } else {
+                (false, "basic DAU tier turned off by operator".to_string())
+            }
+        }
+        "local_advanced_product" => {
+            if config.advanced_product == "accepted" {
+                (true, "advanced product tier approved by operator".to_string())
+            } else {
+                (
+                    false,
+                    format!("advanced product tier not approved (state: {})", config.advanced_product),
+                )
+            }
+        }
+        other => (false, format!("class {other} is not a stackd local tier")),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -36,6 +111,7 @@ pub struct TelemetryStatusResponse {
     ok: bool,
     schema_version: u32,
     local_product_telemetry: TelemetryLocalStatus,
+    tiers: TelemetryTierStatus,
     crash_reporting: CrashReportingStatus,
     event_count: usize,
     events: Vec<TelemetryEventStatus>,
@@ -61,6 +137,14 @@ pub struct TelemetryLocalStatus {
 }
 
 #[derive(Debug, Serialize)]
+pub struct TelemetryTierStatus {
+    basic_dau: String,
+    advanced_product: String,
+    install_id_present: bool,
+    config_path: String,
+}
+
+#[derive(Debug, Serialize)]
 pub struct TelemetryEventStatus {
     name: String,
     class: String,
@@ -82,7 +166,9 @@ pub async fn telemetry_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<TelemetryStatusResponse>, ApiError> {
     let contract = read_contract(&state).await.ok();
-    let local_enabled = local_telemetry_enabled();
+    let tier_config = read_tier_config(&state).await;
+    let local_enabled = tier_emits("local_basic_dau", &tier_config).0
+        || tier_emits("local_advanced_product", &tier_config).0;
     let endpoint_configured = std::env::var("STACK_TELEMETRY_ENDPOINT")
         .ok()
         .filter(|value| !value.trim().is_empty())
@@ -91,11 +177,10 @@ pub async fn telemetry_status(
     let crash_enabled = !crash_reporting_disabled();
     let crash_endpoint_configured = crash_report_url(&state.paths.app_root).is_some();
     let contract_reason = if contract.is_some() {
-        if local_enabled {
-            "enabled by STACK_TELEMETRY=1".to_string()
-        } else {
-            "local product telemetry is off by default".to_string()
-        }
+        format!(
+            "basic DAU {} · advanced product {}",
+            tier_config.basic_dau, tier_config.advanced_product
+        )
     } else {
         "telemetry contract unavailable at docs/TELEMETRY_EVENTS.json".to_string()
     };
@@ -105,12 +190,15 @@ pub async fn telemetry_status(
         schema_version: contract.as_ref().map(|entry| entry.schema_version).unwrap_or(1),
         local_product_telemetry: TelemetryLocalStatus {
             enabled: local_enabled,
-            default: contract
-                .as_ref()
-                .map(|entry| entry.default_local_product_telemetry.clone())
-                .unwrap_or_else(|| "unknown".to_string()),
+            default: "basic_dau on · advanced_product approval_required".to_string(),
             reason: contract_reason,
             endpoint_configured,
+        },
+        tiers: TelemetryTierStatus {
+            basic_dau: tier_config.basic_dau.clone(),
+            advanced_product: tier_config.advanced_product.clone(),
+            install_id_present: !tier_config.install_id.is_empty(),
+            config_path: telemetry_config_path(&state).to_string_lossy().to_string(),
         },
         crash_reporting: CrashReportingStatus {
             enabled: crash_enabled,
@@ -163,7 +251,9 @@ pub async fn record_telemetry_event(
             ))
         })?;
 
-    if event.owner != "stackd" || event.class != "local_product_opt_in" {
+    if event.owner != "stackd"
+        || !matches!(event.class.as_str(), "local_basic_dau" | "local_advanced_product")
+    {
         return Err(ApiError::bad_request(format!(
             "telemetry event {} is not a stackd local product event",
             event.name
@@ -177,12 +267,14 @@ pub async fn record_telemetry_event(
         &contract.forbidden_fields,
     )?;
 
-    if !local_telemetry_enabled() {
+    let tier_config = read_tier_config(&state).await;
+    let (emits, tier_reason) = tier_emits(&event.class, &tier_config);
+    if !emits {
         return Ok(Json(TelemetryEventRecordResponse {
             ok: true,
             accepted: true,
             emitted: false,
-            reason: "local product telemetry is off by default".to_string(),
+            reason: tier_reason,
             outbox_path: None,
             event: None,
         }));
@@ -196,6 +288,7 @@ pub async fn record_telemetry_event(
         "class": event.class,
         "owner": event.owner,
         "observed_at": observed_at,
+        "install_id": tier_config.install_id,
         "payload": payload,
     });
     let outbox_path = telemetry_outbox_path(&state);
@@ -317,16 +410,6 @@ fn telemetry_outbox_path(state: &AppState) -> PathBuf {
         .unwrap_or_else(|| state.paths.stack_dir.join("telemetry").join("events.jsonl"))
 }
 
-fn local_telemetry_enabled() -> bool {
-    matches!(
-        std::env::var("STACK_TELEMETRY")
-            .unwrap_or_default()
-            .trim()
-            .to_ascii_lowercase()
-            .as_str(),
-        "1" | "true" | "on" | "yes"
-    )
-}
 
 fn target_triple() -> String {
     let arch = match env::consts::ARCH {
