@@ -295,7 +295,7 @@ import {
   type TranscriptRenderOptions,
   type TranscriptViewport,
 } from "./transcript.js"
-import { readRolloutTranscript } from "./rollout-transcript.js"
+import { readRequiredRolloutTranscript, readRolloutTranscript } from "./rollout-transcript.js"
 import { anchorTranscriptBox } from "./transcript-slot.js"
 import type { SubagentLog } from "./subagents.js"
 import { upsertSubagentLog } from "./subagents.js"
@@ -9899,6 +9899,27 @@ function forkSession(current: StackLocalSession, loaded: StackLocalSession): Sta
 async function hydrateTranscriptFromRollout(options: StackAppOptions, state: AppState): Promise<void> {
   const threadId = options.session.codexThreadId
   if (!threadId) return
+  // Only app-server threads persist a rollout jsonl; exec/acp-mode threads legitimately have
+  // none, so for those a missing rollout is expected — keep the local render. For a rollout-backed
+  // (app-server) thread, a missing/unreadable rollout on resume is a real defect: surface it in
+  // the transcript instead of silently rendering an empty chat.
+  if (state.codexTransport === "app-server") {
+    try {
+      const rollout = await readRequiredRolloutTranscript(threadId)
+      if (rollout.blocks.length === 0) return
+      state.blocks = rollout.blocks
+      state.toolLogs = rollout.tools
+      state.subagentLogs = rollout.subagents
+      state.selectedToolIndex = clampIndex(rollout.tools.length - 1, rollout.tools.length)
+      state.agentScrollOffset = 0
+    } catch (error) {
+      appendStackBlock(
+        state.blocks,
+        `⚠ could not load prior transcript for ${threadId.slice(0, 8)}: ${errorMessage(error)}`,
+      )
+    }
+    return
+  }
   const rollout = await readRolloutTranscript(threadId)
   if (!rollout || rollout.blocks.length === 0) return
   state.blocks = rollout.blocks
