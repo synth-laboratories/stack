@@ -33,10 +33,22 @@ try {
   term.press("Enter")
 
   await waitForScreenText(term, "Goal ·", 15_000)
-  await waitForScreenText(term, "Sidecar thread", 15_000)
+  await waitForScreenText(term, "events", 15_000)
 
   // Wait for monitor activity when sidecar is enabled.
   await waitForScreenText(term, "monitor", 30_000).catch(() => undefined)
+  const feedText = terminalText(term)
+  const normalizedFeedText = feedText.replace(/[│└┘┌┐─]+/g, " ")
+  if (!/t\s+thread[\s\S]*e\s+events/.test(normalizedFeedText)) {
+    throw new Error(`goal shutter sidecar controls missing thread/events toggle:\n${feedText.slice(-1600)}`)
+  }
+  for (const forbidden of ["NO_USER_UPDATE", "checkpoint advanced", "pause_for_restart"]) {
+    if (feedText.includes(forbidden)) throw new Error(`sidecar events feed leaked runtime/quiet text: ${forbidden}`)
+  }
+
+  term.press("t")
+  await waitForScreenText(term, "Sidecar thread", 8_000)
+  await waitForScreenText(term, "Message sidecar", 8_000)
 
   await waitForGoalShutterLayout(term, 10_000)
 

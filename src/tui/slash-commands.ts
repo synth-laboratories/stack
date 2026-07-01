@@ -140,6 +140,44 @@ export function filterSlashCommands(query: string): SlashCommandSpec[] {
   return SLASH_COMMAND_SPECS.filter((spec) => matchesQuery(spec, query))
 }
 
+// The registered command (or alias) nearest to a typo, for "did you mean" errors. Prefix match
+// first (fast, common — `/gol` → `/goal`), then a small Levenshtein for transpositions/typos.
+export function closestSlashCommand(name: string): string | undefined {
+  const query = name.trim().toLowerCase()
+  if (query.length < 2) return undefined
+  const names = SLASH_COMMAND_SPECS.flatMap((spec) => [spec.command, ...(spec.aliases ?? [])])
+  // A command that begins with what the user typed (`goa` → `goal`); shortest such wins. Note this
+  // only fires when the COMMAND starts with the query, not the reverse — otherwise `gol` would
+  // match the one-letter `g` instead of `goal`.
+  const prefix = names.filter((candidate) => candidate.startsWith(query)).sort((a, b) => a.length - b.length)[0]
+  if (prefix) return prefix
+  // Otherwise the nearest by edit distance, tolerance scaled to the command's length.
+  let best: string | undefined
+  let bestDistance = Infinity
+  for (const candidate of names) {
+    const distance = levenshtein(query, candidate)
+    if (distance < bestDistance && distance <= Math.max(1, Math.floor(candidate.length / 3))) {
+      bestDistance = distance
+      best = candidate
+    }
+  }
+  return best
+}
+
+function levenshtein(a: string, b: string): number {
+  const rows = a.length + 1
+  const cols = b.length + 1
+  const dist = Array.from({ length: rows }, (_, i) => [i, ...new Array(cols - 1).fill(0)])
+  for (let j = 0; j < cols; j++) dist[0][j] = j
+  for (let i = 1; i < rows; i++) {
+    for (let j = 1; j < cols; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1
+      dist[i][j] = Math.min(dist[i - 1][j] + 1, dist[i][j - 1] + 1, dist[i - 1][j - 1] + cost)
+    }
+  }
+  return dist[a.length][b.length]
+}
+
 export function selectedSlashCommandSpec(buffer: string, selectedIndex: number): SlashCommandSpec | undefined {
   const query = slashMenuQuery(buffer)
   if (query === null) return undefined
@@ -388,8 +426,32 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
     case "c":
       hooks.clearInput()
       return true
-    default:
-      hooks.feedback(`unknown command /${name} · type /help`)
+    case "goal":
+      // /goal is routed by the goal input path (submitGoalSlashIfNeeded), not this dispatcher.
+      // Reaching here means it was submitted from a context that doesn't route goals — say how to
+      // use it, never "unknown command" (it IS a command).
+      hooks.feedback(
+        args
+          ? `couldn't start goal from here · run \`/goal ${args}\` from the worker input (press 1 or esc to focus it)`
+          : "goal · type `/goal <objective>` from the worker input, or press g to open the goal panel",
+      )
       return true
+    default: {
+      // A registered command that fell through is NOT unknown — it's routed elsewhere or missing a
+      // handler here. Tell the truth; only say "unknown" for genuinely unregistered input, and then
+      // suggest the closest command instead of a bare rejection.
+      const spec = SLASH_COMMAND_SPECS.find(
+        (entry) => entry.command === name || (entry.aliases ?? []).includes(name),
+      )
+      if (spec) {
+        hooks.feedback(`/${name} · ${spec.description}${spec.args ? ` · usage: /${name} ${spec.args}` : ""}`)
+        return true
+      }
+      const near = closestSlashCommand(name)
+      hooks.feedback(
+        near ? `unknown command /${name} · did you mean /${near}? · type /help` : `unknown command /${name} · type /help`,
+      )
+      return true
+    }
   }
 }

@@ -10,8 +10,9 @@ import { deriveMetaGoalName } from "../meta-goal.js"
 import {
   goalShutterStreamLineCount,
   renderGoalShutterStreamStyled,
-  renderGoalSidecarThreadStyled,
+  renderGoalSidecarThreadRich,
 } from "./monitor-thread.js"
+import type { TranscriptRenderOptions } from "./transcript.js"
 import { anchorTranscriptBox } from "./transcript-slot.js"
 import { sidecarAgentActive, sidecarInputStatusLine, type SidecarQueueUiState } from "./sidecar-queue.js"
 import { stackTuiTheme as theme } from "./theme.js"
@@ -29,6 +30,7 @@ export type GoalShutterRenderInput = {
   }
   events: StackThreadMetaEvent[]
   sidecarTurns?: readonly StackMonitorSidecarTurn[]
+  sidecarRenderOptions: TranscriptRenderOptions
   sidecarView: "thread" | "events"
   sidecarThreadScrollOffset: number
   columns: number
@@ -191,12 +193,20 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
   const sidecarMenuRows = input.sidecarMenuElements?.length ? 1 : 0
   const streamRows =
     input.streamRows ??
-    goalShutterStreamVisibleRows(input.visibleRows, cardLines.length, sidecarMenuRows)
+    // The goal card is now a single compact strip (1 row), not the full multi-line card.
+    goalShutterStreamVisibleRows(input.visibleRows, 1, sidecarMenuRows)
   const sidecarColumns = Math.max(20, input.columns - 4)
   const sidecarThreadRows = Math.max(3, streamRows)
   const title = goal.objective
     ? `Goal · ${oneLine(goal.objective, Math.max(24, input.columns - 10))}`
     : "Goal shutter"
+  const monitorModel = input.state.monitorSnapshot.model
+  const monitorEffort = input.state.monitorSnapshot.reasoningEffort
+  // Model goes on a line INSIDE the box, not in the border title — a long title gets truncated in
+  // the narrow split layout, which would clip the "Sidecar thread" anchor.
+  const monitorModelLine = monitorModel
+    ? `monitor · ${monitorModel}${monitorEffort ? ` · ${monitorEffort}` : ""}`
+    : undefined
   const sidecarTitle = input.sidecarView === "events"
     ? input.state.agentViewEnabled ? "Agent tape" : "Sidecar events"
     : "Sidecar thread"
@@ -223,28 +233,14 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
           }),
         ]
       : []),
-    Box(
-      {
-        border: true,
-        borderStyle: "single",
-        borderColor: theme.borderInactive,
-        titleColor: theme.synth.orange,
-        title: goal.objective ? `Goal · ${deriveMetaGoalName(goal.objective)}` : "Goal",
-        flexDirection: "column",
-        padding: 1,
-        flexShrink: 0,
-        gap: 0,
-        width: "100%",
-      },
-      ...cardLines.map((line) =>
-        Text({
-          content: line,
-          fg: line.startsWith("blocker") ? theme.synth.red : theme.fgPrimary,
-          width: "100%",
-          flexShrink: 0,
-        }),
-      ),
-    ),
+    // Compact one-line status strip instead of a bordered card — frees ~5 rows for the sidecar
+    // thread. The full goal card (criteria list, ETA, blockers) lives in the progress tab.
+    Text({
+      content: goalStatusStrip(cardLines, Math.max(24, input.columns - 4)),
+      fg: theme.fgMuted,
+      width: "100%",
+      flexShrink: 0,
+    }),
     Box(
       {
         border: true,
@@ -280,6 +276,9 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
           input.onSelectSidecarEvents ?? (() => undefined),
         ),
       ),
+      ...(input.sidecarView === "thread" && monitorModelLine
+        ? [Text({ content: monitorModelLine, fg: theme.fgMuted, width: "100%", flexShrink: 0 })]
+        : []),
       ...(input.sidecarView === "events"
         ? [
             Text({
@@ -306,13 +305,13 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
             overflow: "hidden",
           },
           Text({
-            content: renderGoalSidecarThreadStyled(
+            content: renderGoalSidecarThreadRich(
               {
                 turns: input.sidecarTurns,
-                events: input.events,
                 columns: sidecarColumns,
                 visibleRows: sidecarThreadRows,
                 scrollOffset: input.sidecarThreadScrollOffset,
+                options: input.sidecarRenderOptions,
               },
             ),
             width: "100%",
@@ -391,6 +390,13 @@ export function renderSidecarChatInputStyled(state: SidecarQueueUiState & {
 export function sidecarInputBackground(state: { focusMode: string; monitorInputBuffer: string }): string {
   if (state.focusMode === "monitor" || state.monitorInputBuffer.length > 0) return theme.bgInputFocused
   return theme.bgPanel
+}
+
+// Fold the goal card's status + spend lines into one compact strip for the chat view; the full
+// card (criteria list, ETA, blockers) stays in the progress tab.
+function goalStatusStrip(cardLines: string[], width: number): string {
+  const compact = cardLines.filter((line) => !line.startsWith("·")).slice(0, 2).join("  ·  ")
+  return oneLine(compact || "no active goal", width)
 }
 
 function goalCardLines(input: Pick<GoalShutterRenderInput, "state" | "events" | "columns" | "metaThreadId">): string[] {

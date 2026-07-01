@@ -104,8 +104,8 @@ if (curated.some((event) => event.event_id.includes("noise"))) {
 if (!curated.some((event) => event.type === "monitor.summary")) {
   failures.push("curated stream should include monitor.summary")
 }
-if (!curated.some((event) => event.type === "agent.tool.completed")) {
-  failures.push("curated stream should include goal-relevant tool completion")
+if (curated.some((event) => event.type === "agent.tool.completed")) {
+  failures.push("curated stream should hide worker tool completions; agent tape owns raw worker activity")
 }
 
 const agentTape = goalShutterStreamEvents(events, true)

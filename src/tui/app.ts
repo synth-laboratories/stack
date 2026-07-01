@@ -321,7 +321,7 @@ import {
   type RightPanelMode,
 } from "./ops-panel.js"
 import {
-  goalSidecarThreadLineCount,
+  sidecarThreadRenderedLineCount,
   monitorEventStreamLineCount,
 } from "./monitor-thread.js"
 import { activeGoalModeSnapshot, isGoalMode } from "./goal-mode.js"
@@ -797,7 +797,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     slashMenuIndex: 0,
     goalPanelSelectedIndex: 0,
     goalShutterWorkerPeek: false,
-    goalShutterSidecarView: "thread",
+    goalShutterSidecarView: "events",
     goalShutterSidecarThreadScrollOffset: 0,
     goalShutterSidecarThreadScrollPinned: true,
     goalShutterScrollOffset: 0,
@@ -1936,7 +1936,7 @@ function createView(
       )
     : []
   const sidecarTranscript = showGoalShutter
-    ? readMonitorSidecarTranscript(options.config.appRoot, options.session.id, state.monitorSnapshot.actorId)
+    ? readMonitorSidecarTranscript(options.config.stackDataRoot, options.session.id, state.monitorSnapshot.actorId)
     : undefined
   const goalStreamRows = showGoalShutter
     ? goalShutterStreamVisibleRows(
@@ -1994,6 +1994,7 @@ function createView(
             state,
             events: workerMetaEvents,
             sidecarTurns: sidecarTranscript?.turns,
+            sidecarRenderOptions: sidecarTranscriptRenderOptions(state),
             sidecarView: state.goalShutterSidecarView,
             columns: transcriptViewport.columns,
             visibleRows: transcriptViewport.lines,
@@ -3086,7 +3087,7 @@ function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
   reconcileGoalOwnership(options, state)
   if (!isGoalMode(state)) {
     state.goalShutterWorkerPeek = false
-    state.goalShutterSidecarView = "thread"
+    state.goalShutterSidecarView = "events"
     state.goalShutterSidecarThreadScrollOffset = 0
     state.goalShutterSidecarThreadScrollPinned = true
     state.goalShutterScrollOffset = 0
@@ -3144,7 +3145,7 @@ function focusGoalWorkerPeek(state: AppState, refresh: () => void): boolean {
 function returnToGoalShutter(state: AppState, refresh: () => void): boolean {
   if (!isGoalMode(state) || !state.goalShutterWorkerPeek) return false
   state.goalShutterWorkerPeek = false
-  state.goalShutterSidecarView = "thread"
+  state.goalShutterSidecarView = "events"
   state.goalShutterSidecarThreadScrollPinned = true
   state.focusMode = "monitor"
   refresh()
@@ -5363,12 +5364,12 @@ function tailGoalShutterScroll(
 
 function tailGoalSidecarThreadScroll(
   state: AppState,
-  turns: Parameters<typeof goalSidecarThreadLineCount>[0]["turns"],
+  turns: Parameters<typeof sidecarThreadRenderedLineCount>[0]["turns"],
   events: StackThreadMetaEvent[],
   columns: number,
   visibleRows: number,
 ): void {
-  const lineCount = goalSidecarThreadLineCount({ turns, events, columns })
+  const lineCount = sidecarThreadRenderedLineCount({ turns, columns, options: sidecarTranscriptRenderOptions(state) })
   const maxOffset = Math.max(0, lineCount - visibleRows)
   if (state.goalShutterSidecarThreadScrollPinned) state.goalShutterSidecarThreadScrollOffset = maxOffset
   else if (state.goalShutterSidecarThreadScrollOffset > maxOffset) state.goalShutterSidecarThreadScrollOffset = maxOffset
@@ -5377,13 +5378,13 @@ function tailGoalSidecarThreadScroll(
 function handleGoalSidecarThreadMouseScroll(
   direction: "up" | "down",
   state: AppState,
-  turns: Parameters<typeof goalSidecarThreadLineCount>[0]["turns"],
+  turns: Parameters<typeof sidecarThreadRenderedLineCount>[0]["turns"],
   events: StackThreadMetaEvent[],
   columns: number,
   visibleRows: number,
   refresh: () => void,
 ): void {
-  const lineCount = goalSidecarThreadLineCount({ turns, events, columns })
+  const lineCount = sidecarThreadRenderedLineCount({ turns, columns, options: sidecarTranscriptRenderOptions(state) })
   const maxOffset = Math.max(0, lineCount - visibleRows)
   if (direction === "up") {
     state.goalShutterSidecarThreadScrollPinned = false
@@ -6303,6 +6304,20 @@ function renderTranscriptPanel(state: AppState, viewport: TranscriptViewport) {
     transcriptRenderOptions(state),
     state.agentScrollOffset,
   )
+}
+
+// The monitor sidecar renders through the same transcript renderer as the worker, but its turns are
+// post-hoc (no live-thinking stream) and it carries a "monitor" speaker label, not the worker's.
+function sidecarTranscriptRenderOptions(state: AppState): TranscriptRenderOptions {
+  return {
+    expandedBlockIds: state.expandedBlockIds,
+    showDetails: state.showDetails,
+    liveThinkingText: undefined,
+    running: state.monitorSnapshot.status === "running",
+    spinnerFrame: state.spinnerFrame,
+    agentSpeakerLabel: "monitor",
+    showAgentSpeakerLabel: false,
+  }
 }
 
 function handleSessionsMouseScroll(
@@ -9849,17 +9864,17 @@ function restoreHarnessFromSession(options: StackAppOptions, state: AppState): v
 function applyGoalUiAfterSessionResume(
   state: AppState,
   checkpoint?: StackResumeCheckpoint,
-  session?: StackLocalSession,
+  _session?: StackLocalSession,
 ): void {
   if (!isGoalMode(state)) {
     state.goalShutterWorkerPeek = false
-    state.goalShutterSidecarView = "thread"
+    state.goalShutterSidecarView = "events"
     state.goalShutterSidecarThreadScrollOffset = 0
     state.goalShutterSidecarThreadScrollPinned = true
     return
   }
   state.goalShutterWorkerPeek = checkpoint?.goalShutterWorkerPeek ?? false
-  state.goalShutterSidecarView = checkpoint?.goalShutterSidecarView ?? "thread"
+  state.goalShutterSidecarView = checkpoint?.goalShutterSidecarView ?? "events"
   state.goalShutterSidecarThreadScrollOffset = 0
   state.goalShutterSidecarThreadScrollPinned = true
   state.goalShutterScrollOffset = 0
@@ -9870,11 +9885,6 @@ function applyGoalUiAfterSessionResume(
     state.focusMode = checkpoint.focusMode
   } else {
     state.focusMode = state.goalShutterWorkerPeek ? "agent" : "monitor"
-  }
-  if (session && session.turns.length > 0) {
-    state.goalShutterWorkerPeek = true
-    state.focusMode = "agent"
-    state.talkToMonitor = false
   }
 }
 
@@ -10063,7 +10073,7 @@ function applySession(
   state.metaThreadManifest = undefined
   state.focusMode = "agent"
   state.goalShutterWorkerPeek = false
-  state.goalShutterSidecarView = "thread"
+  state.goalShutterSidecarView = "events"
   state.goalShutterSidecarThreadScrollOffset = 0
   state.goalShutterSidecarThreadScrollPinned = true
   state.goalShutterScrollOffset = 0

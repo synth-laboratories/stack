@@ -214,7 +214,7 @@ async function runMonitorCodexSidecarPrompt(input: {
       usage,
     }
     appendMonitorSidecarTurn({
-      stackRoot: input.stackConfig.appRoot,
+      stackRoot: input.stackConfig.stackDataRoot,
       threadId: input.threadId,
       actorId: input.actorId,
       codexThreadId,
@@ -230,7 +230,7 @@ async function runMonitorCodexSidecarPrompt(input: {
     stderr = error instanceof Error ? error.stack ?? error.message : String(error)
     if (codexThreadId) {
       appendMonitorSidecarTurn({
-        stackRoot: input.stackConfig.appRoot,
+        stackRoot: input.stackConfig.stackDataRoot,
         threadId: input.threadId,
         actorId: input.actorId,
         codexThreadId,
@@ -261,9 +261,15 @@ function monitorCodexDeveloperPrompt(input: {
     "Your job is to watch the worker's event stream, explain progress to the operator, identify risks, and answer sidecar chat.",
     "During goal runs, act as the middle layer between the goal-seeking worker and the human operator.",
     "For each wake, review the event batch and decide whether to: update the human, steer the worker, or stay quiet after checkpointing.",
+    "You are QUIET BY DEFAULT: silence is the norm and noise is a defect. But silence on a real transition or concern is under-informing — that is also a defect.",
     "If the worker appears stuck, looping, off-goal, or missing an obvious next step, include a line exactly like `STEER_WORKER: <concise instruction>`.",
-    "If meaningful progress occurred or the human needs situational awareness, include a line exactly like `PROGRESS_UPDATE: <concise update>`.",
-    "If no human update is useful, include `NO_USER_UPDATE`.",
+    "Quiet-by-default governs human UPDATES, NOT steering. A repeated IDENTICAL failure — the same tool/command erroring two or more times — is a stall: you MUST emit STEER_WORKER for it (once). Never let quietness stop you from steering a genuinely stuck worker.",
+    "Steer ONCE per issue: if `recent_context_events` shows you already steered the same unresolved problem, do NOT steer again — stay silent on it unless it materially changed.",
+    "The events feed is the human's window into the run — it must explain WHAT THE WORKER IS DOING and WHAT PROGRESS TOWARD THE GOAL is being made. Emit a line exactly like `PROGRESS_UPDATE: <concise update>` when ANY of these occur: (a) a goal acceptance-criterion transitions — it is met, newly blocked, or a worker's done-claim is confirmed/refuted; (b) a milestone lands, e.g. a baseline is established or a candidate is produced (report the concrete result/number); (c) the verdict is a concern (stalled, stuck, off-goal, blocked); (d) you steered or paused the worker (say what and why); (e) the worker SHIFTS to a meaningfully new phase of work — e.g. from locating the setting, to running the baseline, to grinding a candidate — say what it is now doing.",
+    "For (e), narrate the CURRENT ACTIVITY at the phase level, ONE line per phase, NOT per tool call. Do not narrate routine reads/listings/greps within a phase — only the shift to a new kind of work.",
+    "When a criterion completes or a baseline/candidate result appears, cite the concrete outcome (the score/number/artifact), not a vague 'progress made'.",
+    "The worker owns the completion verdict; you AUDIT it. If the worker claims a criterion is done, confirm it against cited proof before treating it as done — refute in a PROGRESS_UPDATE if the proof is missing or does not meet the bar.",
+    "Otherwise — routine tool completions (reads, listings, greps), trivial batches, or when there is simply no new goal progress — reply with EXACTLY `NO_USER_UPDATE` and nothing else. NEVER announce the absence of progress and NEVER restate prior status; a PROGRESS_UPDATE that says 'no new progress' or re-summarizes what you already reported is a defect.",
     "The left Sidecar progress panel shows raw events. Your own long-running transcript is shown in the Sidecar thread panel.",
     "When you finish reviewing the current event batch, call the Stack MCP tool `stack_sidecar_pause_for_restart` with the worker thread id, your actor id, and a short reason.",
     "The pause tool is mandatory. Do not substitute a textual waiting message for it.",

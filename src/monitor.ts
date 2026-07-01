@@ -929,7 +929,11 @@ export async function runMonitorForNewEvents(input: {
       })),
     },
   })
-  if (pass.userProgressUpdate || pass.workerSteerMessage || pass.severity !== "none") {
+  // monitor.progress is the HUMAN-facing narration event. It carries ONLY a real update the
+  // operator should read — never the generic per-pass checkpoint text and never NO_USER_UPDATE.
+  // (monitor.summary above is the internal per-pass checkpoint record; steers ride monitor.steer.)
+  const humanProgress = pass.userProgressUpdate ?? pass.operatorUpdate?.progress_note
+  if (humanProgress && !isNoUserUpdateText(humanProgress)) {
     appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId("monitor_progress"),
       type: "monitor.progress",
@@ -940,7 +944,7 @@ export async function runMonitorForNewEvents(input: {
       payload: {
         wake_id: wakeId,
         wake_reason: candidate.reason,
-        summary: pass.userProgressUpdate ?? pass.operatorUpdate?.progress_note ?? pass.summary,
+        summary: humanProgress,
         severity: pass.severity,
         operator_update: pass.operatorUpdate ?? null,
         trigger_event_ids: candidate.triggerEventIds,
@@ -1009,10 +1013,14 @@ export async function runMonitorForNewEvents(input: {
   }
 
   let steerDelta = 0
+  const steerSignature = triggerSignature(candidate.pendingEvents)
   if (
     pass.workerSteerMessage &&
     monitorConfig.permissions.steer &&
-    actorToolAllowed(monitorConfig.tools, "monitor.steer")
+    actorToolAllowed(monitorConfig.tools, "monitor.steer") &&
+    // Steer once per issue: suppress a repeat of a recent sidecar steer. The LLM re-surfaces
+    // unresolved problems every wake; code enforces the "don't repeat" invariant.
+    !recentSidecarSteerIsSimilar(priorEvents, pass.workerSteerMessage, steerSignature)
   ) {
     appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId("monitor_steer"),
@@ -1027,6 +1035,7 @@ export async function runMonitorForNewEvents(input: {
         severity: pass.severity === "none" ? "low" : pass.severity,
         focus: "goal_progress",
         source: "sidecar_codex",
+        trigger_signature: steerSignature,
       },
     })
     steerDelta += 1
@@ -1183,7 +1192,75 @@ export async function runMonitorForNewEvents(input: {
 }
 
 function monitorRuntimeRoot(config: StackConfig): string {
-  return config.stackDataRoot || config.appRoot
+  if (!config.stackDataRoot) {
+    throw new Error(
+      "monitorRuntimeRoot: config.stackDataRoot is empty — monitor event/actor-state root is unresolved and would silently split from worker events",
+    )
+  }
+  return config.stackDataRoot
+}
+
+function steerTokens(message: string): Set<string> {
+  return new Set(
+    message
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, " ")
+      .split(/\s+/)
+      .filter((word) => word.length > 3),
+  )
+}
+
+// The stable identity of the issue a steer is about: the set of failing worker actions in the
+// batch (tool + command), one entry per distinct failing command. Two wakes over the SAME
+// unresolved failure share an entry even when the monitor rewords its steer or the failing SET
+// changes — so this, not fragile prose matching, is the primary dedup key.
+export function triggerSignature(events: StackThreadMetaEvent[]): string {
+  const commands = events
+    .filter((event) => event.type === "agent.tool.failed")
+    .map((event) => {
+      const payload = (event.payload ?? {}) as Record<string, unknown>
+      const command = String(payload.command ?? "").trim().toLowerCase()
+      if (!command) return "" // an empty command is not an identity — never collapse distinct issues onto it
+      return `${String(payload.tool_name ?? "").trim().toLowerCase()}:${command}`
+    })
+    .filter((entry) => entry.length > 0)
+  return [...new Set(commands)].sort().join("|")
+}
+
+function signatureCommands(signature: string): Set<string> {
+  return new Set(signature.split("|").filter((entry) => entry.length > 0))
+}
+
+// Steer once per issue. Suppress a new sidecar steer if a recent one addressed the same failing
+// command (robust to rewording and to the failing set changing), or — as a fallback for steers
+// with no failing command, e.g. off-goal — shares most of its meaningful tokens (Jaccard >= 0.5).
+export function recentSidecarSteerIsSimilar(
+  priorEvents: StackThreadMetaEvent[],
+  message: string,
+  signature: string,
+): boolean {
+  const target = steerTokens(message)
+  const targetCommands = signatureCommands(signature)
+  // Window over prior SIDECAR STEERS, not raw events: a chatty worker emits many events per turn,
+  // so a raw slice would push the last steer out of view and silently break steer-once.
+  const recentSteers = priorEvents
+    .filter(
+      (event) =>
+        event.type === "monitor.steer" &&
+        (event.payload as Record<string, unknown> | undefined)?.source === "sidecar_codex",
+    )
+    .slice(-12)
+  for (const event of recentSteers) {
+    const payload = event.payload as Record<string, unknown>
+    const prevCommands = signatureCommands(String(payload.trigger_signature ?? ""))
+    for (const command of targetCommands) if (prevCommands.has(command)) return true
+    const prev = steerTokens(String(payload.message ?? ""))
+    if (target.size === 0 || prev.size === 0) continue
+    const overlap = [...target].filter((word) => prev.has(word)).length
+    const union = new Set([...target, ...prev]).size
+    if (union > 0 && overlap / union >= 0.5) return true
+  }
+  return false
 }
 
 export function monitorRailLines(snapshot: StackMonitorSnapshot, columns: number): string[] {
@@ -1882,9 +1959,33 @@ function estimateMonitorUsage(events: StackThreadMetaEvent[], summary: string): 
 }
 
 function parseSidecarDirectives(text: string): { progressUpdate?: string; steerMessage?: string } {
-  const progressUpdate = directiveLine(text, "PROGRESS_UPDATE")
+  const rawProgress = directiveLine(text, "PROGRESS_UPDATE")
   const steerMessage = directiveLine(text, "STEER_WORKER")
+  // A "progress update" that only announces the ABSENCE of progress is noise, not signal — treat
+  // it as NO_USER_UPDATE. Keep any update that also carries a concrete transition/refutation/number.
+  const progressUpdate = rawProgress && isNoProgressAnnouncement(rawProgress) ? undefined : rawProgress
   return { progressUpdate, steerMessage }
+}
+
+export function isNoUserUpdateText(text: string): boolean {
+  const trimmed = text.trim()
+  return trimmed.length === 0 || /^NO_USER_UPDATE\b/i.test(trimmed)
+}
+
+export function isNoProgressAnnouncement(text: string): boolean {
+  const t = text.trim().toLowerCase()
+  const announcesNoProgress =
+    /\bno (new |goal[- ]?relevant |goal |real )?(progress|benchmark|candidate|score|result)/.test(t) ||
+    /\bnothing (new|to report|changed|has changed)/.test(t) ||
+    /\bno (new )?(change|update)\b/.test(t)
+  if (!announcesNoProgress) return false
+  // Preserve updates that also carry real signal: a refutation, a criterion transition, a concrete
+  // number, or a CONCERN (blocked/stuck/stalled/off-goal/error) — concerns are exactly what the
+  // operator needs, so a "no results yet, but blocked on X" line must NOT be swallowed as noise.
+  const carriesSignal =
+    /\brefut|done[- ]?claim|criterion|meets?\b|below|above|threshold|\d\.\d/.test(t) ||
+    /\bblock|stuck|stall|off[- ]goal|error|fail|missing|unable|cannot|can.t|credential|permission|timeout|denied/.test(t)
+  return !carriesSignal
 }
 
 function directiveLine(text: string, label: string): string | undefined {

@@ -83,8 +83,46 @@ export function recordCoreAgentTurnCompleted(input: {
       finished_at: input.turn.finishedAt,
       exit_code: input.turn.exitCode ?? null,
       usage: usagePayload(input.turn.usage),
+      // The monitor must see what the worker produced to narrate positive progress,
+      // not just that a turn finished. Feed the prompt + a bounded tail of stdout (the
+      // tail holds the result). Without this the monitor is blind to successful work.
+      // Redact BEFORE taking the tail so a secret straddling the cut can't survive as a partial.
+      // Pre-bound the redaction input so the regex work stays proportional to what we keep.
+      prompt: boundedTail(redactSecrets(boundedTail(input.turn.prompt, 1200)), 600),
+      stdout_excerpt: boundedTail(redactSecrets(boundedTail(input.turn.stdout, 4000)), 2000),
     },
   })
+}
+
+export function boundedTail(text: string | undefined, max: number): string {
+  if (!text) return ""
+  const trimmed = text.trim()
+  if (trimmed.length <= max) return trimmed
+  return "…[truncated]\n" + trimmed.slice(trimmed.length - max)
+}
+
+// Mask common secret shapes before worker output enters the durable event log. Covers token
+// formats (JWT, provider keys with `-`/`_`, Google, GitHub, Slack, AWS), PEM private-key blocks,
+// URL credentials for any scheme, Authorization headers, and KEY/SECRET/TOKEN/PASSWORD assignments
+// in both env (`X=y`) and JSON (`"x": "y"`) form. Redaction false-positives are safe (they only
+// mask a non-secret); false-negatives leak — so this errs toward over-masking.
+export function redactSecrets(text: string): string {
+  if (!text) return ""
+  return text
+    .replace(/-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----/g, "[REDACTED_PRIVATE_KEY]")
+    .replace(/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{6,}\b/g, "[REDACTED_JWT]")
+    .replace(/\bya29\.[A-Za-z0-9._-]{20,}/g, "[REDACTED_TOKEN]")
+    .replace(/\bAIza[0-9A-Za-z_-]{35}\b/g, "[REDACTED_KEY]")
+    .replace(/\b(sk|rk|pk)[-_][A-Za-z0-9_-]{16,}\b/g, "[REDACTED_KEY]")
+    .replace(/\b(gh[pousr]_|github_pat_)[A-Za-z0-9_]{20,}\b/g, "[REDACTED_TOKEN]")
+    .replace(/\bxox[baprs]-[A-Za-z0-9-]{10,}\b/g, "[REDACTED_TOKEN]")
+    .replace(/\b(AKIA|ASIA)[0-9A-Z]{16}\b/g, "[REDACTED_AWS_KEY]")
+    .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9._~+/=-]{12,}/gi, "$1 [REDACTED_TOKEN]")
+    .replace(/\b([a-z][a-z0-9+.-]*):\/\/[^\s/@"']+:[^\s/@"']+@/gi, "$1://[REDACTED]@")
+    .replace(
+      /("?[A-Za-z0-9_]*(?:KEY|SECRET|TOKEN|PASSWORD|PASSWD|CREDENTIAL|PRIVATE)[A-Za-z0-9_]*"?)(\s*[:=]\s*)("?)[^\s"',}]{6,}\3/gi,
+      "$1$2[REDACTED]",
+    )
 }
 
 type PendingCoreEvent = {
@@ -196,12 +234,14 @@ function commandExecutionEvent(record: Record<string, unknown>): PendingCoreEven
     payload: {
       tool_id: readString(record.id) ?? readString(record.call_id) ?? null,
       tool_name: "command_execution",
-      command: redactText(truncate(readString(record.command) ?? "", 1200)),
+      // Redact BEFORE truncating: truncation can split a secret past its anchor, defeating the
+      // prefix-anchored redaction rules and leaving a usable partial secret.
+      command: truncate(redactText(readString(record.command) ?? ""), 1200),
       status,
       exit_code: exitCode ?? null,
-      output: redactText(truncate(output, 1800)),
-      stdout: redactText(truncate(readString(record.stdout) ?? "", 1200)),
-      stderr: redactText(truncate(readString(record.stderr) ?? "", 1200)),
+      output: truncate(redactText(output), 1800),
+      stdout: truncate(redactText(readString(record.stdout) ?? ""), 1200),
+      stderr: truncate(redactText(readString(record.stderr) ?? ""), 1200),
     },
   }
 }
@@ -247,11 +287,10 @@ function readUsage(record: Record<string, unknown>): StackCodexUsage | undefined
   }
 }
 
+// One redactor for the whole event pipeline. Tool events (the high-volume path) route through
+// here too, so they get the same coverage as turn output — no weaker second redactor.
 function redactText(value: string): string {
-  return value
-    .replace(/sk-[A-Za-z0-9_-]{20,}/g, "[REDACTED_OPENAI_KEY]")
-    .replace(/SYNTH_API_KEY=([A-Za-z0-9._-]+)/g, "SYNTH_API_KEY=[REDACTED]")
-    .replace(/RUNPOD_API_KEY=([A-Za-z0-9._-]+)/g, "RUNPOD_API_KEY=[REDACTED]")
+  return redactSecrets(value)
 }
 
 function safeEventComponent(value: string): string {

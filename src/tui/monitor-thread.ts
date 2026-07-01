@@ -3,6 +3,14 @@ import type { StackMonitorSnapshot } from "../monitor.js"
 import type { StackMonitorSidecarTurn } from "../monitor-sidecar-codex.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
 import { stackTuiTheme as theme } from "./theme.js"
+import {
+  blocksFromTurnStdout,
+  maxTranscriptScrollOffset,
+  renderTranscriptStyledView,
+  type TranscriptRenderOptions,
+} from "./transcript.js"
+
+type SidecarBuild = ReturnType<typeof blocksFromTurnStdout>
 
 const NARRATIVE_EVENT_TYPES = new Set([
   "monitor.operator_message",
@@ -16,21 +24,17 @@ const NARRATIVE_EVENT_TYPES = new Set([
   "monitor.error",
 ])
 
+// The HUMAN-facing events feed. Deliberately excludes the internal per-pass mechanics —
+// monitor.summary (checkpoint), monitor.wake, monitor.checkpoint, monitor.pause_for_restart,
+// monitor.trigger_queued, monitor.usage — so the operator sees narration, not plumbing. The real
+// update rides monitor.progress; steers ride monitor.steer.
 const GOAL_SHUTTER_EVENT_TYPES = new Set([
-  "monitor.chat.request",
   "monitor.chat.reply",
   "monitor.summary",
   "monitor.progress",
-  "monitor.queued",
   "monitor.steer",
+  "monitor.skill_context_push",
   "monitor.error",
-  "monitor.handoff_preempt.eligible",
-  "monitor.handoff_preempt.skipped",
-  "meta_thread.goal_updated",
-  "goal.started",
-  "goal.paused",
-  "goal.resumed",
-  "goal.cleared",
 ])
 
 const WATCH_EVENT_TYPES = new Set([
@@ -164,21 +168,44 @@ function goalSidecarCodexThreadLines(
   const width = Math.max(16, columns - 2)
   const lines: GoalSidecarThreadLine[] = []
   for (const turn of turns) {
+    const body = sidecarTurnOutputLines(turn.stdout, width)
+    const errorText = turn.stderr.trim()
+    // A quiet wake (only the internal pause tool + NO_USER_UPDATE) has no body — don't show its
+    // header either. The sidecar thread shows monitor ACTIVITY, not every heartbeat.
+    if (body.length === 0 && !errorText) continue
     if (lines.length > 0) lines.push({ text: "", kind: "blank" })
     lines.push(...wrapPlain(`› ${sidecarTurnPromptLabel(turn.prompt)}`, width).map((text) => ({
       text,
       kind: "ask" as const,
     })))
-    for (const line of sidecarTurnOutputLines(turn.stdout, width)) lines.push(line)
-    if (turn.stderr.trim()) {
-      lines.push(...wrapPlain(`error · ${turn.stderr.trim()}`, width).map((text, index) => ({
+    for (const line of body) lines.push(line)
+    if (errorText) {
+      lines.push(...wrapPlain(`error · ${errorText}`, width).map((text, index) => ({
         text,
         kind: index === 0 ? "reply-label" as const : "reply-body" as const,
       })))
     }
   }
-  if (lines.length === 0) return [{ text: "(waiting for sidecar messages)", kind: "empty" }]
+  if (lines.length === 0) return [{ text: "(monitor watching · no update yet)", kind: "empty" }]
   return lines
+}
+
+// Rendered like the worker chat: interleaved tool calls + thinking + the monitor's message —
+// with the runtime mechanics (the mandatory pause tool, the bridge's start+complete double-emit)
+// and the "staying quiet" marker filtered out, and the machine directive prefix cleaned off.
+const SIDECAR_PAUSE_TOOL = "stack_sidecar_pause_for_restart"
+
+function isSidecarQuietMarker(text: string): boolean {
+  return /^\s*NO_USER_UPDATE\.?\s*$/i.test(text)
+}
+
+function cleanSidecarMessage(text: string): string {
+  return text
+    .replace(/^\s*PROGRESS_UPDATE\s*:\s*/i, "")
+    .replace(/\bSTEER_WORKER\s*:\s*/gi, "steer → ")
+    .replace(/\bNO_USER_UPDATE\b\.?/gi, "")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim()
 }
 
 function sidecarThreadScrollWindow(
@@ -194,6 +221,7 @@ function sidecarThreadScrollWindow(
 
 function sidecarTurnOutputLines(stdout: string, width: number): GoalSidecarThreadLine[] {
   const lines: GoalSidecarThreadLine[] = []
+  const seenCalls = new Set<string>()
   let latestAgentMessage: string | undefined
   let latestReasoning: string | undefined
   for (const raw of stdout.split(/\r?\n/)) {
@@ -214,15 +242,13 @@ function sidecarTurnOutputLines(stdout: string, width: number): GoalSidecarThrea
     }
     if (parsed.type === "function_call") {
       const name = typeof parsed.name === "string" ? parsed.name : "tool"
+      if (name === SIDECAR_PAUSE_TOOL) continue // runtime mechanics — never shown to the operator
+      // The bridge serializes the same call on item/started AND item/completed; de-dup so a tool
+      // shows once, not twice.
+      const callKey = `${String(parsed.call_id ?? parsed.id ?? name)}:${String(parsed.arguments ?? "")}`
+      if (seenCalls.has(callKey)) continue
+      seenCalls.add(callKey)
       lines.push(...wrapPlain(`tool · ${name}`, width).map((text, index) => ({
-        text,
-        kind: index === 0 ? "reply-label" as const : "reply-body" as const,
-      })))
-    }
-    if (parsed.type === "function_call_output") {
-      const output = typeof parsed.output === "string" ? parsed.output : ""
-      const label = output.trim() ? `tool result · ${output.trim()}` : "tool result"
-      lines.push(...wrapPlain(label, width).map((text, index) => ({
         text,
         kind: index === 0 ? "reply-label" as const : "reply-body" as const,
       })))
@@ -234,13 +260,28 @@ function sidecarTurnOutputLines(stdout: string, width: number): GoalSidecarThrea
       kind: index === 0 ? "reply-label" as const : "reply-body" as const,
     })))
   }
-  if (latestAgentMessage) {
-    lines.push(...wrapPlain(`sidecar · ${latestAgentMessage}`, width).map((text, index) => ({
-      text,
-      kind: index === 0 ? "reply-label" as const : "reply-body" as const,
-    })))
+  if (latestAgentMessage && !isSidecarQuietMarker(latestAgentMessage)) {
+    const message = cleanSidecarMessage(latestAgentMessage)
+    if (message) {
+      lines.push(...wrapPlain(message, width).map((text, index) => ({
+        text,
+        kind: index === 0 ? "reply-label" as const : "reply-body" as const,
+      })))
+    }
   }
   return lines
+}
+
+const WAKE_REASON_LABELS: Record<string, string> = {
+  tool_completed: "tool completed",
+  tool_failed: "tool failed",
+  turn_completed: "turn completed",
+  error: "worker error",
+  operator_message: "operator message",
+  cadence_tick: "scheduled check",
+  stale_worker: "worker idle",
+  event_batch: "activity batch",
+  delta_events: "activity",
 }
 
 function sidecarTurnPromptLabel(prompt: string): string {
@@ -249,11 +290,101 @@ function sidecarTurnPromptLabel(prompt: string): string {
     const operatorMessage = typeof parsed.operator_message === "string" ? parsed.operator_message.trim() : ""
     if (operatorMessage) return operatorMessage
     const wakeReason = typeof parsed.wake_reason === "string" ? parsed.wake_reason : "wake"
-    const wakeId = typeof parsed.wake_id === "string" ? parsed.wake_id : undefined
-    return wakeId ? `${wakeReason} · ${wakeId}` : wakeReason
+    return WAKE_REASON_LABELS[wakeReason] ?? wakeReason.replace(/_/g, " ")
   } catch {
     return oneLine(prompt, 96)
   }
+}
+
+// --- Rich sidecar-thread render ------------------------------------------------------------
+// Render the monitor's transcript exactly like the worker chat — interleaved thinking + grouped
+// tool calls — via the shared transcript renderer. Runtime mechanics (the pause tool, the bridge's
+// start+complete double-emit) and the "staying quiet" marker are filtered first, and the machine
+// directive prefix is cleaned off the message so PROGRESS_UPDATE reads as plain prose.
+
+// Exposed for tests: the cleaning applied to a turn's JSONL stdout before it is rendered.
+export function cleanSidecarStdout(stdout: string): string {
+  const out: string[] = []
+  const pauseCallIds = new Set<string>()
+  for (const raw of stdout.split(/\r?\n/)) {
+    if (!raw.trim()) continue
+    let parsed: Record<string, unknown>
+    try {
+      parsed = JSON.parse(raw) as Record<string, unknown>
+    } catch {
+      out.push(raw)
+      continue
+    }
+    if (parsed.type === "function_call" && parsed.name === SIDECAR_PAUSE_TOOL) {
+      const id = String(parsed.call_id ?? parsed.id ?? "")
+      if (id) pauseCallIds.add(id)
+      continue // the mandatory pause tool is runtime mechanics, never shown
+    }
+    if (parsed.type === "function_call_output" && pauseCallIds.has(String(parsed.call_id ?? parsed.id ?? ""))) {
+      continue // and its result too, so no orphan tool block is grouped
+    }
+    if (parsed.type === "agent_message" && typeof parsed.text === "string") {
+      const text = parsed.text.trim()
+      if (isSidecarQuietMarker(text)) continue // a quiet review is not a message
+      const cleaned = cleanSidecarMessage(text)
+      if (!cleaned) continue
+      out.push(JSON.stringify({ ...parsed, text: cleaned }))
+      continue
+    }
+    out.push(raw)
+  }
+  return out.join("\n")
+}
+
+function buildSidecarBlocks(turns?: readonly StackMonitorSidecarTurn[]): SidecarBuild {
+  const blocks: SidecarBuild["blocks"] = []
+  const tools: SidecarBuild["tools"] = []
+  const subagents: SidecarBuild["subagents"] = []
+  for (const turn of turns ?? []) {
+    const built = blocksFromTurnStdout(`wake · ${sidecarTurnPromptLabel(turn.prompt)}`, cleanSidecarStdout(turn.stdout))
+    // A quiet review yields only its wake-header block — skip it so the thread shows real activity.
+    const hasContent = built.blocks.some((block) => block.kind !== "user") || built.tools.length > 0
+    if (!hasContent) continue
+    blocks.push(...built.blocks)
+    tools.push(...built.tools)
+    subagents.push(...built.subagents)
+  }
+  return { blocks, tools, subagents }
+}
+
+export function renderGoalSidecarThreadRich(input: {
+  turns?: readonly StackMonitorSidecarTurn[]
+  columns: number
+  visibleRows?: number
+  scrollOffset?: number
+  options: TranscriptRenderOptions
+}): StyledText {
+  const { blocks, tools, subagents } = buildSidecarBlocks(input.turns)
+  if (blocks.length === 0) {
+    return new StyledText([dim(fg(theme.fgMuted)("(monitor watching · no update yet)"))])
+  }
+  const columns = Math.max(16, input.columns - 2)
+  const visibleRows = input.visibleRows ?? 5
+  return renderTranscriptStyledView(
+    blocks,
+    tools,
+    subagents,
+    { lines: visibleRows, columns, pageLines: visibleRows },
+    input.options,
+    input.scrollOffset ?? 0,
+  )
+}
+
+// Total rendered line count (for scroll bounds); mirrors the rich render's block build.
+export function sidecarThreadRenderedLineCount(input: {
+  turns?: readonly StackMonitorSidecarTurn[]
+  columns: number
+  options: TranscriptRenderOptions
+}): number {
+  const { blocks, tools, subagents } = buildSidecarBlocks(input.turns)
+  if (blocks.length === 0) return 1
+  // A 0-line viewport makes maxTranscriptScrollOffset return the full annotated line count.
+  return maxTranscriptScrollOffset(blocks, tools, subagents, Math.max(16, input.columns - 2), input.options, 0)
 }
 
 function styledSidecarThreadLine(line: GoalSidecarThreadLine): TextChunk[] {
@@ -278,13 +409,7 @@ export function goalShutterStreamEvents(
   if (agentViewEnabled) {
     return monitorThreadEvents(events).filter((event) => !GOAL_SHUTTER_SIDECAR_CHAT_TYPES.has(event.type))
   }
-  return events.filter((event) => {
-    if (GOAL_SHUTTER_SIDECAR_CHAT_TYPES.has(event.type)) return false
-    if (GOAL_SHUTTER_EVENT_TYPES.has(event.type)) return true
-    if (event.type === "agent.tool.failed" || event.type === "agent.error") return true
-    if (event.type !== "agent.tool.completed") return false
-    return isGoalShutterToolCompletion(event)
-  })
+  return events.filter((event) => GOAL_SHUTTER_EVENT_TYPES.has(event.type) && isHumanFacingGoalFeedEvent(event))
 }
 
 export function goalShutterStreamLines(
@@ -296,10 +421,8 @@ export function goalShutterStreamLines(
   const width = Math.max(16, columns - 2)
   const threadEvents = goalShutterStreamEvents(events, agentViewEnabled)
   if (threadEvents.length === 0) {
-    const empty = snapshot.enabled ? "(waiting for sidecar progress)" : "(monitor off)"
-    return snapshot.lastSummary
-      ? [empty, oneLine(`monitor  ${snapshot.lastSummary}`, width)]
-      : [empty]
+    const empty = snapshot.enabled ? "(monitor watching · no human-facing updates yet)" : "(monitor off)"
+    return [empty, ...substantiveSummaryLines(snapshot.lastSummary, width)]
   }
   const lines: string[] = []
   for (const event of threadEvents) {
@@ -366,11 +489,9 @@ export function goalShutterStreamRows(
   const width = Math.max(16, columns - 2)
   const threadEvents = goalShutterStreamEvents(events, agentViewEnabled)
   if (threadEvents.length === 0) {
-    const empty = snapshot.enabled ? "(waiting for sidecar progress)" : "(monitor off)"
+    const empty = snapshot.enabled ? "(monitor watching · no human-facing updates yet)" : "(monitor off)"
     const rows: GoalShutterStreamRow[] = [{ line: empty }]
-    if (snapshot.lastSummary) {
-      rows.push({ line: oneLine(`monitor  ${snapshot.lastSummary}`, width) })
-    }
+    for (const line of substantiveSummaryLines(snapshot.lastSummary, width)) rows.push({ line })
     return rows
   }
   const rows: GoalShutterStreamRow[] = []
@@ -496,29 +617,28 @@ function formatNarrativeEvent(
     case "monitor.summary": {
       const summary = readString(payload.summary) ?? "(empty summary)"
       const severity = readString(payload.severity) ?? "none"
-      const lines = [oneLine(`  monitor  ${severity} · ${summary}`, width)]
       const operatorUpdate = asRecord(payload.operator_update)
       const workingOn = readString(operatorUpdate?.working_on)
       const struggling = readString(operatorUpdate?.struggling_with)
       const progress = readString(operatorUpdate?.progress_note)
-      if (workingOn && !summary.includes(workingOn)) {
-        lines.push(oneLine(`           goal · ${workingOn}`, width))
-      }
-      if (progress && !summary.includes(progress)) {
-        lines.push(oneLine(`           progress · ${progress}`, width))
-      }
-      if (struggling) {
-        lines.push(oneLine(`           stuck · ${struggling}`, width))
-      }
+      const lead = struggling
+        ? `  concern  ${struggling}`
+        : progress
+          ? `  progress  ${progress}`
+          : workingOn
+            ? `  working  ${workingOn}`
+            : `  monitor  ${severity} · ${summary}`
+      const lines = [oneLine(lead, width)]
+      if (progress && struggling && !struggling.includes(progress)) lines.push(oneLine(`           progress · ${progress}`, width))
+      if (workingOn && !lead.includes(workingOn)) lines.push(oneLine(`           working · ${workingOn}`, width))
+      if (summary && severity !== "none" && !lead.includes(summary)) lines.push(oneLine(`           summary · ${summary}`, width))
       return lines
     }
-    case "monitor.progress":
-      return [
-        oneLine(
-          `  progress  ${readString(payload.summary) ?? readString(payload.phase) ?? "goal progress"}`,
-          width,
-        ),
-      ]
+    case "monitor.progress": {
+      const text = (readString(payload.summary) ?? readString(payload.phase) ?? "").trim()
+      if (!text || /^NO_USER_UPDATE\b/i.test(text)) return [] // defensive: never surface a quiet marker
+      return [oneLine(`  progress  ${text.replace(/^\s*PROGRESS_UPDATE\s*:\s*/i, "")}`, width)]
+    }
     case "monitor.queued":
       return [
         oneLine(
@@ -604,14 +724,50 @@ function sidecarPrefillPromptForEvent(event: StackThreadMetaEvent): string | und
   }
 }
 
-function isGoalShutterToolCompletion(event: StackThreadMetaEvent): boolean {
-  const text = [
-    readString(event.payload.tool_name),
-    readString(event.payload.command),
-    readString(event.payload.output),
-    readString(event.payload.stdout),
-  ].filter(Boolean).join(" ").toLowerCase()
-  return /\b(test|pytest|bun|npm|pnpm|yarn|cargo|go test|tsc|ruff|mypy|build|smoke|verify|check)\b/.test(text)
+function isHumanFacingGoalFeedEvent(event: StackThreadMetaEvent): boolean {
+  switch (event.type) {
+    case "monitor.progress":
+    case "monitor.steer":
+    case "monitor.skill_context_push":
+    case "monitor.error":
+    case "monitor.chat.reply":
+      return true
+    case "monitor.summary":
+      return isSubstantiveMonitorSummary(event.payload)
+    default:
+      return false
+  }
+}
+
+function isSubstantiveMonitorSummary(payload: Record<string, unknown>): boolean {
+  const summary = readString(payload.summary)
+  const severity = readString(payload.severity) ?? "none"
+  const operatorUpdate = asRecord(payload.operator_update)
+  if (readString(operatorUpdate?.working_on)) return true
+  if (readString(operatorUpdate?.progress_note)) return true
+  if (readString(operatorUpdate?.struggling_with)) return true
+  if (severity !== "none") return true
+  return Boolean(summary && !isRuntimeOrQuietSummary(summary))
+}
+
+function substantiveSummaryLines(summary: string | undefined, width: number): string[] {
+  if (!summary || isRuntimeOrQuietSummary(summary)) return []
+  return [oneLine(`monitor  ${summary}`, width)]
+}
+
+function isRuntimeOrQuietSummary(summary: string): boolean {
+  const text = summary.trim().toLowerCase()
+  if (!text) return true
+  if (/^no_user_update\.?$/.test(text)) return true
+  if (/\bcheckpoint advanced\b/.test(text)) return true
+  if (/\bwaiting for the next wake\b/.test(text)) return true
+  if (
+    /\breviewed\b.*\bevent(s)?\b/.test(text) &&
+    !/\b(progress|baseline|candidate|blocked|stuck|failed|risk|score|criterion|done|target)\b/.test(text)
+  ) {
+    return true
+  }
+  return false
 }
 
 function monitorRuntimeWakeMessage(wake: StackThreadMetaEvent, allEvents: StackThreadMetaEvent[]): string {
@@ -752,6 +908,8 @@ function styledNarrativeLine(line: string): TextChunk[] {
   if (line.startsWith("  monitor")) return [fg("#3fb950")(line)]
   if (line.startsWith("  sidecar")) return [fg("#3fb950")(line)]
   if (line.startsWith("  progress")) return [fg("#3fb950")(line)]
+  if (line.startsWith("  working")) return [fg("#3fb950")(line)]
+  if (line.startsWith("  concern")) return [fg(theme.synth.red)(line)]
   if (line.startsWith("  steer")) return [fg("#3fb950")(line)]
   if (line.startsWith("  queue")) return [fg(theme.synth.amber)(line)]
   if (line.startsWith("  push")) return [fg(theme.synth.gold)(line)]
