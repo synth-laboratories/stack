@@ -17,6 +17,32 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+### Added
+
+- **MetaHarness runtime core.** `POST /meta/tick` runs one serialized tick — actor
+  schedulers queue triggers (monitor, plus a gardener queue fed by
+  `monitor.handoff_requested` and operator chat), a pure reducer folds every live
+  thread into a `MetaHarnessSnapshot` (goal phase, per-actor cursor/queued
+  triggers/next-wake hints, `ui.*` side-panel slot, human headline), and the
+  projection lands at `.stack/meta/status.json`. `GET /meta/status` serves the same
+  snapshot. Roles are data on `stack-core::actor_runtime::ActorRole`; the monitor
+  scheduler runs on the shared cursor/dedupe/wake-hint machinery. Contract:
+  `docs/META_HARNESS_RUNTIME.md`.
+- **Agents open UI, humans override.** MCP levers `stack_ui_open_panel` /
+  `stack_ui_close_panel` backed by the UI vocabulary registry
+  (`src/ui/vocabulary.ts`): monitor/gardener may open only allowed panels with a
+  required reason, close only panels they opened; the operator closes anything.
+  Every open/close is an audited `ui.panel_opened`/`ui.panel_closed` event. The
+  monitor may open its panel once per high-signal review moment (audited
+  goal_met/goal_failed, blocked, steer, risky pending) — never for routine progress.
+- **Telemetry tiers.** Basic DAU (`stack_first_launch`, `stack_session_started`)
+  on by default and turn-offable; advanced product telemetry (feature usage,
+  coarse session length) only after explicit approval. stackd owns the choice in
+  `.stack/config/telemetry.json` with a pseudonymous `install_id`. New advanced
+  events: `stack_session_ended` (duration bucket), `stack_session_heartbeat`,
+  `stack_feature_used` (enum feature ids).
+- Goal bind names the thread: bound goals never show `(empty)` in the threads rail.
+
 ### Changed
 
 - **Goal task context is now fully data-driven.** Stack no longer contains any

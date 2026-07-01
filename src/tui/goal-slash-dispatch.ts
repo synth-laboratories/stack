@@ -1,5 +1,6 @@
 import { stackdCreateMetaThread, stackdUpdateMetaThreadGoal } from "../client/stackd.js"
 import { sanitizeThreadDisplayName } from "../thread-display-name.js"
+import { emitFeatureUsed } from "../telemetry/funnel.js"
 import { harnessModel, isCursorHarness, type StackConfig } from "../config.js"
 import { emptyGoalContext, mergeGoalContext, type CodexGoalSnapshot } from "../codex/goal-context.js"
 import { CodexAppServerSession } from "../codex/app-server-session.js"
@@ -290,6 +291,7 @@ async function ensureMetaThreadBound(
   ctx.session.metaThreadId = created.id
   ctx.session.segmentId = created.head_segment_id
   ctx.session.segmentRole = "implement"
+  void emitFeatureUsed("goal_mode")
   // Name the session from the goal title at bind so the threads rail never
   // shows (empty) for a bound goal, even before any worker turn lands.
   if (!ctx.session.displayName?.trim()) {

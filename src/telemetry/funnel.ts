@@ -60,3 +60,31 @@ export async function emitFirstAgentTurn(agentBackend = "codex"): Promise<void> 
 export async function emitOptimizerRunStarted(optimizer: string, mode: string): Promise<void> {
   await emitFunnelEvent("stack_optimizer_run_started", { optimizer, mode })
 }
+
+// Advanced tier (approval-gated server-side): coarse session length at exit.
+const sessionStartedAtMs = Date.now()
+
+function sessionDurationBucket(): string {
+  const minutes = (Date.now() - sessionStartedAtMs) / 60_000
+  if (minutes < 5) return "under_5m"
+  if (minutes < 30) return "5m_30m"
+  if (minutes < 60) return "30m_1h"
+  if (minutes < 240) return "1h_4h"
+  return "over_4h"
+}
+
+let sessionEndedEmitted = false
+export async function emitSessionEnded(): Promise<void> {
+  if (sessionEndedEmitted) return
+  sessionEndedEmitted = true
+  await emitFunnelEvent("stack_session_ended", { duration_bucket: sessionDurationBucket() })
+}
+
+// Advanced tier: feature adoption. feature_id must be in the contract enum; the
+// stackd gate refuses anything else. Fires at most once per feature per session.
+const emittedFeatures = new Set<string>()
+export async function emitFeatureUsed(featureId: string): Promise<void> {
+  if (emittedFeatures.has(featureId)) return
+  emittedFeatures.add(featureId)
+  await emitFunnelEvent("stack_feature_used", { feature_id: featureId })
+}

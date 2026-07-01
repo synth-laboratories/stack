@@ -16,7 +16,7 @@ import {
   type StackResumeCheckpoint,
 } from "./resume-checkpoint.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
-import { emitSessionFunnel } from "./telemetry/funnel.js"
+import { emitSessionEnded, emitSessionFunnel } from "./telemetry/funnel.js"
 import { resolveEnvironmentFromArgv, runTelemetryDigest } from "./telemetry-digest.js"
 import { runStackApp } from "./tui/app.js"
 import { resetTerminalAfterTui } from "./tui/terminal-cleanup.js"
@@ -114,6 +114,7 @@ try {
 
   void emitSessionFunnel()
   await runStackApp({ config, workspace, session })
+  await emitSessionEnded()
 } catch (error) {
   resetTerminalAfterTui()
   if (error instanceof Error) {

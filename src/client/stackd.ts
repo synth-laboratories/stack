@@ -536,6 +536,41 @@ export async function stackdStatus(baseUrl = stackdBaseUrl()): Promise<StackdSta
   return requestJson<StackdStatus>(baseUrl, "/status")
 }
 
+export type StackdMetaSidePanel = {
+  panel: string
+  view?: string | null
+  opened_by: string
+  reason?: string | null
+  opened_at?: string | null
+}
+
+export type StackdMetaThreadSnapshot = {
+  thread_id: string
+  meta_thread_id?: string | null
+  goal: { phase: string; objective?: string | null; status?: string | null }
+  actors: Array<{
+    actor_id: string
+    role: string
+    state: string
+    cursor?: string | null
+    queued_triggers: string[]
+    next_wake_on?: string[] | null
+    next_wake_at?: string | null
+  }>
+  ui: { side_panel?: StackdMetaSidePanel | null }
+  headline?: { headline?: string | null; note?: string | null; status?: string | null } | null
+}
+
+export type StackdMetaStatus = {
+  schema: string
+  generated_at: string
+  threads: StackdMetaThreadSnapshot[]
+}
+
+export async function stackdMetaStatus(baseUrl = stackdBaseUrl()): Promise<StackdMetaStatus> {
+  return requestJson<StackdMetaStatus>(baseUrl, "/meta/status")
+}
+
 export async function stackdRuntimeFactory(baseUrl = stackdBaseUrl()): Promise<StackdRuntimeFactoryResponse> {
   return requestJson<StackdRuntimeFactoryResponse>(baseUrl, "/runtime/factory")
 }
