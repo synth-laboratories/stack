@@ -402,10 +402,11 @@ export async function runMonitorAfterOperatorMessage(input: {
   agentContext: AgentContextSnapshot
   goalContext: CodexGoalSnapshot
 }): Promise<{ event: StackThreadMetaEvent; snapshot: StackMonitorSnapshot }> {
-  const operatorEvent = appendMonitorOperatorMessage(input.config.appRoot, input.session.id, input.message)
+  const runtimeRoot = monitorRuntimeRoot(input.config)
+  const operatorEvent = appendMonitorOperatorMessage(runtimeRoot, input.session.id, input.message)
   if (shouldUseSidecarGoalChat(input.goalContext)) {
     const requestEvent = appendMonitorChatRequest({
-      stackRoot: input.config.appRoot,
+      stackRoot: runtimeRoot,
       session: input.session,
       message: input.message,
       goalContext: input.goalContext,
@@ -413,7 +414,7 @@ export async function runMonitorAfterOperatorMessage(input: {
     })
     await appendMonitorChatReply({
       stackConfig: input.config,
-      stackRoot: input.config.appRoot,
+      stackRoot: runtimeRoot,
       session: input.session,
       message: input.message,
       goalContext: input.goalContext,
@@ -421,7 +422,7 @@ export async function runMonitorAfterOperatorMessage(input: {
     })
     return {
       event: requestEvent,
-      snapshot: refreshMonitorSnapshot(input.config.appRoot, input.session.id),
+      snapshot: refreshMonitorSnapshot(runtimeRoot, input.session.id),
     }
   }
   const snapshot = await runMonitorForNewEvents({
@@ -480,7 +481,7 @@ async function appendMonitorChatReply(input: {
 }): Promise<StackThreadMetaEvent> {
   const events = readThreadMetaEvents(input.stackRoot, input.session.id)
   const context = buildSidecarChatContext(input.goalContext, events)
-  const monitorConfig = loadMonitorConfig(input.stackRoot)
+  const monitorConfig = loadMonitorConfig(input.stackConfig.appRoot)
   const actorId = monitorActorId(monitorConfig)
   const actorState = readMonitorActorState(input.stackRoot, input.session.id, actorId)
   const reply = await runMonitorSidecarChatReply({
@@ -660,8 +661,9 @@ export async function runMonitorAfterTurn(input: {
   agentContext: AgentContextSnapshot
   goalContext: CodexGoalSnapshot
 }): Promise<StackMonitorSnapshot> {
+  const runtimeRoot = monitorRuntimeRoot(input.config)
   recordCoreAgentTurnCompleted({
-    stackRoot: input.config.appRoot,
+    stackRoot: runtimeRoot,
     threadId: input.session.id,
     actorId: "primary_codex",
     metaThreadId: input.session.metaThreadId,
@@ -681,11 +683,12 @@ export async function runGoalMonitorCadenceTick(input: {
   goalContext: CodexGoalSnapshot
 }): Promise<StackMonitorSnapshot | undefined> {
   if (!goalContextActive(input.goalContext)) return undefined
+  const runtimeRoot = monitorRuntimeRoot(input.config)
   const monitorConfig = loadMonitorConfig(input.config.appRoot)
   const threadId = input.session.id
-  const events = readThreadMetaEvents(input.config.appRoot, threadId)
+  const events = readThreadMetaEvents(runtimeRoot, threadId)
   const actorId = monitorActorId(monitorConfig)
-  const actorState = readMonitorActorState(input.config.appRoot, threadId, actorId)
+  const actorState = readMonitorActorState(runtimeRoot, threadId, actorId)
   if (actorState?.state === "running" && hasQueuedTriggerAfterLatestWake(events)) return undefined
   const cadence = cadenceWakeReason(monitorConfig, events, actorState)
   if (!cadence) return undefined
@@ -708,7 +711,7 @@ export async function runGoalMonitorCadenceTick(input: {
       source: "tui-cadence",
     },
   }
-  appendThreadMetaEvent(input.config.appRoot, event)
+  appendThreadMetaEvent(runtimeRoot, event)
   return await runMonitorForNewEvents({
     config: input.config,
     session: input.session,
@@ -729,19 +732,20 @@ export async function runMonitorForNewEvents(input: {
   triggerEventIds?: string[]
   drainQueued?: boolean
 }): Promise<StackMonitorSnapshot> {
+  const runtimeRoot = monitorRuntimeRoot(input.config)
   const monitorConfig = loadMonitorConfig(input.config.appRoot)
   const threadId = input.session.id
-  const priorEvents = readThreadMetaEvents(input.config.appRoot, threadId)
+  const priorEvents = readThreadMetaEvents(runtimeRoot, threadId)
   const effective = effectiveMonitorState(monitorConfig, priorEvents)
   const actorId = monitorActorId(monitorConfig)
-  const actorState = readMonitorActorState(input.config.appRoot, threadId, actorId)
+  const actorState = readMonitorActorState(runtimeRoot, threadId, actorId)
   if (!effective.enabled) {
-    writeMonitorActorState(input.config.appRoot, actorStateFromConfig(monitorConfig, threadId, {
+    writeMonitorActorState(runtimeRoot, actorStateFromConfig(monitorConfig, threadId, {
       previous: actorState,
       state: "paused",
       strictness: effective.strictness,
     }))
-    return snapshotFromEvents(monitorConfig, priorEvents, readMonitorActorState(input.config.appRoot, threadId, actorId))
+    return snapshotFromEvents(monitorConfig, priorEvents, readMonitorActorState(runtimeRoot, threadId, actorId))
   }
   monitorConfig.enabled = effective.enabled
   monitorConfig.strictness = effective.strictness
@@ -759,11 +763,11 @@ export async function runMonitorForNewEvents(input: {
       state: actorState?.state === "running" ? "idle" : actorState?.state,
       strictness: effective.strictness,
     })
-    writeMonitorActorState(input.config.appRoot, refreshed)
+    writeMonitorActorState(runtimeRoot, refreshed)
     return snapshotFromEvents(
       monitorConfig,
-      readThreadMetaEvents(input.config.appRoot, threadId),
-      readMonitorActorState(input.config.appRoot, threadId, actorId),
+      readThreadMetaEvents(runtimeRoot, threadId),
+      readMonitorActorState(runtimeRoot, threadId, actorId),
     )
   }
 
@@ -771,7 +775,7 @@ export async function runMonitorForNewEvents(input: {
     const alreadyQueued = queuedTriggerEventIds(priorEvents)
     const triggerEventIds = candidate.triggerEventIds.filter((id) => !alreadyQueued.has(id))
     if (triggerEventIds.length > 0) {
-      appendThreadMetaEvent(input.config.appRoot, {
+      appendThreadMetaEvent(runtimeRoot, {
         event_id: stackEventId("monitor_trigger_queued"),
         type: "monitor.trigger_queued",
         thread_id: threadId,
@@ -789,8 +793,8 @@ export async function runMonitorForNewEvents(input: {
     }
     return snapshotFromEvents(
       monitorConfig,
-      readThreadMetaEvents(input.config.appRoot, threadId),
-      readMonitorActorState(input.config.appRoot, threadId, actorId),
+      readThreadMetaEvents(runtimeRoot, threadId),
+      readMonitorActorState(runtimeRoot, threadId, actorId),
     )
   }
 
@@ -811,8 +815,8 @@ export async function runMonitorForNewEvents(input: {
     strictness: effective.strictness,
     lastStartedAt: observedAt,
   })
-  writeMonitorActorState(input.config.appRoot, runningState)
-  appendThreadMetaEvent(input.config.appRoot, {
+  writeMonitorActorState(runtimeRoot, runningState)
+  appendThreadMetaEvent(runtimeRoot, {
     event_id: wakeId,
     type: "monitor.wake",
     thread_id: threadId,
@@ -831,7 +835,7 @@ export async function runMonitorForNewEvents(input: {
     },
   })
   if (handoffPreempt) {
-    appendThreadMetaEvent(input.config.appRoot, {
+    appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId(`monitor_handoff_preempt_${handoffPreempt.status}`),
       type: `monitor.handoff_preempt.${handoffPreempt.status}`,
       thread_id: threadId,
@@ -857,7 +861,7 @@ export async function runMonitorForNewEvents(input: {
     })
     pass = await runMonitorPass({
       stackConfig: input.config,
-      stackRoot: input.config.stackDataRoot,
+      stackRoot: runtimeRoot,
       config: monitorConfig,
       actorState: runningState,
       threadId,
@@ -878,8 +882,8 @@ export async function runMonitorForNewEvents(input: {
       strictness: effective.strictness,
       lastErrorAt: new Date().toISOString(),
     })
-    writeMonitorActorState(input.config.appRoot, failedState)
-    appendThreadMetaEvent(input.config.appRoot, {
+    writeMonitorActorState(runtimeRoot, failedState)
+    appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId("monitor_error"),
       type: "monitor.error",
       thread_id: threadId,
@@ -893,12 +897,12 @@ export async function runMonitorForNewEvents(input: {
     })
     return snapshotFromEvents(
       monitorConfig,
-      readThreadMetaEvents(input.config.appRoot, threadId),
-      readMonitorActorState(input.config.appRoot, threadId, actorId),
+      readThreadMetaEvents(runtimeRoot, threadId),
+      readMonitorActorState(runtimeRoot, threadId, actorId),
     )
   }
 
-  appendThreadMetaEvent(input.config.appRoot, {
+  appendThreadMetaEvent(runtimeRoot, {
     event_id: stackEventId("monitor_summary"),
     type: "monitor.summary",
     thread_id: threadId,
@@ -926,7 +930,7 @@ export async function runMonitorForNewEvents(input: {
     },
   })
   if (pass.userProgressUpdate || pass.workerSteerMessage || pass.severity !== "none") {
-    appendThreadMetaEvent(input.config.appRoot, {
+    appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId("monitor_progress"),
       type: "monitor.progress",
       thread_id: threadId,
@@ -951,7 +955,7 @@ export async function runMonitorForNewEvents(input: {
     parseThreadNameFromAgentResponse(pass.summary)
   if (suggestedThreadName) {
     await setThreadDisplayName({
-      stackRoot: input.config.appRoot,
+      stackRoot: runtimeRoot,
       sessionLogDir: input.config.sessionLogDir,
       threadId,
       displayName: suggestedThreadName,
@@ -968,7 +972,7 @@ export async function runMonitorForNewEvents(input: {
     ? pass.queueItems
     : []
   for (const item of queueItems.slice(0, monitorConfig.intervention.maxQueuedItemsPerThread)) {
-    appendThreadMetaEvent(input.config.appRoot, {
+    appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId("monitor_queued"),
       type: "monitor.queued",
       thread_id: threadId,
@@ -991,7 +995,7 @@ export async function runMonitorForNewEvents(input: {
     : []
   for (const decision of contextPushes) {
     suggestSkillToThread({
-      stackRoot: input.config.appRoot,
+      stackRoot: runtimeRoot,
       threadId,
       actorId,
       actorRole: "monitor",
@@ -1010,7 +1014,7 @@ export async function runMonitorForNewEvents(input: {
     monitorConfig.permissions.steer &&
     actorToolAllowed(monitorConfig.tools, "monitor.steer")
   ) {
-    appendThreadMetaEvent(input.config.appRoot, {
+    appendThreadMetaEvent(runtimeRoot, {
       event_id: stackEventId("monitor_steer"),
       type: "monitor.steer",
       thread_id: threadId,
@@ -1034,12 +1038,12 @@ export async function runMonitorForNewEvents(input: {
     const severity = severityForStyleViolation(violation.id)
     if (steerAllowedForStrictness(monitorConfig.strictness, severity)) {
       const steer = buildStyleSteerFromGuidance({
-        stackRoot: input.config.appRoot,
+        stackRoot: runtimeRoot,
         workspaceRoot: input.config.workspaceRoot,
         violation,
       })
       if (steer) {
-        appendThreadMetaEvent(input.config.appRoot, {
+        appendThreadMetaEvent(runtimeRoot, {
           event_id: stackEventId("guidance_query"),
           type: "guidance.query",
           thread_id: threadId,
@@ -1054,7 +1058,7 @@ export async function runMonitorForNewEvents(input: {
             rule_id: violation.id,
           },
         })
-        appendThreadMetaEvent(input.config.appRoot, {
+        appendThreadMetaEvent(runtimeRoot, {
           event_id: stackEventId("guidance_used"),
           type: "guidance.used",
           thread_id: threadId,
@@ -1068,7 +1072,7 @@ export async function runMonitorForNewEvents(input: {
             excerpt: steer.excerpt,
           },
         })
-        appendThreadMetaEvent(input.config.appRoot, {
+        appendThreadMetaEvent(runtimeRoot, {
           event_id: stackEventId("monitor_steer"),
           type: "monitor.steer",
           thread_id: threadId,
@@ -1091,7 +1095,7 @@ export async function runMonitorForNewEvents(input: {
   }
 
   const usage = pass.usage ?? estimateMonitorUsage(candidate.pendingEvents, pass.summary)
-  appendThreadMetaEvent(input.config.appRoot, {
+  appendThreadMetaEvent(runtimeRoot, {
     event_id: stackEventId("monitor_usage"),
     type: "monitor.usage",
     thread_id: threadId,
@@ -1132,8 +1136,8 @@ export async function runMonitorForNewEvents(input: {
     contextPushDelta: contextPushes.length,
     steerDelta,
   })
-  writeMonitorActorState(input.config.appRoot, completedState)
-  appendThreadMetaEvent(input.config.appRoot, {
+  writeMonitorActorState(runtimeRoot, completedState)
+  appendThreadMetaEvent(runtimeRoot, {
     event_id: stackEventId("monitor_checkpoint"),
     type: "monitor.checkpoint",
     thread_id: threadId,
@@ -1155,7 +1159,7 @@ export async function runMonitorForNewEvents(input: {
   })
 
   if (input.drainQueued !== false) {
-    const eventsAfterCheckpoint = readThreadMetaEvents(input.config.appRoot, threadId)
+    const eventsAfterCheckpoint = readThreadMetaEvents(runtimeRoot, threadId)
     const queuedTriggerIds = queuedTriggerEventIdsAfterWake(eventsAfterCheckpoint, wakeId)
       .filter((id) => id !== completedState.last_event_id)
     if (queuedTriggerIds.length > 0) {
@@ -1173,9 +1177,13 @@ export async function runMonitorForNewEvents(input: {
 
   return snapshotFromEvents(
     monitorConfig,
-    readThreadMetaEvents(input.config.appRoot, threadId),
-    readMonitorActorState(input.config.appRoot, threadId, actorId),
+    readThreadMetaEvents(runtimeRoot, threadId),
+    readMonitorActorState(runtimeRoot, threadId, actorId),
   )
+}
+
+function monitorRuntimeRoot(config: StackConfig): string {
+  return config.stackDataRoot || config.appRoot
 }
 
 export function monitorRailLines(snapshot: StackMonitorSnapshot, columns: number): string[] {

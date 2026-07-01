@@ -10273,7 +10273,7 @@ async function submitPrompt(
         config: options.config,
         session: options.session,
         agentContext: state.agentContext,
-        goalContext: state.goalContext,
+        goalContext: mergeMetaThreadGoalContext(state.goalContext, state.metaThreadManifest),
         wakeReason: triggerEvents.some((event) => event.type === "agent.tool.failed")
           ? "tool_failed"
           : triggerEvents.some((event) => event.type === "agent.error")
@@ -10362,7 +10362,7 @@ async function submitPrompt(
         session: options.session,
         turn,
         agentContext: state.agentContext,
-        goalContext: state.goalContext,
+        goalContext: mergeMetaThreadGoalContext(state.goalContext, state.metaThreadManifest),
       })
     }
     const gardenerResult = runGardenerAfterTurn({
@@ -10402,7 +10402,7 @@ async function submitPrompt(
           session: options.session,
           turn,
           agentContext: state.agentContext,
-          goalContext: state.goalContext,
+          goalContext: mergeMetaThreadGoalContext(state.goalContext, state.metaThreadManifest),
         })
       }
       const gardenerQueued = runGardenerAfterTurn({
@@ -10437,7 +10437,7 @@ async function submitPrompt(
         session: options.session,
         turn,
         agentContext: state.agentContext,
-        goalContext: state.goalContext,
+        goalContext: mergeMetaThreadGoalContext(state.goalContext, state.metaThreadManifest),
       })
       const gardenerFollowUp = runGardenerAfterTurn({
         config: options.config,

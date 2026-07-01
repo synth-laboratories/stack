@@ -211,7 +211,7 @@ export class StackMcpServer {
         source: "sidecar_codex_tool",
       },
     }
-    const path = appendThreadMetaEvent(config.appRoot, event)
+    const path = appendThreadMetaEvent(config.stackDataRoot, event)
     return {
       ok: true,
       event_id: event.event_id,
@@ -1363,7 +1363,7 @@ export class StackMcpServer {
     let eventId: string | undefined
     if (threadId) {
       eventId = stackEventId("skill_read")
-      threadEventLogPath = appendThreadMetaEvent(config.appRoot, {
+      threadEventLogPath = appendThreadMetaEvent(config.stackDataRoot, {
         event_id: eventId,
         type: "skill.read",
         thread_id: threadId,
@@ -1447,7 +1447,7 @@ export class StackMcpServer {
     let eventId: string | undefined
     if (threadId) {
       eventId = stackEventId("guidance_query")
-      threadEventLogPath = appendThreadMetaEvent(config.appRoot, {
+      threadEventLogPath = appendThreadMetaEvent(config.stackDataRoot, {
         event_id: eventId,
         type: "guidance.query",
         thread_id: threadId,
@@ -1506,7 +1506,7 @@ export class StackMcpServer {
     let eventId: string | undefined
     if (threadId) {
       eventId = stackEventId("guidance_read")
-      threadEventLogPath = appendThreadMetaEvent(config.appRoot, {
+      threadEventLogPath = appendThreadMetaEvent(config.stackDataRoot, {
         event_id: eventId,
         type: "guidance.read",
         thread_id: threadId,
@@ -1626,7 +1626,7 @@ export class StackMcpServer {
       message: optionalString(args, "message"),
       workspaceRoot: config.workspaceRoot,
     })
-    const threadEventLogPath = appendThreadMetaEvent(config.appRoot, {
+    const threadEventLogPath = appendThreadMetaEvent(config.stackDataRoot, {
       event_id: event.eventId,
       type: "monitor.skill_context_push",
       thread_id: event.threadId,

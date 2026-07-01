@@ -51,7 +51,7 @@ await runMonitorAfterTurn({
 const styleSession = { ...session, turns: [turn] }
 await writeSessionLog(styleSession, config.sessionLogDir, { codexModel: config.codexModel, pricingRows: config.codexPricing })
 
-const events = readThreadMetaEvents(config.appRoot, threadId)
+const events = readThreadMetaEvents(config.stackDataRoot, threadId)
 const summary = events.find((event) => event.type === "monitor.summary")
 const guidanceQuery = events.find((event) => event.type === "guidance.query")
 const steer = events.find((event) => event.type === "monitor.steer")
@@ -111,7 +111,7 @@ async function proveToolFailureSummaryNoSteer(): Promise<Record<string, unknown>
     turns: [toolTurn],
   }
   const failedToolEventId = stackEventId("agent_tool_failed")
-  appendThreadMetaEvent(config.appRoot, {
+  appendThreadMetaEvent(config.stackDataRoot, {
     event_id: failedToolEventId,
     type: "agent.tool.failed",
     thread_id: toolThreadId,
@@ -135,7 +135,7 @@ async function proveToolFailureSummaryNoSteer(): Promise<Record<string, unknown>
   })
   await writeSessionLog(toolSession, config.sessionLogDir, { codexModel: config.codexModel, pricingRows: config.codexPricing })
 
-  const toolEvents = readThreadMetaEvents(config.appRoot, toolThreadId)
+  const toolEvents = readThreadMetaEvents(config.stackDataRoot, toolThreadId)
   const toolWake = toolEvents.find((event) => event.type === "monitor.wake")
   const toolSummary = toolEvents.find((event) => event.type === "monitor.summary")
   const toolSteers = toolEvents.filter((event) => event.type === "monitor.steer")
@@ -160,14 +160,14 @@ async function proveToolFailureSummaryNoSteer(): Promise<Record<string, unknown>
 function proveExportShape(threadId: string, session: StackLocalSession, name: string): Record<string, unknown> {
   const exportDir = join(proofDir, "stack-session", name, "stackd-export")
   mkdirSync(exportDir, { recursive: true })
-  const events = readThreadMetaEvents(config.appRoot, threadId)
+  const events = readThreadMetaEvents(config.stackDataRoot, threadId)
   const monitorUsage = events.filter((event) => event.type === "monitor.usage")
   const monitorEvents = events.filter((event) => event.type.startsWith("monitor."))
   const guidanceEvents = events.filter((event) => event.type.startsWith("guidance."))
-  const actorStateDir = join(config.appRoot, ".stack", "actors", threadId, "monitors")
+  const actorStateDir = join(config.stackDataRoot, ".stack", "actors", threadId, "monitors")
   const actorFiles = existsSync(actorStateDir) ? readdirSync(actorStateDir).filter((file) => file.endsWith(".json")) : []
   const sessionPath = join(config.sessionLogDir, `${threadId}.json`)
-  const metaEventsPath = join(config.appRoot, ".stack", "events", "threads", `${threadId}.jsonl`)
+  const metaEventsPath = join(config.stackDataRoot, ".stack", "events", "threads", `${threadId}.jsonl`)
 
   if (!existsSync(sessionPath)) failures.push(`${name} export missing session file`)
   if (!existsSync(metaEventsPath)) failures.push(`${name} export missing meta-events source`)

@@ -54,7 +54,7 @@ await runMonitorAfterTurn({
   },
 })
 
-appendThreadMetaEvent(config.appRoot, {
+appendThreadMetaEvent(config.stackDataRoot, {
   event_id: stackEventId("agent_tool_failed"),
   type: "agent.tool.failed",
   thread_id: threadId,
@@ -79,10 +79,10 @@ await runMonitorForNewEvents({
     source: "context",
   },
   wakeReason: "tool_failed",
-  triggerEventIds: [readThreadMetaEvents(config.appRoot, threadId).at(-1)!.event_id],
+  triggerEventIds: [readThreadMetaEvents(config.stackDataRoot, threadId).at(-1)!.event_id],
 })
 
-const events = readThreadMetaEvents(config.appRoot, threadId)
+const events = readThreadMetaEvents(config.stackDataRoot, threadId)
 const summaries = events.filter((event) => event.type === "monitor.summary")
 const steers = events.filter((event) => event.type === "monitor.steer")
 const queued = events.filter((event) => event.type === "monitor.queued")

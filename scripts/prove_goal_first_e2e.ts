@@ -124,7 +124,7 @@ try {
   }
 
   const config = await loadConfig(appRoot)
-  const eventRoot = config.appRoot
+  const eventRoot = config.stackDataRoot
   const goalContext = mergeMetaThreadGoalContext({ source: "none" }, manifestAfterPatch)
   checks.merge_goal_context = goalContext.objective === objective
 

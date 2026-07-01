@@ -61,7 +61,7 @@ await runMonitorAfterTurn({
   goalContext,
 })
 
-appendThreadMetaEvent(config.appRoot, {
+appendThreadMetaEvent(config.stackDataRoot, {
   event_id: stackEventId("agent_tool_failed"),
   type: "agent.tool.failed",
   thread_id: threadId,
@@ -81,7 +81,7 @@ await runMonitorForNewEvents({
   agentContext: { usedSkills: [], loadedSkills: [], cwd: config.workspaceRoot },
   goalContext,
   wakeReason: "tool_failed",
-  triggerEventIds: [readThreadMetaEvents(config.appRoot, threadId).at(-1)!.event_id],
+  triggerEventIds: [readThreadMetaEvents(config.stackDataRoot, threadId).at(-1)!.event_id],
 })
 
 await runMonitorAfterOperatorMessage({
@@ -92,7 +92,7 @@ await runMonitorAfterOperatorMessage({
   goalContext,
 })
 
-const events = readThreadMetaEvents(config.appRoot, threadId)
+const events = readThreadMetaEvents(config.stackDataRoot, threadId)
 const summaries = events.filter((event) => event.type === "monitor.summary")
 const chatRequests = events.filter((event) => event.type === "monitor.chat.request")
 const chatReplies = events.filter((event) => event.type === "monitor.chat.reply")
