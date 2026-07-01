@@ -34,6 +34,8 @@ import {
 import { appendThreadMetaEvent, stackEventId } from "../thread-events.js"
 import {
   stackdExport,
+  stackdMetaThread,
+  stackdMetaThreads,
   stackdRuntimeAppendEvent,
   stackdRuntimeEvents,
   stackdRuntimeFactory,
@@ -41,7 +43,9 @@ import {
   stackdThread,
   stackdThreads,
   stackdTrace,
+  stackdUpdateMetaThreadLifecycle,
   type StackdFactorySnapshot,
+  type StackdMetaThreadLifecycleStatus,
   type StackdRuntimeEventAppendRequest,
   type StackdRuntimeFactoryResponse,
 } from "../client/stackd.js"
@@ -49,6 +53,7 @@ import { projectLogDocumentToVictoriaLogs, queryStackLogs } from "../observabili
 import { readReadmeSmokeEvalLaunch, startReadmeSmokeEval, type StackEvalLaunch } from "../local/evals.js"
 import { readActiveStackevalPacket } from "../stackeval/packet.js"
 import { readOptimizerSnapshot } from "../local/optimizers.js"
+import { loadGardenerConfig } from "../gardener-config.js"
 import {
   createRemoteLaunch,
   decideRemoteRunApproval,
@@ -311,6 +316,65 @@ export class StackMcpServer {
       hostedOptimizers: hosted,
       readmeSmoke,
     } satisfies JsonObject
+  }
+
+  async listMetaThreads(args: JsonObject): Promise<JsonValue> {
+    await this.config(args)
+    const lifecycle = optionalMetaThreadLifecycle(args, "lifecycle") ?? "live"
+    const limit = optionalInteger(args, "limit") ?? 50
+    const manifests = await stackdMetaThreads({ lifecycle })
+    return toJsonValue({
+      lifecycle,
+      count: manifests.length,
+      meta_threads: manifests.slice(0, Math.max(1, Math.min(limit, 200))).map(metaThreadListItem),
+    }) ?? null
+  }
+
+  async getMetaThread(args: JsonObject): Promise<JsonValue> {
+    await this.config(args)
+    const metaThreadId = requiredString(args, "meta_thread_id")
+    const manifest = await stackdMetaThread(metaThreadId)
+    return toJsonValue({
+      manifest,
+      derived: metaThreadListItem(manifest),
+    }) ?? null
+  }
+
+  async setMetaThreadLifecycle(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const actorRole = optionalString(args, "actor_role") ?? "gardener"
+    if (actorRole === "monitor") {
+      throw new RpcError(-32602, "monitor cannot mutate meta-thread lifecycle")
+    }
+    if (actorRole !== "gardener" && actorRole !== "operator") {
+      throw new RpcError(-32602, "actor_role must be gardener or operator")
+    }
+    if (actorRole === "gardener" && !loadGardenerConfig(config.stackDataRoot).permissions.metaThreadLifecycle) {
+      throw new RpcError(-32602, "gardener meta-thread lifecycle permission is disabled")
+    }
+    const metaThreadId = requiredString(args, "meta_thread_id")
+    const status = requiredMetaThreadLifecycle(args, "status")
+    const confirm = optionalBoolean(args, "confirm") ?? false
+    if (status === "archived" && !confirm) {
+      throw new RpcError(-32602, "confirm=true is required to archive a meta-thread")
+    }
+    const reason = optionalString(args, "reason")
+    const actorId = optionalString(args, "actor_id") ?? actorRole
+    const manifest = await stackdUpdateMetaThreadLifecycle(metaThreadId, {
+      status,
+      reason,
+      actor_id: actorId,
+    })
+    return toJsonValue({
+      ok: true,
+      meta_thread_id: manifest.id,
+      lifecycle_status: manifest.lifecycle_status ?? "live",
+      archived_at: manifest.archived_at ?? null,
+      archived_by: manifest.archived_by ?? null,
+      archive_reason: manifest.archive_reason ?? null,
+      manifest,
+      receipt: "lever.stack_mcp meta_thread.lifecycle_updated",
+    }) ?? null
   }
 
   async agentStatus(args: JsonObject): Promise<JsonValue> {
@@ -2345,6 +2409,45 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.liveStatus(args),
     },
     {
+      name: "stack_meta_threads_list",
+      description: "List Stack meta-threads with lifecycle and goal state. Defaults to lifecycle=live; use all or archived for broader views.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        lifecycle: enumProperty(["live", "archived", "all"], "Optional lifecycle filter. Defaults to live."),
+        limit: numberProperty("Maximum meta-threads to return. Defaults to 50, max 200."),
+      }),
+      handler: (args) => server.listMetaThreads(args),
+    },
+    {
+      name: "stack_meta_thread_get",
+      description: "Read one Stack meta-thread manifest with derived lifecycle and head-thread summary fields.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          meta_thread_id: stringProperty("Stack meta-thread id."),
+        },
+        ["meta_thread_id"],
+      ),
+      handler: (args) => server.getMetaThread(args),
+    },
+    {
+      name: "stack_meta_thread_set_lifecycle",
+      description: "Set a Stack meta-thread lifecycle to live or archived through stackd owner routes. Gardener/operator only; monitor is rejected. Archive requires confirm=true.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          meta_thread_id: stringProperty("Stack meta-thread id."),
+          status: enumProperty(["live", "archived"], "Desired lifecycle status."),
+          reason: stringProperty("Optional short operator/gardener reason."),
+          actor_id: stringProperty("Optional actor id. Defaults to actor_role."),
+          actor_role: enumProperty(["gardener", "operator", "monitor"], "Actor role. Defaults to gardener; monitor is rejected."),
+          confirm: { type: "boolean", description: "Required true when status=archived." },
+        },
+        ["meta_thread_id", "status"],
+      ),
+      handler: (args) => server.setMetaThreadLifecycle(args),
+    },
+    {
       name: "stack_message_live_run",
       description: "Send an operator message to a live SMR run through the backend runtime-message owner route.",
       inputSchema: objectSchema(
@@ -2810,6 +2913,55 @@ function optionalBridgeMode(args: JsonObject): StackBridgeMode | undefined {
   if (!value) return undefined
   if (value === "local" || value === "remote" || value === "all") return value
   throw new RpcError(-32602, "mode must be local, remote, or all")
+}
+
+function optionalMetaThreadLifecycle(
+  args: JsonObject,
+  key: string,
+): StackdMetaThreadLifecycleStatus | "all" | undefined {
+  const value = optionalString(args, key)
+  if (!value) return undefined
+  if (value === "live" || value === "archived" || value === "all") return value
+  throw new RpcError(-32602, `${key} must be live, archived, or all`)
+}
+
+function requiredMetaThreadLifecycle(args: JsonObject, key: string): StackdMetaThreadLifecycleStatus {
+  const value = requiredString(args, key)
+  if (value === "live" || value === "archived") return value
+  throw new RpcError(-32602, `${key} must be live or archived`)
+}
+
+function metaThreadListItem(manifest: {
+  id: string
+  title: string
+  lifecycle_status?: string
+  archived_at?: string
+  archived_by?: string
+  archive_reason?: string
+  active_goal?: { objective?: string; status?: string }
+  head_thread_id?: string
+  head_segment_id?: string
+  monitor_profile?: string
+  updated_at?: string
+}): JsonObject {
+  return {
+    id: manifest.id,
+    title: manifest.title,
+    lifecycle_status: manifest.lifecycle_status ?? "live",
+    archived_at: manifest.archived_at ?? null,
+    archived_by: manifest.archived_by ?? null,
+    archive_reason: manifest.archive_reason ?? null,
+    active_goal: manifest.active_goal
+      ? {
+          objective: manifest.active_goal.objective ?? "",
+          status: manifest.active_goal.status ?? "active",
+        }
+      : null,
+    head_thread_id: manifest.head_thread_id ?? null,
+    head_segment_id: manifest.head_segment_id ?? null,
+    monitor_profile: manifest.monitor_profile ?? null,
+    updated_at: manifest.updated_at ?? null,
+  }
 }
 
 function optionalGuidanceScope(args: JsonObject): StackGuidanceScope | undefined {

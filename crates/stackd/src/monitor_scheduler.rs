@@ -3,6 +3,7 @@ use crate::victorialogs::append_thread_event_projected;
 use chrono::Utc;
 use serde_json::{json, Value};
 use stack_core::events::{read_thread_events, thread_monitor_actor_dir_path};
+use stack_core::meta_thread::{manifest_is_archived, read_manifest};
 use stack_core::session::list_summaries;
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -62,6 +63,13 @@ async fn scheduler_tick(state: &AppState, scheduler_started_at: &str) -> anyhow:
     }
     let summaries = list_summaries(&state.paths.session_log_dir).await?;
     for summary in summaries.into_iter().take(64) {
+        if let Some(meta_thread_id) = summary.meta_thread_id.as_deref() {
+            if let Ok(manifest) = read_manifest(&state.paths.stack_dir, meta_thread_id).await {
+                if manifest_is_archived(&manifest) {
+                    continue;
+                }
+            }
+        }
         process_thread(state, &config, &summary.id, scheduler_started_at).await?;
     }
     Ok(())

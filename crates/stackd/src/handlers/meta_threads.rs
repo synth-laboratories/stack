@@ -1,16 +1,17 @@
 use crate::handlers::ApiError;
 use crate::server::AppState;
 use crate::victorialogs::append_thread_event_projected;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::Json;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use stack_core::codex_path::resolve_for_session;
 use stack_core::meta_thread::{
-    build_meta_thread_usage_summary, handoff_ref, meta_events_path, read_handoff, read_manifest,
-    safe_segment, write_handoff, write_manifest, AgentConfig, Handoff, MetaThreadActiveGoal,
-    MetaThreadArtifactRef, MetaThreadManifest, MetaThreadSegment, META_THREAD_SCHEMA,
+    build_meta_thread_usage_summary, handoff_ref, meta_events_path, normalize_lifecycle_status,
+    read_handoff, read_manifest, safe_segment, write_handoff, write_manifest, AgentConfig, Handoff,
+    MetaThreadActiveGoal, MetaThreadArtifactRef, MetaThreadManifest, MetaThreadSegment,
+    META_THREAD_SCHEMA,
 };
 use stack_core::session::{
     build_usage_summary, read_session_by_id, read_usage_from_stdout, session_path,
@@ -77,6 +78,18 @@ pub struct UpdateGoalRequest {
     pub blockers: Option<Vec<String>>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct MetaThreadListQuery {
+    pub lifecycle: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateLifecycleRequest {
+    pub status: String,
+    pub reason: Option<String>,
+    pub actor_id: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct ContinueHandoffResponse {
     pub manifest: MetaThreadManifest,
@@ -88,7 +101,9 @@ pub struct ContinueHandoffResponse {
 
 pub async fn list_meta_threads(
     State(state): State<Arc<AppState>>,
+    Query(query): Query<MetaThreadListQuery>,
 ) -> Result<Json<Vec<MetaThreadManifest>>, ApiError> {
+    let lifecycle = parse_lifecycle_filter(query.lifecycle.as_deref())?;
     let dir = state.paths.stack_dir.join("meta-threads");
     let mut entries = match fs::read_dir(&dir).await {
         Ok(entries) => entries,
@@ -104,12 +119,78 @@ pub async fn list_meta_threads(
         let path = entry.path().join("manifest.json");
         if let Ok(text) = fs::read_to_string(&path).await {
             if let Ok(manifest) = serde_json::from_str::<MetaThreadManifest>(&text) {
-                manifests.push(manifest);
+                if lifecycle_matches(&manifest, lifecycle) {
+                    manifests.push(manifest);
+                }
             }
         }
     }
     manifests.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     Ok(Json(manifests))
+}
+
+pub async fn update_lifecycle(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateLifecycleRequest>,
+) -> Result<Json<MetaThreadManifest>, ApiError> {
+    let status = normalize_lifecycle_status(&request.status)
+        .ok_or_else(|| ApiError::bad_request("status must be live or archived"))?;
+    let mut manifest = read_manifest(&state.paths.stack_dir, &id)
+        .await
+        .map_err(ApiError::from)?;
+    let previous = normalize_lifecycle_status(&manifest.lifecycle_status)
+        .unwrap_or("live")
+        .to_string();
+    if previous == status {
+        return Ok(Json(manifest));
+    }
+
+    let actor_id = request
+        .actor_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("gardener")
+        .to_string();
+    let reason = request
+        .reason
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string);
+    let updated_at = now();
+    manifest.lifecycle_status = status.to_string();
+    manifest.updated_at = updated_at.clone();
+    if status == "archived" {
+        manifest.archived_at = Some(updated_at);
+        manifest.archived_by = Some(actor_id.clone());
+        manifest.archive_reason = reason.clone();
+    } else {
+        manifest.archived_at = None;
+        manifest.archived_by = None;
+        manifest.archive_reason = None;
+    }
+    write_manifest(&state.paths.stack_dir, &manifest)
+        .await
+        .map_err(ApiError::from)?;
+    append_meta_event(
+        &state,
+        &manifest.id,
+        "meta_thread.lifecycle_updated",
+        &manifest.head_thread_id,
+        Some(&manifest.head_segment_id),
+        None,
+        json!({
+            "from": previous,
+            "to": status,
+            "reason": reason,
+            "actor_id": actor_id,
+            "actor_role": "gardener",
+        }),
+    )
+    .await?;
+    Ok(Json(manifest))
 }
 
 pub async fn get_meta_thread(
@@ -179,6 +260,10 @@ pub async fn create_meta_thread(
         schema: META_THREAD_SCHEMA.to_string(),
         id: meta_thread_id.clone(),
         title: request.title.trim().to_string(),
+        lifecycle_status: "live".to_string(),
+        archived_at: None,
+        archived_by: None,
+        archive_reason: None,
         source: request.source,
         source_ref: request.source_ref,
         repo_refs: request.repo_refs,
@@ -773,6 +858,32 @@ async fn append_meta_event(
         .map_err(|error| ApiError::internal(error.to_string()))?;
     append_thread_event_projected(&state.paths.stack_dir, thread_id, &event).await?;
     Ok(())
+}
+
+fn parse_lifecycle_filter(value: Option<&str>) -> Result<Option<&'static str>, ApiError> {
+    let Some(value) = value else {
+        return Ok(Some("live"));
+    };
+    let normalized = value.trim().to_ascii_lowercase();
+    if normalized.is_empty() || normalized == "live" {
+        return Ok(Some("live"));
+    }
+    if normalized == "archived" {
+        return Ok(Some("archived"));
+    }
+    if normalized == "all" {
+        return Ok(None);
+    }
+    Err(ApiError::bad_request(
+        "lifecycle must be live, archived, or all",
+    ))
+}
+
+fn lifecycle_matches(manifest: &MetaThreadManifest, filter: Option<&str>) -> bool {
+    let Some(filter) = filter else {
+        return true;
+    };
+    normalize_lifecycle_status(&manifest.lifecycle_status).unwrap_or("live") == filter
 }
 
 fn bind_session(

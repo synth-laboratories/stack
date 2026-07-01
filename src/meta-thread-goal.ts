@@ -1,9 +1,11 @@
-import { readFile } from "node:fs/promises"
+import { readFile, readdir } from "node:fs/promises"
 import { join } from "node:path"
 import {
   stackdHealthOk,
   stackdMetaThread,
+  stackdMetaThreads,
   stackdUpdateMetaThreadGoal,
+  type StackdMetaThreadLifecycleStatus,
   type StackdMetaThreadManifest,
 } from "./client/stackd.js"
 import { mergeGoalContext, readCodexGoalSnapshotOnce, type CodexGoalSnapshot } from "./codex/goal-context.js"
@@ -32,6 +34,41 @@ export async function readMetaThreadManifest(
     return JSON.parse(text) as StackdMetaThreadManifest
   } catch {
     return undefined
+  }
+}
+
+export async function readMetaThreadManifests(
+  stackDataRoot: string,
+  lifecycle: StackdMetaThreadLifecycleStatus | "all" = "live",
+): Promise<StackdMetaThreadManifest[]> {
+  if (await stackdHealthOk()) {
+    try {
+      return await stackdMetaThreads({ lifecycle })
+    } catch {
+      // fall through to disk read
+    }
+  }
+  const dir = join(stackDataRoot, ".stack", "meta-threads")
+  try {
+    const entries = await readdir(dir, { withFileTypes: true })
+    const manifests = await Promise.all(
+      entries
+        .filter((entry) => entry.isDirectory())
+        .map(async (entry) => {
+          try {
+            const text = await readFile(join(dir, entry.name, "manifest.json"), "utf8")
+            return JSON.parse(text) as StackdMetaThreadManifest
+          } catch {
+            return undefined
+          }
+        }),
+    )
+    return manifests
+      .filter((manifest): manifest is StackdMetaThreadManifest => Boolean(manifest))
+      .filter((manifest) => lifecycle === "all" || (manifest.lifecycle_status ?? "live") === lifecycle)
+      .sort((left, right) => (right.updated_at ?? "").localeCompare(left.updated_at ?? ""))
+  } catch {
+    return []
   }
 }
 

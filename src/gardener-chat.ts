@@ -8,6 +8,7 @@ import {
   snapshotWorkerHarness,
 } from "./gardener.js"
 import { loadGardenerConfig, resolveGardenerSystemPrompt, type StackGardenerConfig } from "./gardener-config.js"
+import { readMetaThreadManifests } from "./meta-thread-goal.js"
 import {
   readSessionLog,
   writeSessionLog,
@@ -38,7 +39,7 @@ export async function runGardenerChatTurn(input: GardenerChatTurnInput): Promise
   try {
     const turn = await runCodexTurn({
       config: input.config,
-      userPrompt: buildGardenerChatPrompt(input.userMessage, input, gardenerConfig),
+      userPrompt: await buildGardenerChatPrompt(input.userMessage, input, gardenerConfig),
       selectedFiles: [],
       priorTurns: gardenerSession.turns,
       onOutput: input.onOutput ?? (() => undefined),
@@ -58,11 +59,11 @@ export async function runGardenerChatTurn(input: GardenerChatTurnInput): Promise
   }
 }
 
-function buildGardenerChatPrompt(
+async function buildGardenerChatPrompt(
   message: string,
   input: GardenerChatTurnInput,
   gardenerConfig: StackGardenerConfig,
-): string {
+): Promise<string> {
   const workers = (input.workerSummaries ?? [])
     .filter((summary) => summary.id !== input.gardenerThreadId)
     .slice(0, 8)
@@ -72,14 +73,28 @@ function buildGardenerChatPrompt(
   )
   const target = input.workerTargetId?.slice(0, 8)
   const systemPrompt = resolveGardenerSystemPrompt(input.config.stackDataRoot, gardenerConfig)
+  const metaThreadLines = await liveMetaThreadLines(input.config.stackDataRoot)
   return [
     systemPrompt,
     ...(target ? [`Default worker target for explicit routing: ${target}`] : []),
     ...(workerLines.length > 0 ? ["Live worker threads:", ...workerLines] : []),
+    ...(metaThreadLines.length > 0 ? ["Live meta-threads:", ...metaThreadLines] : []),
     "",
     "Operator message:",
     message,
   ].join("\n")
+}
+
+async function liveMetaThreadLines(stackDataRoot: string): Promise<string[]> {
+  const manifests = await readMetaThreadManifests(stackDataRoot, "live")
+  return manifests.slice(0, 8).map((manifest) => {
+    const goal = manifest.active_goal
+    const goalLabel = goal?.objective?.trim()
+      ? `goal ${goal.status || "active"}`
+      : "no goal"
+    const monitor = manifest.monitor_profile ? ` · monitor ${manifest.monitor_profile}` : ""
+    return `- ${manifest.id.slice(0, 10)} · ${truncateOneLine(manifest.title, 48)} · ${goalLabel} · head ${manifest.head_thread_id.slice(0, 8)}${monitor}`
+  })
 }
 
 function extractTurnAssistantText(turn: StackCodexTurn): string | undefined {

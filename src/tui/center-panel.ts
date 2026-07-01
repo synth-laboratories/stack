@@ -38,6 +38,8 @@ export type ActiveThreadsRenderInput = {
   liveTokensPerSecond?: string
   usageForSummary: (summary: StackSessionSummary) => StackSessionUsageSummary | undefined
   threadGoalStatus?: ReadonlyMap<string, ThreadGoalStatus>
+  threadLifecycleStatus?: ReadonlyMap<string, ThreadLifecycleStatus>
+  threadMetaThreadIds?: ReadonlyMap<string, string>
 }
 
 /** Gardener focus → gardener stream; worker/agent focus → monitor + actor stream. */
@@ -292,11 +294,19 @@ function emptyProjectsLine(snapshot: RemoteProjectsPanelSnapshot): string {
 /** v1: current worker session + gardener routing target. Gardener will expand this later. */
 export function resolveActiveThreadIds(
   sessionId: string,
-  gardenerWorkerTargetId?: string,
+  gardenerWorkerTargetId: string | undefined,
+  history: readonly StackSessionSummary[] = [],
+  threadLifecycleStatus: ReadonlyMap<string, ThreadLifecycleStatus> = new Map(),
 ): ReadonlySet<string> {
   const ids = new Set<string>([sessionId])
   if (gardenerWorkerTargetId && gardenerWorkerTargetId !== sessionId) {
     ids.add(gardenerWorkerTargetId)
+  }
+  for (const summary of history) {
+    if (!summary.metaThreadId) continue
+    if ((threadLifecycleStatus.get(summary.id) ?? "live") === "live") {
+      ids.add(summary.id)
+    }
   }
   return ids
 }
@@ -345,6 +355,7 @@ export function renderActiveThreadsStyled(input: ActiveThreadsRenderInput): Styl
 }
 
 export type ThreadGoalStatus = "active" | "paused" | "blocked" | "done"
+export type ThreadLifecycleStatus = "live" | "archived"
 
 const THREAD_GOAL_STATUS_COLOR: Record<ThreadGoalStatus, string> = {
   active: "#58a6ff",
@@ -362,6 +373,8 @@ export type ActiveThreadRow =
       active: boolean
       gardener: boolean
       goalStatus?: ThreadGoalStatus
+      lifecycleStatus?: ThreadLifecycleStatus
+      metaThreadId?: string
       time: string
       prompt: string
       resumeToken?: string
@@ -388,6 +401,8 @@ function activeThreadRowSpecs(
       active: input.activeThreadIds.has(summary.id),
       gardener: input.gardenerThreadIds.has(summary.id),
       goalStatus: input.threadGoalStatus?.get(summary.id),
+      lifecycleStatus: input.threadLifecycleStatus?.get(summary.id),
+      metaThreadId: input.threadMetaThreadIds?.get(summary.id) ?? summary.metaThreadId,
       time: formatRelativeTime(summary.updatedAt),
       prompt: resolveThreadDisplayLabel(summary, {
         isGardener: input.gardenerThreadIds.has(summary.id),
@@ -411,6 +426,15 @@ function styleActiveThreadRow(row: ActiveThreadRow): TextChunk[] {
   const cursor = row.selected ? "›" : " "
   const activeMarker = row.active ? "●" : "○"
   const goalBadge = row.goalStatus ? [bold(fg(THREAD_GOAL_STATUS_COLOR[row.goalStatus])(" G"))] : []
+  const lifecycleBadge = row.metaThreadId
+    ? [
+        dim(fg(row.lifecycleStatus === "archived" ? theme.fgMuted : "#3fb950")(
+          ` [${row.lifecycleStatus ?? "live"}]`,
+        )),
+        ...(row.goalStatus ? [dim(fg(theme.fgMuted)(`:${row.goalStatus}`))] : []),
+        dim(fg(theme.fgMuted)(` · ${row.metaThreadId.slice(0, 10)}`)),
+      ]
+    : []
   const resumeSuffix = row.resumeToken ? [dim(fg(theme.fgMuted)(` · ${row.resumeToken}`))] : []
   if (row.selected) {
     return [
@@ -419,6 +443,7 @@ function styleActiveThreadRow(row: ActiveThreadRow): TextChunk[] {
       ...(row.gardener ? [fg("#3fb950")(" gard")] : []),
       ...goalBadge,
       fg(theme.fgPrimary)(` ${row.prompt}`),
+      ...lifecycleBadge,
       ...resumeSuffix,
     ]
   }
@@ -427,6 +452,7 @@ function styleActiveThreadRow(row: ActiveThreadRow): TextChunk[] {
     ...(row.gardener ? [fg("#3fb950")(" gard")] : []),
     ...goalBadge,
     fg(row.active ? theme.fgSecondary : theme.fgMuted)(` ${row.prompt}`),
+    ...lifecycleBadge,
     ...resumeSuffix,
   ]
 }

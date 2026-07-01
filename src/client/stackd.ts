@@ -314,6 +314,10 @@ export type StackdMetaThreadManifest = {
   schema: "stack/meta-thread/v1"
   id: string
   title: string
+  lifecycle_status?: StackdMetaThreadLifecycleStatus
+  archived_at?: string
+  archived_by?: string
+  archive_reason?: string
   source?: string
   source_ref?: string
   repo_refs: string[]
@@ -331,6 +335,8 @@ export type StackdMetaThreadManifest = {
   active_goal?: StackdMetaThreadActiveGoal
   usage_summary?: StackSessionUsageSummary
 }
+
+export type StackdMetaThreadLifecycleStatus = "live" | "archived"
 
 export type StackdAgentConfig = {
   agentRole: "worker" | "gardener" | "monitor" | string
@@ -382,6 +388,12 @@ export type StackdUpdateMetaThreadGoalRequest = {
   status?: string
   acceptance_criteria?: string[]
   blockers?: string[]
+}
+
+export type StackdUpdateMetaThreadLifecycleRequest = {
+  status: StackdMetaThreadLifecycleStatus
+  reason?: string
+  actor_id?: string
 }
 
 export type StackdMetaThreadSealRequest = {
@@ -534,8 +546,13 @@ export async function stackdRecordTelemetryEvent(
   return requestJson<StackdTelemetryEventResponse>(baseUrl, "/telemetry/events", jsonPost(request))
 }
 
-export async function stackdMetaThreads(baseUrl = stackdBaseUrl()): Promise<StackdMetaThreadManifest[]> {
-  return requestJson<StackdMetaThreadManifest[]>(baseUrl, "/meta-threads")
+export async function stackdMetaThreads(
+  query: { lifecycle?: StackdMetaThreadLifecycleStatus | "all" } = {},
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdMetaThreadManifest[]> {
+  const url = new URL("/meta-threads", ensureTrailingSlash(baseUrl))
+  if (query.lifecycle) url.searchParams.set("lifecycle", query.lifecycle)
+  return requestJson<StackdMetaThreadManifest[]>(baseUrl, `${url.pathname}${url.search}`)
 }
 
 export async function stackdMetaThread(id: string, baseUrl = stackdBaseUrl()): Promise<StackdMetaThreadManifest> {
@@ -606,6 +623,18 @@ export async function stackdUpdateMetaThreadGoal(
   return requestJson<StackdMetaThreadManifest>(
     baseUrl,
     `/meta-threads/${encodeURIComponent(metaThreadId)}/goal`,
+    jsonPatch(request),
+  )
+}
+
+export async function stackdUpdateMetaThreadLifecycle(
+  metaThreadId: string,
+  request: StackdUpdateMetaThreadLifecycleRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdMetaThreadManifest> {
+  return requestJson<StackdMetaThreadManifest>(
+    baseUrl,
+    `/meta-threads/${encodeURIComponent(metaThreadId)}/lifecycle`,
     jsonPatch(request),
   )
 }

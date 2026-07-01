@@ -147,6 +147,10 @@ fn router(state: Arc<AppState>) -> Router {
             get(meta_threads::list_meta_threads).post(meta_threads::create_meta_thread),
         )
         .route("/meta-threads/:id", get(meta_threads::get_meta_thread))
+        .route(
+            "/meta-threads/:id/lifecycle",
+            patch(meta_threads::update_lifecycle),
+        )
         .route("/meta-threads/:id/resume", get(checkpoints::get_meta_thread_resume))
         .route(
             "/meta-threads/:id/checkpoint",

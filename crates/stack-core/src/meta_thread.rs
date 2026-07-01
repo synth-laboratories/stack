@@ -197,6 +197,14 @@ pub struct MetaThreadManifest {
     pub schema: String,
     pub id: String,
     pub title: String,
+    #[serde(default = "default_lifecycle_status")]
+    pub lifecycle_status: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archived_by: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub archive_reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -225,6 +233,22 @@ pub struct MetaThreadManifest {
     pub active_goal: Option<MetaThreadActiveGoal>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_summary: Option<StackSessionUsageSummary>,
+}
+
+pub fn default_lifecycle_status() -> String {
+    "live".to_string()
+}
+
+pub fn normalize_lifecycle_status(status: &str) -> Option<&'static str> {
+    match status.trim().to_ascii_lowercase().as_str() {
+        "live" => Some("live"),
+        "archived" => Some("archived"),
+        _ => None,
+    }
+}
+
+pub fn manifest_is_archived(manifest: &MetaThreadManifest) -> bool {
+    normalize_lifecycle_status(&manifest.lifecycle_status) == Some("archived")
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

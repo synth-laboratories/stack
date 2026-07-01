@@ -401,6 +401,7 @@ export function rewriteWorkspaceGardenDoc(input: {
   gardenerThreadId: string
   workerTargetId?: string
   workerSummaries: readonly StackSessionSummary[]
+  liveMetaThreadCount?: number
   inboxPending: number
   workerStatus?: string
   workerQueueCount?: number
@@ -415,6 +416,7 @@ export function rewriteWorkspaceGardenDoc(input: {
     `gardener_thread: ${input.gardenerThreadId}`,
     ...(input.workerTargetId ? [`worker_target: ${input.workerTargetId}`] : []),
     `threads_live: ${workers.length}`,
+    ...(input.liveMetaThreadCount !== undefined ? [`meta_threads_live: ${input.liveMetaThreadCount}`] : []),
     `inbox_pending: ${input.inboxPending}`,
     ...(input.workerStatus ? [`worker_status: ${input.workerStatus}`] : []),
     ...(input.workerQueueCount !== undefined ? [`worker_queue: ${input.workerQueueCount}`] : []),

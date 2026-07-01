@@ -374,6 +374,7 @@ import {
   resolveActiveThreadIds,
   resolveCoreEventStreamContext,
   styleActiveThreadRowStyled,
+  type ThreadLifecycleStatus,
   type ThreadGoalStatus,
 } from "./center-panel.js"
 
@@ -457,6 +458,8 @@ type AppState = {
   subagentLogs: SubagentLog[]
   history: StackSessionSummary[]
   threadGoalStatus: Map<string, ThreadGoalStatus>
+  threadLifecycleStatus: Map<string, ThreadLifecycleStatus>
+  threadMetaThreadIds: Map<string, string>
   lastSessionLogPath?: string
   optimizerSnapshot: OptimizerSnapshot
   selectedOptimizerRunIndex: number
@@ -806,6 +809,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     subagentLogs: [],
     history,
     threadGoalStatus: new Map(),
+    threadLifecycleStatus: new Map(),
+    threadMetaThreadIds: new Map(),
     optimizerSnapshot: localStackBoot.optimizer ?? optimizerSnapshot,
     optimizerCliAvailable,
     localBootstrapSnapshot: localStackBoot.bootstrap,
@@ -1871,7 +1876,12 @@ function createView(
   const leftPanelLayout = leftGardenerPanelLayout(state)
   const leftColumns = gardenerPanelColumns(renderer, leftPanelLayout.fraction)
   const centerColumns = centerPanelColumns(renderer)
-  const activeThreadIds = resolveActiveThreadIds(options.session.id, state.gardenerWorkerTargetId)
+  const activeThreadIds = resolveActiveThreadIds(
+    options.session.id,
+    state.gardenerWorkerTargetId,
+    state.history,
+    state.threadLifecycleStatus,
+  )
   const gardenerEvents = readThreadMetaEvents(options.config.stackDataRoot, state.gardenerThreadId)
   const workerMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
   const gardenerChatBlocks = buildGardenerChatBlocks(state, gardenerEvents)
@@ -2192,6 +2202,8 @@ function createView(
                 liveTokensPerSecond: formatAverageTokensPerSecond(displayTokensPerSecond(state)),
                 usageForSummary: (summary) => threadUsageSummary(options, summary),
                 threadGoalStatus: state.threadGoalStatus,
+                threadLifecycleStatus: state.threadLifecycleStatus,
+                threadMetaThreadIds: state.threadMetaThreadIds,
               },
               options,
               state,
@@ -3042,6 +3054,8 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
   )
   if (metaThreadIds.size === 0) {
     if (state.threadGoalStatus.size > 0) state.threadGoalStatus = new Map()
+    if (state.threadLifecycleStatus.size > 0) state.threadLifecycleStatus = new Map()
+    if (state.threadMetaThreadIds.size > 0) state.threadMetaThreadIds = new Map()
     return
   }
   const manifests = new Map(
@@ -3053,14 +3067,24 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
     ),
   )
   const next = new Map<string, ThreadGoalStatus>()
+  const nextLifecycle = new Map<string, ThreadLifecycleStatus>()
+  const nextMetaThreadIds = new Map<string, string>()
   for (const summary of state.history) {
     if (!summary.metaThreadId) continue
-    const goal = manifests.get(summary.metaThreadId)?.active_goal
-    if (!goal?.objective?.trim()) continue
-    const status = normalizeThreadGoalStatus(goal.status)
-    if (status) next.set(summary.id, status)
+    const manifest = manifests.get(summary.metaThreadId)
+    if (manifest) {
+      nextMetaThreadIds.set(summary.id, manifest.id)
+      nextLifecycle.set(summary.id, manifest.lifecycle_status === "archived" ? "archived" : "live")
+    }
+    const goal = manifest?.active_goal
+    if (goal?.objective?.trim()) {
+      const status = normalizeThreadGoalStatus(goal.status)
+      if (status) next.set(summary.id, status)
+    }
   }
   state.threadGoalStatus = next
+  state.threadLifecycleStatus = nextLifecycle
+  state.threadMetaThreadIds = nextMetaThreadIds
 }
 
 /**

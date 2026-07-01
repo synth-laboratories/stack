@@ -20,6 +20,7 @@ import {
   type StackLocalSession,
   type StackSessionSummary,
 } from "./session.js"
+import { readMetaThreadManifests } from "./meta-thread-goal.js"
 import { readThreadMetaEvents } from "./thread-events.js"
 
 export type GardenerDispatchKind = "route" | "steer" | "queue"
@@ -136,12 +137,14 @@ export async function runGardenerMaintenancePass(input: GardenerMaintenanceInput
     input.workerSummaries.length > 0
       ? input.workerSummaries
       : await listWorkerThreadSummaries(input.config, input.gardenerThreadId)
+  const liveMetaThreadCount = (await readMetaThreadManifests(input.config.stackDataRoot, "live")).length
 
   const workspaceGardenPath = rewriteWorkspaceGardenDoc({
     stackRoot: input.config.stackDataRoot,
     gardenerThreadId: input.gardenerThreadId,
     workerTargetId: input.workerTargetId,
     workerSummaries,
+    liveMetaThreadCount,
     inboxPending: inbox.length,
     workerStatus: input.workerStatus,
     workerQueueCount: input.workerQueueCount,
