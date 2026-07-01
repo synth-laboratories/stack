@@ -53,7 +53,9 @@ export function resolveThreadDisplayLabel(
 ): string {
   if (options?.isGardener) return "gardener"
   const maxLength = options?.maxLength ?? 28
-  if (summary?.metaThreadId && options?.metaThreadTitle?.trim()) {
+  // A meta-thread title labels the thread whenever the caller resolved one — callers
+  // only look titles up for bound threads, and a bound goal must never show (empty).
+  if (options?.metaThreadTitle?.trim()) {
     return oneLine(options.metaThreadTitle.trim(), maxLength)
   }
   if (summary?.displayName?.trim()) return oneLine(summary.displayName.trim(), maxLength)
