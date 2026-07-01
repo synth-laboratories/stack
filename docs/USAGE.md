@@ -2,6 +2,8 @@
 
 > Controls, the stackd local API, the monitor, workspace config, and Stack MCP.
 > For install and overview, see the [README](../README.md).
+> **Full UX spec (goal mode, sidecar, actors):** Jstack
+> `product/specs/stack/ux/` — start with `goal_mode.md` and `cockpit_layout.md`.
 
 ## Controls
 
