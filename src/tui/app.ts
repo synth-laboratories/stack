@@ -2816,6 +2816,9 @@ function agentControlRow(
               alignItems: "center",
             },
             controlLabel(agentRoleLabel("monitor")),
+            controlChip(state.monitorSnapshot.model, false),
+            ...(cursorHarness ? [] : [controlDivider(), controlChip(state.monitorSnapshot.reasoningEffort, false)]),
+            controlDivider(),
             monitorControlChip(
               monitorOnOffLabel(state.monitorSnapshot),
               state.monitorSnapshot,
@@ -2872,6 +2875,9 @@ function agentControlRow(
               alignItems: "center",
             },
             controlLabel(agentRoleLabel("monitor")),
+            controlChip(state.monitorSnapshot.model, false),
+            ...(cursorHarness ? [] : [controlDivider(), controlChip(state.monitorSnapshot.reasoningEffort, false)]),
+            controlDivider(),
             monitorControlChip(
               monitorOnOffLabel(state.monitorSnapshot),
               state.monitorSnapshot,

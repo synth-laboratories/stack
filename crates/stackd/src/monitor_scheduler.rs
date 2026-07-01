@@ -20,13 +20,7 @@ struct MonitorRuntimeConfig {
     focus_selection: String,
     model: String,
     reasoning_effort: String,
-    worker: String,
     max_wakes_per_primary_turn: u64,
-    max_queued_items_per_thread: usize,
-    skill_context_push: String,
-    skills_enabled: bool,
-    allowed_skill_ids: Vec<String>,
-    push_when_confident: bool,
     on_turn_completed: bool,
     on_tool_completed: bool,
     on_tool_failed: bool,
@@ -149,13 +143,12 @@ async fn process_thread(
         return Ok(());
     };
 
-    run_monitor_pass(
+    queue_monitor_trigger(
         state,
         config,
         thread_id,
         actor_path,
         actor.as_ref(),
-        &events,
         pending,
         wake.triggers,
         wake.reason,
@@ -267,35 +260,38 @@ async fn select_monty_wake_candidate<'a>(
     Ok(Some(WakeSelection { reason, triggers }))
 }
 
-async fn run_monitor_pass(
+async fn queue_monitor_trigger(
     state: &AppState,
     config: &MonitorRuntimeConfig,
     thread_id: &str,
     actor_path: std::path::PathBuf,
     actor: Option<&Value>,
-    all_events: &[Value],
     pending: Vec<&Value>,
     triggers: Vec<&Value>,
     reason: String,
     strictness: String,
 ) -> anyhow::Result<()> {
-    let started_at = now();
+    let queued_at = now();
     write_actor_state(
         &actor_path,
         config,
         thread_id,
         actor,
         ActorUpdate {
-            state: Some("running"),
+            state: Some(
+                actor
+                    .and_then(|value| value.get("state"))
+                    .and_then(Value::as_str)
+                    .unwrap_or("idle"),
+            ),
             strictness: Some(&strictness),
-            last_started_at: Some(&started_at),
             ..ActorUpdate::default()
         },
     )
     .await?;
 
-    let wake_id = format!(
-        "monitor_wake_{}",
+    let queue_id = format!(
+        "monitor_trigger_queued_{}",
         Utc::now().timestamp_nanos_opt().unwrap_or_default()
     );
     let trigger_ids: Vec<String> = triggers
@@ -306,10 +302,10 @@ async fn run_monitor_pass(
         &state.paths.stack_dir,
         thread_id,
         &json!({
-            "event_id": wake_id,
-            "type": "monitor.wake",
+            "event_id": queue_id,
+            "type": "monitor.trigger_queued",
             "thread_id": thread_id,
-            "observed_at": started_at,
+            "observed_at": queued_at,
             "actor_id": config.actor_id,
             "actor_role": "monitor",
             "payload": {
@@ -318,174 +314,8 @@ async fn run_monitor_pass(
                 "pending_event_count": pending.len(),
                 "strictness": strictness,
                 "focus_selection": config.focus_selection,
-                "source": "stackd-scheduler"
-            }
-        }),
-    )
-    .await?;
-
-    let pass = run_scheduler_pass(config, actor, &pending, &wake_id, &reason, &strictness).await;
-    append_thread_event_projected(
-        &state.paths.stack_dir,
-        thread_id,
-        &json!({
-            "event_id": format!("monitor_summary_{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
-            "type": "monitor.summary",
-            "thread_id": thread_id,
-            "observed_at": now(),
-            "actor_id": config.actor_id,
-            "actor_role": "monitor",
-            "payload": {
-                "wake_id": wake_id,
-                "model": config.model,
-                "reasoning_effort": config.reasoning_effort,
-                "strictness": strictness,
-                "severity": &pass.severity,
-                "summary": &pass.summary,
-                "focus_results": &pass.focus_results,
-                "source": &pass.source,
-                "model_thread_id": &pass.monitor_thread_id
-            }
-        }),
-    )
-    .await?;
-
-    if let Some(reason) = &pass.fallback_reason {
-        append_thread_event_projected(
-            &state.paths.stack_dir,
-            thread_id,
-            &json!({
-                "event_id": format!("monitor_model_fallback_{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
-                "type": "monitor.model_fallback",
-                "thread_id": thread_id,
-                "observed_at": now(),
-                "actor_id": config.actor_id,
-                "actor_role": "monitor",
-                "payload": {
-                    "wake_id": wake_id,
-                    "reason": reason,
-                    "worker": config.worker,
-                    "model": config.model,
-                    "source": &pass.source
-                }
-            }),
-        )
-        .await?;
-    }
-
-    for item in &pass.queue_items {
-        append_thread_event_projected(
-            &state.paths.stack_dir,
-            thread_id,
-            &json!({
-                "event_id": format!("monitor_queued_{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
-                "type": "monitor.queued",
-                "thread_id": thread_id,
-                "observed_at": now(),
-                "actor_id": config.actor_id,
-                "actor_role": "monitor",
-                "payload": item
-            }),
-        )
-        .await?;
-    }
-
-    let context_pushes = skill_context_pushes_for_pending(
-        state,
-        config,
-        all_events,
-        &pending,
-        &trigger_ids,
-        &wake_id,
-        &strictness,
-    );
-    for push in &context_pushes {
-        append_thread_event_projected(
-            &state.paths.stack_dir,
-            thread_id,
-            &json!({
-                "event_id": format!("monitor_skill_context_push_{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
-                "type": "monitor.skill_context_push",
-                "thread_id": thread_id,
-                "observed_at": now(),
-                "actor_id": config.actor_id,
-                "actor_role": "monitor",
-                "payload": push
-            }),
-        )
-        .await?;
-    }
-
-    append_thread_event_projected(
-        &state.paths.stack_dir,
-        thread_id,
-        &json!({
-            "event_id": format!("monitor_usage_{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
-            "type": "monitor.usage",
-            "thread_id": thread_id,
-            "observed_at": now(),
-            "actor_id": config.actor_id,
-            "actor_role": "monitor",
-            "payload": {
-                "wake_id": wake_id,
-                "model": config.model,
-                "reasoning_effort": config.reasoning_effort,
-                "input_tokens": pass.usage.input_tokens,
-                "cached_input_tokens": pass.usage.cached_input_tokens,
-                "output_tokens": pass.usage.output_tokens,
-                "reasoning_output_tokens": pass.usage.reasoning_output_tokens,
-                "estimated_spend_usd": 0,
-                "source": &pass.source
-            }
-        }),
-    )
-    .await?;
-
-    let last_event = pending.last().copied();
-    let completed_at = now();
-    write_actor_state(
-        &actor_path,
-        config,
-        thread_id,
-        actor,
-        ActorUpdate {
-            state: Some("idle"),
-            strictness: Some(&strictness),
-            last_event_id: last_event.and_then(event_id),
-            last_event_type: last_event.and_then(event_type),
-            last_wake_id: Some(&wake_id),
-            monitor_thread_id: pass.monitor_thread_id.as_deref(),
-            rolling_summary: Some(&pass.checkpoint_summary),
-            last_severity: Some(&pass.severity),
-            wake_delta: 1,
-            queue_delta: pass.queue_items.len() as u64,
-            context_push_delta: context_pushes.len() as u64,
-            last_completed_at: Some(&completed_at),
-            ..ActorUpdate::default()
-        },
-    )
-    .await?;
-
-    append_thread_event_projected(
-        &state.paths.stack_dir,
-        thread_id,
-        &json!({
-            "event_id": format!("monitor_checkpoint_{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
-            "type": "monitor.checkpoint",
-            "thread_id": thread_id,
-            "observed_at": completed_at,
-            "actor_id": config.actor_id,
-            "actor_role": "monitor",
-            "payload": {
-                "last_wake_id": wake_id,
-                "last_event_id": last_event.and_then(event_id),
-                "last_event_type": last_event.and_then(event_type),
-                "summary": &pass.summary,
-                "severity": &pass.severity,
-                "state": "idle",
-                "actor_state_path": actor_path.to_string_lossy(),
-                "source": &pass.source,
-                "model_thread_id": &pass.monitor_thread_id
+                "queued_for": "codex-app-server",
+                "source": "stackd-runtime"
             }
         }),
     )
@@ -508,293 +338,6 @@ struct ActorUpdate<'a> {
     context_push_delta: u64,
     last_started_at: Option<&'a str>,
     last_completed_at: Option<&'a str>,
-}
-
-#[derive(Debug, Clone)]
-struct SchedulerPass {
-    summary: String,
-    checkpoint_summary: String,
-    severity: String,
-    focus_results: Value,
-    queue_items: Vec<Value>,
-    source: String,
-    monitor_thread_id: Option<String>,
-    fallback_reason: Option<String>,
-    usage: SchedulerUsage,
-}
-
-#[derive(Debug, Clone)]
-struct SchedulerUsage {
-    input_tokens: u64,
-    cached_input_tokens: u64,
-    output_tokens: u64,
-    reasoning_output_tokens: u64,
-}
-
-async fn run_scheduler_pass(
-    config: &MonitorRuntimeConfig,
-    actor: Option<&Value>,
-    pending: &[&Value],
-    wake_id: &str,
-    wake_reason: &str,
-    strictness: &str,
-) -> SchedulerPass {
-    let deterministic = deterministic_pass(config, pending);
-    if !should_use_openai(config) {
-        return deterministic;
-    }
-    let Some(api_key) = std::env::var("OPENAI_API_KEY")
-        .ok()
-        .filter(|value| !value.trim().is_empty())
-    else {
-        return if config.worker == "openai_responses" {
-            SchedulerPass {
-                fallback_reason: Some("OPENAI_API_KEY missing".to_string()),
-                ..deterministic
-            }
-        } else {
-            deterministic
-        };
-    };
-    match openai_scheduler_pass(
-        config,
-        actor,
-        pending,
-        wake_id,
-        wake_reason,
-        strictness,
-        &api_key,
-    )
-    .await
-    {
-        Ok(pass) => pass,
-        Err(error) => {
-            tracing::warn!(
-                "stackd OpenAI monitor pass failed; using deterministic fallback: {error}"
-            );
-            SchedulerPass {
-                fallback_reason: Some(error.to_string()),
-                ..deterministic
-            }
-        }
-    }
-}
-
-fn deterministic_pass(config: &MonitorRuntimeConfig, pending: &[&Value]) -> SchedulerPass {
-    let summary = summarize_pending(pending);
-    let severity = severity_for_pending(pending);
-    let queue_items =
-        queue_items_for_pending(pending, &severity, config.max_queued_items_per_thread);
-    let usage = estimate_usage(pending, &summary);
-    SchedulerPass {
-        checkpoint_summary: summary.clone(),
-        summary,
-        severity,
-        focus_results: focus_results_for_pending(pending),
-        queue_items,
-        source: "stackd-scheduler".to_string(),
-        monitor_thread_id: None,
-        fallback_reason: None,
-        usage: SchedulerUsage {
-            input_tokens: usage.0,
-            cached_input_tokens: 0,
-            output_tokens: usage.1,
-            reasoning_output_tokens: 0,
-        },
-    }
-}
-
-async fn openai_scheduler_pass(
-    config: &MonitorRuntimeConfig,
-    actor: Option<&Value>,
-    pending: &[&Value],
-    wake_id: &str,
-    wake_reason: &str,
-    strictness: &str,
-    api_key: &str,
-) -> anyhow::Result<SchedulerPass> {
-    let previous_response_id = actor
-        .and_then(|value| value.get("monitor_thread_id"))
-        .and_then(Value::as_str);
-    let baseline = deterministic_pass(config, pending);
-    let client = reqwest::Client::new();
-    let mut body = json!({
-        "model": config.model,
-        "reasoning": { "effort": config.reasoning_effort },
-        "input": [
-            {
-                "role": "developer",
-                "content": [{
-                    "type": "input_text",
-                    "text": monitor_developer_prompt()
-                }]
-            },
-            {
-                "role": "user",
-                "content": [{
-                    "type": "input_text",
-                    "text": serde_json::to_string_pretty(&json!({
-                        "wake_id": wake_id,
-                        "wake_reason": wake_reason,
-                        "strictness": strictness,
-                        "previous_checkpoint": actor.and_then(|value| value.get("rolling_summary")).and_then(Value::as_str),
-                        "baseline": {
-                            "summary": baseline.summary,
-                            "severity": baseline.severity,
-                            "focus_results": baseline.focus_results,
-                            "queue_items": baseline.queue_items,
-                        },
-                        "delta_events": pending,
-                    }))?
-                }]
-            }
-        ]
-    });
-    if let Some(previous_response_id) = previous_response_id {
-        body["previous_response_id"] = json!(previous_response_id);
-    }
-    let response = client
-        .post("https://api.openai.com/v1/responses")
-        .bearer_auth(api_key)
-        .json(&body)
-        .send()
-        .await?;
-    let status = response.status();
-    let payload: Value = response.json().await?;
-    if !status.is_success() {
-        anyhow::bail!("OpenAI Responses returned {status}: {}", payload);
-    }
-    let text = extract_openai_output_text(&payload);
-    let parsed = parse_json_object_from_text(&text)
-        .ok_or_else(|| anyhow::anyhow!("OpenAI monitor response did not contain JSON"))?;
-    let fallback = deterministic_pass(config, pending);
-    let summary = parsed
-        .get("summary")
-        .and_then(Value::as_str)
-        .unwrap_or(&fallback.summary)
-        .to_string();
-    let severity = parsed
-        .get("severity")
-        .and_then(Value::as_str)
-        .filter(|value| matches!(*value, "none" | "low" | "medium" | "high"))
-        .unwrap_or(&fallback.severity)
-        .to_string();
-    let focus_results = parsed
-        .get("focus_results")
-        .cloned()
-        .unwrap_or(fallback.focus_results);
-    let queue_items = parsed
-        .get("queue_items")
-        .and_then(Value::as_array)
-        .map(|items| {
-            items
-                .iter()
-                .take(config.max_queued_items_per_thread)
-                .cloned()
-                .collect()
-        })
-        .unwrap_or(fallback.queue_items);
-    let checkpoint_summary = parsed
-        .get("checkpoint_summary")
-        .and_then(Value::as_str)
-        .unwrap_or(&summary)
-        .to_string();
-    let usage = openai_usage(&payload).unwrap_or(fallback.usage);
-    Ok(SchedulerPass {
-        summary,
-        checkpoint_summary,
-        severity,
-        focus_results,
-        queue_items,
-        source: "openai-responses".to_string(),
-        monitor_thread_id: payload
-            .get("id")
-            .and_then(Value::as_str)
-            .map(str::to_string),
-        fallback_reason: None,
-        usage,
-    })
-}
-
-fn should_use_openai(config: &MonitorRuntimeConfig) -> bool {
-    let worker = std::env::var("STACK_MONITOR_MODEL_WORKER")
-        .ok()
-        .unwrap_or_else(|| config.worker.clone());
-    match worker.as_str() {
-        "deterministic" | "stackd_scheduler" => false,
-        "openai_responses" => true,
-        _ => std::env::var("OPENAI_API_KEY").is_ok(),
-    }
-}
-
-fn monitor_developer_prompt() -> &'static str {
-    r#"You are the Stack monitor actor watching a primary coding agent.
-Behave like calibrated human oversight: sparse, concrete, and non-spammy.
-Review only the event delta and previous checkpoint. Do not invent events.
-Return only JSON:
-{
-  "summary": "short operator-facing summary",
-  "severity": "none|low|medium|high",
-  "focus_results": {"style":"pass|warn|fail|disabled","goal_progress":"pass|warn|fail|disabled","skills":"pass|warn|fail|disabled","tool_use":"pass|warn|fail|disabled","scope_control":"pass|warn|fail|disabled","acceptance":"pass|warn|fail|disabled"},
-  "queue_items": [{"severity":"low|medium|high","focus":"style|goal_progress|skills|tool_use|scope_control|acceptance","summary":"...","evidence":"..."}],
-  "checkpoint_summary": "rolling state for your next wake"
-}"#
-}
-
-fn extract_openai_output_text(payload: &Value) -> String {
-    if let Some(text) = payload.get("output_text").and_then(Value::as_str) {
-        return text.to_string();
-    }
-    let mut parts = Vec::new();
-    if let Some(output) = payload.get("output").and_then(Value::as_array) {
-        for item in output {
-            let Some(content) = item.get("content").and_then(Value::as_array) else {
-                continue;
-            };
-            for part in content {
-                if let Some(text) = part
-                    .get("text")
-                    .or_else(|| part.get("output_text"))
-                    .and_then(Value::as_str)
-                {
-                    parts.push(text.to_string());
-                }
-            }
-        }
-    }
-    parts.join("\n")
-}
-
-fn parse_json_object_from_text(text: &str) -> Option<Value> {
-    serde_json::from_str::<Value>(text.trim()).ok().or_else(|| {
-        let start = text.find('{')?;
-        let end = text.rfind('}')?;
-        serde_json::from_str::<Value>(&text[start..=end]).ok()
-    })
-}
-
-fn openai_usage(payload: &Value) -> Option<SchedulerUsage> {
-    let usage = payload.get("usage")?;
-    let output_details = usage.get("output_tokens_details");
-    Some(SchedulerUsage {
-        input_tokens: usage
-            .get("input_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        cached_input_tokens: usage
-            .get("input_tokens_details")
-            .and_then(|value| value.get("cached_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        output_tokens: usage
-            .get("output_tokens")
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-        reasoning_output_tokens: output_details
-            .and_then(|value| value.get("reasoning_tokens"))
-            .and_then(Value::as_u64)
-            .unwrap_or(0),
-    })
 }
 
 async fn write_actor_state(
@@ -837,8 +380,7 @@ async fn write_actor_state(
     actor["model"] = json!({
         "provider": "openai",
         "model": config.model,
-        "reasoning_effort": config.reasoning_effort,
-        "worker": config.worker
+        "reasoning_effort": config.reasoning_effort
     });
     if let Some(value) = update.last_event_id {
         actor["last_event_id"] = json!(value);
@@ -928,25 +470,8 @@ async fn read_monitor_config(state: &AppState) -> MonitorRuntimeConfig {
         model: toml_string(&text, "model", "model").unwrap_or_else(|| "gpt-5.4-mini".to_string()),
         reasoning_effort: toml_string(&text, "model", "reasoning_effort")
             .unwrap_or_else(|| "medium".to_string()),
-        worker: toml_string(&text, "model", "worker")
-            .unwrap_or_else(|| "stackd_scheduler".to_string()),
         max_wakes_per_primary_turn: toml_u64(&text, "wake", "max_wakes_per_primary_turn")
             .unwrap_or(6),
-        max_queued_items_per_thread: toml_u64(&text, "intervention", "max_queued_items_per_thread")
-            .unwrap_or(8) as usize,
-        skill_context_push: toml_string(&text, "intervention", "skill_context_push")
-            .unwrap_or_else(|| "queue_or_steer".to_string()),
-        skills_enabled: toml_bool(&text, "skills", "enabled").unwrap_or(true),
-        allowed_skill_ids: toml_string_array(&text, "skills", "allowed_skill_ids").unwrap_or_else(
-            || {
-                vec![
-                    "stack-agent-bridge".to_string(),
-                    "synth-via-stack".to_string(),
-                    "stackeval".to_string(),
-                ]
-            },
-        ),
-        push_when_confident: toml_bool(&text, "skills", "push_when_confident").unwrap_or(false),
         on_turn_completed: toml_bool(&text, "wake", "on_turn_completed").unwrap_or(true),
         on_tool_completed: toml_bool(&text, "wake", "on_tool_completed").unwrap_or(true),
         on_tool_failed: toml_bool(&text, "wake", "on_tool_failed").unwrap_or(true),
@@ -996,7 +521,10 @@ fn events_after_cursor<'a>(events: &'a [Value], last_event_id: Option<&str>) -> 
 fn triggered_event_ids(events: &[Value], actor_id: &str) -> HashSet<String> {
     let mut ids = HashSet::new();
     for event in events {
-        if event_type(event) != Some("monitor.wake") {
+        if !matches!(
+            event_type(event),
+            Some("monitor.wake" | "monitor.trigger_queued")
+        ) {
             continue;
         }
         if event.get("actor_id").and_then(Value::as_str) != Some(actor_id) {
@@ -1068,229 +596,6 @@ fn wake_reason(event: Option<&Value>) -> &'static str {
     }
 }
 
-fn summarize_pending(events: &[&Value]) -> String {
-    if events
-        .iter()
-        .any(|event| event_type(event) == Some("agent.tool.failed"))
-    {
-        return "A tool failed; inspect stderr/output before continuing.".to_string();
-    }
-    if events
-        .iter()
-        .any(|event| event_type(event) == Some("agent.error"))
-    {
-        return "The primary actor emitted an error event.".to_string();
-    }
-    if events
-        .iter()
-        .any(|event| event_type(event) == Some("agent.tool.completed"))
-    {
-        return "A tool completed; monitor checkpoint advanced after reviewing the event delta."
-            .to_string();
-    }
-    "Monitor checkpoint advanced after a completed turn.".to_string()
-}
-
-fn severity_for_pending(events: &[&Value]) -> String {
-    if events
-        .iter()
-        .any(|event| matches!(event_type(event), Some("agent.tool.failed" | "agent.error")))
-    {
-        "high".to_string()
-    } else {
-        "low".to_string()
-    }
-}
-
-fn focus_results_for_pending(events: &[&Value]) -> Value {
-    let failed = events
-        .iter()
-        .any(|event| matches!(event_type(event), Some("agent.tool.failed" | "agent.error")));
-    json!({
-        "style": "pass",
-        "goal_progress": "pass",
-        "skills": "pass",
-        "tool_use": if failed { "fail" } else { "pass" },
-        "scope_control": "pass",
-        "acceptance": "pass"
-    })
-}
-
-fn queue_items_for_pending(events: &[&Value], severity: &str, limit: usize) -> Vec<Value> {
-    if severity == "low" {
-        return Vec::new();
-    }
-    events
-        .iter()
-        .filter(|event| matches!(event_type(event), Some("agent.tool.failed" | "agent.error")))
-        .take(limit)
-        .map(|event| {
-            json!({
-                "severity": severity,
-                "focus": "tool_use",
-                "summary": summarize_pending(&[*event]),
-                "evidence": event.get("payload").and_then(|payload| payload.get("stderr").or_else(|| payload.get("message"))).and_then(Value::as_str)
-            })
-        })
-        .collect()
-}
-
-fn skill_context_pushes_for_pending(
-    state: &AppState,
-    config: &MonitorRuntimeConfig,
-    all_events: &[Value],
-    pending: &[&Value],
-    trigger_ids: &[String],
-    wake_id: &str,
-    strictness: &str,
-) -> Vec<Value> {
-    if !can_push_skill_context(config, strictness) || !likely_needs_stack_skill(pending) {
-        return Vec::new();
-    }
-    let Some(skill_id) = recommended_skill_for_pending(config, pending) else {
-        return Vec::new();
-    };
-    if has_used_skill(all_events, &skill_id) || has_pushed_skill(all_events, &skill_id) {
-        return Vec::new();
-    }
-    let source_path = skill_source_path(state, &skill_id);
-    let mut evidence_event_ids = trigger_ids.to_vec();
-    for event in pending {
-        if let Some(id) = event_id(event) {
-            evidence_event_ids.push(id.to_string());
-        }
-    }
-    evidence_event_ids.sort();
-    evidence_event_ids.dedup();
-    let reason = format!(
-        "Local StackEval/GEPA work is active and skill context for {skill_id} has not been loaded."
-    );
-    let message = format!(
-        "Monitor suggests reading skill {skill_id}.\nReason: {reason}\nEvidence events: {}.\nApply only the relevant runbook guidance before the next action.",
-        evidence_event_ids
-            .iter()
-            .take(5)
-            .cloned()
-            .collect::<Vec<String>>()
-            .join(", ")
-    );
-    vec![json!({
-        "wake_id": wake_id,
-        "target_actor_id": "primary_stackeval",
-        "skill_id": skill_id,
-        "source_path": source_path,
-        "reason": reason,
-        "evidence_event_ids": evidence_event_ids,
-        "message_id": format!("skillmsg_{}", Utc::now().timestamp_nanos_opt().unwrap_or_default()),
-        "message": message,
-        "source": "stackd-scheduler"
-    })]
-}
-
-fn can_push_skill_context(config: &MonitorRuntimeConfig, strictness: &str) -> bool {
-    if !config.skills_enabled || matches!(strictness, "off" | "passive") {
-        return false;
-    }
-    let policy = config.skill_context_push.trim().to_ascii_lowercase();
-    if matches!(policy.as_str(), "" | "off" | "never" | "false" | "disabled") {
-        return false;
-    }
-    policy == "queue_or_steer"
-        || policy == "always"
-        || config.push_when_confident
-        || strictness == "aggressive"
-}
-
-fn likely_needs_stack_skill(events: &[&Value]) -> bool {
-    let text = events
-        .iter()
-        .map(|event| event.to_string().to_ascii_lowercase())
-        .collect::<Vec<String>>()
-        .join("\n");
-    text.contains("stackeval") || text.contains("gepa") || text.contains("synth-optimizers")
-}
-
-fn recommended_skill_for_pending(
-    config: &MonitorRuntimeConfig,
-    pending: &[&Value],
-) -> Option<String> {
-    let text = pending
-        .iter()
-        .map(|event| event.to_string().to_ascii_lowercase())
-        .collect::<Vec<String>>()
-        .join("\n");
-    if (text.contains("stackeval") || text.contains("gepa") || text.contains("synth"))
-        && config
-            .allowed_skill_ids
-            .iter()
-            .any(|skill_id| skill_id == "synth-via-stack")
-    {
-        return Some("synth-via-stack".to_string());
-    }
-    config.allowed_skill_ids.first().cloned()
-}
-
-fn has_used_skill(events: &[Value], skill_id: &str) -> bool {
-    events.iter().any(|event| {
-        matches!(event_type(event), Some("skill.read" | "skill.used"))
-            && event
-                .get("payload")
-                .and_then(|payload| payload.get("skill_id"))
-                .and_then(Value::as_str)
-                == Some(skill_id)
-    })
-}
-
-fn has_pushed_skill(events: &[Value], skill_id: &str) -> bool {
-    events.iter().any(|event| {
-        event_type(event) == Some("monitor.skill_context_push")
-            && event
-                .get("payload")
-                .and_then(|payload| payload.get("skill_id"))
-                .and_then(Value::as_str)
-                == Some(skill_id)
-    })
-}
-
-fn skill_source_path(state: &AppState, skill_id: &str) -> String {
-    let candidates = [
-        state
-            .paths
-            .stack_global_dir
-            .join("skills")
-            .join(skill_id)
-            .join("SKILL.md"),
-        state
-            .paths
-            .app_root
-            .join(".stack")
-            .join("skills")
-            .join(skill_id)
-            .join("SKILL.md"),
-        state
-            .paths
-            .app_root
-            .join(".codex")
-            .join("skills")
-            .join(skill_id)
-            .join("SKILL.md"),
-    ];
-    candidates
-        .iter()
-        .find(|path| path.is_file())
-        .unwrap_or(&candidates[0])
-        .to_string_lossy()
-        .to_string()
-}
-
-fn estimate_usage(events: &[&Value], summary: &str) -> (u64, u64) {
-    let input_chars: usize = events.iter().map(|event| event.to_string().len()).sum();
-    (
-        ((input_chars as u64) / 4).max(1),
-        ((summary.len() as u64) / 4).max(1),
-    )
-}
-
 fn event_id(event: &Value) -> Option<&str> {
     event.get("event_id").and_then(Value::as_str)
 }
@@ -1350,22 +655,6 @@ fn toml_u64(text: &str, section: &str, key: &str) -> Option<u64> {
 
 fn toml_f64(text: &str, section: &str, key: &str) -> Option<f64> {
     toml_value(text, section, key)?.parse::<f64>().ok()
-}
-
-fn toml_string_array(text: &str, section: &str, key: &str) -> Option<Vec<String>> {
-    let value = toml_value(text, section, key)?;
-    let trimmed = value.trim();
-    if !trimmed.starts_with('[') || !trimmed.ends_with(']') {
-        return None;
-    }
-    let items = trimmed
-        .trim_start_matches('[')
-        .trim_end_matches(']')
-        .split(',')
-        .map(|item| item.trim().trim_matches('"').to_string())
-        .filter(|item| !item.is_empty())
-        .collect::<Vec<String>>();
-    Some(items)
 }
 
 fn resolve_config_path(app_root: &std::path::Path, path: &str) -> PathBuf {

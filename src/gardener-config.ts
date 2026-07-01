@@ -81,7 +81,7 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
     provider: "openai",
     model: "gpt-5.5",
     reasoningEffort: "low",
-    worker: "auto",
+    worker: "codex_app_server",
   },
   prompt: {
     systemFile: ".stack/gardeners/default.system.md",

@@ -157,9 +157,20 @@ function readNestedString(record: Record<string, unknown>, ...path: string[]): s
   return readString(current)
 }
 
-export function autoApproveServerRequest(method: string): unknown {
-  if (method.includes("requestApproval")) {
+export function autoApproveServerRequest(method: string, params?: unknown): unknown {
+  if (method === "item/commandExecution/requestApproval" || method === "item/fileChange/requestApproval") {
     return { decision: "acceptForSession" }
+  }
+  if (method === "item/permissions/requestApproval") {
+    const permissions = asRecord(params)?.permissions
+    return {
+      permissions: asRecord(permissions) ?? {},
+      scope: "session",
+      strictAutoReview: false,
+    }
+  }
+  if (method === "execCommandApproval" || method === "applyPatchApproval") {
+    return { decision: "approved_for_session" }
   }
   if (method === "item/tool/requestUserInput") {
     return { answers: [] }

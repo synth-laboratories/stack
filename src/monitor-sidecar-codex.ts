@@ -172,7 +172,7 @@ async function runMonitorCodexSidecarPrompt(input: {
     },
     onServerRequest(message: JsonRpcServerRequest) {
       stdout += `${JSON.stringify({ type: "stack", message: `sidecar codex request: ${message.method}` })}\n`
-      return Promise.resolve(autoApproveServerRequest(message.method))
+      return Promise.resolve(autoApproveServerRequest(message.method, message.params))
     },
   })
   try {
@@ -184,7 +184,7 @@ async function runMonitorCodexSidecarPrompt(input: {
         cwd: input.stackConfig.workspaceRoot,
         developerInstructions: monitorCodexDeveloperPrompt(input),
         serviceName: "stack-sidecar",
-        approvalPolicy: "on-failure",
+        approvalPolicy: "never",
       })
       codexThreadId = extractThreadIdFromResult(started)
       if (!codexThreadId) {
@@ -261,7 +261,7 @@ function monitorCodexDeveloperPrompt(input: {
     "Your job is to watch the worker's event stream, explain progress to the operator, identify risks, and answer sidecar chat.",
     "The left Sidecar progress panel shows raw events. Your own long-running transcript is shown in the Sidecar thread panel.",
     "When you finish reviewing the current event batch, call the Stack MCP tool `stack_sidecar_pause_for_restart` with the worker thread id, your actor id, and a short reason.",
-    "If that tool is unavailable, end your response with a concise status update and explicitly say you are waiting for the next worker event.",
+    "The pause tool is mandatory. Do not substitute a textual waiting message for it.",
     "Do not claim unseen tool output. Cite event ids when useful.",
     `Worker thread id: ${input.threadId}`,
     `Sidecar actor id: ${input.actorId}`,
@@ -306,7 +306,7 @@ function monitorCodexChatPrompt(input: {
       current_goal: input.goalContext,
       sidecar_context: input.sidecarContext,
       instruction:
-        "Answer the operator in the persistent sidecar thread using the current goal and sidecar context. After answering, call stack_sidecar_pause_for_restart so the runtime can wake you again on the next event.",
+        "Answer the operator in the persistent sidecar thread using the current goal and sidecar context. After answering, call stack_sidecar_pause_for_restart so the runtime can wake you again on the next event. Do not substitute a textual waiting message for that tool call.",
     },
     null,
     2,

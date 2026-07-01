@@ -713,6 +713,33 @@ export async function runMonitorForNewEvents(input: {
     )
   }
 
+  if (actorState?.state === "running") {
+    const alreadyQueued = queuedTriggerEventIds(priorEvents)
+    const triggerEventIds = candidate.triggerEventIds.filter((id) => !alreadyQueued.has(id))
+    if (triggerEventIds.length > 0) {
+      appendThreadMetaEvent(input.config.appRoot, {
+        event_id: stackEventId("monitor_trigger_queued"),
+        type: "monitor.trigger_queued",
+        thread_id: threadId,
+        observed_at: new Date().toISOString(),
+        actor_id: actorId,
+        actor_role: "monitor",
+        payload: {
+          wake_reason: candidate.reason,
+          trigger_event_ids: triggerEventIds,
+          pending_event_count: candidate.pendingEvents.length,
+          running_wake_id: actorState.last_wake_id ?? null,
+          last_event_id_before: actorState.last_event_id ?? null,
+        },
+      })
+    }
+    return snapshotFromEvents(
+      monitorConfig,
+      readThreadMetaEvents(input.config.appRoot, threadId),
+      readMonitorActorState(input.config.appRoot, threadId, actorId),
+    )
+  }
+
   const observedAt = new Date().toISOString()
   const wakeId = stackEventId("monitor_wake")
   const handoffPreempt = evaluateHandoffPreempt({
@@ -1392,6 +1419,19 @@ function triggeredEventIds(events: StackThreadMetaEvent[]): Set<string> {
   return ids
 }
 
+function queuedTriggerEventIds(events: StackThreadMetaEvent[]): Set<string> {
+  const ids = new Set<string>()
+  for (const event of events) {
+    if (event.type !== "monitor.trigger_queued") continue
+    const triggerIds = event.payload.trigger_event_ids
+    if (!Array.isArray(triggerIds)) continue
+    for (const id of triggerIds) {
+      if (typeof id === "string") ids.add(id)
+    }
+  }
+  return ids
+}
+
 function isWakeTrigger(config: StackMonitorConfig, event: StackThreadMetaEvent): boolean {
   if (event.type === "agent.tool.failed") return config.wake.onToolFailed
   if (event.type === "agent.tool.completed") return config.wake.onToolCompleted
@@ -2059,7 +2099,9 @@ function snapshotFromEvents(
     lastEventId: actorState?.last_event_id,
     lastWakeId: actorState?.last_wake_id,
     wakeCount: actorState?.wake_counts ?? events.filter((event) => event.type === "monitor.wake").length,
-    queuedCount: actorState?.queue_counts ?? events.filter((event) => event.type === "monitor.queued").length,
+    queuedCount:
+      (actorState?.queue_counts ?? events.filter((event) => event.type === "monitor.queued").length) +
+      events.filter((event) => event.type === "monitor.trigger_queued").length,
     skillReadCount: events.filter((event) => event.type === "skill.read").length,
     contextPushCount: events.filter((event) => event.type === "monitor.skill_context_push").length,
     threadSpendUsd: usage.spendUsd,
@@ -2104,10 +2146,22 @@ function monitorStatus(
   if (actorState?.state === "running") return "running"
   if (actorState?.state === "paused") return "paused"
   if (actorState?.state === "error") return "error"
+  if (hasQueuedTriggerAfterLatestWake(events)) return "queued"
   if (events.some((event) => event.type === "monitor.queued")) return "queued"
   if (actorState?.state === "idle") return "idle"
   if (events.some((event) => event.type === "monitor.summary")) return "summarized"
   return "watching"
+}
+
+function hasQueuedTriggerAfterLatestWake(events: StackThreadMetaEvent[]): boolean {
+  let latestWakeIndex = -1
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    if (events[index]?.type === "monitor.wake") {
+      latestWakeIndex = index
+      break
+    }
+  }
+  return events.slice(latestWakeIndex + 1).some((event) => event.type === "monitor.trigger_queued")
 }
 
 function effectiveMonitorState(
@@ -2136,9 +2190,6 @@ function nextStrictness(current: MonitorStrictness): MonitorStrictness {
 }
 
 function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Record<string, unknown>>): StackMonitorConfig {
-  if (process.env.STACK_MONITOR_MODEL_WORKER?.trim()) {
-    throw new Error("STACK_MONITOR_MODEL_WORKER is not supported; Stack monitor always uses Codex app-server")
-  }
   return {
     ...base,
     id: readString(parsed.monitor?.id) ?? base.id,
