@@ -13,6 +13,7 @@ export function anchorTranscriptBox(content: StyledText, flexGrow = 1): ReturnTy
     },
     Text({
       content,
+      minWidth: 1,
       flexShrink: 0,
     }),
   )

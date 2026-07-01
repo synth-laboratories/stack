@@ -2174,6 +2174,7 @@ function createView(
               visibleRows: projectRows,
               columns: centerColumns,
             }),
+            minWidth: 1,
           }),
         ),
         Box(
@@ -2196,6 +2197,7 @@ function createView(
             Text({
               content: activeThreadsFocusHint(state.focusMode),
               fg: theme.fgMuted,
+              minWidth: 1,
               flexGrow: 1,
             }),
             controlChip("+ new", true, () => {
@@ -2967,6 +2969,7 @@ function controlLabel(content: string): ReturnType<typeof Text> {
   return Text({
     content,
     fg: theme.fgMuted,
+    minWidth: 1,
     flexShrink: 0,
   })
 }
@@ -2981,6 +2984,7 @@ function controlChip(content: string, active: boolean, onSelect?: () => void): R
     content,
     fg: active ? theme.fgOnAccent : theme.synth.amber,
     bg: active ? theme.bgChipActive : theme.bgSubtle,
+    minWidth: 1,
     flexShrink: 0,
     ...(onSelect
       ? {
@@ -3008,11 +3012,12 @@ function activeThreadRowElements(
 ): ReturnType<typeof Text>[] {
   return activeThreadRows(input).map((row) => {
     if (row.kind !== "thread") {
-      return Text({ content: styleActiveThreadRowStyled(row), flexShrink: 0 })
+      return Text({ content: styleActiveThreadRowStyled(row), minWidth: 1, flexShrink: 0 })
     }
     const historyIndex = row.historyIndex
     return Text({
       content: styleActiveThreadRowStyled(row),
+      minWidth: 1,
       flexShrink: 0,
       onMouseDown(event: PanelMouseEvent) {
         event.preventDefault?.()
