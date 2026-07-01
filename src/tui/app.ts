@@ -9429,20 +9429,12 @@ async function startNewThread(
   refreshMetaEvents: () => void,
 ): Promise<void> {
   if (state.status === "running") {
-    if (!isGoalMode(state)) {
-      appendStackBlock(state.blocks, "interrupt or wait for the current turn before starting a new thread")
-      refresh()
-      return
-    }
-    // Goal mode keeps the worker turn perpetually running, so a plain status guard would
-    // make "+ new" permanently unavailable. Stop the live worker turn and let its loop fully
-    // wind down before swapping sessions, so the displaced turn can't clobber the new thread.
-    appendStackBlock(state.blocks, "stopping goal worker to start a new thread")
+    const message = isGoalMode(state)
+      ? "goal worker is running; keeping it active instead of starting a new thread"
+      : "interrupt or wait for the current turn before starting a new thread"
+    appendStackBlock(state.blocks, message)
     refresh()
-    state.abortTurnLoop = true
-    await codexSessionHandle.session?.interrupt().catch(() => undefined)
-    await state.activeTurnPromise?.catch(() => undefined)
-    state.abortTurnLoop = false
+    return
   }
 
   setStackHarness(options.config, "codex")
