@@ -31,7 +31,7 @@ export type ToolLog = {
 }
 
 export type TranscriptBlock =
-  | { id: string; kind: "user"; text: string }
+  | { id: string; kind: "user"; text: string; origin?: string }
   | { id: string; kind: "thinking"; text: string; live?: boolean; startedAt?: string; finishedAt?: string }
   | { id: string; kind: "tool"; toolId: string }
   | {
@@ -107,8 +107,8 @@ export function parseCodexJsonLine(line: string): CodexLineResult | undefined {
   return parsed ?? (rateLimits ? { rateLimits } : undefined)
 }
 
-export function appendUserBlock(blocks: TranscriptBlock[], text: string): void {
-  blocks.push({ id: randomUUID(), kind: "user", text: text.trim() || "(empty)" })
+export function appendUserBlock(blocks: TranscriptBlock[], text: string, origin?: string): void {
+  blocks.push({ id: randomUUID(), kind: "user", text: text.trim() || "(empty)", origin })
 }
 
 export function appendStackBlock(blocks: TranscriptBlock[], text: string): void {
@@ -293,6 +293,7 @@ export function countNewTranscriptLines(
 export function blocksFromTurnStdout(
   prompt: string,
   stdout: string,
+  userOrigin?: string,
 ): { blocks: TranscriptBlock[]; tools: ToolLog[]; subagents: SubagentLog[] } {
   const blocks: TranscriptBlock[] = []
   const tools: ToolLog[] = []
@@ -302,7 +303,7 @@ export function blocksFromTurnStdout(
   const liveSubagentGroupId: { current?: string } = {}
   const multiAgentCalls = new Map<string, MultiAgentCallMeta & { callId: string }>()
   const turnStartedAt: { current?: string } = {}
-  appendUserBlock(blocks, prompt)
+  appendUserBlock(blocks, prompt, userOrigin)
   for (const line of stdout.split("\n")) {
     if (!line.trim()) continue
     applyCodexLine(
@@ -479,7 +480,9 @@ function blockToLines(
   const expanded = options.showDetails || options.expandedBlockIds.has(block.id)
   switch (block.kind) {
     case "user":
-      return sectionLines("›", ` ${block.text}`, columns, true)
+      // A non-user origin (e.g. the runtime waking the monitor) keeps the user-block style but
+      // labels who it actually came from: "› runtime  <message>".
+      return sectionLines(block.origin ? `› ${block.origin}` : "›", ` ${block.text}`, columns, true)
     case "thinking":
       return []
     case "tool": {

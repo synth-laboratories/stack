@@ -9,6 +9,8 @@ import { activeGoalModeSnapshot, type GoalModeState } from "./goal-mode.js"
 import { deriveMetaGoalName } from "../meta-goal.js"
 import {
   goalShutterStreamLineCount,
+  renderGoalProgressStripStyled,
+  renderGoalProgressTimelineStyled,
   renderGoalShutterStreamStyled,
   renderGoalSidecarThreadRich,
 } from "./monitor-thread.js"
@@ -211,6 +213,35 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
     ? input.state.agentViewEnabled ? "Agent tape" : "Sidecar events"
     : "Sidecar thread"
 
+  // Structured goal-progress visualization from the monitor's typed `monitor.goal_status` signal:
+  // a headline strip + milestone timeline. Simple beats the free-text feed for tracking progress.
+  const progressWidth = Math.max(24, input.columns - 4)
+  const progressStrip = renderGoalProgressStripStyled(input.events, progressWidth)
+  const goalProgressElements = progressStrip
+    ? [
+        Text({ content: progressStrip, width: "100%", flexShrink: 0 }),
+        Box(
+          {
+            border: true,
+            borderStyle: "single" as const,
+            borderColor: theme.borderInactive,
+            titleColor: theme.synth.orange,
+            title: "Goal progress",
+            flexDirection: "column" as const,
+            padding: 1,
+            flexShrink: 0,
+            width: "100%",
+            overflow: "hidden" as const,
+          },
+          Text({
+            content: renderGoalProgressTimelineStyled(input.events, progressWidth, 6),
+            width: "100%",
+            flexShrink: 0,
+          }),
+        ),
+      ]
+    : []
+
   return Box(
     {
       flexDirection: "column",
@@ -241,6 +272,7 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
       width: "100%",
       flexShrink: 0,
     }),
+    ...goalProgressElements,
     Box(
       {
         border: true,

@@ -1,7 +1,7 @@
 # Sidecar Monitor — Product Spec & Engineering Handoff
 
 **Audience:** the engineer owning the Stack sidecar monitor.
-**Status:** 2026-07-01. Supervision + rich thread render + model display + clean human-facing events feed are built and tested. Read §2 (locked decisions) and §5–§6 (what the human sees) first.
+**Status:** 2026-07-01. Supervision + rich thread render + model display + clean human-facing events feed + **structured goal-progress (tool + typed events + goal-done flip + visualization)** are built and confirmed on real workers. Read §2 (locked decisions), §5–§6 (what the human sees), and §11 (structured goal-progress) first.
 
 ---
 
@@ -61,7 +61,7 @@ The monitor is a **self-scheduling agent**: it wakes on a cursor, does a pass, s
 - **TS in-process:** `src/monitor.ts` (`nextWakeCandidate`, `runMonitorForNewEvents`), driven by the TUI.
 - **Rust scheduler:** `crates/stackd/src/monitor_scheduler.rs`, polls ~500ms, **only queues** (`monitor.trigger_queued`) — the TUI/JS runs the actual LLM pass. (A headless self-scheduling monitor would need a server-side pass runner — noted gap.)
 
-**Wake layers** (all in `[wake]` config, `.stack/monitors/*.toml`): immediate (tool_failed / error / turn_completed / operator_message / goal_change) · event-batch (every K worker events, K=8, min-interval 30s) · time cadence (≥ every 3m while goal active + worker running) · staleness (5m of worker silence). Dedup: already-running → merge into one queued trigger.
+**Wake layers** (all in `[wake]` config, `.stack/monitors/*.toml`): immediate (tool_failed / error / turn_completed / operator_message / goal_change) · event-batch (every K worker events, K=4, min-interval 12s) · time cadence (≥ every 90s while goal active + worker running) · staleness (5m of worker silence). Dedup: already-running → merge into one queued trigger. (Cadence tightened 2026-07-01 for a live-feeling feed — see §11.)
 
 **Sleep:** `stack_sidecar_pause_for_restart` (`src/mcp/server.ts`) appends `monitor.pause_for_restart` and yields. Note `next_wake_on` is currently written and **not read** — the monitor cannot yet choose its own next-wake time (gap).
 
@@ -172,3 +172,55 @@ The goal strip shows `status · criteria X/Y · elapsed · worker $ · monitor $
 4. **Model/effort routing:** the monitor runs `gpt-5.4-mini medium` by default; is that the right tier for narration quality, or bump for the audit/steer judgment?
 
 **How to validate any change:** `bunx tsc --noEmit` · `cargo check -p stackd` / `cargo build -p stackd` when touching TUI e2e · deterministic smokes (`smoke:monitor:logic`, `smoke:sidecar:render`, `smoke:slash:errors`, `smoke:goal-shutter`) · `smoke:tui:e2e:layout` (panel layout) · `smoke:goal-mode:ux` (full TUI GameBench flow) · `smoke:monitor:supervision` (real-brain behavior). Add a real-brain acceptance scenario for any new feed behavior — event *counts* from a faked sidecar prove plumbing, not supervision.
+
+---
+
+## 11. Structured goal-progress — tool + typed events + goal-done flip + visualization (2026-07-01)
+
+The events feed was a text dump of parsed free-text markers; it couldn't be visualized and had no
+"goal achieved" signal (the goal stayed "active" even after the worker cleared the target, because
+completion depended solely on the worker calling the Codex `update_goal{complete}` tool, which it
+often skips). Fixed by giving the monitor a **typed status tool** and visualizing the structure.
+
+**The tool** — `stack_monitor_goal_status` (`src/mcp/server.ts`). The monitor calls it to write a
+typed `monitor.goal_status` event: `{ status, note, metric?, evidence_event_ids? }` where
+`status ∈ advancing | working | blocked | stalled | goal_met | goal_failed` and `metric` carries the
+concrete number (`{ value, baseline, ratio, target, unit }`). Deliberate, structured, evidence-linked
+— not prefix-parsing. (This is the "monitor_note" tool from §10.1, now built.)
+
+**Goal-done flip — both paths (decided w/ Josh):** the goal flips to `done` when EITHER the worker
+calls `update_goal{complete}` OR the monitor emits `monitor.goal_status: goal_met`. The monitor path
+is an AUDIT: `goal_met` only after the cited proof clears the target (`goalLifecycleState` in
+`src/goal-session.ts`). `goal_failed`/`blocked`/`stalled` → goal `blocked`; `advancing`/`working` → `active`.
+
+**Prompt:** the monitor emits `stack_monitor_goal_status` on real status changes in ADDITION to the
+prose `PROGRESS_UPDATE`, and emits `goal_met` only on an audited clear (`src/monitor-sidecar-codex.ts`).
+
+**Visualization — both (decided w/ Josh)** in the goal shutter (`src/tui/goal-shutter.ts`,
+renderers in `src/tui/monitor-thread.ts`):
+- **Headline strip** — the latest status + metric, color-coded: `✓ goal met · 2.53× · 0.22 vs 0.0871 · target 2×`.
+- **"Goal progress" milestone timeline** — the sequence of `monitor.goal_status` transitions (`◆ advancing → ✓ goal_met`), each with its note + metric.
+
+**Also:** the runtime wake in the Sidecar thread renders `› runtime · <reason>` (kept in the user-block
+style but origin-labeled runtime; operator messages get `› you`). Added `origin?` to the shared
+transcript user block (`src/tui/transcript.ts`).
+
+**Confirmed on REAL workers (not scripted):**
+- Correct-data run (worker found the real 0.22 candidate, 2.53×) → monitor emitted `goal_met` → goal `done`.
+- Contaminated-data run (worker misled into reporting 0.11) → monitor emitted `goal_failed` (did the
+  `0.11/0.085 = 1.29×` math, refused the claim) → goal `blocked`. It audits, it does not parrot.
+- **Mid-flight feed** (monitor woken on cadence during a live 78s worker run) is a genuine running
+  commentary — `advancing → located artifacts → goal_met (2.53×)` — and caught a live secret-paste and
+  steered it. Density is the knob: the default `[wake]` cadence was tightened to `event_batch_size = 4`,
+  `event_batch_min_interval_ms = 12000`, `default_interval_ms = 90000` so the feed feels live and the
+  structured `goal_status` fires mid-run, not only at the terminal audit.
+
+**Tests:** `scripts/smoke_goal_progress.ts` (deterministic: extraction + strip + reducer flip),
+`scripts/accept_goal_status_tool.ts` (real-brain: monitor calls the tool, emits goal_met),
+`scripts/accept_goal_status_negative.ts` (real-brain: refuses goal_met on a false claim),
+`scripts/accept_craftax_e2e.ts` / `accept_craftax_real_worker.ts` / `accept_craftax_midflight.ts`
+(real worker end-to-end + mid-flight feed).
+
+**Honest residual:** worker ACCURACY depends on what it finds in the repo (one run was misled by a
+stale evidence file). The monitor faithfully audits whatever the worker claims — that is its job, but a
+wrong worker claim with matching "proof" would pass. The audit is only as good as the cited proof.

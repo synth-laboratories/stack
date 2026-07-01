@@ -72,6 +72,8 @@
     "smoke:goal-mode:ux": "bun run scripts/accept_goal_mode_ux.ts",
     "smoke:sidecar:render": "bun run scripts/smoke_sidecar_render.ts",
     "smoke:slash:errors": "bun run scripts/smoke_slash_errors.ts",
+    "smoke:goal:progress": "bun run scripts/smoke_goal_progress.ts",
+    "smoke:goal:status-tool": "bun run scripts/accept_goal_status_tool.ts",
     "smoke:meta-threads:goal": "bun run scripts/smoke_meta_threads_goal.ts",
     "smoke:meta-threads:contract": "bun run scripts/prove_goal_first_e2e.ts",
     "smoke:meta-threads:concurrency": "bun run scripts/smoke_meta_threads_concurrency.ts",

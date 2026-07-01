@@ -296,6 +296,148 @@ function sidecarTurnPromptLabel(prompt: string): string {
   }
 }
 
+// Who the wake "user turn" actually came from: the operator (a sidecar message) or the runtime.
+function sidecarTurnOrigin(prompt: string): string {
+  try {
+    const parsed = JSON.parse(prompt) as Record<string, unknown>
+    if (typeof parsed.operator_message === "string" && parsed.operator_message.trim()) return "you"
+  } catch {
+    // fall through
+  }
+  return "runtime"
+}
+
+// --- Structured goal-progress visualization -------------------------------------------------
+// The monitor writes typed `monitor.goal_status` events via the `stack_monitor_goal_status` tool.
+// Rather than dump the free-text feed, we visualize the STRUCTURE: a one-line status/metric strip
+// plus a milestone timeline. Simple beats a text dump.
+
+export type GoalMilestone = {
+  status: string
+  note: string
+  metric?: Record<string, unknown>
+  at: string
+}
+
+export function goalMilestonesFromEvents(events: StackThreadMetaEvent[]): GoalMilestone[] {
+  const out: GoalMilestone[] = []
+  for (const event of events) {
+    if (event.type !== "monitor.goal_status") continue
+    const payload = event.payload as Record<string, unknown>
+    const metric = payload.metric && typeof payload.metric === "object" && !Array.isArray(payload.metric)
+      ? (payload.metric as Record<string, unknown>)
+      : undefined
+    out.push({
+      status: readString(payload.status) ?? "working",
+      note: readString(payload.note) ?? "",
+      metric,
+      at: event.observed_at,
+    })
+  }
+  return out
+}
+
+function goalStatusIcon(status: string): string {
+  switch (status) {
+    case "goal_met":
+      return "✓"
+    case "goal_failed":
+      return "✗"
+    case "blocked":
+    case "stalled":
+      return "▲"
+    case "advancing":
+      return "◆"
+    default:
+      return "·"
+  }
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function formatGoalMetric(metric?: Record<string, unknown>): string {
+  if (!metric) return ""
+  const value = readNumber(metric.value)
+  const baseline = readNumber(metric.baseline)
+  const target = readNumber(metric.target)
+  const ratio = readNumber(metric.ratio) ?? (value !== undefined && baseline ? value / baseline : undefined)
+  const parts: string[] = []
+  if (ratio !== undefined) parts.push(`${ratio.toFixed(2)}×`)
+  if (value !== undefined) parts.push(baseline !== undefined ? `${value} vs ${baseline}` : `${value}`)
+  if (target !== undefined) parts.push(`target ${target}×`)
+  return parts.join(" · ")
+}
+
+function goalMilestoneStyle(status: string): (text: string) => TextChunk {
+  switch (status) {
+    case "goal_met":
+      return (text) => bold(fg(theme.synth.gold)(text))
+    case "goal_failed":
+    case "blocked":
+    case "stalled":
+      return (text) => fg(theme.synth.red)(text)
+    case "advancing":
+      return (text) => fg(theme.synth.amber)(text)
+    default:
+      return (text) => fg(theme.fgMuted)(text)
+  }
+}
+
+// One-line headline: the latest structured status + its metric. Empty until the monitor emits one.
+export function goalProgressStripLine(events: StackThreadMetaEvent[], columns: number): string | undefined {
+  const milestones = goalMilestonesFromEvents(events)
+  const latest = milestones.at(-1)
+  if (!latest) return undefined
+  const metric = formatGoalMetric(latest.metric)
+  const label = latest.status.replace(/_/g, " ")
+  return oneLine(
+    `${goalStatusIcon(latest.status)} ${label}${metric ? ` · ${metric}` : ""}${latest.note ? ` · ${latest.note}` : ""}`,
+    Math.max(16, columns - 2),
+  )
+}
+
+export function renderGoalProgressStripStyled(events: StackThreadMetaEvent[], columns: number): StyledText | undefined {
+  const milestones = goalMilestonesFromEvents(events)
+  const latest = milestones.at(-1)
+  if (!latest) return undefined
+  const line = goalProgressStripLine(events, columns)
+  if (!line) return undefined
+  return new StyledText([goalMilestoneStyle(latest.status)(line)])
+}
+
+export function goalProgressTimelineLineCount(events: StackThreadMetaEvent[]): number {
+  return Math.max(1, goalMilestonesFromEvents(events).length)
+}
+
+export function renderGoalProgressTimelineStyled(
+  events: StackThreadMetaEvent[],
+  columns: number,
+  visibleRows: number,
+  scrollOffset = 0,
+): StyledText {
+  const width = Math.max(16, columns - 2)
+  const milestones = goalMilestonesFromEvents(events)
+  if (milestones.length === 0) {
+    return new StyledText([dim(fg(theme.fgMuted)("(no goal milestones yet)"))])
+  }
+  const lines = milestones.map((milestone) => {
+    const metric = formatGoalMetric(milestone.metric)
+    const body = [milestone.note, metric].filter(Boolean).join(" · ") || milestone.status.replace(/_/g, " ")
+    return { status: milestone.status, text: oneLine(`${goalStatusIcon(milestone.status)} ${body}`, width) }
+  })
+  const maxOffset = Math.max(0, lines.length - visibleRows)
+  const offset = Math.min(Math.max(0, scrollOffset), maxOffset)
+  const window = lines.slice(offset, offset + visibleRows)
+  const chunks: TextChunk[] = []
+  for (const [index, line] of window.entries()) {
+    if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
+    chunks.push(goalMilestoneStyle(line.status)(line.text))
+  }
+  return new StyledText(chunks)
+}
+
 // --- Rich sidecar-thread render ------------------------------------------------------------
 // Render the monitor's transcript exactly like the worker chat — interleaved thinking + grouped
 // tool calls — via the shared transcript renderer. Runtime mechanics (the pause tool, the bridge's
@@ -341,7 +483,13 @@ function buildSidecarBlocks(turns?: readonly StackMonitorSidecarTurn[]): Sidecar
   const tools: SidecarBuild["tools"] = []
   const subagents: SidecarBuild["subagents"] = []
   for (const turn of turns ?? []) {
-    const built = blocksFromTurnStdout(`wake · ${sidecarTurnPromptLabel(turn.prompt)}`, cleanSidecarStdout(turn.stdout))
+    // The wake "user turn" comes from the RUNTIME (or the operator, for a sidecar message). Keep the
+    // user-block style but label the true origin so it reads "› runtime  scheduled check".
+    const built = blocksFromTurnStdout(
+      sidecarTurnPromptLabel(turn.prompt),
+      cleanSidecarStdout(turn.stdout),
+      sidecarTurnOrigin(turn.prompt),
+    )
     // A quiet review yields only its wake-header block — skip it so the thread shows real activity.
     const hasContent = built.blocks.some((block) => block.kind !== "user") || built.tools.length > 0
     if (!hasContent) continue

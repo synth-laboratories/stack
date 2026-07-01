@@ -221,6 +221,36 @@ export class StackMcpServer {
     }
   }
 
+  async monitorGoalStatus(args: JsonObject): Promise<JsonObject> {
+    const config = await this.config(args)
+    const threadId = requiredString(args, "thread_id")
+    const actorId = optionalString(args, "actor_id") ?? "monitor"
+    const status = requiredString(args, "status")
+    const note = optionalString(args, "note") ?? ""
+    const metric =
+      args.metric && typeof args.metric === "object" && !Array.isArray(args.metric)
+        ? (args.metric as JsonObject)
+        : undefined
+    const evidence = optionalStringArray(args, "evidence_event_ids") ?? []
+    const event = {
+      event_id: stackEventId("monitor_goal_status"),
+      type: "monitor.goal_status",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: actorId,
+      actor_role: "monitor" as const,
+      payload: {
+        status,
+        note,
+        metric: metric ?? null,
+        evidence_event_ids: evidence,
+        source: "sidecar_codex_tool",
+      },
+    }
+    const path = appendThreadMetaEvent(config.stackDataRoot, event)
+    return { ok: true, event_id: event.event_id, status, thread_id: threadId, path }
+  }
+
   private async handleMessage(message: ParsedMessage): Promise<JsonObject | undefined> {
     const request = message.payload
     const method = readString(request.method)
@@ -2078,6 +2108,27 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["thread_id"],
       ),
       handler: (args) => server.sidecarPauseForRestart(args),
+    },
+    {
+      name: "stack_monitor_goal_status",
+      description:
+        "Sidecar monitor tool: record a STRUCTURED goal-progress signal that the human UI visualizes (a timeline + status strip), instead of only free-text narration. Call it on a MEANINGFUL status change: `advancing` (with the concrete metric), `blocked`/`stalled`, `goal_failed`, or `goal_met` once you have AUDITED the worker's completion claim against cited proof. `goal_met` flips the goal to done, so only emit it when the proof clears the target.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Worker Stack thread/session id this sidecar monitors."),
+          actor_id: stringProperty("Optional sidecar actor id. Defaults to monitor."),
+          status: stringProperty("One of: advancing, working, blocked, stalled, goal_met, goal_failed."),
+          note: stringProperty("One concise human sentence: what the worker is doing or the milestone reached."),
+          metric: {
+            type: "object",
+            description: "Optional concrete metric, e.g. {value, baseline, ratio, target, unit} — cite the number.",
+          },
+          evidence_event_ids: arrayProperty("Optional event ids that substantiate this status."),
+        },
+        ["thread_id", "status"],
+      ),
+      handler: (args) => server.monitorGoalStatus(args),
     },
     {
       name: "stack_list_remote_projects",

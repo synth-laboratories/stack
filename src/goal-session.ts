@@ -119,6 +119,19 @@ function goalLifecycleState(
   let status: GoalSessionStatus = "active"
 
   for (const event of events) {
+    // Monitor-audited goal status (thread-scoped, one active goal). goal_met is the monitor
+    // confirming the worker's completion claim → the goal is done. This is the second flip path
+    // alongside the worker's own update_goal{complete}.
+    if (event.type === "monitor.goal_status") {
+      const monitorStatus = readString(event.payload.status)
+      if (monitorStatus === "goal_met") status = "done"
+      else if (monitorStatus === "goal_failed" || monitorStatus === "blocked" || monitorStatus === "stalled") {
+        if (status !== "done") status = "blocked"
+      } else if (monitorStatus === "advancing" || monitorStatus === "working") {
+        if (status !== "done") status = "active"
+      }
+      continue
+    }
     if (!GOAL_LIFECYCLE_TYPES.has(event.type)) continue
     if (readString(event.payload.objective) !== objective) continue
     switch (event.type) {
