@@ -192,6 +192,9 @@ stack --version
 - Private changelog: Jstack / `synth-dev` release ledgers — richer operational
   context, launch gates, evidence packets, waivers, regressions, and internal
   owner decisions.
+- **Ship checklist (Stack gates):** Jstack
+  `daily_notes/YYYY-MM-DD/stack_ship_checklist.md` — exhaustive dev/stable checklist
+  (CHANGELOG + USAGE pairing required on every ship).
 
 **Dev bump**
 
