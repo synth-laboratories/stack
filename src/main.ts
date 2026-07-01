@@ -39,6 +39,10 @@ try {
   if (process.argv[2] === "doctor") {
     process.exit(await runDoctor(config, process.argv.slice(3)))
   }
+  if (process.argv[2] === "auth") {
+    const { runAuthCli } = await import("./auth-cli.js")
+    process.exit(await runAuthCli(config, process.argv.slice(2)))
+  }
   if (process.argv[2] === "crashes") {
     process.exit(await runCrashReports(config, process.argv.slice(3)))
   }

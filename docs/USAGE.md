@@ -1,9 +1,13 @@
 # Stack — Usage & reference
 
+> **Public docs:** [docs.usesynth.ai/stack](https://docs.usesynth.ai/stack/overview) —
+> Quickstart, goal mode, cockpit, stackd, MCP, configuration.
+> This file is the **engineer/operator deep reference** in the repo (includes smoke
+> commands and internal paths). Keep user-facing Mintlify pages in sync when behavior
+> changes.
+
 > Controls, the stackd local API, the monitor, workspace config, and Stack MCP.
 > For install and overview, see the [README](../README.md).
-> **Full UX spec (goal mode, sidecar, actors):** Jstack
-> `product/specs/stack/ux/` — start with `goal_mode.md` and `cockpit_layout.md`.
 
 ## Controls
 
@@ -586,6 +590,20 @@ export SYNTH_API_KEY="..."   # from usesynth.ai/keys — or use authEnvFile in s
 stack doctor
 stack
 ```
+
+### Terminal auth (`stack auth`)
+
+Signed-out install stays local-first; hosted SMR/Factory/optimizers need a Synth account.
+
+```bash
+stack auth urls --json              # signup/signin/keys URLs (product=stack attribution)
+stack auth open signup              # open browser (or --no-browser to print URL only)
+stack auth verify --json            # remote account snapshot; exit 0 when connected
+stack auth test signin              # optional Playwright harness (testing repo)
+```
+
+Signup/signin URLs carry `product=stack` for activation funnel rollup. Synth sign-in remains
+optional for local goal mode — `stack doctor` reports `synth_sign_in_optional: true`.
 
 Optional: install [synth-optimizers](https://pypi.org/project/synth-optimizers/) for local GEPA.
 Advanced Synth monorepo eval wrappers are optional — set `STACK_SYNTH_DEV_ROOT` and

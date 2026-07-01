@@ -64,7 +64,11 @@ monitor thread, `a` for the raw worker tape. See [Usage § Stack Monitor](docs/U
 
 ## Docs
 
-- [Usage & reference](docs/USAGE.md) — controls, stackd API, monitor, workspace config, Stack MCP
+**Website:** [docs.usesynth.ai/stack](https://docs.usesynth.ai/stack/overview) — quickstart, goal mode, cockpit, MCP, configuration.
+
+**In-repo (engineers):**
+
+- [Usage & reference](docs/USAGE.md) — deep operator reference
 - [Synth productivity](docs/SYNTH_PRODUCTIVITY.md) — OSS + hosted workflows
 - [Release process](docs/RELEASE.md) — channels, versioning, changelog
 - [Distribution](docs/DISTRIBUTION.md) — installer/download contract
