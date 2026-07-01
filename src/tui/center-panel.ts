@@ -30,6 +30,7 @@ export type ActiveThreadsRenderInput = {
   focusMode: string
   history: readonly StackSessionSummary[]
   activeThreadIds: ReadonlySet<string>
+  visibleThreadIds?: ReadonlySet<string>
   selectedHistoryIndex: number
   currentSessionId: string
   visibleRows: number
@@ -291,20 +292,35 @@ function emptyProjectsLine(snapshot: RemoteProjectsPanelSnapshot): string {
   return "(no live projects)"
 }
 
-/** v1: current worker session + gardener routing target. Gardener will expand this later. */
 export function resolveActiveThreadIds(
   sessionId: string,
   gardenerWorkerTargetId: string | undefined,
-  history: readonly StackSessionSummary[] = [],
-  threadLifecycleStatus: ReadonlyMap<string, ThreadLifecycleStatus> = new Map(),
 ): ReadonlySet<string> {
   const ids = new Set<string>([sessionId])
   if (gardenerWorkerTargetId && gardenerWorkerTargetId !== sessionId) {
     ids.add(gardenerWorkerTargetId)
   }
-  for (const summary of history) {
+  return ids
+}
+
+export function resolveVisibleThreadIds(
+  sessionId: string,
+  gardenerWorkerTargetId: string | undefined,
+  options: {
+    lifecycle?: ThreadLifecycleStatus | "all"
+    history?: readonly StackSessionSummary[]
+    threadLifecycleStatus?: ReadonlyMap<string, ThreadLifecycleStatus>
+  } = {},
+): ReadonlySet<string> {
+  const ids = new Set(resolveActiveThreadIds(sessionId, gardenerWorkerTargetId))
+  const lifecycle = options.lifecycle ?? "live"
+  if (lifecycle === "all") {
+    for (const summary of options.history ?? []) ids.add(summary.id)
+    return ids
+  }
+  for (const summary of options.history ?? []) {
     if (!summary.metaThreadId) continue
-    if ((threadLifecycleStatus.get(summary.id) ?? "live") === "live") {
+    if ((options.threadLifecycleStatus?.get(summary.id) ?? "live") === lifecycle) {
       ids.add(summary.id)
     }
   }
@@ -319,9 +335,10 @@ export function activeThreadsFocusHint(focusMode: string): string {
  * thread rows carry `historyIndex` so callers can wire per-row selection/resume on click. */
 export function activeThreadRows(input: ActiveThreadsRenderInput): ActiveThreadRow[] {
   const showAll = input.focusMode === "history"
+  const visibleThreadIds = input.visibleThreadIds ?? input.activeThreadIds
   const summaries = showAll
     ? input.history
-    : input.history.filter((summary) => input.activeThreadIds.has(summary.id))
+    : input.history.filter((summary) => visibleThreadIds.has(summary.id))
 
   if (summaries.length === 0) {
     return [{ kind: "pager", text: showAll ? "(no threads yet)" : "(no active threads)" }]

@@ -373,6 +373,7 @@ import {
   renderCoreEventStreamStyled,
   resolveActiveThreadIds,
   resolveCoreEventStreamContext,
+  resolveVisibleThreadIds,
   styleActiveThreadRowStyled,
   type ThreadLifecycleStatus,
   type ThreadGoalStatus,
@@ -1876,12 +1877,12 @@ function createView(
   const leftPanelLayout = leftGardenerPanelLayout(state)
   const leftColumns = gardenerPanelColumns(renderer, leftPanelLayout.fraction)
   const centerColumns = centerPanelColumns(renderer)
-  const activeThreadIds = resolveActiveThreadIds(
-    options.session.id,
-    state.gardenerWorkerTargetId,
-    state.history,
-    state.threadLifecycleStatus,
-  )
+  const activeThreadIds = resolveActiveThreadIds(options.session.id, state.gardenerWorkerTargetId)
+  const visibleThreadIds = resolveVisibleThreadIds(options.session.id, state.gardenerWorkerTargetId, {
+    lifecycle: "live",
+    history: state.history,
+    threadLifecycleStatus: state.threadLifecycleStatus,
+  })
   const gardenerEvents = readThreadMetaEvents(options.config.stackDataRoot, state.gardenerThreadId)
   const workerMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
   const gardenerChatBlocks = buildGardenerChatBlocks(state, gardenerEvents)
@@ -2194,6 +2195,7 @@ function createView(
                 focusMode: state.focusMode,
                 history: state.history,
                 activeThreadIds,
+                visibleThreadIds,
                 selectedHistoryIndex: state.selectedHistoryIndex,
                 currentSessionId: options.session.id,
                 visibleRows: threadRows,
