@@ -64,14 +64,14 @@ fi
 if [ "$SKIP_HOST" = "0" ]; then
   if ! command -v wrangler >/dev/null 2>&1; then
     echo "ERROR: wrangler not found; cannot deploy to the install host." >&2
-    echo "       Install + auth wrangler (Cloudflare), then: wrangler pages deploy '$SITE' --project-name=$PAGES_PROJECT" >&2
+    echo "       Install + auth wrangler (Cloudflare), then: wrangler pages deploy '$SITE' --project-name=$PAGES_PROJECT --branch=main" >&2
     exit 1
   fi
   echo "==> deploying release-site to Cloudflare Pages ($PAGES_PROJECT)"
-  wrangler pages deploy "$SITE" --project-name="$PAGES_PROJECT"
+  wrangler pages deploy "$SITE" --project-name="$PAGES_PROJECT" --branch=main
 else
   echo "==> skipping host (--skip-host). Deploy later with:"
-  echo "    wrangler pages deploy '$SITE' --project-name=$PAGES_PROJECT"
+  echo "    wrangler pages deploy '$SITE' --project-name=$PAGES_PROJECT --branch=main"
 fi
 
 echo "done: ${TAG} published (one artifact to the selected destinations)"

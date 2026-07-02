@@ -4179,11 +4179,20 @@ function actionResult(result: RemoteActionResult): JsonValue {
 }
 
 function actionResultWithData(result: RemoteActionResult, extra: Record<string, unknown> = {}): JsonValue {
+  const runtimeEvent = asRecord(toJsonValue(extra.runtime_event))
+  const localReceiptWarning =
+    runtimeEvent && runtimeEvent.ok === false
+      ? [
+          `remote action ${result.ok ? "landed" : "returned"}`,
+          `local runtime receipt failed: ${readString(runtimeEvent.message) ?? "unknown error"}`,
+        ].join("; ")
+      : undefined
   return toJsonValue({
     ok: result.ok,
     status: result.status,
-    message: result.message,
+    message: localReceiptWarning ? `${result.message}; ${localReceiptWarning}` : result.message,
     data: result.data ?? null,
+    ...(localReceiptWarning ? { local_receipt_warning: localReceiptWarning } : {}),
     ...extra,
   }) ?? null
 }
