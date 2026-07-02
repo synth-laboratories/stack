@@ -547,7 +547,7 @@ function readEnvironments(fileConfig: StackConfigFile): Record<StackEnvironmentN
     staging: {
       name: "staging",
       label: "Staging",
-      apiBaseUrl: "https://staging-api.usesynth.ai",
+      apiBaseUrl: "https://api-dev.usesynth.ai",
       authEnv: "SYNTH_STAGING_API_KEY",
     },
     prod: {

@@ -57,7 +57,7 @@ Live staging/prod proof uses the same payloads and records only HTTP status,
 backend event ids, or sanitized network error classes:
 
 ```bash
-bun run smoke:growth-ingestion -- --live-url https://staging-api.usesynth.ai
+bun run smoke:growth-ingestion -- --live-url https://api-dev.usesynth.ai
 bun run smoke:growth-ingestion -- --live-url https://api.usesynth.ai --allow-prod-post
 ```
 

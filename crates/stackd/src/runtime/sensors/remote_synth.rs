@@ -502,7 +502,7 @@ fn default_remote_environment(environment_name: &str) -> RemoteEnvironmentDefaul
             auth_env_file: Some("../synth-ai/.env".to_string()),
         },
         "staging" => RemoteEnvironmentDefaults {
-            api_base_url: "https://staging-api.usesynth.ai".to_string(),
+            api_base_url: "https://api-dev.usesynth.ai".to_string(),
             auth_env: "SYNTH_STAGING_API_KEY".to_string(),
             auth_env_file: None,
         },

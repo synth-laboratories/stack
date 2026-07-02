@@ -59,7 +59,7 @@ Contract + optional live backend proof:
 
 ```bash
 make smoke-crash-ingestion
-bun run smoke:crash-ingestion -- --live-url https://staging-api.usesynth.ai
+bun run smoke:crash-ingestion -- --live-url https://api-dev.usesynth.ai
 ```
 
 Live prod POST is guarded the same way as growth ingestion; do not pass
