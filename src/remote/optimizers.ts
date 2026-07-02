@@ -380,7 +380,7 @@ async function readRunDetail(
     backendUpdatedAt: readString(backendProjection?.updated_at) ?? run.updatedAt,
     resultKeys: resultPayload ? Object.keys(resultPayload).slice(0, 5) : [],
     stateKeys: statePayload ? Object.keys(statePayload).slice(0, 5) : [],
-    artifactNames: readArtifactNames(payload),
+    artifactNames: readArtifactNames(payload, statePayload),
     eventCount: events.length,
     latestEventSeq: latestEventSeq(events),
     eventTypes: events.map((event) => event.eventType).filter((type): type is string => Boolean(type)).slice(-5),
@@ -413,17 +413,27 @@ function readRuns(value: unknown): HostedOptimizerRunSummary[] {
     .filter((run): run is HostedOptimizerRunSummary => Boolean(run))
 }
 
-function readArtifactNames(payload: Record<string, unknown> | undefined): string[] {
-  const handles = asRecord(payload?.artifact_handles)
-  if (handles) return Object.keys(handles).slice(0, 5)
-  const artifacts = asArray(payload?.artifacts)
-  return artifacts
-    .map((item) => {
+function readArtifactNames(
+  payload: Record<string, unknown> | undefined,
+  statePayload: Record<string, unknown> | undefined,
+): string[] {
+  const names = new Set<string>()
+  for (const source of [
+    asRecord(payload?.artifact_handles),
+    asRecord(asRecord(payload?.result)?.artifact_handles),
+    asRecord(statePayload?.artifact_handles),
+    asRecord(asRecord(statePayload?.result)?.artifact_handles),
+  ]) {
+    for (const name of Object.keys(source ?? {})) names.add(name)
+  }
+  for (const source of [asArray(payload?.artifacts), asArray(statePayload?.artifacts)]) {
+    for (const item of source) {
       const artifact = asRecord(item)
-      return readString(artifact?.artifact_name) ?? readString(artifact?.name)
-    })
-    .filter((name): name is string => Boolean(name))
-    .slice(0, 5)
+      const name = readString(artifact?.artifact_name) ?? readString(artifact?.name)
+      if (name) names.add(name)
+    }
+  }
+  return [...names].slice(0, 5)
 }
 
 function readEvents(text: string): { seq?: number; eventType?: string }[] {
