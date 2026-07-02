@@ -1599,6 +1599,13 @@ export class StackMcpServer {
         pid: result.service.pid ?? null,
         pid_alive: result.service.pidAlive ?? null,
       },
+      container: result.container
+        ? {
+            url: result.container.url,
+            pid: result.container.pid ?? null,
+            log_path: result.container.logPath,
+          }
+        : null,
       run: result.run
         ? {
             run_id: result.run.runId,
