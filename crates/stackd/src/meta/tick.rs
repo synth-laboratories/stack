@@ -13,6 +13,7 @@ use stack_core::actor_runtime::{event_id, event_type, thread_actor_dir_path, Act
 use stack_core::events::read_thread_events;
 use stack_core::meta_thread::{manifest_is_archived, read_manifest};
 use stack_core::session::list_summaries;
+use std::collections::HashSet;
 use tokio::fs;
 
 #[derive(Debug, Serialize)]
@@ -30,13 +31,16 @@ pub async fn read_meta_status(state: &AppState) -> anyhow::Result<MetaStatus> {
 /// One full tick (POST /meta/tick): produce triggers, then reduce and persist.
 pub async fn run_meta_tick(state: &AppState) -> anyhow::Result<MetaStatus> {
     let _guard = state.meta_tick_lock.lock().await;
-    let summaries = list_summaries(&state.paths.session_log_dir).await?;
-    for summary in summaries.iter().take(64) {
-        if is_archived(state, summary.meta_thread_id.as_deref()).await {
+    let candidates = status_thread_candidates(state).await?;
+    for candidate in candidates.iter().take(64) {
+        if is_archived(state, candidate.meta_thread_id.as_deref()).await {
             continue;
         }
-        if let Err(error) = queue_gardener_triggers(state, &summary.id).await {
-            tracing::warn!("meta tick gardener queue failed for {}: {error}", summary.id);
+        if let Err(error) = queue_gardener_triggers(state, &candidate.thread_id).await {
+            tracing::warn!(
+                "meta tick gardener queue failed for {}: {error}",
+                candidate.thread_id
+            );
         }
     }
     let status = build_status(state).await?;
@@ -45,26 +49,29 @@ pub async fn run_meta_tick(state: &AppState) -> anyhow::Result<MetaStatus> {
 }
 
 async fn build_status(state: &AppState) -> anyhow::Result<MetaStatus> {
-    let summaries = list_summaries(&state.paths.session_log_dir).await?;
+    let candidates = status_thread_candidates(state).await?;
     let mut threads = Vec::new();
-    for summary in summaries.into_iter().take(64) {
-        if is_archived(state, summary.meta_thread_id.as_deref()).await {
+    for candidate in candidates.into_iter().take(64) {
+        if is_archived(state, candidate.meta_thread_id.as_deref()).await {
             continue;
         }
-        let events = match read_thread_events(&state.paths.stack_dir, &summary.id).await {
+        let events = match read_thread_events(&state.paths.stack_dir, &candidate.thread_id).await {
             Ok(events) => events,
             Err(error) => {
-                tracing::warn!("meta status skipping unreadable thread {}: {error}", summary.id);
+                tracing::warn!(
+                    "meta status skipping unreadable thread {}: {error}",
+                    candidate.thread_id
+                );
                 continue;
             }
         };
         if events.is_empty() {
             continue;
         }
-        let actor_states = read_actor_states(state, &summary.id).await;
+        let actor_states = read_actor_states(state, &candidate.thread_id).await;
         threads.push(reduce_thread(
-            &summary.id,
-            summary.meta_thread_id.as_deref(),
+            &candidate.thread_id,
+            candidate.meta_thread_id.as_deref(),
             &events,
             &actor_states,
         ));
@@ -74,6 +81,47 @@ async fn build_status(state: &AppState) -> anyhow::Result<MetaStatus> {
         generated_at: now(),
         threads,
     })
+}
+
+struct StatusThreadCandidate {
+    thread_id: String,
+    meta_thread_id: Option<String>,
+}
+
+async fn status_thread_candidates(state: &AppState) -> anyhow::Result<Vec<StatusThreadCandidate>> {
+    let summaries = list_summaries(&state.paths.session_log_dir).await?;
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+    for summary in summaries {
+        seen.insert(summary.id.clone());
+        candidates.push(StatusThreadCandidate {
+            thread_id: summary.id,
+            meta_thread_id: summary.meta_thread_id,
+        });
+    }
+
+    let event_dir = state.paths.stack_dir.join("events").join("threads");
+    let mut entries = match fs::read_dir(&event_dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(candidates),
+        Err(error) => return Err(error.into()),
+    };
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|value| value.to_str()) else {
+            continue;
+        };
+        if seen.insert(stem.to_string()) {
+            candidates.push(StatusThreadCandidate {
+                thread_id: stem.to_string(),
+                meta_thread_id: None,
+            });
+        }
+    }
+    Ok(candidates)
 }
 
 async fn is_archived(state: &AppState, meta_thread_id: Option<&str>) -> bool {
