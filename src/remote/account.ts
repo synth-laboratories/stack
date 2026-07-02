@@ -29,10 +29,11 @@ export function maskApiKeyHint(token: string): string {
 }
 
 export function authSetupHint(auth: StackAuthStatus): string {
+  const command = "stack auth open signin"
   if (auth.envFile) {
-    return `Set ${auth.authEnv} in ${auth.envFile} · keys ${SYNTH_KEYS_URL} · signup ${SYNTH_SIGNUP_URL}`
+    return `Local ready · connect cloud with ${command} · ${auth.authEnv} may live in ${auth.envFile}`
   }
-  return `Set ${auth.authEnv} · keys ${SYNTH_KEYS_URL} · signup ${SYNTH_SIGNUP_URL}`
+  return `Local ready · connect cloud with ${command} · keys ${SYNTH_KEYS_URL} · signup ${SYNTH_SIGNUP_URL}`
 }
 
 export async function readRemoteAccountSnapshot(config: StackConfig): Promise<RemoteAccountSnapshot> {

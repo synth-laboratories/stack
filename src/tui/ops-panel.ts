@@ -160,9 +160,9 @@ function setupHintLines(input: {
 }): string[] {
   const lines: string[] = []
   if (!input.setup.hasAuth) {
-    lines.push("Setup · auth missing")
+    lines.push("Setup · local ready")
     lines.push(`  ${oneLine(input.setup.authMessage, 52)}`)
-    if (input.setup.authEnvFile) lines.push(`  add key to ${oneLine(input.setup.authEnvFile, 44)}`)
+    if (input.setup.authEnvFile) lines.push(`  cloud key may live in ${oneLine(input.setup.authEnvFile, 33)}`)
   }
   if (input.setup.localBootstrap && !input.setup.localBootstrap.dockerAvailable) {
     lines.push("Setup · docker unavailable")
@@ -249,7 +249,7 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
     lines.push(`  ${oneLine(account.message, 52)}`)
   }
   if (usage.status === "missing-auth") {
-    lines.push("  add Synth API key (see Setup above)")
+    lines.push("  Local ready · stack auth open signin for cloud")
     return lines
   }
   if (usage.status === "offline") {
@@ -533,7 +533,7 @@ function formatProjectExperiments7d(project: RemoteProjectsPanelSnapshot["projec
 
 function projectsBody(snapshot: RemoteProjectsPanelSnapshot): string[] {
   if (snapshot.projects.length === 0) {
-    if (snapshot.status === "missing-auth") return ["  add Synth API key (see Setup above)"]
+    if (snapshot.status === "missing-auth") return ["  Local ready · stack auth open signin for cloud"]
     if (snapshot.status === "offline") return ["  start dev slot (see Setup above)"]
     if (snapshot.tagScope) return ["  (no live projects)", "", ...orgWideTagLines(snapshot.tagScope)]
     return ["  (no live projects)"]
@@ -620,7 +620,7 @@ function hostedHeader(snapshot: HostedOptimizerSnapshot): string {
 
 function hostedBody(snapshot: HostedOptimizerSnapshot, focus: OpsPanelFocus): string[] {
   if (snapshot.runs.length === 0) {
-    if (snapshot.status === "missing-auth") return ["  add Synth API key"]
+    if (snapshot.status === "missing-auth") return ["  Local ready · stack auth open signin for hosted jobs"]
     return ["  (no hosted optimizer jobs)"]
   }
   const lines = snapshot.runs.slice(0, 6).map((run, index) => {
@@ -659,7 +659,7 @@ function containersHeader(snapshot: ContainersPanelSnapshot): string {
 
 function containersBody(snapshot: ContainersPanelSnapshot): string[] {
   if (snapshot.containers.length === 0) {
-    if (snapshot.status === "missing-auth") return ["  add Synth API key (see Setup above)"]
+    if (snapshot.status === "missing-auth") return ["  Local ready · stack auth open signin for containers"]
     if (snapshot.status === "offline") return ["  API offline — start dev slot or check /v1/containers"]
     return ["  (no containers) · synth-ai containers create …"]
   }

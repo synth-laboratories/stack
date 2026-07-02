@@ -5815,13 +5815,13 @@ function synthConnectionBadge(
   const hint = snap.keyHint
 
   if (!auth.hasAuth) {
-    return { label: `○ ${env} · add key`, fg: theme.synth.red }
+    return { label: `○ ${env} · connect`, fg: theme.synth.amber }
   }
   if (snap.status === "invalid-auth") {
     return { label: `○ ${env} · bad key`, fg: theme.synth.red }
   }
   if (snap.status === "missing-auth") {
-    return { label: `○ ${env} · add key`, fg: theme.synth.red }
+    return { label: `○ ${env} · connect`, fg: theme.synth.amber }
   }
   if (snap.status === "offline") {
     return { label: `◐ ${env} · ${hint ?? "key"} offline`, fg: theme.synth.amber }
@@ -10073,11 +10073,15 @@ function remoteResearchSnapshotFromRuntime(
   const remote = snapshot?.remote_synth
   if (!snapshot || !remote) return undefined
   const runtimeEnvironment = runtimeRemoteEnvironment(remote, config)
+  const deployments = remote.deployments ?? []
+  const deploymentCount = remote.deployment_count ?? deployments.length
   const hasRemoteState =
     remote.runs.length > 0 ||
     remote.factories.length > 0 ||
+    deployments.length > 0 ||
     remote.active_run_count > 0 ||
-    remote.active_factory_count > 0
+    remote.active_factory_count > 0 ||
+    deploymentCount > 0
   if (!hasRemoteState) return undefined
 
   const fallbackRunsById = new Map((fallback?.jobs ?? []).map((run) => [run.runId, run]))
@@ -10125,7 +10129,7 @@ function remoteResearchSnapshotFromRuntime(
     environmentName: runtimeEnvironment.environmentName,
     apiBaseUrl: runtimeEnvironment.apiBaseUrl,
     checkedAt: snapshot.updated_at,
-    message: `runtime ${jobs.length} SMR runs, ${factories.length} factories`,
+    message: `runtime ${jobs.length} SMR runs, ${factories.length} factories, ${deploymentCount} deployments`,
     jobs,
     factories,
     runDetails: fallback?.runDetails ?? {},

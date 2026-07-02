@@ -98,6 +98,7 @@ export type StackdRuntimeCorrelation = {
   project_id?: string | null
   run_id?: string | null
   factory_id?: string | null
+  deployment_id?: string | null
   optimizer_run_id?: string | null
   trace_id?: string | null
   commit_sha?: string | null
@@ -163,11 +164,14 @@ export type StackdFactorySnapshot = {
     active_run_count: number
     active_factory_count: number
     active_hosted_optimizer_count: number
+    deployment_count?: number
+    degraded_deployment_count?: number
     last_ok_at?: string | null
     projects: StackdRemoteProjectSnapshot[]
     runs: StackdRemoteRunSnapshot[]
     factories: StackdRemoteFactorySnapshot[]
     hosted_optimizers: StackdRemoteHostedOptimizerSnapshot[]
+    deployments?: StackdRemoteDeploymentSnapshot[]
   }
   recent_events: StackdRuntimeEventRef[]
 }
@@ -213,6 +217,20 @@ export type StackdRemoteHostedOptimizerSnapshot = {
   status: string
   updated_at?: string | null
   terminal: boolean
+}
+
+export type StackdRemoteDeploymentSnapshot = {
+  deployment_id: string
+  name: string
+  status?: string | null
+  preflight_status?: string | null
+  degraded_reason?: string | null
+  project_id?: string | null
+  factory_id?: string | null
+  topology?: string | null
+  substrate?: string | null
+  updated_at?: string | null
+  ready?: boolean | null
 }
 
 export type StackdExport = {

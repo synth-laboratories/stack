@@ -31,11 +31,14 @@ pub struct RemoteSynthSnapshot {
     pub active_run_count: usize,
     pub active_factory_count: usize,
     pub active_hosted_optimizer_count: usize,
+    pub deployment_count: usize,
+    pub degraded_deployment_count: usize,
     pub last_ok_at: Option<String>,
     pub projects: Vec<RemoteProjectSnapshot>,
     pub runs: Vec<RemoteRunSnapshot>,
     pub factories: Vec<RemoteFactorySnapshot>,
     pub hosted_optimizers: Vec<RemoteHostedOptimizerSnapshot>,
+    pub deployments: Vec<RemoteDeploymentSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -86,6 +89,21 @@ pub struct RemoteHostedOptimizerSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteDeploymentSnapshot {
+    pub deployment_id: String,
+    pub name: String,
+    pub status: Option<String>,
+    pub preflight_status: Option<String>,
+    pub degraded_reason: Option<String>,
+    pub project_id: Option<String>,
+    pub factory_id: Option<String>,
+    pub topology: Option<String>,
+    pub substrate: Option<String>,
+    pub updated_at: Option<String>,
+    pub ready: Option<bool>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeEventRef {
     pub seq: i64,
     pub event_type: String,
@@ -119,11 +137,14 @@ impl FactorySnapshot {
                 active_run_count: 0,
                 active_factory_count: 0,
                 active_hosted_optimizer_count: 0,
+                deployment_count: 0,
+                degraded_deployment_count: 0,
                 last_ok_at: None,
                 projects: Vec::new(),
                 runs: Vec::new(),
                 factories: Vec::new(),
                 hosted_optimizers: Vec::new(),
+                deployments: Vec::new(),
             },
             recent_events: Vec::new(),
         }

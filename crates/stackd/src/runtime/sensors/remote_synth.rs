@@ -26,6 +26,7 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
         cursor.runs.clear();
         cursor.factories.clear();
         cursor.optimizers.clear();
+        cursor.deployments.clear();
     }
     cursor.environment_name = Some(profile.environment_name.clone());
     cursor.api_base_url = Some(profile.api_base_url.clone());
@@ -359,6 +360,63 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
             "hosted_optimizers",
             &observed_at,
             "/api/v1/optimizers/runs?limit=12",
+            error,
+            &profile,
+            RuntimeCorrelation::default(),
+        )),
+    }
+
+    match fetch_json(
+        client,
+        &api_key,
+        &base_url,
+        "/smr/deployments?limit=20&include_archived=false",
+    )
+    .await
+    {
+        Ok(deployments) => {
+            let mut observed_deployment_ids = BTreeSet::new();
+            for deployment in read_deployments(&deployments) {
+                observed_deployment_ids.insert(deployment.deployment_id.clone());
+                let previous = cursor.deployments.get(&deployment.deployment_id);
+                if previous.is_none_or(|prior| deployment.changed(prior)) {
+                    events.push(deployment_event(
+                        "sensor.remote.deployment.updated",
+                        &deployment,
+                        &observed_at,
+                        &profile,
+                        previous.cloned(),
+                    ));
+                }
+                cursor
+                    .deployments
+                    .insert(deployment.deployment_id.clone(), deployment);
+            }
+            let unobserved_deployments = cursor
+                .deployments
+                .values()
+                .filter(|deployment| !observed_deployment_ids.contains(&deployment.deployment_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            for mut deployment in unobserved_deployments {
+                deployment.status = Some("unobserved".to_string());
+                deployment.ready = Some(false);
+                events.push(deployment_event(
+                    "sensor.remote.deployment.unobserved",
+                    &deployment,
+                    &observed_at,
+                    &profile,
+                    Some(deployment.clone()),
+                ));
+                cursor.deployments.remove(&deployment.deployment_id);
+            }
+        }
+        Err(error) => events.push(fetch_failed_event(
+            "sensor.remote.deployments.fetch_failed",
+            "remote_deployment_list",
+            "deployments",
+            &observed_at,
+            "/smr/deployments?limit=20&include_archived=false",
             error,
             &profile,
             RuntimeCorrelation::default(),
@@ -721,6 +779,46 @@ fn optimizer_event(
     }
 }
 
+fn deployment_event(
+    event_type: &str,
+    deployment: &RemoteDeploymentCursor,
+    observed_at: &str,
+    profile: &RemoteSynthProfile,
+    previous: Option<RemoteDeploymentCursor>,
+) -> RuntimeEventDraft {
+    RuntimeEventDraft {
+        event_type: event_type.to_string(),
+        source: "sensor.remote_synth".to_string(),
+        observed_at: observed_at.to_string(),
+        subject: RuntimeSubject {
+            kind: "remote_deployment".to_string(),
+            id: deployment.deployment_id.clone(),
+        },
+        correlation: RuntimeCorrelation {
+            project_id: deployment.project_id.clone(),
+            factory_id: deployment.factory_id.clone(),
+            deployment_id: Some(deployment.deployment_id.clone()),
+            ..RuntimeCorrelation::default()
+        },
+        payload: json!({
+            "environment": profile.environment_name,
+            "api_base_url": profile.api_base_url,
+            "deployment_id": deployment.deployment_id,
+            "name": deployment.name,
+            "status": deployment.status,
+            "preflight_status": deployment.preflight_status,
+            "degraded_reason": deployment.degraded_reason,
+            "project_id": deployment.project_id,
+            "factory_id": deployment.factory_id,
+            "topology": deployment.topology,
+            "substrate": deployment.substrate,
+            "updated_at": deployment.updated_at,
+            "ready": deployment.ready,
+            "previous": previous,
+        }),
+    }
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct RemoteSynthCursor {
     environment_name: Option<String>,
@@ -735,6 +833,8 @@ struct RemoteSynthCursor {
     factories: BTreeMap<String, RemoteFactoryCursor>,
     #[serde(default)]
     optimizers: BTreeMap<String, RemoteOptimizerCursor>,
+    #[serde(default)]
+    deployments: BTreeMap<String, RemoteDeploymentCursor>,
 }
 
 impl RemoteSynthCursor {
@@ -748,6 +848,7 @@ impl RemoteSynthCursor {
             runs: BTreeMap::new(),
             factories: BTreeMap::new(),
             optimizers: BTreeMap::new(),
+            deployments: BTreeMap::new(),
         })
     }
 
@@ -953,6 +1054,36 @@ impl RemoteOptimizerCursor {
     }
 }
 
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct RemoteDeploymentCursor {
+    deployment_id: String,
+    name: Option<String>,
+    status: Option<String>,
+    preflight_status: Option<String>,
+    degraded_reason: Option<String>,
+    project_id: Option<String>,
+    factory_id: Option<String>,
+    topology: Option<String>,
+    substrate: Option<String>,
+    updated_at: Option<String>,
+    ready: Option<bool>,
+}
+
+impl RemoteDeploymentCursor {
+    fn changed(&self, prior: &Self) -> bool {
+        self.name != prior.name
+            || self.status != prior.status
+            || self.preflight_status != prior.preflight_status
+            || self.degraded_reason != prior.degraded_reason
+            || self.project_id != prior.project_id
+            || self.factory_id != prior.factory_id
+            || self.topology != prior.topology
+            || self.substrate != prior.substrate
+            || self.updated_at != prior.updated_at
+            || self.ready != prior.ready
+    }
+}
+
 fn read_projects(value: &Value) -> Vec<RemoteProjectCursor> {
     array_payload(value)
         .into_iter()
@@ -1024,6 +1155,58 @@ fn read_optimizers(value: &Value) -> Vec<RemoteOptimizerCursor> {
                 run_id,
                 status: read_string(&item, "status"),
                 updated_at: read_string(&item, "updated_at")
+                    .or_else(|| read_string(&item, "created_at")),
+            })
+        })
+        .collect()
+}
+
+fn read_deployments(value: &Value) -> Vec<RemoteDeploymentCursor> {
+    array_payload(value)
+        .into_iter()
+        .filter_map(|item| {
+            let deployment_id = read_string(&item, "cloud_deployment_id")
+                .or_else(|| read_string(&item, "deployment_id"))
+                .or_else(|| read_string(&item, "id"))?;
+            let status = read_string(&item, "status");
+            let preflight_status =
+                read_string(&item, "preflight_status").or_else(|| read_string(&item, "health"));
+            let degraded_reason = read_string(&item, "degraded_reason")
+                .or_else(|| read_string(&item, "failure_reason"))
+                .or_else(|| read_string(&item, "message"));
+            Some(RemoteDeploymentCursor {
+                deployment_id,
+                name: read_string(&item, "name").or_else(|| read_string(&item, "display_name")),
+                ready: read_bool(&item, "ready").or_else(|| {
+                    let status = status.as_deref().unwrap_or_default().to_ascii_lowercase();
+                    let preflight = preflight_status
+                        .as_deref()
+                        .unwrap_or_default()
+                        .to_ascii_lowercase();
+                    if status.is_empty() && preflight.is_empty() {
+                        None
+                    } else {
+                        Some(
+                            matches!(status.as_str(), "ready" | "active" | "healthy")
+                                || matches!(preflight.as_str(), "ready" | "passed" | "pass"),
+                        )
+                    }
+                }),
+                status,
+                preflight_status,
+                degraded_reason,
+                project_id: read_string(&item, "project_id")
+                    .or_else(|| read_string(&item, "linked_project_id")),
+                factory_id: read_string(&item, "factory_id")
+                    .or_else(|| read_string(&item, "default_factory_id")),
+                topology: read_string(&item, "topology_ref")
+                    .or_else(|| read_string(&item, "environment_name"))
+                    .or_else(|| read_string(&item, "environment")),
+                substrate: read_string(&item, "preferred_substrate")
+                    .or_else(|| read_string(&item, "substrate"))
+                    .or_else(|| read_string(&item, "host_kind")),
+                updated_at: read_string(&item, "updated_at")
+                    .or_else(|| read_string(&item, "last_preflight_at"))
                     .or_else(|| read_string(&item, "created_at")),
             })
         })
@@ -1141,7 +1324,14 @@ fn array_payload(value: &Value) -> Vec<Value> {
     if let Some(values) = value.get("items").and_then(Value::as_array) {
         return values.clone();
     }
-    for key in ["runs", "projects", "factories", "optimizers"] {
+    for key in [
+        "runs",
+        "projects",
+        "factories",
+        "optimizers",
+        "deployments",
+        "cloud_deployments",
+    ] {
         if let Some(values) = value.get(key).and_then(Value::as_array) {
             return values.clone();
         }
@@ -1158,4 +1348,8 @@ fn array_payload(value: &Value) -> Vec<Value> {
 
 fn read_string(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn read_bool(value: &Value, key: &str) -> Option<bool> {
+    value.get(key).and_then(Value::as_bool)
 }

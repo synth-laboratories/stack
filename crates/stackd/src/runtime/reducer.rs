@@ -1,8 +1,8 @@
 use chrono::Utc;
 use stack_core::runtime_event::RuntimeEvent;
 use stack_core::runtime_state::{
-    FactorySnapshot, RemoteFactorySnapshot, RemoteHostedOptimizerSnapshot, RemoteProjectSnapshot,
-    RemoteRunSnapshot, RuntimeEventRef,
+    FactorySnapshot, RemoteDeploymentSnapshot, RemoteFactorySnapshot,
+    RemoteHostedOptimizerSnapshot, RemoteProjectSnapshot, RemoteRunSnapshot, RuntimeEventRef,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -16,6 +16,7 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
     let mut remote_run_map = BTreeMap::<String, RemoteRunSnapshot>::new();
     let mut remote_factory_map = BTreeMap::<String, RemoteFactorySnapshot>::new();
     let mut remote_hosted_optimizer_map = BTreeMap::<String, RemoteHostedOptimizerSnapshot>::new();
+    let mut remote_deployment_map = BTreeMap::<String, RemoteDeploymentSnapshot>::new();
     let mut sensor_degraded = false;
 
     for event in events {
@@ -96,6 +97,7 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
                 remote_run_map.clear();
                 remote_factory_map.clear();
                 remote_hosted_optimizer_map.clear();
+                remote_deployment_map.clear();
                 snapshot.remote_synth.sync_enabled = false;
                 snapshot.remote_synth.auth_status = "unknown".to_string();
                 snapshot.remote_synth.last_ok_at = None;
@@ -106,6 +108,7 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
                 if !remote_runs.is_empty()
                     || !remote_factories.is_empty()
                     || !remote_hosted_optimizers.is_empty()
+                    || !remote_deployment_map.is_empty()
                 {
                     sensor_degraded = true;
                 }
@@ -115,10 +118,12 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
             | "sensor.remote.factories.fetch_failed"
             | "sensor.remote.factory_projects.fetch_failed"
             | "sensor.remote.factory_status.fetch_failed"
-            | "sensor.remote.hosted_optimizers.fetch_failed" => {
+            | "sensor.remote.hosted_optimizers.fetch_failed"
+            | "sensor.remote.deployments.fetch_failed" => {
                 if !remote_runs.is_empty()
                     || !remote_factories.is_empty()
                     || !remote_hosted_optimizers.is_empty()
+                    || !remote_deployment_map.is_empty()
                 {
                     sensor_degraded = true;
                 }
@@ -190,6 +195,15 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
                     remote_hosted_optimizer_map.insert(optimizer.run_id.clone(), optimizer);
                 }
             }
+            "sensor.remote.deployment.updated" => {
+                let deployment = remote_deployment_snapshot(event);
+                remote_deployment_map.insert(deployment.deployment_id.clone(), deployment);
+            }
+            "sensor.remote.deployment.unobserved" => {
+                let deployment_id = payload_string(event, "deployment_id")
+                    .unwrap_or_else(|| event.subject.id.clone());
+                remote_deployment_map.remove(&deployment_id);
+            }
             _ => {}
         }
     }
@@ -198,6 +212,11 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
     snapshot.remote_synth.active_run_count = remote_runs.len();
     snapshot.remote_synth.active_factory_count = remote_factories.len();
     snapshot.remote_synth.active_hosted_optimizer_count = remote_hosted_optimizers.len();
+    snapshot.remote_synth.deployment_count = remote_deployment_map.len();
+    snapshot.remote_synth.degraded_deployment_count = remote_deployment_map
+        .values()
+        .filter(|deployment| deployment_is_degraded(deployment))
+        .count();
     snapshot.control_state = control_state(&snapshot, sensor_degraded);
     for run in remote_run_map.values() {
         if let Some(project_id) = &run.project_id {
@@ -232,6 +251,9 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
         .collect::<Vec<_>>();
     hosted_optimizers.sort_by(compare_remote_hosted_optimizer_snapshot);
     snapshot.remote_synth.hosted_optimizers = hosted_optimizers.into_iter().take(50).collect();
+    let mut deployments = remote_deployment_map.into_values().collect::<Vec<_>>();
+    deployments.sort_by(compare_remote_deployment_snapshot);
+    snapshot.remote_synth.deployments = deployments.into_iter().take(50).collect();
     snapshot.recent_events = events
         .iter()
         .rev()
@@ -257,7 +279,8 @@ fn control_state(snapshot: &FactorySnapshot, sensor_degraded: bool) -> String {
     let any_remote_active = remote_active || hosted_optimizer_active;
     let degraded = sensor_degraded
         || (snapshot.local_gepa.service_status == "stopped" && local_active)
-        || (snapshot.remote_synth.auth_status == "missing" && any_remote_active);
+        || (snapshot.remote_synth.auth_status == "missing" && any_remote_active)
+        || snapshot.remote_synth.degraded_deployment_count > 0;
     if degraded {
         "degraded"
     } else if local_active && any_remote_active {
@@ -323,8 +346,40 @@ fn compare_remote_hosted_optimizer_snapshot(
         .then_with(|| left.run_id.cmp(&right.run_id))
 }
 
+fn compare_remote_deployment_snapshot(
+    left: &RemoteDeploymentSnapshot,
+    right: &RemoteDeploymentSnapshot,
+) -> std::cmp::Ordering {
+    deployment_is_degraded(right)
+        .cmp(&deployment_is_degraded(left))
+        .then_with(|| {
+            compare_optional_iso_desc(left.updated_at.as_deref(), right.updated_at.as_deref())
+        })
+        .then_with(|| left.deployment_id.cmp(&right.deployment_id))
+}
+
 fn factory_is_active(factory: &RemoteFactorySnapshot) -> bool {
     factory.is_running == Some(true) || factory.active_efforts.unwrap_or(0) > 0
+}
+
+fn deployment_is_degraded(deployment: &RemoteDeploymentSnapshot) -> bool {
+    if deployment.degraded_reason.is_some() {
+        return true;
+    }
+    let status = deployment
+        .status
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let preflight = deployment
+        .preflight_status
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    matches!(
+        status.as_str(),
+        "degraded" | "failed" | "error" | "unhealthy" | "disabled"
+    ) || matches!(preflight.as_str(), "failed" | "error" | "unhealthy")
 }
 
 fn compare_optional_iso_desc(left: Option<&str>, right: Option<&str>) -> std::cmp::Ordering {
@@ -340,6 +395,26 @@ fn remote_hosted_optimizer_snapshot(event: &RuntimeEvent) -> RemoteHostedOptimiz
         terminal: is_terminal_optimizer_status(&status),
         status,
         updated_at: payload_string(event, "updated_at"),
+    }
+}
+
+fn remote_deployment_snapshot(event: &RuntimeEvent) -> RemoteDeploymentSnapshot {
+    RemoteDeploymentSnapshot {
+        deployment_id: payload_string(event, "deployment_id")
+            .unwrap_or_else(|| event.subject.id.clone()),
+        name: payload_string(event, "name").unwrap_or_else(|| event.subject.id.clone()),
+        status: payload_string(event, "status"),
+        preflight_status: payload_string(event, "preflight_status"),
+        degraded_reason: payload_string(event, "degraded_reason"),
+        project_id: payload_string(event, "project_id"),
+        factory_id: payload_string(event, "factory_id"),
+        topology: payload_string(event, "topology"),
+        substrate: payload_string(event, "substrate"),
+        updated_at: payload_string(event, "updated_at"),
+        ready: event
+            .payload
+            .get("ready")
+            .and_then(serde_json::Value::as_bool),
     }
 }
 

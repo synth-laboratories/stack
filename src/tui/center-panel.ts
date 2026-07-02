@@ -99,11 +99,16 @@ function styleRuntimeSnapshotLine(
   const remoteOptimizers = snapshot.remote_synth.active_hosted_optimizer_count > 0
     ? ` opt:${snapshot.remote_synth.active_hosted_optimizer_count}`
     : ""
+  const deploymentCount = snapshot.remote_synth.deployment_count ?? 0
+  const degradedDeploymentCount = snapshot.remote_synth.degraded_deployment_count ?? 0
+  const remoteDeployments = deploymentCount > 0
+    ? ` dep:${deploymentCount}${degradedDeploymentCount > 0 ? `!${degradedDeploymentCount}` : ""}`
+    : ""
   const localRuns = snapshot.local_gepa.active_run_count > 0
     ? ` gepa:${snapshot.local_gepa.active_run_count}`
     : ""
   const state = snapshot.control_state
-  const text = oneLine(`runtime ${state} local:${localStatus} synth${remoteEnvironment}:${remoteAuth}${remoteRuns}${remoteOptimizers}${localRuns}${eventSeq}${tickEvents}`, columns)
+  const text = oneLine(`runtime ${state} local:${localStatus} synth${remoteEnvironment}:${remoteAuth}${remoteRuns}${remoteOptimizers}${remoteDeployments}${localRuns}${eventSeq}${tickEvents}`, columns)
   const color = state === "degraded"
     ? theme.synth.red
     : remoteAuth === "ready" || localStatus === "running"
@@ -288,7 +293,7 @@ function runRecency(run: RemoteSmrRunSummary): number {
 }
 
 function emptyProjectsLine(snapshot: RemoteProjectsPanelSnapshot): string {
-  if (snapshot.status === "missing-auth") return "(add Synth API key)"
+  if (snapshot.status === "missing-auth") return "(Local ready · connect cloud)"
   if (snapshot.status === "offline") return "(API offline)"
   return "(no live projects)"
 }

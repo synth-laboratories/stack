@@ -1935,6 +1935,8 @@ function runtimeSummaryFromFactory(snapshot: StackdFactorySnapshot | null | unde
     control_state: string
     smr_runs: number
     factories: number
+    deployments: number
+    degraded_deployments: number
     active_smr_runs: number
     active_factories: number
     selected_smr_run_id?: string
@@ -1954,14 +1956,18 @@ function runtimeSummaryFromFactory(snapshot: StackdFactorySnapshot | null | unde
 } | undefined {
   const remote = snapshot?.remote_synth
   if (!snapshot || !remote) return undefined
+  const deployments = remote.deployments ?? []
+  const deploymentCount = remote.deployment_count ?? deployments.length
   const hasRemoteState =
     remote.projects.length > 0 ||
     remote.runs.length > 0 ||
     remote.factories.length > 0 ||
+    deployments.length > 0 ||
     remote.hosted_optimizers.length > 0 ||
     remote.active_run_count > 0 ||
     remote.active_factory_count > 0 ||
-    remote.active_hosted_optimizer_count > 0
+    remote.active_hosted_optimizer_count > 0 ||
+    deploymentCount > 0
   if (!hasRemoteState) return undefined
   const selectedRun = remote.runs.find((run) => !run.terminal) ?? remote.runs[0]
   const selectedFactory = remote.factories.find((factory) => factory.is_running) ?? remote.factories[0]
@@ -1973,10 +1979,12 @@ function runtimeSummaryFromFactory(snapshot: StackdFactorySnapshot | null | unde
       environment: runtimeEnvironment.environmentName,
       api_base_url: runtimeEnvironment.apiBaseUrl,
       status: remote.auth_status === "ready" ? "ready" : "missing-auth",
-      message: `runtime ${remote.active_project_count} projects`,
+      message: `runtime ${remote.active_project_count} projects, ${deploymentCount} deployments`,
       control_state: snapshot.control_state,
       smr_runs: remote.runs.length,
       factories: remote.factories.length,
+      deployments: deploymentCount,
+      degraded_deployments: remote.degraded_deployment_count ?? 0,
       active_smr_runs: remote.active_run_count,
       active_factories: remote.active_factory_count,
       ...(selectedRun ? { selected_smr_run_id: selectedRun.run_id } : {}),
@@ -2002,7 +2010,9 @@ function remoteProjectsMcpFromRuntime(
 ): JsonValue | undefined {
   const remote = snapshot?.remote_synth
   const projects = remote?.projects ?? []
-  if (!remote || projects.length === 0) return undefined
+  const runtimeDeployments = remote?.deployments ?? []
+  const deploymentCount = remote?.deployment_count ?? runtimeDeployments.length
+  if (!remote || (projects.length === 0 && deploymentCount === 0)) return undefined
   const runtimeEnvironment = runtimeRemoteEnvironment(remote, config)
   const runtimeRuns = remote.runs ?? []
   const runtimeFactories = remote.factories ?? []
@@ -2024,6 +2034,23 @@ function remoteProjectsMcpFromRuntime(
         status: optimizer.status,
         updated_at: optimizer.updated_at,
         terminal: optimizer.terminal,
+      })),
+    },
+    deployments: {
+      count: deploymentCount,
+      degraded_count: remote.degraded_deployment_count ?? 0,
+      rows: runtimeDeployments.map((deployment) => ({
+        deployment_id: deployment.deployment_id,
+        name: deployment.name,
+        status: deployment.status,
+        preflight_status: deployment.preflight_status,
+        degraded_reason: deployment.degraded_reason,
+        project_id: deployment.project_id,
+        factory_id: deployment.factory_id,
+        topology: deployment.topology,
+        substrate: deployment.substrate,
+        updated_at: deployment.updated_at,
+        ready: deployment.ready,
       })),
     },
     projects: projects.map((project) => {

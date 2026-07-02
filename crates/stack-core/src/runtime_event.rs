@@ -44,6 +44,8 @@ pub struct RuntimeCorrelation {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub factory_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub optimizer_run_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
