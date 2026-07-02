@@ -31,7 +31,7 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
   const checks: DoctorCheck[] = [
     check("version", "pass", `Stack ${stackVersion(config.appRoot)} (${stackChannel(config.appRoot)})`),
     check("local-mode", "pass", "Local ready; Synth sign-in optional"),
-    check("telemetry", "pass", "Local product telemetry is treated as off unless explicitly configured"),
+    await telemetryCheck(),
     check("auth", auth.hasAuth ? "pass" : "warn", auth.hasAuth ? `${auth.authEnv} is present` : `${auth.authEnv} is not set; hosted features will ask for sign-in`),
     await stackdCheck(),
     await crashReportingCheck(config),
@@ -65,6 +65,37 @@ function check(id: string, level: DoctorLevel, summary: string, detail?: string)
 
 function fileCheck(id: string, path: string, summary: string): DoctorCheck {
   return existsSync(path) ? check(id, "pass", summary) : check(id, "warn", `${summary} missing`)
+}
+
+async function telemetryCheck(): Promise<DoctorCheck> {
+  const url = process.env.STACK_API_URL?.trim() || "http://127.0.0.1:8792"
+  try {
+    const status = await stackdTelemetryStatus(url)
+    const basic = status.tiers.basic_dau === "on" ? "on" : "off"
+    const advanced = advancedTelemetryLabel(status.tiers.advanced_product)
+    const detail = [
+      `default=${status.local_product_telemetry.default}`,
+      `install_id=${status.tiers.install_id_present ? "present" : "missing"}`,
+      status.local_product_telemetry.endpoint_configured
+        ? "upload endpoint configured"
+        : "upload endpoint not configured",
+    ].join("; ")
+    return check("telemetry", "pass", `Telemetry basic DAU ${basic}; advanced product ${advanced}`, detail)
+  } catch (failure) {
+    const message = failure instanceof Error ? failure.message : String(failure)
+    return check(
+      "telemetry",
+      "warn",
+      "Telemetry posture defaults to basic DAU on; advanced product asks first",
+      message,
+    )
+  }
+}
+
+function advancedTelemetryLabel(value: string): string {
+  if (value === "accepted") return "accepted"
+  if (value === "declined") return "declined"
+  return "asks first"
 }
 
 async function crashReportingCheck(config: StackConfig): Promise<DoctorCheck> {

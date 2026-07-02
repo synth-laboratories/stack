@@ -24,6 +24,8 @@ pub struct TelemetryTierConfig {
     pub advanced_product: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asked_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub asked_version: Option<String>,
     pub install_id: String,
 }
 
@@ -33,6 +35,7 @@ impl Default for TelemetryTierConfig {
             basic_dau: "on".to_string(),
             advanced_product: "unset".to_string(),
             asked_at: None,
+            asked_version: None,
             install_id: format!("ins_{:x}", std::time::UNIX_EPOCH.elapsed().map(|d| d.as_nanos()).unwrap_or_default()),
         }
     }
@@ -140,6 +143,8 @@ pub struct TelemetryLocalStatus {
 pub struct TelemetryTierStatus {
     basic_dau: String,
     advanced_product: String,
+    asked_at: Option<String>,
+    asked_version: Option<String>,
     install_id_present: bool,
     config_path: String,
 }
@@ -160,6 +165,30 @@ pub struct TelemetryEventRecordResponse {
     reason: String,
     outbox_path: Option<String>,
     event: Option<Value>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct TelemetryConfigUpdateRequest {
+    basic_dau: Option<String>,
+    advanced_product: Option<String>,
+    asked_version: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TelemetryConfigUpdateResponse {
+    ok: bool,
+    tiers: TelemetryTierStatus,
+}
+
+#[derive(Debug, Serialize)]
+pub struct TelemetryFlushResponse {
+    ok: bool,
+    endpoint_configured: bool,
+    attempted: usize,
+    sent: usize,
+    pending: usize,
+    sent_cursor_path: String,
+    reason: String,
 }
 
 pub async fn telemetry_status(
@@ -197,6 +226,8 @@ pub async fn telemetry_status(
         tiers: TelemetryTierStatus {
             basic_dau: tier_config.basic_dau.clone(),
             advanced_product: tier_config.advanced_product.clone(),
+            asked_at: tier_config.asked_at.clone(),
+            asked_version: tier_config.asked_version.clone(),
             install_id_present: !tier_config.install_id.is_empty(),
             config_path: telemetry_config_path(&state).to_string_lossy().to_string(),
         },
@@ -232,6 +263,41 @@ pub async fn telemetry_status(
             .as_ref()
             .map(|entry| entry.forbidden_fields.clone())
             .unwrap_or_default(),
+    }))
+}
+
+pub async fn update_telemetry_config(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<TelemetryConfigUpdateRequest>,
+) -> Result<Json<TelemetryConfigUpdateResponse>, ApiError> {
+    let mut config = read_tier_config(&state).await;
+    if let Some(value) = request.basic_dau.as_deref() {
+        if !matches!(value, "on" | "off") {
+            return Err(ApiError::bad_request(
+                "basic_dau must be on or off".to_string(),
+            ));
+        }
+        config.basic_dau = value.to_string();
+    }
+    if let Some(value) = request.advanced_product.as_deref() {
+        if !matches!(value, "unset" | "accepted" | "declined") {
+            return Err(ApiError::bad_request(
+                "advanced_product must be unset, accepted, or declined".to_string(),
+            ));
+        }
+        config.advanced_product = value.to_string();
+        config.asked_at = Some(chrono::Utc::now().to_rfc3339());
+        config.asked_version = Some(request.asked_version.unwrap_or_else(|| {
+            state
+                .stack_version
+                .clone()
+                .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string())
+        }));
+    }
+    write_tier_config(&state, &config).await?;
+    Ok(Json(TelemetryConfigUpdateResponse {
+        ok: true,
+        tiers: tier_status(&state, &config),
     }))
 }
 
@@ -319,10 +385,77 @@ pub async fn record_telemetry_event(
     }))
 }
 
+pub async fn flush_telemetry_events(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<TelemetryFlushResponse>, ApiError> {
+    let endpoint = match telemetry_endpoint() {
+        Some(value) => value,
+        None => {
+            let outbox = telemetry_outbox_path(&state);
+            let pending = unsent_telemetry_records(&outbox, &telemetry_sent_cursor_path(&state)).await?.len();
+            return Ok(Json(TelemetryFlushResponse {
+                ok: true,
+                endpoint_configured: false,
+                attempted: 0,
+                sent: 0,
+                pending,
+                sent_cursor_path: telemetry_sent_cursor_path(&state).to_string_lossy().to_string(),
+                reason: "STACK_TELEMETRY_ENDPOINT is not configured".to_string(),
+            }));
+        }
+    };
+    let outbox = telemetry_outbox_path(&state);
+    let sent_cursor = telemetry_sent_cursor_path(&state);
+    let pending_records = unsent_telemetry_records(&outbox, &sent_cursor).await?;
+    if pending_records.is_empty() {
+        return Ok(Json(TelemetryFlushResponse {
+            ok: true,
+            endpoint_configured: true,
+            attempted: 0,
+            sent: 0,
+            pending: 0,
+            sent_cursor_path: sent_cursor.to_string_lossy().to_string(),
+            reason: "no pending telemetry events".to_string(),
+        }));
+    }
+
+    let attempted = pending_records.len();
+    let response = state
+        .http_client
+        .post(endpoint)
+        .json(&json!({
+            "schema_version": 2,
+            "product": "stack",
+            "events": pending_records.clone(),
+        }))
+        .send()
+        .await
+        .map_err(|error| ApiError::internal(format!("failed to flush telemetry events: {error}")))?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(ApiError::internal(format!(
+            "telemetry endpoint returned {status}: {}",
+            body.chars().take(300).collect::<String>()
+        )));
+    }
+
+    append_sent_telemetry_records(&sent_cursor, &pending_records).await?;
+    Ok(Json(TelemetryFlushResponse {
+        ok: true,
+        endpoint_configured: true,
+        attempted,
+        sent: attempted,
+        pending: 0,
+        sent_cursor_path: sent_cursor.to_string_lossy().to_string(),
+        reason: "pending telemetry events sent".to_string(),
+    }))
+}
+
 async fn read_contract(state: &AppState) -> Result<TelemetryContract, ApiError> {
     let contract_path = state
         .paths
-        .app_root
+        .install_root
         .join("docs")
         .join("TELEMETRY_EVENTS.json");
     let text = tokio::fs::read_to_string(&contract_path)
@@ -408,6 +541,118 @@ fn telemetry_outbox_path(state: &AppState) -> PathBuf {
         .filter(|value| !value.trim().is_empty())
         .map(PathBuf::from)
         .unwrap_or_else(|| state.paths.stack_dir.join("telemetry").join("events.jsonl"))
+}
+
+fn telemetry_sent_cursor_path(state: &AppState) -> PathBuf {
+    env::var("STACK_TELEMETRY_SENT_CURSOR")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| state.paths.stack_dir.join("telemetry").join("events.sent.jsonl"))
+}
+
+fn telemetry_endpoint() -> Option<String> {
+    env::var("STACK_TELEMETRY_ENDPOINT")
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+}
+
+async fn write_tier_config(
+    state: &AppState,
+    config: &TelemetryTierConfig,
+) -> Result<(), ApiError> {
+    let path = telemetry_config_path(state);
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            ApiError::internal(format!("failed to create telemetry config dir: {error}"))
+        })?;
+    }
+    let text = serde_json::to_string_pretty(config)
+        .map_err(|error| ApiError::internal(format!("failed to serialize telemetry config: {error}")))?;
+    tokio::fs::write(&path, format!("{text}\n")).await.map_err(|error| {
+        ApiError::internal(format!("failed to write telemetry config: {error}"))
+    })
+}
+
+fn tier_status(state: &AppState, config: &TelemetryTierConfig) -> TelemetryTierStatus {
+    TelemetryTierStatus {
+        basic_dau: config.basic_dau.clone(),
+        advanced_product: config.advanced_product.clone(),
+        asked_at: config.asked_at.clone(),
+        asked_version: config.asked_version.clone(),
+        install_id_present: !config.install_id.is_empty(),
+        config_path: telemetry_config_path(state).to_string_lossy().to_string(),
+    }
+}
+
+async fn unsent_telemetry_records(
+    outbox_path: &Path,
+    sent_cursor_path: &Path,
+) -> Result<Vec<Value>, ApiError> {
+    let sent_ids = read_sent_telemetry_event_ids(sent_cursor_path).await?;
+    let text = match tokio::fs::read_to_string(outbox_path).await {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(ApiError::internal(format!("failed to read telemetry outbox: {error}"))),
+    };
+    let mut records = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let record: Value = serde_json::from_str(line)
+            .map_err(|error| ApiError::internal(format!("failed to parse telemetry outbox: {error}")))?;
+        let event_id = record
+            .get("event_id")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if !event_id.is_empty() && !sent_ids.contains(event_id) {
+            records.push(record);
+        }
+    }
+    Ok(records)
+}
+
+async fn read_sent_telemetry_event_ids(path: &Path) -> Result<HashSet<String>, ApiError> {
+    let text = match tokio::fs::read_to_string(path).await {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(HashSet::new()),
+        Err(error) => return Err(ApiError::internal(format!("failed to read telemetry sent cursor: {error}"))),
+    };
+    let mut ids = HashSet::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let record: Value = serde_json::from_str(line)
+            .map_err(|error| ApiError::internal(format!("failed to parse telemetry sent cursor: {error}")))?;
+        if let Some(event_id) = record.get("event_id").and_then(Value::as_str) {
+            ids.insert(event_id.to_string());
+        }
+    }
+    Ok(ids)
+}
+
+async fn append_sent_telemetry_records(
+    path: &Path,
+    records: &[Value],
+) -> Result<(), ApiError> {
+    if let Some(parent) = path.parent() {
+        tokio::fs::create_dir_all(parent).await.map_err(|error| {
+            ApiError::internal(format!("failed to create telemetry sent cursor dir: {error}"))
+        })?;
+    }
+    let sent_at = chrono::Utc::now().to_rfc3339();
+    let mut file = tokio::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .await
+        .map_err(|error| ApiError::internal(format!("failed to open telemetry sent cursor: {error}")))?;
+    for record in records {
+        if let Some(event_id) = record.get("event_id").and_then(Value::as_str) {
+            let row = json!({ "event_id": event_id, "sent_at": sent_at });
+            file.write_all(format!("{row}\n").as_bytes()).await.map_err(|error| {
+                ApiError::internal(format!("failed to write telemetry sent cursor: {error}"))
+            })?;
+        }
+    }
+    Ok(())
 }
 
 

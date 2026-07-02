@@ -5,12 +5,15 @@ privacy-preserving.
 
 ## Default posture
 
-Local Stack usage should work without Synth sign-in and without outbound local
-product telemetry.
+Local Stack usage works without Synth sign-in. Product telemetry has two local
+tiers:
+
+- Basic DAU is on by default and can be turned off.
+- Advanced product telemetry is off until the operator accepts it.
 
 ```text
 Local ready · Synth sign-in optional
-Telemetry: off by default for public local usage
+Telemetry: basic DAU on · advanced product asks first
 ```
 
 Authenticated hosted Synth API calls may create backend service events because
@@ -25,12 +28,15 @@ Rust / stackd:
   - reads telemetry config
   - owns event emission
   - owns redaction and allowlisted payloads
-  - sends local lifecycle events only when telemetry is enabled
+  - sends basic DAU events unless turned off
+  - sends advanced product events only after approval
+  - flushes local outbox rows to the configured backend endpoint
 
 TypeScript / TUI:
   - renders telemetry state
   - lets the operator inspect/change settings
-  - does not construct outbound telemetry payloads directly
+  - asks for advanced approval and calls stackd config routes
+  - does not write telemetry config or upload payloads directly
 
 docs/frontend/backend:
   - own public docs/download/signup funnel events
@@ -52,45 +58,66 @@ boundary:
 
 ```text
 GET /telemetry/status
+POST /telemetry/config
 POST /telemetry/events
+POST /telemetry/flush
 ```
 
 Validate the Rust/server route and TypeScript client shape:
 
 ```bash
 make smoke-stackd-telemetry
+make smoke-telemetry-approval
 ```
 
 `GET /telemetry/status` is read-only. It reports whether local product telemetry
-is enabled, whether an endpoint is configured, the allowlisted event names, and
-the forbidden fields.
+is enabled, tier choices, whether an endpoint is configured, the allowlisted
+event names, and the forbidden fields.
+
+`POST /telemetry/config` is the only persisted tier-choice boundary. It accepts:
+
+- `basic_dau: "on" | "off"`
+- `advanced_product: "unset" | "accepted" | "declined"`
+- `asked_version` for first-launch/ask-later prompt suppression
 
 `POST /telemetry/events` is the server-owned local emission boundary. It only
-accepts `owner=stackd`, `class=local_product_opt_in` events from the allowlist,
-rejects forbidden or non-allowlisted payload fields, rejects object/array
-payload values, and writes to `.stack/telemetry/events.jsonl` only when
-`STACK_TELEMETRY=1`. With default settings it validates the event and returns
-`emitted=false` without writing.
+accepts `owner=stackd`, `class=local_basic_dau` or
+`class=local_advanced_product` events from the allowlist, rejects forbidden or
+non-allowlisted payload fields, rejects object/array payload values, and writes
+to `.stack/telemetry/events.jsonl` only when the tier gate permits it.
+
+`POST /telemetry/flush` reads unsent local outbox rows, posts one consolidated
+payload to `STACK_TELEMETRY_ENDPOINT`, and appends sent event ids to
+`.stack/telemetry/events.sent.jsonl`. If no endpoint is configured, it reports
+pending rows without sending.
+
+The Synth backend accepts flushed local usage rows at
+`POST /api/v1/product/stack-usage-events`; the Stack funnel rollup reads them at
+`GET /api/v1/growth/funnel/stack` and reports `usage_dau.unique_actors`.
+Validate that contract with `make smoke-usage-ingestion`.
 
 Allowed local product events, subject to telemetry config:
 
 | Event | Purpose |
 | --- | --- |
-| `stack_first_launch` | Activation count by version/channel/platform. |
-| `stack_doctor_run` | Supportability and common environment failures. |
-| `stack_local_demo_started` | First-win funnel. |
-| `stack_local_demo_succeeded` | First-win completion. |
-| `stack_receipt_created` | Proof that a run produced an auditable result. |
-| `stack_meta_thread_created` | Continuity feature adoption. |
-| `stack_handoff_sealed` | Handoff creation count by reason enum. |
-| `stack_handoff_continued` | Handoff successor creation count. |
-| `stack_update_check` | Update Center use and failure modes. |
+| `stack_first_launch` | Basic DAU first-launch count by version/channel/platform. |
+| `stack_session_started` | Basic DAU session count by version/channel/platform/backend. |
+| `stack_first_agent_turn` | Advanced activation moment after approval. |
+| `stack_session_ended` | Advanced coarse session-length bucket after approval. |
+| `stack_session_heartbeat` | Advanced low-rate foreground session marker after approval. |
+| `stack_feature_used` | Advanced allowlisted feature adoption after approval. |
+| `stack_doctor_run` | Advanced supportability and common environment failures. |
+| `stack_meta_thread_created` | Advanced continuity feature adoption. |
+| `stack_handoff_sealed` | Advanced handoff creation count by reason enum. |
+| `stack_handoff_continued` | Advanced handoff successor creation count. |
+| `stack_optimizer_run_started` | Advanced local optimizer adoption. |
 
 Payloads should use enums, counts, booleans, version strings, and coarse buckets.
 Hash ids before sending. Keep raw ids in local evidence only.
 
-Development proof can isolate the outbox with `STACK_TELEMETRY_OUTBOX=<path>`.
-Public outbound delivery/ingestion remains a separate hosted backend gate.
+Development proof can isolate the outbox with `STACK_TELEMETRY_OUTBOX=<path>`
+and the sent cursor with `STACK_TELEMETRY_SENT_CURSOR=<path>`. Configure upload
+with `STACK_TELEMETRY_ENDPOINT=<url>`.
 The Nightly 1 payload contract for public acquisition events is documented in
 [`GROWTH_INGESTION.md`](GROWTH_INGESTION.md) and validated by
 `make smoke-growth-ingestion`.
@@ -122,7 +149,8 @@ Signed in:
 
 Signed out:
 
-- Local product telemetry remains off unless explicitly enabled.
+- Local basic DAU uses a pseudonymous install id from `.stack/config/telemetry.json`.
+- Advanced local telemetry remains off unless explicitly accepted.
 - Public docs/download events may use request-level attribution.
 - If pseudonymous duplicate suppression is needed, use short-retention HMACs,
   not raw IP addresses and not unsalted hashes.
@@ -133,11 +161,18 @@ The TUI should show a clear local-first posture:
 
 ```text
 Local ready · Synth sign-in optional
-Telemetry off
+Telemetry basic DAU on · advanced asks first
 ```
 
-Hosted-only features ask for login at point of need. Basic local launch, local
-demo, doctor, update check, and local receipts must not require login.
+Advanced approval copy:
+
+```text
+Can we also collect feature usage and session length to improve Stack?
+Accept · Decline · Ask later
+```
+
+Operators can change choices from `/settings telemetry`. Hosted-only features
+ask for login at point of need.
 
 ## Client crash reporting
 
@@ -197,5 +232,8 @@ stack telemetry digest --date 2026-07-01 --remote --write-evidence --json
 ```
 
 Flags: `--date YYYY-MM-DD` · `--remote` · `--window-days N` (default 1 for remote rollup) · `--env dev|staging|prod` · `--write-evidence` · `--json`.
+
+The digest reports local product outbox totals plus upload cursor counts:
+`pending=<n>` and `sent=<n>`.
 
 Jstack inventory: `Jstack/.jstack/daily_notes/2026-07-01/stack_telemetry_20260701.md`.

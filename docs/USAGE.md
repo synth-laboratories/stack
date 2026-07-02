@@ -72,11 +72,15 @@ owner.
 ./bin/stackd serve
 curl -s http://127.0.0.1:8792/health
 curl -s http://127.0.0.1:8792/telemetry/status
+curl -s -X POST http://127.0.0.1:8792/telemetry/config -H 'content-type: application/json' -d '{"advanced_product":"declined"}'
+curl -s -X POST http://127.0.0.1:8792/telemetry/flush
 curl -s "http://127.0.0.1:8792/telemetry/crashes?limit=5"
 curl -s http://127.0.0.1:8792/.well-known/mcp.json
 bun run smoke:stackd
 bun run smoke:mcp:http
 bun run smoke:stackd:telemetry
+bun run smoke:telemetry:approval
+bun run smoke:usage-ingestion
 bun run smoke:stackd:crash-report
 stack crashes --json
 stack crashes --remote --json

@@ -112,6 +112,10 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/runtime/tick", post(runtime::post_runtime_tick))
         .route("/meta/tick", post(meta::post_meta_tick))
         .route("/meta/status", get(meta::get_meta_status))
+        .route(
+            "/threads/:id/gardeners/:gardener_id/pass-complete",
+            post(meta::post_gardener_pass_complete),
+        )
         .route("/threads", get(threads::list_threads))
         .route("/threads/:id", get(threads::get_thread))
         .route("/threads/:id/status", get(threads::get_status))
@@ -123,7 +127,9 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/events/stream", get(threads::stream_events))
         .route("/logs/query", get(logs::query_logs_handler))
         .route("/telemetry/status", get(telemetry::telemetry_status))
+        .route("/telemetry/config", post(telemetry::update_telemetry_config))
         .route("/telemetry/events", post(telemetry::record_telemetry_event))
+        .route("/telemetry/flush", post(telemetry::flush_telemetry_events))
         .route(
             "/telemetry/crashes",
             get(telemetry::list_crash_reports).post(telemetry::record_crash_report),

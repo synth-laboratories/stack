@@ -83,6 +83,8 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     describe: (ctx) => `Toggle side rails (currently ${ctx.railsVisible ? "shown" : "hidden"})`,
   },
   { command: "threads", aliases: ["p"], description: "Toggle threads panel" },
+  { command: "ops", description: "Open ops panel" },
+  { command: "settings", args: "telemetry", description: "Open settings" },
   { command: "actors", description: "Toggle actors panel" },
   { command: "agent", description: "Focus worker chat" },
   {
@@ -318,6 +320,8 @@ export type SlashDispatchHooks = {
   toggleDetails: () => void
   toggleRails: () => void
   toggleThreads: () => void
+  openOps: () => void
+  openTelemetrySettings: () => void
   toggleActors: () => void
   focusAgent: () => void
   toggleAgentView: () => void
@@ -411,6 +415,16 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
     case "threads":
     case "p":
       hooks.toggleThreads()
+      return true
+    case "ops":
+      hooks.openOps()
+      return true
+    case "settings":
+      if (args === "telemetry") {
+        hooks.openTelemetrySettings()
+      } else {
+        hooks.feedback("settings · use /settings telemetry")
+      }
       return true
     case "actors":
       hooks.toggleActors()

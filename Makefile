@@ -1,6 +1,7 @@
 PREFIX ?= $(HOME)/.local
 LIBEXEC ?= $(PREFIX)/libexec/stack
 STACK_ROOT := $(abspath $(dir $(lastword $(MAKEFILE_LIST))))
+TESTING_REPO_ROOT ?= $(abspath $(STACK_ROOT)/../testing)
 
 RSYNC_EXCLUDES := \
 	--exclude node_modules \
@@ -8,7 +9,7 @@ RSYNC_EXCLUDES := \
 	--exclude .git \
 	--exclude .DS_Store
 
-.PHONY: install uninstall install-brew uninstall-brew deps check install-skills version sync-version bump-dev release-promote release-check release-guard-b0 launch-readiness launch-nightly1 launch-nightly1-essentials launch-candidate launch-cut-plan homebrew-formulas smoke-tui smoke-tui-all smoke-tui-gepa smoke-tui-resilience smoke-stackd smoke-bombadil-b0 smoke-installer-contract smoke-installer-apply-rollback smoke-release-artifact-local smoke-release-site-contract smoke-artifact-security smoke-first-run-local smoke-launch-docs-alignment smoke-telemetry-contract smoke-stackd-telemetry smoke-stackd-crash-report smoke-crash-ingestion smoke-growth-ingestion stackeval-banking77-local-gepa quality-static quality-dev quality-local quality-release
+.PHONY: install uninstall install-brew uninstall-brew deps check install-skills version sync-version bump-dev release-promote release-check release-guard-b0 launch-readiness launch-nightly1 launch-nightly1-essentials launch-candidate launch-cut-plan homebrew-formulas smoke-tui smoke-tui-all smoke-tui-gepa smoke-tui-resilience smoke-stackd smoke-bombadil-b0 smoke-installer-contract smoke-installer-apply-rollback smoke-release-artifact-local smoke-release-site-contract smoke-artifact-security smoke-first-run-local smoke-launch-docs-alignment smoke-telemetry-contract smoke-telemetry-approval smoke-stackd-telemetry smoke-stackd-crash-report smoke-crash-ingestion smoke-usage-ingestion smoke-growth-ingestion stackeval-banking77-local-gepa quality-static quality-dev quality-local quality-release
 
 deps:
 	cd "$(STACK_ROOT)" && bun install
@@ -32,43 +33,49 @@ smoke-stackd:
 	cd "$(STACK_ROOT)" && bun run smoke:stackd
 
 smoke-bombadil-b0:
-	cd "$(STACK_ROOT)" && bun run smoke:bombadil:b0
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:bombadil:b0
 
 smoke-installer-contract:
-	cd "$(STACK_ROOT)" && bun run smoke:installer:contract
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:installer:contract
 
 smoke-installer-apply-rollback:
-	cd "$(STACK_ROOT)" && bun run smoke:installer:apply-rollback
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:installer:apply-rollback
 
 smoke-release-artifact-local:
 	cd "$(STACK_ROOT)" && bun run smoke:release-artifact:local
 
 smoke-release-site-contract:
-	cd "$(STACK_ROOT)" && bun run smoke:release-site:contract
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:release-site:contract
 
 smoke-artifact-security:
-	cd "$(STACK_ROOT)" && bun run smoke:artifact-security
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:artifact-security
 
 smoke-first-run-local:
-	cd "$(STACK_ROOT)" && bun run smoke:first-run:local
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:first-run:local
 
 smoke-launch-docs-alignment:
-	cd "$(STACK_ROOT)" && bun run smoke:launch-docs-alignment
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:launch-docs-alignment
 
 smoke-telemetry-contract:
-	cd "$(STACK_ROOT)" && bun run smoke:telemetry:contract
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:telemetry:contract
+
+smoke-telemetry-approval:
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:telemetry:approval
 
 smoke-stackd-telemetry:
-	cd "$(STACK_ROOT)" && bun run smoke:stackd:telemetry
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:stackd:telemetry
 
 smoke-stackd-crash-report:
-	cd "$(STACK_ROOT)" && bun run smoke:stackd:crash-report
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:stackd:crash-report
 
 smoke-crash-ingestion:
-	cd "$(STACK_ROOT)" && bun run smoke:crash-ingestion
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:crash-ingestion
+
+smoke-usage-ingestion:
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:usage-ingestion
 
 smoke-growth-ingestion:
-	cd "$(STACK_ROOT)" && bun run smoke:growth-ingestion
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:growth-ingestion
 
 version:
 	@cd "$(STACK_ROOT)" && bun -e 'import { printStackVersion } from "./src/version.ts"; printStackVersion("stack")'
@@ -108,13 +115,13 @@ quality-static:
 	cd "$(STACK_ROOT)" && bun run quality:static
 
 quality-dev:
-	cd "$(STACK_ROOT)" && bun run quality:dev
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run quality:dev
 
 quality-local:
-	cd "$(STACK_ROOT)" && bun run quality:local
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run quality:local
 
 quality-release:
-	cd "$(STACK_ROOT)" && bun run quality:release
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run quality:release
 
 stackeval-banking77-local-gepa:
 	cd "$(STACK_ROOT)" && bun run stackeval:banking77-local-gepa

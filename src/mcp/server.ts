@@ -2276,13 +2276,13 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     {
       name: "stack_ui_open_panel",
       description:
-        "Open a side panel for human review. The agent panel always stays primary; use this ONLY at review moments (audited goal_met/goal_failed, blocked, a steer you issued, or a risky pending action) and at most once per distinct signature. panel: monitor (sidecar events/thread/tape), gardener (portfolio), ops, threads. Every open emits an audited ui.panel_opened event; the operator's Esc closes it and wins until your next open.",
+        "Open a side panel for human review. The agent panel always stays primary; use this ONLY at review moments (audited goal_met/goal_failed, blocked, a steer you issued, or a risky pending action) and at most once per distinct signature. panel: monitor (sidecar events/thread/tape), gardener (portfolio), ops (local/remote/hosted), threads. Every open emits an audited ui.panel_opened event; the operator's Esc closes it and wins until your next open.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
           thread_id: stringProperty("Worker Stack thread/session id the panel belongs to."),
           panel: { type: "string", enum: [...UI_PANEL_IDS], description: "Registered panel id." },
-          view: stringProperty("Optional view within the panel (monitor: events|thread|tape; gardener: portfolio|chat)."),
+          view: stringProperty("Optional view within the panel (monitor: events|thread|tape; gardener: portfolio|chat; ops: local|remote|hosted; threads: list)."),
           reason: stringProperty("One short sentence: why this deserves the operator's eyes now."),
           actor_role: stringProperty("Who is opening: monitor, gardener, or operator."),
           actor_id: stringProperty("Optional concrete actor id for the audit event."),

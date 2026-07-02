@@ -17,6 +17,10 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+No changes yet.
+
+## [0.2.0-dev.20260701.2] - 2026-07-01
+
 ### Added
 
 - **MetaHarness runtime core.** `POST /meta/tick` runs one serialized tick — actor
@@ -35,12 +39,22 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   Every open/close is an audited `ui.panel_opened`/`ui.panel_closed` event. The
   monitor may open its panel once per high-signal review moment (audited
   goal_met/goal_failed, blocked, steer, risky pending) — never for routine progress.
+- **Agent-first TUI default.** Fresh Stack opens on the worker chat with side panels
+  closed. Goal progress/shutter now lives in the monitor side panel; `Esc` closes
+  operator panels and records `ui.panel_closed`.
+- **Gardener pass completion through stackd.** `POST /threads/:id/gardeners/:gardener_id/pass-complete`
+  records gardener wake consumption, advances the gardener cursor, and drains queued
+  handoff triggers without TypeScript writing actor state directly.
 - **Telemetry tiers.** Basic DAU (`stack_first_launch`, `stack_session_started`)
   on by default and turn-offable; advanced product telemetry (feature usage,
   coarse session length) only after explicit approval. stackd owns the choice in
   `.stack/config/telemetry.json` with a pseudonymous `install_id`. New advanced
   events: `stack_session_ended` (duration bucket), `stack_session_heartbeat`,
-  `stack_feature_used` (enum feature ids).
+  `stack_feature_used` (enum feature ids). The TUI exposes `/settings telemetry`;
+  stackd adds `POST /telemetry/config` and `POST /telemetry/flush`; `stack telemetry
+  digest` reports pending vs sent upload cursor counts. Backend ingestion lands at
+  `/api/v1/product/stack-usage-events` and feeds the Stack funnel `usage_dau`
+  rollup.
 - Goal bind names the thread: bound goals never show `(empty)` in the threads rail.
 
 ### Changed
@@ -164,6 +178,7 @@ Stack MCP).
 
 - Product label in transcript harness: **Stack · semver** (replacing “Prototype 0 · 0.0.0”)
 
-[Unreleased]: https://github.com/synth-laboratories/stack/compare/c55e68f...HEAD
+[Unreleased]: https://github.com/synth-laboratories/stack/compare/HEAD...HEAD
+[0.2.0-dev.20260701.2]: https://github.com/synth-laboratories/stack/compare/c55e68f...HEAD
 [0.2.0-dev.20260701.1]: https://github.com/synth-laboratories/stack/commit/c55e68f
 [0.1.0]: https://github.com/synth-laboratories/stack/releases/tag/v0.1.0

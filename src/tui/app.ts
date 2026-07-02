@@ -80,7 +80,7 @@ import {
   readMetaThreadManifest,
   reconcileMetaThreadGoalFromCodex,
 } from "../meta-thread-goal.js"
-import type { StackdMetaThreadManifest } from "../client/stackd.js"
+import type { StackdMetaSidePanel, StackdMetaStatus, StackdMetaThreadManifest } from "../client/stackd.js"
 import {
   formatCodexBudgetSuffix,
   readCodexRateLimits,
@@ -260,14 +260,21 @@ import {
   resumeHarnessSession,
 } from "../checkpoint-state.js"
 import {
+  stackdGardenerPassComplete,
+  stackdFlushTelemetryEvents,
   stackdRuntimeAppendEvent,
   stackdRuntimeFactory,
+  stackdMetaStatus,
+  stackdTelemetryStatus,
   stackdThreads,
+  stackdUpdateTelemetryConfig,
   type StackdFactorySnapshot,
   type StackdRuntimeEventAppendRequest,
+  type StackdTelemetryStatus,
   type StackdThreadSummary,
 } from "../client/stackd.js"
-import { readThreadMetaEvents, type StackThreadMetaEvent } from "../thread-events.js"
+import { appendThreadMetaEvent, readThreadMetaEvents, stackEventId, type StackThreadMetaEvent } from "../thread-events.js"
+import { isUiPanelId, type UiPanelId } from "../ui/vocabulary.js"
 import {
   resolveThreadDisplayLabel,
   sanitizeThreadDisplayName,
@@ -321,6 +328,7 @@ import {
 import { activeGoalModeSnapshot, isGoalMode } from "./goal-mode.js"
 import { goalShutterLineCount, renderGoalPanelTabBar, renderGoalShutter, renderGoalWorkerPeekPanel, goalShutterCardLineCount, goalShutterProgressChromeRows, goalShutterStreamVisibleRows, goalWorkerPeekTranscriptRows } from "./goal-shutter.js"
 import { setCrashRuntimeContext } from "../telemetry/crash-report.js"
+import { emitFeatureUsed } from "../telemetry/funnel.js"
 import { sidecarAgentActive, sidecarInputStatusLine } from "./sidecar-queue.js"
 import {
   consumeBracketedPasteSequences,
@@ -387,6 +395,7 @@ type FocusMode =
   | "harness"
   | "environment"
   | "account"
+  | "telemetry"
   | "ops"
   | "optimizers"
   | "hosted"
@@ -508,6 +517,9 @@ type AppState = {
   codexRateLimits?: CodexRateLimitsSnapshot
   codexAccountEmail?: string
   cursorAccount?: CursorAccountSnapshot
+  telemetryStatus?: StackdTelemetryStatus
+  telemetryNotice?: string
+  telemetryApprovalVisible: boolean
   goalContext: CodexGoalSnapshot
   metaThreadManifest?: StackdMetaThreadManifest
   agentViewEnabled: boolean
@@ -542,6 +554,8 @@ type AppState = {
   lastMonitorCadenceCheckAt?: number
   monitorSnapshot: StackMonitorSnapshot
   metaEvents: StackThreadMetaEvent[]
+  appliedStackdSidePanelKey?: string
+  lastOperatorSidePanelClosedAtMs?: number
 }
 
 type MountedView = {
@@ -615,7 +629,6 @@ function agentPanelFocusHandlers(state: AppState, refresh: () => void): PanelFoc
 function applySidePanelFocus(state: AppState, focusMode: FocusMode): void {
   state.focusMode = focusMode
   if (focusMode === "history" || focusMode === "harness" || focusMode === "projects") {
-    state.leftPanelOpen = true
     return
   }
   if (focusMode === "gardener") {
@@ -629,9 +642,6 @@ function applySidePanelFocus(state: AppState, focusMode: FocusMode): void {
   if (focusMode === "monitor") {
     state.rightPanelOpen = true
     return
-  }
-  if (focusMode === "agent") {
-    state.leftPanelOpen = true
   }
 }
 
@@ -661,36 +671,6 @@ function toggleRightPanelOps(state: AppState): void {
   toggleRightPanelMode(state)
 }
 
-function collapsedSideTab(
-  label: string,
-  side: "left" | "right",
-  onActivate: () => void,
-): ReturnType<typeof Box> {
-  return Box(
-    {
-      width: 3,
-      flexShrink: 0,
-      border: true,
-      borderStyle: "single",
-      borderColor: theme.borderInactive,
-      backgroundColor: theme.bgPanel,
-      flexDirection: "column",
-      justifyContent: "center",
-      alignItems: "center",
-      title: label,
-      onMouseDown(event: PanelMouseEvent) {
-        event.preventDefault?.()
-        event.stopPropagation?.()
-        onActivate()
-      },
-    },
-    Text({
-      content: side === "left" ? "▶" : "◀",
-      fg: theme.fgMuted,
-    }),
-  )
-}
-
 function defaultLiveOpsFocus(state: AppState): FocusMode {
   return state.liveOpsMode === "local" ? "optimizers" : "remote"
 }
@@ -705,6 +685,7 @@ const COMMON_FOCUS_ORDER: FocusMode[] = [
   "monitor",
   "environment",
   "account",
+  "telemetry",
   "ops",
 ]
 const LOCAL_FOCUS_ORDER: FocusMode[] = [...COMMON_FOCUS_ORDER, "gardener", "harness", "projects", "history", "optimizers"]
@@ -751,6 +732,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const hostedOptimizerSnapshot =
     hostedOptimizerSnapshotFromRuntime(runtimeFactorySnapshot, options.config) ??
     await readHostedOptimizerSnapshot(options.config)
+  const telemetrySnapshot = await stackdTelemetryStatus().catch(() => undefined)
   const recentRemoteDownloads = await readRemoteDownloadHistory(options.config)
   await writeSessionLog(options.session, options.config.sessionLogDir, {
     codexModel: harnessModel(options.config),
@@ -771,10 +753,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   history = pinGardenerThreadToTop(history, gardenerEnsured.threadId)
   const defaultWorker = history.find((summary) => summary.id !== gardenerEnsured.threadId)
   const state: AppState = {
-    focusMode: "gardener",
+    focusMode: "agent",
     liveOpsMode: "local",
     railsVisible: false,
-    leftPanelOpen: true,
+    leftPanelOpen: false,
     leftPanelRailsVisible: false,
     rightPanelOpen: false,
     showDetails: false,
@@ -845,6 +827,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     selectedHostedOptimizerArtifactIndex: 0,
     mediationTargetKind: "remote-run",
     agentContext: emptyAgentContext(options.config.workspaceRoot),
+    telemetryStatus: telemetrySnapshot,
+    telemetryApprovalVisible: shouldShowTelemetryApproval(telemetrySnapshot),
     goalContext: emptyGoalContext(),
     metaThreadManifest: undefined,
     agentViewEnabled: false,
@@ -894,7 +878,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     syncGoalModeDefaults(options, state)
     syncSessionDisplayNameFromGoal(options, state)
   }
-  syncGardenerLeftPanel(state)
+  if (state.focusMode === "gardener") syncGardenerLeftPanel(state)
   syncMonitorRightPanel(state)
   state.rightPanelOpsVisible = !isMonitorOn(state.monitorSnapshot)
   let codexSessionHandle: { session?: HarnessSession } = {}
@@ -958,7 +942,22 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
   }
 
+  let metaStatusPollInFlight = false
+  const refreshStackdMetaStatusUi = async () => {
+    if (metaStatusPollInFlight) return
+    metaStatusPollInFlight = true
+    try {
+      const status = await stackdMetaStatus()
+      if (applyStackdSidePanelSnapshot(options, state, status)) scheduleRemount()
+    } catch {
+      // stackd is optional for local TUI use; side-panel projection stays local-only.
+    } finally {
+      metaStatusPollInFlight = false
+    }
+  }
+
   let spinnerInterval: ReturnType<typeof setInterval> | undefined
+  let metaStatusInterval: ReturnType<typeof setInterval> | undefined
   let optimizerInterval: ReturnType<typeof setInterval> | undefined
   let rateLimitsInterval: ReturnType<typeof setInterval> | undefined
 
@@ -1156,6 +1155,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         ),
       )
     ) {
+      recordSlashFeatureUsage()
       state.inputBuffer = ""
       state.slashMenuIndex = 0
       return true
@@ -1206,6 +1206,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         ),
       )
     ) {
+      recordSlashFeatureUsage()
       state.monitorInputBuffer = ""
       state.slashMenuIndex = 0
       return true
@@ -1265,6 +1266,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         ),
       )
     ) {
+      recordSlashFeatureUsage()
       state.gardenerInputBuffer = ""
       state.slashMenuIndex = 0
       return true
@@ -1348,6 +1350,14 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
   view = mountView(renderer, options, state, undefined)
 
+  if (options.config.autoSubmitInitialPrompt && state.inputBuffer.trim().length > 0) {
+    setTimeout(() => {
+      if (state.status === "idle" && state.focusMode === "agent" && state.inputBuffer.trim().length > 0) {
+        submitFromCurrentInput()
+      }
+    }, 50)
+  }
+
   void refreshGardenerMaintenance(options, state, "manual").finally(scheduleRemount)
 
   void (async () => {
@@ -1373,22 +1383,6 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       remount()
     }
   })()
-
-  if (options.config.autoSubmitInitialPrompt && state.inputBuffer.trim()) {
-    setTimeout(() => {
-      if (state.status === "running") return
-      submitInputValue(
-        state.inputBuffer.trim(),
-        options,
-        state,
-        codexSessionHandle,
-        renderer,
-        remount,
-        refreshHistory,
-        refreshMetaEvents,
-      )
-    }, 250)
-  }
 
   spinnerInterval = setInterval(() => {
     if (state.status !== "running") return
@@ -1440,6 +1434,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     void refreshCodexRateLimits().finally(scheduleRemount)
   }, 120_000)
 
+  void refreshStackdMetaStatusUi()
+  metaStatusInterval = setInterval(() => {
+    void refreshStackdMetaStatusUi()
+  }, 1_000)
+
   registerFatalProcessHandlers(shutdown)
   try {
     process.stdout.write(ENABLE_BRACKETED_PASTE)
@@ -1456,14 +1455,19 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       // ignore
     }
   })
-  registerRendererShutdown(shutdown, renderer, [spinnerInterval, optimizerInterval, projectsInterval, rateLimitsInterval], [
-    () => {
-      remountCoordinator.dispose()
-    },
-    () => {
-      void codexSessionHandle.session?.close()
-    },
-  ])
+  registerRendererShutdown(
+    shutdown,
+    renderer,
+    [spinnerInterval, metaStatusInterval, optimizerInterval, projectsInterval, rateLimitsInterval],
+    [
+      () => {
+        remountCoordinator.dispose()
+      },
+      () => {
+        void codexSessionHandle.session?.close()
+      },
+    ],
+  )
 
   const voiceKeyContext = (): VoiceKeyContext => ({
     options,
@@ -1499,6 +1503,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
     if (voiceKind === "press" && handleVoiceKey(key, "press", voiceKeyContext())) return
+    if (handleTelemetryKey(key, options, state, remount)) return
     if (isGoalMode(state) && !focusedInputEditing(state)) {
       if (key.name === "m") {
         focusGoalSidecarChat(options, state, remount)
@@ -1592,6 +1597,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         remount()
         return
       }
+      if (closeOperatorSidePanels(options, state, "escape")) {
+        remount()
+        return
+      }
       if (isGoalMode(state)) {
         if (returnToGoalShutter(state, remount)) return
         focusGoalWorkerPeek(state, remount)
@@ -1624,7 +1633,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     }
 
     if (key.name === "G" && state.focusMode === "agent") {
-      openGardenerPanel(state, remount)
+      openGardenerPanel(options, state, remount, "keyboard")
       return
     }
 
@@ -1853,8 +1862,11 @@ function createView(
 ): MountedView {
   syncGoalModeDefaults(options, state)
   const switcher = switcherPanel(options, state, refresh, applyStackEnvironmentFromUi)
+  const telemetrySettings = telemetryPanel(options, state, refresh)
   const goalModeActive = isGoalMode(state)
   const showGoalShutter = goalModeActive && !state.goalShutterWorkerPeek
+  const showCenterPanels =
+    state.focusMode === "projects" || state.focusMode === "history" || state.focusMode === "harness"
   const metaThreadTitle =
     state.metaThreadManifest?.title?.trim() ||
     state.metaThreadManifest?.active_goal?.objective?.trim() ||
@@ -1955,12 +1967,14 @@ function createView(
     )
     tailMonitorWatchScroll(state, rightColumns, monitorChatSplit.watchRows)
   }
+  const goalShutterColumns = showGoalShutter ? rightColumns : transcriptViewport.columns
+  const goalShutterRows = showGoalShutter ? Math.max(8, monitorRows) : transcriptViewport.lines
   const sidecarMenuElements = showGoalShutter
     ? slashMenuElements(
         state.monitorInputBuffer,
         state.slashMenuIndex,
         buildSlashCommandContext(options, state),
-        transcriptViewport.columns,
+        goalShutterColumns,
         state.focusMode === "monitor",
       )
     : []
@@ -1969,24 +1983,24 @@ function createView(
     : undefined
   const goalStreamRows = showGoalShutter
     ? goalShutterStreamVisibleRows(
-        transcriptViewport.lines,
+        goalShutterRows,
         goalShutterCardLineCount({
           state,
           events: workerMetaEvents,
-          columns: transcriptViewport.columns,
+          columns: goalShutterColumns,
           metaThreadId: options.session.metaThreadId,
         }),
         (sidecarMenuElements.length > 0 ? 1 : 0) +
-          goalShutterProgressChromeRows(workerMetaEvents, transcriptViewport.columns),
+          goalShutterProgressChromeRows(workerMetaEvents, goalShutterColumns),
       )
     : 0
   if (showGoalShutter) {
-    tailGoalShutterScroll(state, workerMetaEvents, transcriptViewport.columns, goalStreamRows)
+    tailGoalShutterScroll(state, workerMetaEvents, goalShutterColumns, goalStreamRows)
     tailGoalSidecarThreadScroll(
       state,
       sidecarTranscript?.turns,
       workerMetaEvents,
-      Math.max(20, transcriptViewport.columns - 4),
+      Math.max(20, goalShutterColumns - 4),
       Math.max(3, goalStreamRows),
     )
   }
@@ -1998,17 +2012,6 @@ function createView(
   const focusAgent = agentPanelFocusHandlers(state, refresh)
   const focusOps = panelFocusHandlers(state, "ops", refresh)
   const focusMonitor = panelFocusHandlers(state, "monitor", refresh)
-  const openLeftPanel = () => {
-    state.leftPanelOpen = true
-    state.focusMode = "gardener"
-    refresh()
-  }
-  const openRightPanel = () => {
-    state.rightPanelOpen = true
-    state.focusMode =
-      state.rightPanelOpsVisible || !isMonitorOn(state.monitorSnapshot) ? "ops" : "monitor"
-    refresh()
-  }
   const goalPanelTabHandlers = goalModeActive
     ? {
         onSelectChatTab: () => focusGoalWorkerPeek(state, refresh),
@@ -2018,56 +2021,23 @@ function createView(
   const agentChildren = [
     agentPanelIdsCopyIcon(renderer, options, state, refresh),
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
-    ...(showGoalShutter
+    ...(goalPanelTabHandlers
       ? [
-          renderGoalShutter({
-            state,
-            events: workerMetaEvents,
-            sidecarTurns: sidecarTranscript?.turns,
-            sidecarRenderOptions: sidecarTranscriptRenderOptions(state),
-            sidecarView: state.goalShutterSidecarView,
-            columns: transcriptViewport.columns,
-            visibleRows: transcriptViewport.lines,
-            streamRows: goalStreamRows,
-            scrollOffset: state.goalShutterScrollOffset,
-            sidecarThreadScrollOffset: state.goalShutterSidecarThreadScrollOffset,
-            metaThreadId: options.session.metaThreadId,
+          renderGoalWorkerPeekPanel({
+            active: "chat",
+            onSelectChat: goalPanelTabHandlers.onSelectChatTab,
+            onSelectProgress: goalPanelTabHandlers.onSelectProgressTab,
+            transcript: renderTranscriptPanel(state, transcriptViewport),
+            objective:
+              state.metaThreadManifest?.active_goal?.objective?.trim() ||
+              state.goalContext.objective?.trim(),
             metaThreadTitle,
-            sidecarMenuElements,
-            onFocusSidecar: () => focusGoalSidecarChat(options, state, refresh),
-            onPrefillSidecar: (prompt) => {
-              state.monitorInputBuffer = prompt
-              focusGoalSidecarChat(options, state, refresh)
-            },
-            onSelectSidecarThread: () => {
-              state.goalShutterSidecarView = "thread"
-              refresh()
-            },
-            onSelectSidecarEvents: () => {
-              state.goalShutterSidecarView = "events"
-              refresh()
-            },
-            ...goalPanelTabHandlers,
           }),
         ]
-      : [
-          ...(goalPanelTabHandlers
-            ? [
-                renderGoalWorkerPeekPanel({
-                  active: "chat",
-                  onSelectChat: goalPanelTabHandlers.onSelectChatTab,
-                  onSelectProgress: goalPanelTabHandlers.onSelectProgressTab,
-                  transcript: renderTranscriptPanel(state, transcriptViewport),
-                  objective:
-                    state.metaThreadManifest?.active_goal?.objective?.trim() ||
-                    state.goalContext.objective?.trim(),
-                  metaThreadTitle,
-                }),
-              ]
-            : [transcriptPane(renderTranscriptPanel(state, transcriptViewport))]),
-        ]),
+      : [transcriptPane(renderTranscriptPanel(state, transcriptViewport))]),
     ...(state.focusMode === "goal" ? [renderGoalPanel(state)] : []),
     ...(switcher ? [switcher] : []),
+    ...(telemetrySettings ? [telemetrySettings] : []),
     ...(showGoalShutter ? [] : [agentControlRow(options, state, transcriptViewport.columns, refresh)]),
   ]
 
@@ -2143,141 +2113,145 @@ function createView(
               ),
             ),
           ]
-        : [collapsedSideTab(agentRolePanelTitle("gardener"), "left", openLeftPanel)]),
-      Box(
-        {
-          width: CENTER_PANEL_WIDTH,
-          flexDirection: "column",
-          gap: stackTuiLayout.panelGap,
-          flexShrink: 0,
-        },
-        Box(
-          {
-            border: true,
-            borderStyle: "single",
-            borderColor: state.focusMode === "projects" ? theme.borderActive : theme.borderInactive,
-            title: "Active projects",
-            backgroundColor: theme.bgPanel,
-            flexShrink: 0,
-            flexDirection: "column",
-            padding: stackTuiLayout.panelPadding,
-            ...focusCenterProjects,
-            onMouseScroll(event) {
-              handleCenterProjectsMouseScroll(
-                event,
-                state,
-                state.remoteProjectsSnapshot,
-                projectRows,
-                refresh,
-              )
-            },
-          },
-          Text({
-            content: renderActiveProjectsStyled({
-              snapshot: state.remoteProjectsSnapshot,
-              runtimeSnapshot: state.runtimeFactorySnapshot,
-              runtimeEventsAppended: state.runtimeFactoryEventsAppended,
-              selectedProjectIndex: state.selectedProjectIndex,
-              visibleRows: projectRows,
-              columns: centerColumns,
-            }),
-            minWidth: 1,
-          }),
-        ),
-        Box(
-          {
-            border: true,
-            borderStyle: "single",
-            borderColor: state.focusMode === "history" ? theme.borderActive : theme.borderInactive,
-            title: "Active threads",
-            backgroundColor: theme.bgPanel,
-            flexShrink: 0,
-            flexDirection: "column",
-            padding: stackTuiLayout.panelPadding,
-            ...focusCenterThreads,
-            onMouseScroll(event) {
-              handleCenterThreadsMouseScroll(event, state, refresh)
-            },
-          },
-          Box(
-            { flexDirection: "row", width: "100%", flexShrink: 0, gap: 1 },
-            Text({
-              content: activeThreadsFocusHint(state.focusMode),
-              fg: theme.fgMuted,
-              minWidth: 1,
-              flexGrow: 1,
-            }),
-            controlChip("+ new", true, () => {
-              void startNewThread(options, state, codexSessionHandle, refresh, refreshHistory, refreshMetaEvents)
-            }),
-          ),
-          Box(
-            { flexDirection: "column", width: "100%", flexShrink: 0 },
-            ...activeThreadRowElements(
+        : []),
+      ...(showCenterPanels
+        ? [
+            Box(
               {
-                focusMode: state.focusMode,
-                history: state.history,
-                activeThreadIds,
-                visibleThreadIds,
-                selectedHistoryIndex: state.selectedHistoryIndex,
-                currentSessionId: options.session.id,
-                visibleRows: threadRows,
-                columns: centerColumns,
-                gardenerThreadIds: new Set([state.gardenerThreadId]),
-                liveTokensPerSecond: formatAverageTokensPerSecond(displayTokensPerSecond(state)),
-                usageForSummary: (summary) => threadUsageSummary(options, summary),
-                threadGoalStatus: state.threadGoalStatus,
-                threadLifecycleStatus: state.threadLifecycleStatus,
-                threadMetaThreadIds: state.threadMetaThreadIds,
-                threadMetaThreadTitles: state.threadMetaThreadTitles,
+                width: CENTER_PANEL_WIDTH,
+                flexDirection: "column",
+                gap: stackTuiLayout.panelGap,
+                flexShrink: 0,
               },
-              options,
-              state,
-              codexSessionHandle,
-              refresh,
-              refreshHistory,
-              refreshMetaEvents,
+              Box(
+                {
+                  border: true,
+                  borderStyle: "single",
+                  borderColor: state.focusMode === "projects" ? theme.borderActive : theme.borderInactive,
+                  title: "Active projects",
+                  backgroundColor: theme.bgPanel,
+                  flexShrink: 0,
+                  flexDirection: "column",
+                  padding: stackTuiLayout.panelPadding,
+                  ...focusCenterProjects,
+                  onMouseScroll(event) {
+                    handleCenterProjectsMouseScroll(
+                      event,
+                      state,
+                      state.remoteProjectsSnapshot,
+                      projectRows,
+                      refresh,
+                    )
+                  },
+                },
+                Text({
+                  content: renderActiveProjectsStyled({
+                    snapshot: state.remoteProjectsSnapshot,
+                    runtimeSnapshot: state.runtimeFactorySnapshot,
+                    runtimeEventsAppended: state.runtimeFactoryEventsAppended,
+                    selectedProjectIndex: state.selectedProjectIndex,
+                    visibleRows: projectRows,
+                    columns: centerColumns,
+                  }),
+                  minWidth: 1,
+                }),
+              ),
+              Box(
+                {
+                  border: true,
+                  borderStyle: "single",
+                  borderColor: state.focusMode === "history" ? theme.borderActive : theme.borderInactive,
+                  title: "Active threads",
+                  backgroundColor: theme.bgPanel,
+                  flexShrink: 0,
+                  flexDirection: "column",
+                  padding: stackTuiLayout.panelPadding,
+                  ...focusCenterThreads,
+                  onMouseScroll(event) {
+                    handleCenterThreadsMouseScroll(event, state, refresh)
+                  },
+                },
+                Box(
+                  { flexDirection: "row", width: "100%", flexShrink: 0, gap: 1 },
+                  Text({
+                    content: activeThreadsFocusHint(state.focusMode),
+                    fg: theme.fgMuted,
+                    minWidth: 1,
+                    flexGrow: 1,
+                  }),
+                  controlChip("+ new", true, () => {
+                    void startNewThread(options, state, codexSessionHandle, refresh, refreshHistory, refreshMetaEvents)
+                  }),
+                ),
+                Box(
+                  { flexDirection: "column", width: "100%", flexShrink: 0 },
+                  ...activeThreadRowElements(
+                    {
+                      focusMode: state.focusMode,
+                      history: state.history,
+                      activeThreadIds,
+                      visibleThreadIds,
+                      selectedHistoryIndex: state.selectedHistoryIndex,
+                      currentSessionId: options.session.id,
+                      visibleRows: threadRows,
+                      columns: centerColumns,
+                      gardenerThreadIds: new Set([state.gardenerThreadId]),
+                      liveTokensPerSecond: formatAverageTokensPerSecond(displayTokensPerSecond(state)),
+                      usageForSummary: (summary) => threadUsageSummary(options, summary),
+                      threadGoalStatus: state.threadGoalStatus,
+                      threadLifecycleStatus: state.threadLifecycleStatus,
+                      threadMetaThreadIds: state.threadMetaThreadIds,
+                      threadMetaThreadTitles: state.threadMetaThreadTitles,
+                    },
+                    options,
+                    state,
+                    codexSessionHandle,
+                    refresh,
+                    refreshHistory,
+                    refreshMetaEvents,
+                  ),
+                ),
+              ),
+              Box(
+                {
+                  border: true,
+                  borderStyle: "single",
+                  borderColor: state.focusMode === "harness" ? theme.borderActive : theme.borderInactive,
+                  title: state.agentViewEnabled ? "Events · agent" : "Events · human",
+                  backgroundColor: theme.bgPanel,
+                  flexGrow: 1,
+                  flexDirection: "column",
+                  padding: stackTuiLayout.panelPadding,
+                  ...focusCenterEvents,
+                  onMouseScroll(event) {
+                    handleCoreEventScroll(
+                      event,
+                      state,
+                      coreEventStreamContext,
+                      gardenerEvents,
+                      workerMetaEvents,
+                      centerColumns,
+                      eventStreamRows,
+                      refresh,
+                    )
+                  },
+                },
+                Text({
+                  content: renderCoreEventStreamStyled(
+                    coreEventStreamContext,
+                    gardenerEvents,
+                    workerMetaEvents,
+                    centerColumns,
+                    eventStreamRows,
+                    state.gardenerEventScrollOffset,
+                    state.agentViewEnabled,
+                  ),
+                  flexGrow: 1,
+                }),
+              ),
             ),
-          ),
-        ),
-        Box(
-          {
-            border: true,
-            borderStyle: "single",
-            borderColor: state.focusMode === "harness" ? theme.borderActive : theme.borderInactive,
-            title: state.agentViewEnabled ? "Events · agent" : "Events · human",
-            backgroundColor: theme.bgPanel,
-            flexGrow: 1,
-            flexDirection: "column",
-            padding: stackTuiLayout.panelPadding,
-            ...focusCenterEvents,
-            onMouseScroll(event) {
-              handleCoreEventScroll(
-                event,
-                state,
-                coreEventStreamContext,
-                gardenerEvents,
-                workerMetaEvents,
-                centerColumns,
-                eventStreamRows,
-                refresh,
-              )
-            },
-          },
-          Text({
-            content: renderCoreEventStreamStyled(
-              coreEventStreamContext,
-              gardenerEvents,
-              workerMetaEvents,
-              centerColumns,
-              eventStreamRows,
-              state.gardenerEventScrollOffset,
-              state.agentViewEnabled,
-            ),
-            flexGrow: 1,
-          }),
-        ),
-      ),
+          ]
+        : []),
       Box(
         {
           border: true,
@@ -2304,29 +2278,6 @@ function createView(
             event.stopPropagation()
             state.lastAgentScrollAt = Date.now()
             const direction = event.scroll?.direction
-            if (showGoalShutter) {
-              if (state.goalShutterSidecarView === "events" && (direction === "up" || direction === "down")) {
-                handleGoalShutterMouseScroll(
-                  direction,
-                  state,
-                  workerMetaEvents,
-                  transcriptViewport.columns,
-                  goalStreamRows,
-                  refresh,
-                )
-              } else if (state.goalShutterSidecarView === "thread" && (direction === "up" || direction === "down")) {
-                handleGoalSidecarThreadMouseScroll(
-                  direction,
-                  state,
-                  sidecarTranscript?.turns,
-                  workerMetaEvents,
-                  Math.max(20, transcriptViewport.columns - 4),
-                  Math.max(3, goalStreamRows),
-                  refresh,
-                )
-              }
-              return
-            }
             if (direction === "up") {
               scrollAgentTranscript(state, 3, transcriptViewport, "up")
             } else if (direction === "down") {
@@ -2362,6 +2313,30 @@ function createView(
                         gap: stackTuiLayout.panelGap,
                         ...focusMonitor,
                         onMouseScroll(event) {
+                          const direction = event.scroll?.direction
+                          if (showGoalShutter && (direction === "up" || direction === "down")) {
+                            if (state.goalShutterSidecarView === "events") {
+                              handleGoalShutterMouseScroll(
+                                direction,
+                                state,
+                                workerMetaEvents,
+                                goalShutterColumns,
+                                goalStreamRows,
+                                refresh,
+                              )
+                            } else {
+                              handleGoalSidecarThreadMouseScroll(
+                                direction,
+                                state,
+                                sidecarTranscript?.turns,
+                                workerMetaEvents,
+                                Math.max(20, goalShutterColumns - 4),
+                                Math.max(3, goalStreamRows),
+                                refresh,
+                              )
+                            }
+                            return
+                          }
                           if (monitorChatSplit.watchRows > 0) {
                             handleMonitorWatchScroll(
                               event,
@@ -2383,40 +2358,74 @@ function createView(
                           }
                         },
                       },
-                      transcriptPane(
-                        renderRoleChatTranscriptStyled(
-                          monitorChatBlocks,
-                          [],
-                          [],
-                          {
-                            columns: rightColumns,
-                            lines: monitorChatSplit.watchRows > 0 ? monitorChatSplit.narrativeRows : monitorRows,
-                            pageLines: 6,
-                          },
-                          monitorTranscriptOptions,
-                          state.monitorScrollOffset,
-                        ),
-                        monitorChatSplit.watchRows > 0 ? 0 : 1,
-                      ),
-                      ...(monitorWatchLive && monitorChatSplit.watchRows > 0
+                      ...(showGoalShutter
                         ? [
+                            renderGoalShutter({
+                              state,
+                              events: workerMetaEvents,
+                              sidecarTurns: sidecarTranscript?.turns,
+                              sidecarRenderOptions: sidecarTranscriptRenderOptions(state),
+                              sidecarView: state.goalShutterSidecarView,
+                              columns: goalShutterColumns,
+                              visibleRows: goalShutterRows,
+                              streamRows: goalStreamRows,
+                              scrollOffset: state.goalShutterScrollOffset,
+                              sidecarThreadScrollOffset: state.goalShutterSidecarThreadScrollOffset,
+                              metaThreadId: options.session.metaThreadId,
+                              metaThreadTitle,
+                              sidecarMenuElements,
+                              onFocusSidecar: () => focusGoalSidecarChat(options, state, refresh),
+                              onPrefillSidecar: (prompt) => {
+                                state.monitorInputBuffer = prompt
+                                focusGoalSidecarChat(options, state, refresh)
+                              },
+                              onSelectSidecarThread: () => {
+                                state.goalShutterSidecarView = "thread"
+                                refresh()
+                              },
+                              onSelectSidecarEvents: () => {
+                                state.goalShutterSidecarView = "events"
+                                refresh()
+                              },
+                              ...goalPanelTabHandlers,
+                            }),
+                          ]
+                        : [
                             transcriptPane(
-                              renderTranscriptStyledView(
-                                state.blocks,
-                                state.toolLogs,
-                                state.subagentLogs,
+                              renderRoleChatTranscriptStyled(
+                                monitorChatBlocks,
+                                [],
+                                [],
                                 {
                                   columns: rightColumns,
-                                  lines: monitorChatSplit.watchRows,
+                                  lines: monitorChatSplit.watchRows > 0 ? monitorChatSplit.narrativeRows : monitorRows,
                                   pageLines: 6,
                                 },
-                                transcriptRenderOptions(state),
-                                state.monitorWatchScrollOffset,
+                                monitorTranscriptOptions,
+                                state.monitorScrollOffset,
                               ),
+                              monitorChatSplit.watchRows > 0 ? 0 : 1,
                             ),
-                          ]
-                        : []),
-                      monitorControlRow(options, state, refresh, rightColumns),
+                            ...(monitorWatchLive && monitorChatSplit.watchRows > 0
+                              ? [
+                                  transcriptPane(
+                                    renderTranscriptStyledView(
+                                      state.blocks,
+                                      state.toolLogs,
+                                      state.subagentLogs,
+                                      {
+                                        columns: rightColumns,
+                                        lines: monitorChatSplit.watchRows,
+                                        pageLines: 6,
+                                      },
+                                      transcriptRenderOptions(state),
+                                      state.monitorWatchScrollOffset,
+                                    ),
+                                  ),
+                                ]
+                              : []),
+                            monitorControlRow(options, state, refresh, rightColumns),
+                          ]),
                     ),
                   ]
                 : []),
@@ -2486,15 +2495,7 @@ function createView(
                 : []),
             ),
           ]
-        : [
-            collapsedSideTab(
-              isMonitorOn(state.monitorSnapshot)
-                ? agentRolePanelTitle("monitor")
-                : opsPanelTitle(state.rightPanelMode, options.config.environmentName),
-              "right",
-              openRightPanel,
-            ),
-          ]),
+        : []),
     ),
     Text({
       content: footerHint(options.config, state, options.session.id),
@@ -2608,6 +2609,187 @@ function switcherPanel(
       )
     }),
   )
+}
+
+function shouldShowTelemetryApproval(status: StackdTelemetryStatus | undefined): boolean {
+  if (process.env.STACK_TELEMETRY_APPROVAL_PROMPT === "0") return false
+  if (!status) return false
+  if (status.tiers.advanced_product !== "unset") return false
+  const currentVersion = stackVersion()
+  return status.tiers.asked_version !== currentVersion
+}
+
+function telemetryPanel(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): ReturnType<typeof Box> | undefined {
+  if (state.focusMode !== "telemetry" && !state.telemetryApprovalVisible) return undefined
+  const status = state.telemetryStatus
+  const tiers = status?.tiers
+  const basic = tiers?.basic_dau ?? "unknown"
+  const advanced = tiers?.advanced_product ?? "unknown"
+  const title = state.telemetryApprovalVisible ? "Telemetry Approval" : "Telemetry Settings"
+  const lines: Array<{ text: string; active?: boolean; onSelect?: () => void }> = [
+    {
+      text: `basic DAU: ${basic}`,
+      active: basic === "on",
+      onSelect: () => void setTelemetryBasicDau(state, refresh, basic === "on" ? "off" : "on"),
+    },
+    {
+      text: `advanced product: ${advanced}`,
+      active: advanced === "accepted",
+    },
+    {
+      text: "accept advanced feature/session telemetry",
+      active: advanced === "accepted",
+      onSelect: () => void setTelemetryAdvanced(options, state, refresh, "accepted"),
+    },
+    {
+      text: "decline advanced telemetry",
+      active: advanced === "declined",
+      onSelect: () => void setTelemetryAdvanced(options, state, refresh, "declined"),
+    },
+    {
+      text: "ask later this version",
+      active: advanced === "unset" && tiers?.asked_version === stackVersion(options.config.appRoot),
+      onSelect: () => void setTelemetryAdvanced(options, state, refresh, "unset"),
+    },
+    {
+      text: "r refresh · b basic · a accept · d decline · l later · Esc close",
+    },
+  ]
+  if (state.telemetryNotice) {
+    lines.unshift({ text: state.telemetryNotice })
+  } else if (!status) {
+    lines.unshift({ text: "stackd telemetry status unavailable" })
+  } else {
+    lines.unshift({ text: status.local_product_telemetry.reason })
+  }
+
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: state.focusMode === "telemetry" ? theme.borderActive : theme.borderInactive,
+      title,
+      padding: stackTuiLayout.panelPadding,
+      flexDirection: "column",
+      width: "100%",
+      flexShrink: 0,
+      gap: 0,
+    },
+    ...lines.map((line) => switcherLine(line.text, Boolean(line.active), line.onSelect)),
+  )
+}
+
+async function refreshTelemetryStatus(state: AppState, refresh: () => void): Promise<void> {
+  try {
+    state.telemetryStatus = await stackdTelemetryStatus()
+    state.telemetryNotice = undefined
+    state.telemetryApprovalVisible = shouldShowTelemetryApproval(state.telemetryStatus)
+  } catch (error) {
+    state.telemetryNotice = `telemetry status unavailable: ${error instanceof Error ? error.message : String(error)}`
+  }
+  refresh()
+}
+
+async function setTelemetryBasicDau(
+  state: AppState,
+  refresh: () => void,
+  basicDau: "on" | "off",
+): Promise<void> {
+  try {
+    const response = await stackdUpdateTelemetryConfig({ basic_dau: basicDau })
+    state.telemetryStatus = mergeTelemetryTiers(state.telemetryStatus, response.tiers)
+    state.telemetryNotice = `basic DAU ${basicDau}`
+  } catch (error) {
+    state.telemetryNotice = `telemetry update failed: ${error instanceof Error ? error.message : String(error)}`
+  }
+  refresh()
+}
+
+async function setTelemetryAdvanced(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  advancedProduct: "unset" | "accepted" | "declined",
+): Promise<void> {
+  try {
+    const response = await stackdUpdateTelemetryConfig({
+      advanced_product: advancedProduct,
+      asked_version: stackVersion(options.config.appRoot),
+    })
+    state.telemetryStatus = mergeTelemetryTiers(state.telemetryStatus, response.tiers)
+    state.telemetryApprovalVisible = false
+    state.telemetryNotice =
+      advancedProduct === "accepted"
+        ? "advanced telemetry accepted"
+        : advancedProduct === "declined"
+          ? "advanced telemetry declined"
+          : "advanced telemetry ask-later recorded"
+  } catch (error) {
+    state.telemetryNotice = `telemetry update failed: ${error instanceof Error ? error.message : String(error)}`
+  }
+  refresh()
+}
+
+function mergeTelemetryTiers(
+  status: StackdTelemetryStatus | undefined,
+  tiers: StackdTelemetryStatus["tiers"],
+): StackdTelemetryStatus | undefined {
+  if (!status) return status
+  return {
+    ...status,
+    tiers,
+    local_product_telemetry: {
+      ...status.local_product_telemetry,
+      enabled: tiers.basic_dau === "on" || tiers.advanced_product === "accepted",
+      reason: `basic DAU ${tiers.basic_dau} · advanced product ${tiers.advanced_product}`,
+    },
+  }
+}
+
+function handleTelemetryKey(
+  key: StackKeyEvent,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): boolean {
+  if (key.name === "escape" && (state.focusMode === "telemetry" || state.telemetryApprovalVisible)) {
+    state.telemetryApprovalVisible = false
+    state.focusMode = "agent"
+    refresh()
+    return true
+  }
+  if (state.focusMode !== "telemetry" && !state.telemetryApprovalVisible) return false
+  if (key.name === "r") {
+    void refreshTelemetryStatus(state, refresh)
+    return true
+  }
+  if (key.name === "b") {
+    const current = state.telemetryStatus?.tiers.basic_dau === "on" ? "off" : "on"
+    void setTelemetryBasicDau(state, refresh, current)
+    return true
+  }
+  if (key.name === "a") {
+    void setTelemetryAdvanced(options, state, refresh, "accepted")
+    return true
+  }
+  if (key.name === "d") {
+    void setTelemetryAdvanced(options, state, refresh, "declined")
+    return true
+  }
+  if (key.name === "l") {
+    void setTelemetryAdvanced(options, state, refresh, "unset")
+    return true
+  }
+  if (state.focusMode === "telemetry" && isEnterKey(key)) {
+    const next = state.telemetryStatus?.tiers.advanced_product === "accepted" ? "declined" : "accepted"
+    void setTelemetryAdvanced(options, state, refresh, next)
+    return true
+  }
+  return false
 }
 
 function switcherFocusLabel(focusMode: FocusMode): string {
@@ -3149,6 +3331,139 @@ function reconcileGoalOwnership(options: StackAppOptions, state: AppState): void
   }
 }
 
+function applyStackdSidePanelSnapshot(
+  options: StackAppOptions,
+  state: AppState,
+  status: StackdMetaStatus,
+): boolean {
+  const threadSnapshot =
+    status.threads.find((thread) => thread.thread_id === options.session.id) ??
+    (options.session.metaThreadId
+      ? status.threads.find((thread) => thread.meta_thread_id === options.session.metaThreadId)
+      : undefined)
+  if (!threadSnapshot) return false
+
+  const sidePanel = threadSnapshot.ui.side_panel ?? null
+  const nextKey = stackdSidePanelKey(sidePanel)
+  const previousKey = state.appliedStackdSidePanelKey
+  if (nextKey === previousKey) return false
+
+  if (sidePanel && stackdSidePanelOpenedBeforeOperatorClose(state, sidePanel)) {
+    state.appliedStackdSidePanelKey = nextKey
+    return false
+  }
+
+  state.appliedStackdSidePanelKey = nextKey
+  if (!sidePanel) {
+    if (previousKey === undefined || previousKey === "closed") return false
+    return applyStackdClosedSidePanel(state)
+  }
+
+  return applyStackdOpenedSidePanel(options, state, sidePanel)
+}
+
+function stackdSidePanelKey(sidePanel: StackdMetaSidePanel | null): string {
+  if (!sidePanel) return "closed"
+  return JSON.stringify([
+    sidePanel.panel,
+    sidePanel.view ?? "",
+    sidePanel.opened_by,
+    sidePanel.reason ?? "",
+    sidePanel.opened_at ?? "",
+  ])
+}
+
+function stackdSidePanelOpenedBeforeOperatorClose(
+  state: AppState,
+  sidePanel: StackdMetaSidePanel,
+): boolean {
+  if (!state.lastOperatorSidePanelClosedAtMs || !sidePanel.opened_at) return false
+  const openedAtMs = Date.parse(sidePanel.opened_at)
+  return Number.isFinite(openedAtMs) && openedAtMs <= state.lastOperatorSidePanelClosedAtMs
+}
+
+function stackdSidePanelLayoutKey(state: AppState): string {
+  return JSON.stringify([
+    state.focusMode,
+    state.leftPanelOpen,
+    state.rightPanelOpen,
+    state.rightPanelOpsVisible,
+    state.rightPanelMode,
+    state.liveOpsMode,
+    state.monitorPanelMode,
+    state.gardenerPanelMode,
+    state.goalShutterWorkerPeek,
+    state.goalShutterSidecarView,
+  ])
+}
+
+function applyStackdClosedSidePanel(state: AppState): boolean {
+  const before = stackdSidePanelLayoutKey(state)
+  state.leftPanelOpen = false
+  state.rightPanelOpen = false
+  state.goalShutterWorkerPeek = false
+  if (
+    state.focusMode === "monitor" ||
+    state.focusMode === "gardener" ||
+    state.focusMode === "ops" ||
+    state.focusMode === "history" ||
+    state.focusMode === "projects" ||
+    state.focusMode === "harness" ||
+    state.focusMode === "optimizers" ||
+    state.focusMode === "hosted" ||
+    state.focusMode === "remote"
+  ) {
+    state.focusMode = "agent"
+  }
+  return stackdSidePanelLayoutKey(state) !== before
+}
+
+function applyStackdOpenedSidePanel(
+  options: StackAppOptions,
+  state: AppState,
+  sidePanel: StackdMetaSidePanel,
+): boolean {
+  if (!isUiPanelId(sidePanel.panel)) return false
+
+  const before = stackdSidePanelLayoutKey(state)
+  if (sidePanel.panel === "monitor") {
+    state.leftPanelOpen = false
+    state.rightPanelOpen = true
+    state.rightPanelOpsVisible = false
+    state.monitorWorkerTargetId = options.session.id
+    state.monitorPanelMode = sidePanel.view === "events" || sidePanel.view === "tape" ? "events" : "chat"
+    if (isGoalMode(state)) {
+      state.goalShutterWorkerPeek = false
+      state.goalShutterSidecarView = sidePanel.view === "thread" ? "thread" : "events"
+    }
+    state.focusMode = "monitor"
+  } else if (sidePanel.panel === "gardener") {
+    state.rightPanelOpen = false
+    state.leftPanelOpen = true
+    state.gardenerPanelMode = sidePanel.view === "portfolio" ? "events" : "chat"
+    state.focusMode = "gardener"
+  } else if (sidePanel.panel === "ops") {
+    state.leftPanelOpen = false
+    state.rightPanelOpen = true
+    state.rightPanelOpsVisible = true
+    state.opsScrollOffset = 0
+    if (sidePanel.view === "remote") {
+      state.liveOpsMode = "remote"
+      state.focusMode = "remote"
+    } else {
+      state.liveOpsMode = "local"
+      state.rightPanelMode = sidePanel.view === "hosted" ? "hosted" : "local"
+      state.focusMode = "ops"
+    }
+  } else if (sidePanel.panel === "threads") {
+    state.leftPanelOpen = false
+    state.rightPanelOpen = false
+    state.leftPanelScrollOffset = 0
+    state.focusMode = "history"
+  }
+  return stackdSidePanelLayoutKey(state) !== before
+}
+
 function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
   reconcileGoalOwnership(options, state)
   if (!isGoalMode(state)) {
@@ -3167,16 +3482,13 @@ function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
       state.monitorSnapshot = setMonitorEnabled(options.config.stackDataRoot, options.session.id, true)
       syncMonitorRightPanel(state)
     }
+    state.rightPanelOpen = true
+    state.rightPanelOpsVisible = false
+    state.monitorWorkerTargetId = options.session.id
     state.goalMonitorAutoEnabledObjective = objective
   }
-  if (
-    !state.goalShutterWorkerPeek &&
-    state.focusMode === "agent" &&
-    state.inputBuffer.length === 0 &&
-    state.monitorInputBuffer.length === 0
-  ) {
+  if (!state.goalShutterWorkerPeek && state.focusMode === "goal") {
     state.focusMode = "monitor"
-    state.monitorWorkerTargetId = options.session.id
   }
 }
 
@@ -3192,6 +3504,8 @@ function focusGoalSidecarChat(
   state.goalShutterWorkerPeek = false
   state.goalShutterSidecarView = "thread"
   state.goalShutterSidecarThreadScrollPinned = true
+  state.rightPanelOpen = true
+  state.rightPanelOpsVisible = false
   state.talkToMonitor = true
   state.monitorPanelMode = "chat"
   state.monitorWorkerTargetId = options.session.id
@@ -3213,8 +3527,119 @@ function returnToGoalShutter(state: AppState, refresh: () => void): boolean {
   state.goalShutterWorkerPeek = false
   state.goalShutterSidecarView = "events"
   state.goalShutterSidecarThreadScrollPinned = true
+  state.rightPanelOpen = true
+  state.rightPanelOpsVisible = false
   state.focusMode = "monitor"
   refresh()
+  return true
+}
+
+function appendUiPanelOpened(
+  options: StackAppOptions,
+  state: AppState,
+  panel: UiPanelId,
+  view: string | undefined,
+  openedBy: "operator" | "monitor" | "gardener",
+  reason: string,
+): void {
+  try {
+    appendThreadMetaEvent(options.config.stackDataRoot, {
+      event_id: stackEventId("ui_panel_opened"),
+      type: "ui.panel_opened",
+      thread_id: options.session.id,
+      observed_at: new Date().toISOString(),
+      actor_id: openedBy,
+      actor_role: openedBy === "operator" ? "primary" : openedBy,
+      payload: {
+        panel,
+        ...(view ? { view } : {}),
+        opened_by: openedBy,
+        reason,
+        source: "tui",
+      },
+    })
+    void emitFeatureUsed("side_panel_open")
+    state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+  } catch (error) {
+    appendStackBlock(state.blocks, `ui panel open audit failed: ${errorMessage(error)}`)
+  }
+}
+
+function recordSlashFeatureUsage(): void {
+  void emitFeatureUsed("slash_command")
+}
+
+function appendUiPanelClosed(
+  options: StackAppOptions,
+  state: AppState,
+  panel: UiPanelId,
+  reason: string,
+): void {
+  state.lastOperatorSidePanelClosedAtMs = Date.now()
+  try {
+    appendThreadMetaEvent(options.config.stackDataRoot, {
+      event_id: stackEventId("ui_panel_closed"),
+      type: "ui.panel_closed",
+      thread_id: options.session.id,
+      observed_at: new Date().toISOString(),
+      actor_id: "operator",
+      actor_role: "primary",
+      payload: {
+        panel,
+        closed_by: "operator",
+        reason,
+        source: "tui",
+      },
+    })
+    state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+  } catch (error) {
+    appendStackBlock(state.blocks, `ui panel close audit failed: ${errorMessage(error)}`)
+  }
+}
+
+function closeOperatorSidePanels(
+  options: StackAppOptions,
+  state: AppState,
+  reason: string,
+): boolean {
+  const closedPanels: string[] = []
+  if (state.leftPanelOpen) {
+    state.leftPanelOpen = false
+    closedPanels.push("gardener")
+  }
+  if (state.rightPanelOpen) {
+    closedPanels.push(state.rightPanelOpsVisible || !isMonitorOn(state.monitorSnapshot) ? "ops" : "monitor")
+    state.rightPanelOpen = false
+  }
+  if (state.focusMode === "history" || state.focusMode === "projects" || state.focusMode === "harness") {
+    closedPanels.push("threads")
+  }
+  if (closedPanels.length === 0) return false
+  state.lastOperatorSidePanelClosedAtMs = Date.now()
+  state.focusMode = "agent"
+  state.goalShutterWorkerPeek = false
+
+  for (const panel of new Set(closedPanels)) {
+    try {
+      appendThreadMetaEvent(options.config.stackDataRoot, {
+        event_id: stackEventId("ui_panel_closed"),
+        type: "ui.panel_closed",
+        thread_id: options.session.id,
+        observed_at: new Date().toISOString(),
+        actor_id: "operator",
+        actor_role: "primary",
+        payload: {
+          panel,
+          closed_by: "operator",
+          reason,
+          source: "tui",
+        },
+      })
+    } catch (error) {
+      appendStackBlock(state.blocks, `ui panel close audit failed: ${errorMessage(error)}`)
+    }
+  }
+  state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
   return true
 }
 
@@ -3245,6 +3670,7 @@ function openMonitorPanel(
   options: StackAppOptions,
   state: AppState,
   refresh: () => void,
+  reason = "slash",
 ): void {
   if (!isMonitorOn(state.monitorSnapshot)) {
     state.monitorSnapshot = setMonitorEnabled(options.config.stackDataRoot, options.session.id, true)
@@ -3255,6 +3681,8 @@ function openMonitorPanel(
   state.monitorPanelMode = "chat"
   state.monitorWorkerTargetId = options.session.id
   state.focusMode = "monitor"
+  appendUiPanelOpened(options, state, "monitor", "thread", "operator", reason)
+  void emitFeatureUsed("monitor_sidecar")
   refresh()
 }
 
@@ -3266,6 +3694,7 @@ function toggleMonitorPanelVisibility(
   if (state.rightPanelOpen) {
     state.rightPanelOpen = false
     if (state.focusMode === "monitor") state.focusMode = "agent"
+    appendUiPanelClosed(options, state, "monitor", "slash")
     refresh()
     return
   }
@@ -3389,10 +3818,17 @@ function monitorControlRow(
   )
 }
 
-function openGardenerPanel(state: AppState, refresh: () => void): void {
+function openGardenerPanel(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  reason = "slash",
+): void {
   state.leftPanelOpen = true
   state.gardenerPanelMode = "chat"
   state.focusMode = "gardener"
+  appendUiPanelOpened(options, state, "gardener", "chat", "operator", reason)
+  void emitFeatureUsed("gardener_chat")
   refresh()
 }
 
@@ -4074,7 +4510,7 @@ function buildSlashDispatchHooks(
       appendStackBlock(state.blocks, message)
       refresh()
     },
-    openGardener: () => openGardenerPanel(state, refresh),
+    openGardener: () => openGardenerPanel(options, state, refresh, "slash"),
     messageGardener: (message) => {
       void submitGardenerInputValue(
         message,
@@ -4150,8 +4586,22 @@ function buildSlashDispatchHooks(
       refresh()
     },
     toggleThreads: () => {
-      toggleLeftPanelRails(state)
+      state.focusMode = "history"
+      state.leftPanelScrollOffset = 0
+      appendUiPanelOpened(options, state, "threads", "list", "operator", "slash")
       refresh()
+    },
+    openOps: () => {
+      state.rightPanelOpen = true
+      state.rightPanelOpsVisible = true
+      state.focusMode = "ops"
+      state.opsScrollOffset = 0
+      appendUiPanelOpened(options, state, "ops", state.liveOpsMode === "remote" ? "remote" : "local", "operator", "slash")
+      refresh()
+    },
+    openTelemetrySettings: () => {
+      state.focusMode = "telemetry"
+      void refreshTelemetryStatus(state, refresh)
     },
     toggleActors: () => {
       if (isMonitorOn(state.monitorSnapshot)) {
@@ -5090,11 +5540,18 @@ function gardenerPassContext(options: StackAppOptions, state: AppState) {
   }
 }
 
+function gardenerPassCursorEvent(stackRoot: string, threadId: string): StackThreadMetaEvent | undefined {
+  return readThreadMetaEvents(stackRoot, threadId)
+    .filter((event) => event.actor_role !== "gardener" && event.actor_role !== "system")
+    .at(-1)
+}
+
 async function refreshGardenerMaintenance(
   options: StackAppOptions,
   state: AppState,
   wakeReason: "inbox" | "turn_completed" | "idle" | "manual",
 ): Promise<void> {
+  const cursorEvent = gardenerPassCursorEvent(options.config.stackDataRoot, options.session.id)
   const result = await runGardenerMaintenancePass({
     config: options.config,
     gardenerThreadId: state.gardenerThreadId,
@@ -5108,6 +5565,18 @@ async function refreshGardenerMaintenance(
   })
   state.gardenerWorkspacePath = result.workspaceGardenPath
   if (result.gardenerGardenPath) state.gardenerGardenPath = result.gardenerGardenPath
+  try {
+    await stackdGardenerPassComplete(options.session.id, "gardener_default", {
+      ...(cursorEvent?.event_id ? { cursor_event_id: cursorEvent.event_id } : {}),
+      wake_reason: wakeReason,
+      ...(result.workspaceGardenPath ? { workspace_garden_path: result.workspaceGardenPath } : {}),
+      ...(result.gardenerGardenPath ? { gardener_garden_path: result.gardenerGardenPath } : {}),
+      inbox_pending: result.inboxPending,
+    })
+    state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+  } catch (error) {
+    appendStackBlock(state.blocks, `gardener cursor advance failed: ${errorMessage(error)}`)
+  }
 }
 
 function workerPanelThreadLabel(options: StackAppOptions, state: AppState): string {

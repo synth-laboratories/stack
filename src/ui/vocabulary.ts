@@ -41,7 +41,7 @@ export const UI_PANELS: Record<UiPanelId, UiPanelSpec> = {
   ops: {
     id: "ops",
     openedBy: ["gardener", "operator"],
-    views: ["remote", "hosted"],
+    views: ["local", "remote", "hosted"],
     toolName: "stack_ui_open_panel",
     slash: "/ops",
     eventTypes: EVENT_TYPES,

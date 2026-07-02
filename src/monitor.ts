@@ -1568,6 +1568,28 @@ type WakeCandidate = {
   pendingEvents: StackThreadMetaEvent[]
 }
 
+export type StackMonitorWakeDecision = {
+  reason: string
+  triggerEventIds: string[]
+  pendingEventIds: string[]
+}
+
+export function selectMonitorWakeDecision(input: {
+  config: StackMonitorConfig
+  actorState?: StackMonitorActorRuntimeState
+  events: StackThreadMetaEvent[]
+  wakeReason?: string
+  triggerEventIds?: string[]
+}): StackMonitorWakeDecision | undefined {
+  const candidate = nextWakeCandidate(input)
+  if (!candidate) return undefined
+  return {
+    reason: candidate.reason,
+    triggerEventIds: candidate.triggerEventIds,
+    pendingEventIds: candidate.pendingEvents.map((event) => event.event_id),
+  }
+}
+
 type HandoffPreemptEvaluation = {
   status: "eligible" | "skipped"
   wakePayload: Record<string, unknown>
