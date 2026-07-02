@@ -101,6 +101,20 @@ export type RemoteFactorySummary = {
   isRunning?: boolean
 }
 
+export type RemoteDeploymentSummary = {
+  deploymentId: string
+  name: string
+  status?: string
+  preflightStatus?: string
+  degradedReason?: string
+  projectId?: string
+  factoryId?: string
+  topology?: string
+  substrate?: string
+  updatedAt?: string
+  ready?: boolean
+}
+
 export type RemoteSyncRequestSummary = {
   eventId: string
   observedAt: string
@@ -185,6 +199,7 @@ export type RemoteResearchSnapshot = {
   message?: string
   jobs: RemoteSmrRunSummary[]
   factories: RemoteFactorySummary[]
+  deployments: RemoteDeploymentSummary[]
   runDetails: Record<string, RemoteRunDetail>
   hostedArtifacts: Record<string, HostedArtifactStatus>
   sync?: RemoteSyncSnapshot
@@ -206,6 +221,7 @@ export type RemoteProjectsPanelSnapshot = {
   checkedAt: string
   message?: string
   projects: RemoteProjectPanelEntry[]
+  deployments: RemoteDeploymentSummary[]
   tagScope?: RemoteTagScopeSummary
   sync?: RemoteSyncSnapshot
 }
@@ -220,6 +236,7 @@ export type RemoteProjectPanelEntry = {
   experimentsLast7DaysCapped?: boolean
   factories: RemoteFactorySummary[]
   runs: RemoteSmrRunSummary[]
+  deployments?: RemoteDeploymentSummary[]
 }
 
 const LIVE_PROJECT_LIMIT = 6
@@ -238,6 +255,7 @@ export async function readRemoteProjectsPanelSnapshot(config: StackConfig): Prom
     checkedAt: new Date().toISOString(),
     message: auth.hasAuth ? "not checked yet" : auth.message,
     projects: [],
+    deployments: [],
   }
 
   if (!auth.hasAuth) return base
@@ -437,6 +455,7 @@ export async function readRemoteResearchSnapshot(config: StackConfig): Promise<R
     message: auth.hasAuth ? "not checked yet" : auth.message,
     jobs: [],
     factories: [],
+    deployments: [],
     runDetails: {},
     hostedArtifacts: {},
   }

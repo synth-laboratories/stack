@@ -7541,6 +7541,9 @@ function remoteResearchText(state: AppState): string[] {
     `factories: ${snapshot.factories.length}`,
     ...remoteFactoryRows(state, 3),
     "",
+    `deployments: ${snapshot.deployments.length}`,
+    ...remoteDeploymentRows(snapshot, 3),
+    "",
     "Selected Factory",
     ...(selectedFactory ? selectedRemoteFactoryText(selectedFactory) : ["none"]),
   ].filter((line) => line.length > 0)
@@ -7716,6 +7719,22 @@ function remoteFactoryRows(state: AppState, limit: number): string[] {
   const hiddenOlder = factories.length - (start + limit)
   if (hiddenOlder > 0) rows.push(`  ... ${hiddenOlder} older`)
   return rows
+}
+
+function remoteDeploymentRows(snapshot: RemoteResearchSnapshot, limit: number): string[] {
+  const deployments = snapshot.deployments
+  if (deployments.length === 0) return ["  no deployments"]
+  return deployments.slice(0, limit).map((deployment) => {
+    const status = inlineText(deployment.status ?? "-", 8).padEnd(8)
+    const health = deployment.degradedReason
+      ? ` issue ${inlineText(deployment.degradedReason, 18)}`
+      : deployment.ready === false
+        ? " not-ready"
+        : ""
+    const project = deployment.projectId ? ` proj ${deployment.projectId.slice(0, 8)}` : ""
+    const at = formatRemoteShortTime(deployment.updatedAt)
+    return `  ${status} ${at} ${inlineText(deployment.name || deployment.deploymentId, 20)}${project}${health}`
+  })
 }
 
 function selectedRemoteJobText(state: AppState, job: RemoteSmrRunSummary): string[] {
@@ -9862,6 +9881,7 @@ function markEnvironmentChecking(config: StackConfig, state: AppState): void {
     message: hasAuth ? "checking remote SMR" : auth.message,
     jobs: [],
     factories: [],
+    deployments: [],
     runDetails: {},
     hostedArtifacts: {},
   }
@@ -9872,6 +9892,7 @@ function markEnvironmentChecking(config: StackConfig, state: AppState): void {
     checkedAt: new Date().toISOString(),
     message: hasAuth ? "checking projects" : auth.message,
     projects: [],
+    deployments: [],
   }
   state.opsScrollOffset = 0
   state.selectedProjectIndex = 0
@@ -10262,6 +10283,7 @@ export function remoteResearchSnapshotFromRuntime(
 
   const fallbackRunsById = new Map((fallback?.jobs ?? []).map((run) => [run.runId, run]))
   const fallbackFactoriesById = new Map((fallback?.factories ?? []).map((factory) => [factory.factoryId, factory]))
+  const fallbackDeploymentsById = new Map((fallback?.deployments ?? []).map((deployment) => [deployment.deploymentId, deployment]))
   const jobs = remote.runs
     .slice()
     .sort(compareRuntimeRunRecency)
@@ -10299,6 +10321,26 @@ export function remoteResearchSnapshotFromRuntime(
         isRunning: factory.is_running ?? fallbackFactory?.isRunning,
       }
     })
+  const runtimeDeployments = deployments
+    .slice()
+    .sort(compareRuntimeDeploymentRecency)
+    .map((deployment) => {
+      const fallbackDeployment = fallbackDeploymentsById.get(deployment.deployment_id)
+      return {
+        ...fallbackDeployment,
+        deploymentId: deployment.deployment_id,
+        name: deployment.name,
+        status: deployment.status ?? fallbackDeployment?.status,
+        preflightStatus: deployment.preflight_status ?? fallbackDeployment?.preflightStatus,
+        degradedReason: deployment.degraded_reason ?? fallbackDeployment?.degradedReason,
+        projectId: deployment.project_id ?? fallbackDeployment?.projectId,
+        factoryId: deployment.factory_id ?? fallbackDeployment?.factoryId,
+        topology: deployment.topology ?? fallbackDeployment?.topology,
+        substrate: deployment.substrate ?? fallbackDeployment?.substrate,
+        updatedAt: deployment.updated_at ?? fallbackDeployment?.updatedAt,
+        ready: deployment.ready ?? fallbackDeployment?.ready,
+      }
+    })
 
   return {
     status: remote.auth_status === "ready" ? "ready" : "missing-auth",
@@ -10308,6 +10350,7 @@ export function remoteResearchSnapshotFromRuntime(
     message: `runtime ${jobs.length} SMR runs, ${factories.length} factories, ${deploymentCount} deployments${sync ? `, ${remoteSyncSummaryLabel(sync)}` : ""}`,
     jobs,
     factories,
+    deployments: runtimeDeployments,
     runDetails: fallback?.runDetails ?? {},
     hostedArtifacts: fallback?.hostedArtifacts ?? {},
     ...(sync ? { sync } : {}),
@@ -10330,6 +10373,16 @@ function compareRuntimeFactoryRecency(
   return compareOptionalIsoDesc(left.next_wake_at, right.next_wake_at) || left.factory_id.localeCompare(right.factory_id)
 }
 
+function compareRuntimeDeploymentRecency(
+  left: NonNullable<StackdFactorySnapshot["remote_synth"]["deployments"]>[number],
+  right: NonNullable<StackdFactorySnapshot["remote_synth"]["deployments"]>[number],
+): number {
+  const leftDegraded = Boolean(left.degraded_reason) || (left.ready === false)
+  const rightDegraded = Boolean(right.degraded_reason) || (right.ready === false)
+  if (leftDegraded !== rightDegraded) return leftDegraded ? -1 : 1
+  return compareOptionalIsoDesc(left.updated_at, right.updated_at) || left.deployment_id.localeCompare(right.deployment_id)
+}
+
 function compareOptionalIsoDesc(left: string | null | undefined, right: string | null | undefined): number {
   const leftMs = left ? Date.parse(left) : 0
   const rightMs = right ? Date.parse(right) : 0
@@ -10346,18 +10399,33 @@ export function remoteProjectsPanelFromRuntime(
   const projects = remote?.projects ?? []
   const runtimeRuns = remote?.runs ?? []
   const runtimeFactories = remote?.factories ?? []
+  const runtimeDeployments = remote?.deployments ?? []
   const sync = remote ? remoteSyncSnapshotFromRuntime(remote) : undefined
-  if (!remote || (projects.length === 0 && !sync)) return undefined
+  if (!remote || (projects.length === 0 && runtimeDeployments.length === 0 && !sync)) return undefined
   const runtimeEnvironment = runtimeRemoteEnvironment(remote, config)
   const runsById = new Map(runtimeRuns.map((run) => [run.run_id, run]))
   const factoriesById = new Map(runtimeFactories.map((factory) => [factory.factory_id, factory]))
+  const deploymentRows = runtimeDeployments.slice().sort(compareRuntimeDeploymentRecency).map((deployment) => ({
+    deploymentId: deployment.deployment_id,
+    name: deployment.name,
+    status: deployment.status ?? undefined,
+    preflightStatus: deployment.preflight_status ?? undefined,
+    degradedReason: deployment.degraded_reason ?? undefined,
+    projectId: deployment.project_id ?? undefined,
+    factoryId: deployment.factory_id ?? undefined,
+    topology: deployment.topology ?? undefined,
+    substrate: deployment.substrate ?? undefined,
+    updatedAt: deployment.updated_at ?? undefined,
+    ready: deployment.ready ?? undefined,
+  }))
   return {
     status: remote.auth_status === "ready" ? "ready" : "missing-auth",
     environmentName: runtimeEnvironment.environmentName,
     apiBaseUrl: runtimeEnvironment.apiBaseUrl,
     checkedAt: snapshot.updated_at,
-    message: `runtime ${projects.length} projects${sync ? `, ${remoteSyncSummaryLabel(sync)}` : ""}`,
+    message: `runtime ${projects.length} projects, ${deploymentRows.length} deployments${sync ? `, ${remoteSyncSummaryLabel(sync)}` : ""}`,
     ...(sync ? { sync } : {}),
+    deployments: deploymentRows,
     projects: projects.map((project) => {
       const linkedRuns = project.run_ids
         .map((runId) => runsById.get(runId))
@@ -10371,6 +10439,7 @@ export function remoteProjectsPanelFromRuntime(
       const projectFactories = linkedFactories.length > 0
         ? linkedFactories
         : runtimeFactories.filter((factory) => factory.project_ids.includes(project.project_id))
+      const projectDeployments = deploymentRows.filter((deployment) => deployment.projectId === project.project_id)
       const activeRun = projectRuns.find((run) => !run.terminal)
       return {
         projectId: project.project_id,
@@ -10400,6 +10469,7 @@ export function remoteProjectsPanelFromRuntime(
           runbook: run.runbook ?? undefined,
           updatedAt: run.updated_at ?? undefined,
         })),
+        deployments: projectDeployments,
       }
     }),
   }

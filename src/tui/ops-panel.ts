@@ -542,8 +542,10 @@ function projectsHeader(snapshot: RemoteProjectsPanelSnapshot): string {
   const tag = snapshot.tagScope ? ` · tag ${oneLine(snapshot.tagScope.name, 12)}` : ""
   const experiments7d = formatExperiments7dTotal(snapshot.projects)
   const experiments = experiments7d ? ` · ${experiments7d}` : ""
+  const deploymentCount = snapshot.deployments.length
+  const deployments = deploymentCount > 0 ? ` · dep ${deploymentCount}${countDegradedDeployments(snapshot.deployments) > 0 ? "!" : ""}` : ""
   const sync = snapshot.sync ? ` · ${remoteSyncHeader(snapshot.sync)}` : ""
-  return `${snapshot.status}${message}${tag}${experiments}${sync} · factories + runs`
+  return `${snapshot.status}${message}${tag}${experiments}${deployments}${sync} · factories + runs`
 }
 
 function formatExperiments7dTotal(
@@ -573,12 +575,13 @@ function formatProjectExperiments7d(project: RemoteProjectsPanelSnapshot["projec
 function projectsBody(snapshot: RemoteProjectsPanelSnapshot): string[] {
   const syncLines = remoteSyncLines(snapshot)
   if (snapshot.projects.length === 0) {
+    const deploymentLines = deploymentLinesForSnapshot(snapshot.deployments)
     if (snapshot.status === "missing-auth") {
-      return [...syncLines, "  Local ready · Sign in to Synth for cloud", "  stack auth open signin"]
+      return [...syncLines, ...deploymentLines, "  Local ready · Sign in to Synth for cloud", "  stack auth open signin"]
     }
-    if (snapshot.status === "offline") return [...syncLines, "  start dev slot (see Setup above)"]
-    if (snapshot.tagScope) return [...syncLines, "  (no live projects)", "", ...orgWideTagLines(snapshot.tagScope)]
-    return [...syncLines, "  (no live projects)"]
+    if (snapshot.status === "offline") return [...syncLines, ...deploymentLines, "  start dev slot (see Setup above)"]
+    if (snapshot.tagScope) return [...syncLines, ...deploymentLines, "  (no live projects)", "", ...orgWideTagLines(snapshot.tagScope)]
+    return [...syncLines, ...deploymentLines, "  (no live projects)"]
   }
   const lines: string[] = [...syncLines]
   if (lines.length > 0) lines.push("")
@@ -604,6 +607,9 @@ function projectsBody(snapshot: RemoteProjectsPanelSnapshot): string[] {
       if (factoryTag) lines.push(...projectTagLines(factoryTag, "    "))
     }
     if (project.factories.length === 0) lines.push("  (no factories)")
+    for (const deployment of (project.deployments ?? []).slice(0, 2)) {
+      lines.push(`  d ${deploymentStatusLabel(deployment)} · ${oneLine(deployment.name, 16)}`)
+    }
     for (const run of project.runs.slice(0, 4)) {
       lines.push(`  r ${run.runId.slice(0, 8)} · ${run.state}${run.phase ? `/${run.phase}` : ""} · ${runAge(run)}`)
     }
@@ -613,6 +619,31 @@ function projectsBody(snapshot: RemoteProjectsPanelSnapshot): string[] {
   }
   if (lines.at(-1) === "") lines.pop()
   return lines
+}
+
+function deploymentLinesForSnapshot(
+  deployments: RemoteProjectsPanelSnapshot["deployments"],
+): string[] {
+  if (deployments.length === 0) return []
+  return ["Deployments", ...deployments.slice(0, 4).map((deployment) =>
+    `  ${deploymentStatusLabel(deployment)} · ${oneLine(deployment.name, 22)}${deployment.projectId ? ` · proj ${deployment.projectId.slice(0, 8)}` : ""}`,
+  )]
+}
+
+function countDegradedDeployments(
+  deployments: RemoteProjectsPanelSnapshot["deployments"],
+): number {
+  return deployments.filter((deployment) => deployment.degradedReason || deployment.ready === false).length
+}
+
+function deploymentStatusLabel(
+  deployment: RemoteProjectsPanelSnapshot["deployments"][number],
+): string {
+  const status = oneLine(deployment.status ?? "unknown", 10)
+  if (deployment.degradedReason) return `${status}!`
+  if (deployment.ready === false) return `${status}!`
+  if (deployment.preflightStatus) return `${status}/${oneLine(deployment.preflightStatus, 8)}`
+  return status
 }
 
 function remoteSyncHeader(sync: NonNullable<RemoteProjectsPanelSnapshot["sync"]>): string {
