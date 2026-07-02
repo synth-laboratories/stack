@@ -68,6 +68,13 @@ For hosted Synth access, use the live backend routes:
 Do not build against `/v1/containers`; that SDK prefix is not the live backend
 router. Document the naming mismatch if it appears in user-facing context.
 
+Stack MCP wrappers for the common read paths:
+
+- `stack_list_container_pools`
+- `stack_container_health`
+
+Use the wrappers first from Stack agents; drop to raw HTTP only when a route is not wrapped.
+
 ## Task Info
 
 `/task_info` should give a general proposer enough context to improve behavior:

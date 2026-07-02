@@ -85,8 +85,11 @@ import {
   cancelHostedOptimizerRun,
   downloadHostedOptimizerArtifact,
   previewHostedOptimizerArtifact,
+  submitHostedGepaRun,
+  type HostedGepaTunnelProvider,
 } from "../remote/optimizers.js"
 import { readHostedOptimizerSnapshot } from "../remote/optimizers.js"
+import { readContainerPoolHealth, readContainerPools } from "../remote/containers.js"
 import { readRemoteInferenceCatalog } from "../remote/inference.js"
 import { readRemoteInferenceUsage } from "../remote/inference-usage.js"
 import {
@@ -1413,6 +1416,55 @@ export class StackMcpServer {
     }
   }
 
+  async listContainerPools(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const limit = optionalInteger(args, "limit") ?? 100
+    if (limit < 1 || limit > 500) throw new RpcError(-32602, "limit must be between 1 and 500")
+    const snapshot = await readContainerPools(config, {
+      limit,
+      state: optionalString(args, "state"),
+    })
+    return {
+      environment: snapshot.environmentName,
+      api_base_url: snapshot.apiBaseUrl,
+      status: snapshot.status,
+      message: snapshot.message ?? null,
+      state: snapshot.state ?? null,
+      checked_at: snapshot.checkedAt,
+      next_cursor: snapshot.nextCursor ?? null,
+      count: snapshot.pools.length,
+      pools: snapshot.pools.map((pool) => ({
+        pool_id: pool.poolId,
+        name: pool.name ?? null,
+        type: pool.type ?? null,
+        status: pool.status ?? null,
+        state: pool.state ?? null,
+        adapter: pool.adapter ?? null,
+        container_url: pool.containerUrl ?? null,
+        task_count: pool.taskCount ?? null,
+        created_at: pool.createdAt ?? null,
+        updated_at: pool.updatedAt ?? null,
+      })),
+    }
+  }
+
+  async containerHealth(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const poolId = requiredString(args, "pool_id")
+    const taskId = optionalString(args, "task_id")
+    const result = await readContainerPoolHealth(config, { poolId, taskId })
+    return {
+      ok: result.ok,
+      status: result.status,
+      environment: result.environmentName,
+      api_base_url: result.apiBaseUrl,
+      pool_id: result.poolId,
+      task_id: result.taskId ?? null,
+      message: result.message,
+      health: toJsonValue(result.data ?? {}) ?? {},
+    }
+  }
+
   async openHostedArtifact(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const runId = requiredString(args, "run_id")
@@ -1560,6 +1612,93 @@ export class StackMcpServer {
           }
         : null,
       response: toJsonValue(result.response ?? {}) ?? {},
+    }
+  }
+
+  async submitHostedOptimizer(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const rawConfigPath = requiredString(args, "config_path")
+    const configPath = resolve(config.workingDir, rawConfigPath)
+    if (!existsSync(configPath)) {
+      throw new RpcError(-32602, `config_path does not exist: ${configPath}`)
+    }
+    const tunnelProvider = optionalString(args, "tunnel_provider")
+    const allowedTunnelProviders = ["auto", "synth_tunnel", "cloudflared", "ngrok"] as const
+    if (tunnelProvider && !allowedTunnelProviders.includes(tunnelProvider as HostedGepaTunnelProvider)) {
+      throw new RpcError(-32602, "tunnel_provider must be auto, synth_tunnel, cloudflared, or ngrok")
+    }
+    const tunnelTtlSeconds = optionalInteger(args, "tunnel_ttl_seconds")
+    if (tunnelTtlSeconds !== undefined && (tunnelTtlSeconds < 60 || tunnelTtlSeconds > 86400)) {
+      throw new RpcError(-32602, "tunnel_ttl_seconds must be between 60 and 86400")
+    }
+    const timeoutSeconds = optionalInteger(args, "timeout_seconds")
+    if (timeoutSeconds !== undefined && (timeoutSeconds < 30 || timeoutSeconds > 86400)) {
+      throw new RpcError(-32602, "timeout_seconds must be between 30 and 86400")
+    }
+    const tunnelUrl = optionalString(args, "tunnel_url")
+    const follow = optionalBoolean(args, "follow")
+    if (tunnelUrl && follow === false) {
+      throw new RpcError(-32602, "tunnel_url requires follow=true so the SynthTunnel lease stays open")
+    }
+    const containerPool = optionalString(args, "container_pool")
+    const containerTaskId = optionalString(args, "container_task_id")
+    if (containerTaskId && !containerPool) {
+      throw new RpcError(-32602, "container_task_id requires container_pool")
+    }
+
+    const result = await submitHostedGepaRun(config, {
+      configPath,
+      runId: optionalString(args, "run_id"),
+      idempotencyKey: optionalString(args, "idempotency_key"),
+      projectId: optionalString(args, "project_id"),
+      tunnelUrl,
+      tunnelProvider: tunnelProvider as HostedGepaTunnelProvider | undefined,
+      tunnelTtlSeconds,
+      containerPool,
+      containerTaskId,
+      follow,
+      timeoutSeconds,
+    })
+    const projectId = optionalString(args, "project_id")
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.hosted_gepa.submit_requested",
+      source: "lever.stack_mcp",
+      subject: { kind: "hosted_optimizer_run", id: result.runId ?? configPath },
+      correlation: {
+        optimizer_run_id: result.runId,
+        project_id: projectId,
+      },
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        config_path: configPath,
+        tunnel_provider: tunnelProvider ?? (tunnelUrl ? "synth_tunnel" : null),
+        has_tunnel_url: Boolean(tunnelUrl),
+        container_pool: containerPool ?? null,
+        container_task_id: containerTaskId ?? null,
+        follow: result.args.includes("--follow"),
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+      },
+    })
+    return {
+      ok: result.ok,
+      status: result.status,
+      message: result.message,
+      environment: result.environmentName,
+      api_base_url: result.apiBaseUrl,
+      run_id: result.runId ?? null,
+      command: result.command,
+      args: result.args,
+      exit_code: result.exitCode ?? null,
+      signal: result.signal ?? null,
+      timed_out: result.timedOut,
+      stdout_tail: result.stdout,
+      stderr_tail: result.stderr,
+      submitted_at: result.submittedAt,
+      finished_at: result.finishedAt,
+      runtime_event: toJsonValue(runtimeEvent) ?? null,
     }
   }
 
@@ -3583,6 +3722,29 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.listHostedArtifacts(args),
     },
     {
+      name: "stack_list_container_pools",
+      description: "List Synth hosted container pools through the live /v1/pools backend route. Use this before pool health checks, rollouts, or hosted GEPA container-pool submits.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        state: stringProperty("Optional backend state filter."),
+        limit: numberProperty("Maximum pools to return. Defaults to 100, max 500."),
+      }),
+      handler: (args) => server.listContainerPools(args),
+    },
+    {
+      name: "stack_container_health",
+      description: "Read /v1/pools/{pool_id}/container/health, or a task-scoped health route when task_id is provided.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          pool_id: stringProperty("Synth container pool id."),
+          task_id: stringProperty("Optional pool task id for task-scoped container health."),
+        },
+        ["pool_id"],
+      ),
+      handler: (args) => server.containerHealth(args),
+    },
+    {
       name: "stack_open_hosted_artifact",
       description: "Launch the system browser to the hosted artifact (or public shell) for a run. Returns receipt string on success. Does not embed; uses external browser (same split as Codex browser vs Sites).",
       inputSchema: objectSchema({
@@ -3624,6 +3786,28 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["config_path"],
       ),
       handler: (args) => server.launchLocalGepa(args),
+    },
+    {
+      name: "stack_submit_hosted_optimizer",
+      description: "Submit a hosted GEPA optimizer run through synth-optimizers. Supports SynthTunnel by passing tunnel_url + tunnel_provider=synth_tunnel and follows by default while the lease is open.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          config_path: stringProperty("Path to a hosted GEPA TOML config, relative to Stack workingDir or absolute."),
+          run_id: stringProperty("Optional hosted optimizer run id."),
+          idempotency_key: stringProperty("Optional idempotency key for submit retries."),
+          project_id: stringProperty("Optional Synth project id."),
+          tunnel_url: stringProperty("Optional local container URL to expose through SynthTunnel, e.g. http://127.0.0.1:8765."),
+          tunnel_provider: enumProperty(["auto", "synth_tunnel", "cloudflared", "ngrok"], "Tunnel provider for tunnel_url. Defaults to synth_tunnel."),
+          tunnel_ttl_seconds: numberProperty("SynthTunnel lease TTL in seconds. Defaults to CLI behavior, max 86400."),
+          container_pool: stringProperty("Optional existing Synth container pool id instead of a tunnel URL."),
+          container_task_id: stringProperty("Optional task id within container_pool."),
+          follow: { type: "boolean", description: "Follow hosted optimizer events. Defaults to true when tunnel_url is set, otherwise false." },
+          timeout_seconds: numberProperty("Maximum time Stack waits for the submit command. Defaults to 3600 when following, otherwise 300."),
+        },
+        ["config_path"],
+      ),
+      handler: (args) => server.submitHostedOptimizer(args),
     },
     {
       name: "stack_live_status",

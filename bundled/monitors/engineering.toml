@@ -18,7 +18,7 @@ allowed_skill_ids = ["synth-stack-productivity", "synth-via-stack", "synth-ai", 
 push_when_confident = false
 
 [tools]
-allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_launch_gepa", "stack_list_hosted_artifacts", "stack_get_run_artifact_status", "stack_open_hosted_artifact", "stack_list_run_work_products", "stack_download_work_product", "stack_monitor_goal_status", "stack_sidecar_pause_for_restart", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel"]
+allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_launch_gepa", "stack_submit_hosted_optimizer", "stack_list_container_pools", "stack_container_health", "stack_list_hosted_artifacts", "stack_get_run_artifact_status", "stack_open_hosted_artifact", "stack_list_run_work_products", "stack_download_work_product", "stack_monitor_goal_status", "stack_sidecar_pause_for_restart", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel"]
 deny = ["codex.interrupt"]
 
 [permissions]

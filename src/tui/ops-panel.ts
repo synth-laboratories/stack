@@ -789,7 +789,7 @@ function containersHeader(snapshot: ContainersPanelSnapshot): string {
 function containersBody(snapshot: ContainersPanelSnapshot): string[] {
   if (snapshot.containers.length === 0) {
     if (snapshot.status === "missing-auth") return ["  Local ready · Sign in to Synth for containers", "  stack auth open signin"]
-    if (snapshot.status === "offline") return ["  API offline — start dev slot or check /v1/containers"]
+    if (snapshot.status === "offline") return ["  API offline — start dev slot or check /v1/pools"]
     return ["  (no containers) · synth-ai containers create …"]
   }
   return snapshot.containers.slice(0, 8).map((container) => {

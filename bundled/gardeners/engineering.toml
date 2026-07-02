@@ -18,7 +18,7 @@ model = "gpt-5.4-mini"
 reasoning_effort = "low"
 
 [tools]
-allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_hosted_optimizer_runs", "stack_launch_gepa", "stack_list_hosted_artifacts", "stack_get_run_artifact_status", "stack_open_hosted_artifact", "stack_list_run_work_products", "stack_download_work_product", "stack_inference_catalog", "stack_inference_usage", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]
+allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_hosted_optimizer_runs", "stack_launch_gepa", "stack_submit_hosted_optimizer", "stack_list_container_pools", "stack_container_health", "stack_list_hosted_artifacts", "stack_get_run_artifact_status", "stack_open_hosted_artifact", "stack_list_run_work_products", "stack_download_work_product", "stack_inference_catalog", "stack_inference_usage", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]
 deny = ["codex.interrupt"]
 
 [permissions]

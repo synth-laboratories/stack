@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { defaultCodexPricing, type CodexModelPricing } from "./codex/usage-cost.js"
 import { loadOpenAiPricing } from "./codex/openai-pricing.js"
+import { readStackProfile, STACK_PROFILE_DEFAULTS } from "./operator-profile.js"
 
 const DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
 const DEFAULT_CODEX_REASONING_EFFORT = "medium"
@@ -135,19 +136,6 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     appRoot,
     process.env.STACK_WORKING_DIR ?? fileConfig.workingDir ?? appRoot,
   )
-  const codexModelProfile = parseCodexModelProfile(process.env.STACK_CODEX_MODEL)
-  const codexModel = normalizeOption(
-    codexModelProfile.model,
-    CODEX_MODEL_OPTIONS,
-    DEFAULT_CODEX_MODEL,
-    "STACK_CODEX_MODEL",
-  )
-  const codexReasoningEffort = normalizeOption(
-    process.env.STACK_CODEX_REASONING_EFFORT ?? codexModelProfile.reasoningEffort,
-    CODEX_REASONING_EFFORT_OPTIONS,
-    DEFAULT_CODEX_REASONING_EFFORT,
-    "STACK_CODEX_REASONING_EFFORT",
-  )
   const environments = resolveEnvironmentAuthFiles(appRoot, readEnvironments(fileConfig))
   const environmentName = normalizeOption(
     process.env.STACK_ENVIRONMENT ?? fileConfig.defaultEnvironment,
@@ -196,6 +184,33 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     explicitStackRoot ?? (explicitWorkingDir && existsSync(join(workingDir, ".stack")) ? workingDir : workspaceHome)
   const sessionLogDir = process.env.STACK_SESSION_DIR ?? join(stackDataHome, ".stack", "sessions")
   const stackDataRoot = stackDataRootFromSessionDir(sessionLogDir) ?? stackDataHome
+  const activeProfile = readStackProfile(stackDataRoot).active
+  const profileDefaults = STACK_PROFILE_DEFAULTS[activeProfile]
+  const profileDefaultModel = normalizeOption(
+    profileDefaults.codexModel,
+    CODEX_MODEL_OPTIONS,
+    DEFAULT_CODEX_MODEL,
+    `profile ${activeProfile} codexModel`,
+  )
+  const profileDefaultReasoningEffort = normalizeOption(
+    profileDefaults.codexReasoningEffort,
+    CODEX_REASONING_EFFORT_OPTIONS,
+    DEFAULT_CODEX_REASONING_EFFORT,
+    `profile ${activeProfile} codexReasoningEffort`,
+  )
+  const codexModelProfile = parseCodexModelProfile(process.env.STACK_CODEX_MODEL)
+  const codexModel = normalizeOption(
+    codexModelProfile.model,
+    CODEX_MODEL_OPTIONS,
+    profileDefaultModel,
+    "STACK_CODEX_MODEL",
+  )
+  const codexReasoningEffort = normalizeOption(
+    process.env.STACK_CODEX_REASONING_EFFORT ?? codexModelProfile.reasoningEffort,
+    CODEX_REASONING_EFFORT_OPTIONS,
+    profileDefaultReasoningEffort,
+    "STACK_CODEX_REASONING_EFFORT",
+  )
 
   return {
     appRoot,
