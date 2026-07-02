@@ -4586,7 +4586,7 @@ function bridgeNextActions(
     actions.push("set the selected environment auth key or configure authEnvFile before remote actions")
   }
   if (mode !== "local" && hasAuth && remoteRunCount === 0) {
-    actions.push("call stack_launch_read_smoke to create a live SMR run, then poll stack_readme_smoke_eval_status")
+    actions.push("create or select a remote SMR run from the owning evals/synth-dev workflow, then call stack_list_live_smrs")
   }
   if (mode !== "local" && hasAuth && remoteRunCount > 0) {
     actions.push("call stack_list_live_smrs, then preview outputs with stack_preview_run_output")

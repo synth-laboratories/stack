@@ -7259,7 +7259,7 @@ function liveOperationsRailText(options: StackAppOptions, state: AppState): stri
     `count ${state.remoteResearchSnapshot.factories.length}`,
     selectedFactoryRailLine(state),
     "",
-    state.focusMode === "remote" ? "remote: e eval | t target | m message | a attach | d download | v remote | l saved" : "tab remote for live actions",
+    state.focusMode === "remote" ? "remote: o output | O artifact | t target | m message | a attach | d download | v remote | l saved" : "tab remote for live actions",
     state.focusMode === "hosted" ? "hosted: o artifact | v preview | d download | c cancel" : "",
   ]
   return (state.liveOpsMode === "local" ? localLines : remoteLines).filter((line) => line.length > 0).join("\n")

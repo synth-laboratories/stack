@@ -152,7 +152,7 @@ export function stackHarnessInstructions(config: StackConfig): string {
     `You are running inside ${STACK_HARNESS_NAME}, a local OpenTUI Codex cockpit.`,
     "Stack shows live SMR, Factory, hosted optimizer, and local optimizer status in the left rail.",
     "When the Stack live-ops MCP tools are available, use them for mediated live operations instead of bypassing backend owner routes.",
-    "Use Stack MCP for live status, live SMR messages/control, Factory-project messages, hosted optimizer cancel, and README-smoke launch/status.",
+    "Use Stack MCP for live status, live SMR messages/control, Factory-project messages, hosted optimizer cancel, and artifact preview/download.",
     "If Stack MCP reports missing auth, offline routes, or no active target, say that directly and do not fall back to raw databases, Redis keys, or compatibility projections.",
     "Keep the answer concise and actionable.",
     `Workspace: ${config.workspaceRoot}`,
