@@ -13,7 +13,7 @@ pub fn ensure_stack_defaults(paths: &StackPaths) -> std::io::Result<()> {
         return Ok(());
     }
 
-    for subdir in ["monitors", "remote_gardeners", "guidance"] {
+    for subdir in ["monitors", "gardeners", "remote_gardeners", "guidance"] {
         let source = bundled_root.join(subdir);
         if source.is_dir() {
             copy_tree_if_missing(&source, &paths.stack_dir.join(subdir))?;

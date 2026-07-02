@@ -34,7 +34,7 @@ export async function runInferenceCli(config: StackConfig, argv: string[]): Prom
 
 function printInferenceUsage(snapshot: RemoteInferenceUsageSnapshot): void {
   console.log(`Stack inference usage - ${snapshot.environmentName} - ${snapshot.status}`)
-  console.log("worker: Codex/BYOK by default; Synth inference requires explicit profile opt-in")
+  console.log(`worker: ${snapshot.workerSynthInferenceMessage ?? "Codex/BYOK by default; Synth inference requires explicit profile opt-in"}`)
   if (snapshot.message) console.log(`status: ${snapshot.message}`)
   if (snapshot.status === "missing-auth") {
     console.log("connect: stack auth open signin")
@@ -56,6 +56,19 @@ function printInferenceUsage(snapshot: RemoteInferenceUsageSnapshot): void {
     console.log(
       `free aux ${aux.model ?? "aux"}: global ${formatUsd(aux.synthWide.remainingUsd)} / ${formatUsd(aux.synthWide.capUsd)} left; org today ${formatUsd(aux.orgDaily.remainingUsd)} / ${formatUsd(aux.orgDaily.capUsd)} left`,
     )
+  }
+  const billed = snapshot.stackInferenceBudget
+  if (billed) {
+    console.log(
+      `billed ${billed.model ?? "GLM"}: 7d ${formatUsd(billed.spend7d.spentUsd)} across ${billed.spend7d.eventCount} calls; org today ${formatUsd(billed.orgDaily.remainingUsd)} / ${formatUsd(billed.orgDaily.capUsd)} left; synth today ${formatUsd(billed.synthWideDaily.remainingUsd)} / ${formatUsd(billed.synthWideDaily.capUsd)} left`,
+    )
+    if (billed.spend7d.byActor.length > 0) {
+      console.log("billed actors:")
+      for (const row of billed.spend7d.byActor.slice(0, 3)) {
+        const calls = row.eventCount === undefined ? "" : ` across ${row.eventCount} calls`
+        console.log(`  ${row.label}: ${formatUsd(row.costUsd)}${calls}`)
+      }
+    }
   }
 
   if (snapshot.topProjects.length > 0) {

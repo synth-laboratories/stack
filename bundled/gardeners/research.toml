@@ -1,0 +1,38 @@
+[actor]
+id = "research"
+label = "Research Gardener"
+enabled = true
+role = "gardener"
+
+[gardener]
+id = "research"
+label = "Research Gardener"
+enabled = true
+
+[prompt]
+system_file = ".stack/gardeners/research.system.md"
+
+[model]
+provider = "openai"
+model = "gpt-5.5"
+reasoning_effort = "medium"
+
+[tools]
+allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_launch_gepa", "stack_submit_hosted_optimizer", "stack_list_container_pools", "stack_container_health", "stack_list_hosted_artifacts", "stack_get_run_artifact_status", "stack_open_hosted_artifact", "stack_list_run_work_products", "stack_download_work_product", "stack_inference_catalog", "stack_inference_usage", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_remote_gardener_handoff", "stack_ui_open_panel", "stack_ui_close_panel", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]
+deny = ["codex.interrupt"]
+
+[permissions]
+inbox = true
+route = true
+steer = true
+queue = true
+papercut_mirror = true
+pause_worker = false
+meta_thread_lifecycle = true
+meta_thread_title = true
+
+[wake]
+on_turn_completed = true
+idle_ms = 240000
+on_inbox_pending = true
+on_garden_dirty = true

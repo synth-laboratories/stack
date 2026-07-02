@@ -1,5 +1,10 @@
 import type { StackConfig } from "../config.js"
-import { readRemoteUsageSnapshot, type RemoteStackAuxBudget, type RemoteUsageBreakdownRow } from "./usage.js"
+import {
+  readRemoteUsageSnapshot,
+  type RemoteStackAuxBudget,
+  type RemoteStackInferenceBudget,
+  type RemoteUsageBreakdownRow,
+} from "./usage.js"
 
 export type RemoteInferenceUsageSnapshot = {
   status: "ready" | "missing-auth" | "offline"
@@ -9,8 +14,11 @@ export type RemoteInferenceUsageSnapshot = {
   message?: string
   localOnlySupported: boolean
   workerDefault: "codex_byok"
-  workerSynthInference: "explicit_profile_only"
+  workerSynthInference: string
+  workerSynthInferenceEligible?: boolean
+  workerSynthInferenceMessage?: string
   stackAuxBudget?: RemoteStackAuxBudget
+  stackInferenceBudget?: RemoteStackInferenceBudget
   inference7dUsd?: number
   spendTodayUsd?: number
   spend7dUsd?: number
@@ -30,13 +38,16 @@ export async function readRemoteInferenceUsage(config: StackConfig): Promise<Rem
     message: usage.message,
     localOnlySupported: true,
     workerDefault: "codex_byok",
-    workerSynthInference: "explicit_profile_only",
+    workerSynthInference: usage.workerSynthInference ?? "explicit_profile_only",
+    workerSynthInferenceEligible: usage.workerSynthInferenceEligible,
+    workerSynthInferenceMessage: usage.workerSynthInferenceMessage,
     stackAuxBudget: usage.stackAuxBudget,
-    inference7dUsd: inferenceType?.costUsd ?? usage.usage7dUsd,
+    stackInferenceBudget: usage.stackInferenceBudget,
+    inference7dUsd: usage.stackInferenceBudget?.spend7d.spentUsd ?? inferenceType?.costUsd ?? usage.usage7dUsd,
     spendTodayUsd: usage.spendTodayUsd,
     spend7dUsd: usage.spend7dUsd,
     spend30dUsd: usage.spend30dUsd,
     topProjects: usage.usageBreakdown?.byProject ?? [],
-    topActors: usage.usageBreakdown?.byActor ?? [],
+    topActors: usage.stackInferenceBudget?.spend7d.byActor ?? usage.usageBreakdown?.byActor ?? [],
   }
 }

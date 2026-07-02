@@ -65,6 +65,35 @@ export type HostedArtifactStatus = {
   message?: string
 } // FRESH THIS TURN for CHANGED delta - skeptic fix (AC1+AC4)
 
+export type HostedArtifactSummary = {
+  hostedArtifactId: string
+  projectId?: string
+  runId?: string
+  builtByRunId?: string
+  workProductId?: string
+  status?: string
+  title?: string
+  hostedUrl?: string
+  canonicalUrl?: string
+  publicUrl?: string
+  slug?: string
+  visibility?: string
+  artifactVersion?: number
+  sourceRunIds: string[]
+  traceId?: string
+  publishedAt?: string
+}
+
+export type HostedArtifactsSnapshot = {
+  status: RemoteResearchStatus
+  environmentName: string
+  apiBaseUrl: string
+  checkedAt: string
+  projectId?: string
+  message?: string
+  artifacts: HostedArtifactSummary[]
+}
+
 export type RemoteRunDetail = {
   runId: string
   artifactCount: number
@@ -570,6 +599,48 @@ export async function readRemoteRunDetail(config: StackConfig, run: RemoteSmrRun
   }
 }
 
+export async function readHostedArtifacts(
+  config: StackConfig,
+  options: { projectId?: string; limit?: number } = {},
+): Promise<HostedArtifactsSnapshot> {
+  const auth = environmentAuthStatus(config.environment)
+  const base: HostedArtifactsSnapshot = {
+    status: auth.hasAuth ? "offline" : "missing-auth",
+    environmentName: config.environmentName,
+    apiBaseUrl: config.environment.apiBaseUrl,
+    checkedAt: new Date().toISOString(),
+    ...(options.projectId ? { projectId: options.projectId } : {}),
+    message: auth.hasAuth ? "not checked yet" : auth.message,
+    artifacts: [],
+  }
+
+  if (!auth.hasAuth) return base
+
+  const limit = Math.max(1, Math.min(Math.floor(options.limit ?? 100), 500))
+  const path = options.projectId
+    ? `/smr/projects/${encodeURIComponent(options.projectId)}/hosted-artifacts?limit=${limit}`
+    : `/smr/hosted-artifacts?limit=${limit}`
+  try {
+    const payload = asRecord(await getJson(config, path))
+    const artifacts = readHostedArtifactRows(payload?.artifacts)
+    return {
+      ...base,
+      status: "ready",
+      checkedAt: new Date().toISOString(),
+      message: `${artifacts.length} hosted artifacts`,
+      artifacts,
+    }
+  } catch (error) {
+    return {
+      ...base,
+      status: "offline",
+      checkedAt: new Date().toISOString(),
+      message: errorMessage(error),
+      artifacts: [],
+    }
+  }
+}
+
 async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySummary): Promise<RemoteFactorySummary> {
   try {
     const payload = asRecord(await getJson(config, `/smr/factories/${encodeURIComponent(factory.factoryId)}/status`))
@@ -869,6 +940,19 @@ async function getJson(config: StackConfig, path: string): Promise<unknown> {
   return await response.json()
 }
 
+export async function headUrlStatus(url: string, timeoutMs = 3000): Promise<number | undefined> {
+  if (!/^https?:\/\//i.test(url)) return undefined
+  try {
+    const response = await fetch(url, {
+      method: "HEAD",
+      signal: AbortSignal.timeout(Math.max(250, Math.min(Math.floor(timeoutMs), 10000))),
+    })
+    return response.status
+  } catch {
+    return undefined
+  }
+}
+
 function readScalarString(value: unknown): string | undefined {
   if (typeof value === "string") return value
   const record = asRecord(value)
@@ -894,6 +978,38 @@ function readBoolean(value: unknown): boolean {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function readStringArray(value: unknown): string[] {
+  return asArray(value).filter((item): item is string => typeof item === "string" && item.length > 0)
+}
+
+function readHostedArtifactRows(value: unknown): HostedArtifactSummary[] {
+  return asArray(value)
+    .map((item): HostedArtifactSummary | undefined => {
+      const artifact = asRecord(item)
+      const hostedArtifactId = readString(artifact?.hosted_artifact_id) ?? readString(artifact?.hostedArtifactId)
+      if (!artifact || !hostedArtifactId) return undefined
+      return {
+        hostedArtifactId,
+        projectId: readString(artifact.project_id),
+        runId: readString(artifact.run_id),
+        builtByRunId: readString(artifact.built_by_run_id),
+        workProductId: readString(artifact.work_product_id),
+        status: readString(artifact.status),
+        title: readString(artifact.title),
+        hostedUrl: readString(artifact.hosted_url) ?? readString(artifact.hostedUrl),
+        canonicalUrl: readString(artifact.canonical_url) ?? readString(artifact.canonicalUrl),
+        publicUrl: readString(artifact.public_url) ?? readString(artifact.publicUrl),
+        slug: readString(artifact.slug),
+        visibility: readString(artifact.visibility),
+        artifactVersion: readNumber(artifact.artifact_version),
+        sourceRunIds: readStringArray(artifact.source_run_ids),
+        traceId: readString(artifact.trace_id),
+        publishedAt: readString(artifact.published_at),
+      }
+    })
+    .filter((artifact): artifact is HostedArtifactSummary => Boolean(artifact))
 }
 
 function errorMessage(error: unknown): string {

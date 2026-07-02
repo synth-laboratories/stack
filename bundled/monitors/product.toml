@@ -1,0 +1,33 @@
+[monitor]
+id = "product"
+label = "Product monitor"
+enabled = true
+activity_density = "rich"
+strictness = "conservative"
+
+[model]
+provider = "openai"
+model = "gpt-5.5"
+reasoning_effort = "medium"
+
+[prompt]
+system_file = ".stack/monitors/product.system.md"
+
+[wake]
+max_wakes_per_primary_turn = 6
+
+[skills]
+enabled = true
+allowed_skill_ids = ["synth-stack-productivity", "synth-via-stack", "oss-gepa", "hosted-gepa", "synth-ai", "containers", "containers-coding", "stack-agent-bridge", "gepa"]
+push_when_confident = true
+
+[tools]
+allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer", "stack_status", "stack_runtime_status", "stack_list_hosted_optimizer_runs", "stack_preview_hosted_optimizer_artifact", "stack_download_hosted_optimizer_artifact", "stack_list_container_pools", "stack_container_health", "stack_list_hosted_artifacts", "stack_get_run_artifact_status", "stack_open_hosted_artifact", "stack_list_run_work_products", "stack_download_work_product", "stack_inference_usage", "stack_monitor_goal_status", "stack_sidecar_pause_for_restart", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel"]
+deny = ["codex.interrupt"]
+
+[permissions]
+queue = true
+steer = true
+skill_push = true
+pause_worker = false
+block_before_action = false

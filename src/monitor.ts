@@ -35,8 +35,10 @@ import {
   readNumber,
   readString,
   readStringArray,
+  resolveActorPrompt,
   type ParsedTomlSections,
 } from "./actor-config.js"
+import { readStackProfile } from "./operator-profile.js"
 import {
   appendThreadMetaEvent,
   readThreadMetaEvents,
@@ -260,7 +262,7 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
   },
   skills: {
     enabled: true,
-    allowedSkillIds: ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack"],
+    allowedSkillIds: ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "containers", "containers-coding", "gepa", "stack-agent-bridge", "synth-via-stack"],
     pushWhenConfident: false,
   },
   tools: {
@@ -324,7 +326,7 @@ export function ensureDefaultMonitorConfig(stackRoot: string): string {
 }
 
 export function loadMonitorConfig(stackRoot: string): StackMonitorConfig {
-  const profile = process.env.STACK_MONITOR_PROFILE?.trim() || "default"
+  const profile = process.env.STACK_MONITOR_PROFILE?.trim() || readStackProfile(stackRoot).active
   const path = join(stackRoot, ".stack", "monitors", `${profile}.toml`)
   const defaultPath = ensureDefaultMonitorConfig(stackRoot)
   const configPath = profile === "default" ? defaultPath : path
@@ -341,6 +343,10 @@ export function loadMonitorConfig(stackRoot: string): StackMonitorConfig {
   if (strictnessOverride) config.strictness = normalizeStrictness(strictnessOverride, config.strictness)
   assertMonitorProviderSupported(config)
   return config
+}
+
+export function resolveMonitorSystemPrompt(stackRoot: string, config: StackMonitorConfig): string {
+  return resolveActorPrompt(stackRoot, config.prompt, defaultMonitorBuiltinPrompt())
 }
 
 export function emptyMonitorSnapshot(stackRoot: string): StackMonitorSnapshot {
@@ -507,7 +513,7 @@ async function appendMonitorChatReply(input: {
 }): Promise<StackThreadMetaEvent> {
   const events = readThreadMetaEvents(input.stackRoot, input.session.id)
   const context = buildSidecarChatContext(input.goalContext, events)
-  const monitorConfig = loadMonitorConfig(input.stackConfig.appRoot)
+  const monitorConfig = loadMonitorConfig(input.stackRoot)
   const actorId = monitorActorId(monitorConfig)
   const actorState = readMonitorActorState(input.stackRoot, input.session.id, actorId)
   const reply = await runMonitorSidecarChatReply({
@@ -714,7 +720,7 @@ export async function runGoalMonitorCadenceTick(input: {
     if ((manifest?.lifecycle_status ?? "live") === "archived") return undefined
   }
   const runtimeRoot = monitorRuntimeRoot(input.config)
-  const monitorConfig = loadMonitorConfig(input.config.appRoot)
+  const monitorConfig = loadMonitorConfig(runtimeRoot)
   const threadId = input.session.id
   const events = readThreadMetaEvents(runtimeRoot, threadId)
   const actorId = monitorActorId(monitorConfig)
@@ -765,7 +771,7 @@ export async function runMonitorForNewEvents(input: {
   drainQueued?: boolean
 }): Promise<StackMonitorSnapshot> {
   const runtimeRoot = monitorRuntimeRoot(input.config)
-  const monitorConfig = loadMonitorConfig(input.config.appRoot)
+  const monitorConfig = loadMonitorConfig(runtimeRoot)
   const threadId = input.session.id
   const goalContext = enrichGoalTaskContext(input.goalContext, input.config.workspaceRoot)
   const priorEvents = readThreadMetaEvents(runtimeRoot, threadId)
@@ -3566,7 +3572,7 @@ function defaultMonitorToml(): string {
     "",
     "[skills]",
     "enabled = true",
-    'allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack"]',
+    'allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "containers", "containers-coding", "gepa", "stack-agent-bridge", "synth-via-stack"]',
     "push_when_confident = false",
     "",
     "[tools]",
