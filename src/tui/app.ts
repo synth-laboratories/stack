@@ -7020,6 +7020,7 @@ function renderAgentInputStyled(options: StackAppOptions, state: AppState): Styl
   return new StyledText([
     fg(isGardenerSession(options, state) ? "#3fb950" : theme.synth.amber)("› "),
     fg(theme.fgInput)(preview),
+    dim(fg(theme.fgMuted)(` · ${idleHint}`)),
     fg(theme.synth.gold)("_"),
   ])
 }
