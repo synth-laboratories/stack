@@ -103,7 +103,7 @@ export function syncBundledStackSkills(stackRoot: string): string[] {
     const target = join(consolidatedRoot, entry.name)
     if (!linkPointsTo(source, target)) {
       replacePath(target)
-      symlinkSync(source, target)
+      createSkillSymlink(source, target)
     }
     synced.push(entry.name)
   }
@@ -377,6 +377,24 @@ function linkPointsTo(source: string, target: string): boolean {
   } catch {
     return false
   }
+}
+
+function createSkillSymlink(source: string, target: string): void {
+  try {
+    symlinkSync(source, target)
+  } catch (error) {
+    if (isFileExistsError(error) && linkPointsTo(source, target)) return
+    throw error
+  }
+}
+
+function isFileExistsError(error: unknown): boolean {
+  return (
+    typeof error === "object" &&
+    error !== null &&
+    "code" in error &&
+    (error as { code?: unknown }).code === "EEXIST"
+  )
 }
 
 function replacePath(path: string): void {
