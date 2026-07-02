@@ -270,7 +270,9 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
 
   const stackAuxBudget = formatStackAuxBudgetLine(usage)
   if (stackAuxBudget) lines.push(stackAuxBudget)
-  lines.push("  worker Codex by default; Synth inference opt-in only")
+  const stackInferenceBudget = formatStackInferenceBudgetLine(usage)
+  if (stackInferenceBudget) lines.push(stackInferenceBudget)
+  lines.push(formatWorkerSynthInferenceLine(usage))
   const inferenceLine = formatInferenceUsageLine(usage)
   if (inferenceLine) lines.push(inferenceLine)
 
@@ -389,9 +391,27 @@ function formatStackAuxBudgetLine(usage: RemoteUsageSnapshot): string | undefine
   return `  Synth ${model} · ${oneLine(`${synthWide} · ${orgDaily}${reset}`, 50)}`
 }
 
+function formatStackInferenceBudgetLine(usage: RemoteUsageSnapshot): string | undefined {
+  const budget = usage.stackInferenceBudget
+  if (!budget) return undefined
+  const model = budget.model ? oneLine(budget.model, 18) : "billed GLM"
+  const orgDaily = `${formatUsd(budget.orgDaily.remainingUsd)} / ${formatUsd(budget.orgDaily.capUsd)} org today`
+  const reset = budget.orgDaily.resetsInSeconds === undefined
+    ? ""
+    : ` · reset ${formatDuration(budget.orgDaily.resetsInSeconds)}`
+  const spent = budget.spend7d.eventCount > 0
+    ? `7d ${formatUsd(budget.spend7d.spentUsd)} · ${budget.spend7d.eventCount} calls`
+    : "7d no usage"
+  return `  Billed ${model} · ${oneLine(`${spent} · ${orgDaily}${reset}`, 50)}`
+}
+
+function formatWorkerSynthInferenceLine(usage: RemoteUsageSnapshot): string {
+  return `  ${oneLine(usage.workerSynthInferenceMessage ?? "worker Codex by default; Synth inference opt-in only", 56)}`
+}
+
 function formatInferenceUsageLine(usage: RemoteUsageSnapshot): string | undefined {
   const inference = usage.usageBreakdown?.byType.find((row) => row.label.toLowerCase() === "inference")?.costUsd
-  const value = inference ?? usage.usage7dUsd
+  const value = usage.stackInferenceBudget?.spend7d.spentUsd ?? inference ?? usage.usage7dUsd
   if (value === undefined) return undefined
   return `  Synth inference 7d ${formatUsd(value)} · no prompts in usage rows`
 }

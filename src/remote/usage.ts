@@ -44,6 +44,23 @@ export type RemoteStackAuxBudgetWindow = {
   remainingUsd: number
 }
 
+export type RemoteStackInferenceBudget = {
+  provider: string
+  tier: string
+  model?: string
+  spend7d: {
+    spentUsd: number
+    eventCount: number
+    lastUsedAt?: string
+  }
+  synthWideDaily: RemoteStackAuxBudgetWindow
+  orgDaily: RemoteStackAuxBudgetWindow & {
+    resetsInSeconds?: number
+  }
+  workerDefault?: string
+  workerSynthInference?: string
+}
+
 export type RemoteUsageSnapshot = {
   status: RemoteUsageStatus
   environmentName: string
@@ -64,6 +81,11 @@ export type RemoteUsageSnapshot = {
   usage7dUsd?: number
   usageBreakdown?: RemoteUsageBreakdown
   stackAuxBudget?: RemoteStackAuxBudget
+  stackInferenceBudget?: RemoteStackInferenceBudget
+  workerDefault?: string
+  workerSynthInference?: string
+  workerSynthInferenceEligible?: boolean
+  workerSynthInferenceMessage?: string
 }
 
 export function emptyRemoteUsageSnapshot(
@@ -91,12 +113,13 @@ export async function readRemoteUsageSnapshot(config: StackConfig): Promise<Remo
   if (!auth.hasAuth) return base
 
   try {
-    const [planPayload, overviewPayload, stackAuxPayload] = await Promise.all([
+    const [planPayload, overviewPayload, stackAuxPayload, stackInferencePayload] = await Promise.all([
       getJson(config, "/smr/billing/plan"),
       fetchUsageOverviewPayload(config),
       fetchStackAuxUsagePayload(config),
+      fetchStackInferenceUsagePayload(config),
     ])
-    return parseUsageSnapshot(config, planPayload, overviewPayload, stackAuxPayload)
+    return parseUsageSnapshot(config, planPayload, overviewPayload, stackAuxPayload, stackInferencePayload)
   } catch (error) {
     return {
       ...base,
@@ -112,6 +135,7 @@ function parseUsageSnapshot(
   planPayload: unknown,
   overviewPayload: unknown,
   stackAuxPayload: unknown,
+  stackInferencePayload: unknown,
 ): RemoteUsageSnapshot {
   const plan = asRecord(planPayload)
   const wallet = asRecord(plan?.wallet)
@@ -125,6 +149,9 @@ function parseUsageSnapshot(
   const billingMode = readString(plan?.billing_mode)
   const walletUsd = microcentsToUsd(readNumber(wallet?.balance_microcents))
   const blocked = readBoolean(plan?.blocked)
+  const stackInferenceBudget = readStackInferenceBudget(stackInferencePayload)
+  const workerSynthInferenceEligible = stackInferenceWorkerPlanEligible(planTier)
+  const workerSynthInference = stackInferenceBudget?.workerSynthInference ?? "explicit_profile_only"
 
   return {
     status: "ready",
@@ -149,6 +176,11 @@ function parseUsageSnapshot(
       readNumber(usageSummary?.total_charged_usd),
     usageBreakdown: usageSummary ? readUsageBreakdown(usageSummary, 7) : undefined,
     stackAuxBudget: readStackAuxBudget(stackAuxPayload),
+    stackInferenceBudget,
+    workerDefault: stackInferenceBudget?.workerDefault ?? "codex_byok",
+    workerSynthInference,
+    workerSynthInferenceEligible,
+    workerSynthInferenceMessage: workerSynthInferenceMessage(workerSynthInferenceEligible, workerSynthInference),
   }
 }
 
@@ -323,6 +355,14 @@ async function fetchUsageOverviewPayload(config: StackConfig): Promise<unknown |
 async function fetchStackAuxUsagePayload(config: StackConfig): Promise<unknown | undefined> {
   try {
     return await getJson(config, "/api/v1/stack-aux/usage")
+  } catch {
+    return undefined
+  }
+}
+
+async function fetchStackInferenceUsagePayload(config: StackConfig): Promise<unknown | undefined> {
+  try {
+    return await getJson(config, "/api/v1/stack-inference/usage")
   } catch {
     return undefined
   }
@@ -533,6 +573,45 @@ function readStackAuxBudget(payload: unknown): RemoteStackAuxBudget | undefined 
   }
 }
 
+function readStackInferenceBudget(payload: unknown): RemoteStackInferenceBudget | undefined {
+  const record = asRecord(payload)
+  if (!record) return undefined
+  const synthWideDaily = readStackAuxBudgetWindow(record.synth_wide_daily)
+  const orgDaily = readStackAuxBudgetWindow(record.org_daily)
+  if (!synthWideDaily || !orgDaily) return undefined
+  const spend7d = asRecord(record.spend_7d)
+  return {
+    provider: readString(record.provider) ?? "synth",
+    tier: readString(record.tier) ?? "billed_glm",
+    model: readString(record.model),
+    spend7d: {
+      spentUsd: readNumber(spend7d?.spent_usd) ?? centsToUsd(readNumber(spend7d?.spent_cents)) ?? 0,
+      eventCount: readNumber(spend7d?.event_count) ?? 0,
+      lastUsedAt: readString(spend7d?.last_used_at),
+    },
+    synthWideDaily,
+    orgDaily: {
+      ...orgDaily,
+      resetsInSeconds: readNumber(asRecord(record.org_daily)?.resets_in_seconds),
+    },
+    workerDefault: readString(record.worker_default),
+    workerSynthInference: readString(record.worker_synth_inference),
+  }
+}
+
+function stackInferenceWorkerPlanEligible(planTier: string | undefined): boolean {
+  const normalized = planTier?.trim().toLowerCase()
+  return normalized === "standard" || normalized === "max"
+}
+
+function workerSynthInferenceMessage(eligible: boolean, workerSynthInference: string): string {
+  if (!eligible) return "worker Codex by default; Synth worker requires Standard or Max"
+  if (workerSynthInference === "explicit_profile_only") {
+    return "worker Codex by default; Synth worker eligible with explicit profile"
+  }
+  return `worker Synth inference state: ${workerSynthInference}`
+}
+
 function readStackAuxBudgetWindow(value: unknown): RemoteStackAuxBudgetWindow | undefined {
   const record = asRecord(value)
   if (!record) return undefined
@@ -547,6 +626,11 @@ function readStackAuxBudgetWindow(value: unknown): RemoteStackAuxBudgetWindow | 
     spentUsd: spentCents / 100,
     remainingUsd: remainingCents / 100,
   }
+}
+
+function centsToUsd(value: number | undefined): number | undefined {
+  if (value === undefined) return undefined
+  return value / 100
 }
 
 async function getJson(config: StackConfig, path: string): Promise<unknown> {
