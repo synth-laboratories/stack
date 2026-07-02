@@ -7,7 +7,7 @@
 
 export type UiPanelId = "monitor" | "gardener" | "ops" | "threads"
 
-export type UiPanelOpener = "monitor" | "gardener" | "operator"
+export type UiPanelOpener = "monitor" | "gardener" | "remote_gardener" | "operator"
 
 export type UiPanelSpec = {
   id: UiPanelId
@@ -32,7 +32,7 @@ export const UI_PANELS: Record<UiPanelId, UiPanelSpec> = {
   },
   gardener: {
     id: "gardener",
-    openedBy: ["gardener", "operator"],
+    openedBy: ["gardener", "remote_gardener", "operator"],
     views: ["portfolio", "chat"],
     toolName: "stack_ui_open_panel",
     slash: "/g",
@@ -40,7 +40,7 @@ export const UI_PANELS: Record<UiPanelId, UiPanelSpec> = {
   },
   ops: {
     id: "ops",
-    openedBy: ["gardener", "operator"],
+    openedBy: ["gardener", "remote_gardener", "operator"],
     views: ["local", "remote", "hosted"],
     toolName: "stack_ui_open_panel",
     slash: "/ops",

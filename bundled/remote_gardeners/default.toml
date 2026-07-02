@@ -1,0 +1,44 @@
+[actor]
+id = "default"
+label = "Remote Gardener"
+enabled = true
+role = "remote_gardener"
+
+[remote_gardener]
+id = "default"
+label = "Remote Gardener"
+enabled = true
+
+[prompt]
+system_file = ".stack/remote_gardeners/default.system.md"
+
+[model]
+provider = "openai"
+model = "gpt-5.5"
+reasoning_effort = "low"
+worker = "auto"
+
+[tools]
+allow = ["stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_inspect_live_run", "stack_list_run_interactions", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_prepare_cloud_promotion_packet", "stack_launch_cloud_promotion", "stack_message_live_run", "stack_message_factory_project", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel", "stack_skills_search", "stack_skills_read", "stack_search_guidance", "skills.suggest"]
+deny = ["codex.interrupt", "raw.redis", "raw.postgres", "backend.db"]
+
+[sync]
+tick_before_read = true
+max_rows = 8
+narrate_degraded = true
+open_ops_on_review = true
+
+[permissions]
+narrate = true
+request_push = true
+request_pull = true
+message_remote = true
+mutate_cloud_without_confirm = false
+pause_or_stop_runs = false
+archive_meta_threads = false
+
+[wake]
+on_remote_degraded = true
+on_pending_approval = true
+on_terminal_run = true
+idle_ms = 300000

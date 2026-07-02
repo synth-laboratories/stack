@@ -9,7 +9,7 @@ export type StackThreadMetaEvent = {
   thread_id: string
   observed_at: string
   actor_id?: string
-  actor_role?: "primary" | "gardener" | "monitor" | "system" | "unknown"
+  actor_role?: "primary" | "gardener" | "monitor" | "remote_gardener" | "system" | "unknown"
   meta_thread_id?: string
   segment_id?: string
   artifact_id?: string

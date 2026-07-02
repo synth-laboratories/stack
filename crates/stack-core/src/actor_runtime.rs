@@ -15,6 +15,7 @@ use crate::events::EventLogError;
 pub enum ActorRole {
     Monitor,
     Gardener,
+    RemoteGardener,
 }
 
 impl ActorRole {
@@ -22,6 +23,7 @@ impl ActorRole {
         match self {
             ActorRole::Monitor => "monitor",
             ActorRole::Gardener => "gardener",
+            ActorRole::RemoteGardener => "remote_gardener",
         }
     }
 
@@ -30,6 +32,7 @@ impl ActorRole {
         match self {
             ActorRole::Monitor => "monitors",
             ActorRole::Gardener => "gardeners",
+            ActorRole::RemoteGardener => "remote_gardeners",
         }
     }
 
@@ -38,6 +41,7 @@ impl ActorRole {
         match self {
             ActorRole::Monitor => "monitor.",
             ActorRole::Gardener => "gardener.",
+            ActorRole::RemoteGardener => "remote_gardener.",
         }
     }
 
@@ -50,6 +54,7 @@ impl ActorRole {
         match self {
             ActorRole::Monitor => "stack/monitor-actor-state/v1",
             ActorRole::Gardener => "stack/gardener-actor-state/v1",
+            ActorRole::RemoteGardener => "stack/remote-gardener-actor-state/v1",
         }
     }
 
@@ -57,6 +62,7 @@ impl ActorRole {
         match self {
             ActorRole::Monitor => "monitor.trigger_queued",
             ActorRole::Gardener => "gardener.trigger_queued",
+            ActorRole::RemoteGardener => "remote_gardener.trigger_queued",
         }
     }
 
@@ -64,6 +70,7 @@ impl ActorRole {
         match self {
             ActorRole::Monitor => "monitor.wake",
             ActorRole::Gardener => "gardener.wake",
+            ActorRole::RemoteGardener => "remote_gardener.wake",
         }
     }
 
@@ -71,11 +78,16 @@ impl ActorRole {
         match self {
             ActorRole::Monitor => "monitor.pause_for_restart",
             ActorRole::Gardener => "gardener.pause_for_restart",
+            ActorRole::RemoteGardener => "remote_gardener.pause_for_restart",
         }
     }
 
-    pub fn all() -> [ActorRole; 2] {
-        [ActorRole::Monitor, ActorRole::Gardener]
+    pub fn all() -> [ActorRole; 3] {
+        [
+            ActorRole::Monitor,
+            ActorRole::Gardener,
+            ActorRole::RemoteGardener,
+        ]
     }
 }
 

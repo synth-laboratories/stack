@@ -10,7 +10,7 @@ export function ensureStackDefaults(stackDataRoot: string, appRoot = stackAppRoo
   const bundledRoot = bundledDefaultsRoot(appRoot)
   if (!existsSync(bundledRoot)) return
 
-  for (const subdir of ["monitors", "gardeners", "guidance"] as const) {
+  for (const subdir of ["monitors", "gardeners", "remote_gardeners", "guidance"] as const) {
     const source = join(bundledRoot, subdir)
     if (!existsSync(source)) continue
     copyTreeIfMissing(source, join(stackDataRoot, ".stack", subdir))

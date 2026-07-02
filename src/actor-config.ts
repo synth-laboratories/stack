@@ -43,7 +43,7 @@ export function parseTomlLike(text: string): ParsedTomlSections {
 
 export function readTomlProfile(
   stackRoot: string,
-  subdir: "monitors" | "gardeners",
+  subdir: "monitors" | "gardeners" | "remote_gardeners",
   profile: string,
 ): ParsedTomlSections {
   const path = join(stackRoot, ".stack", subdir, `${profile}.toml`)

@@ -271,8 +271,8 @@ export class StackMcpServer {
       throw new RpcError(-32602, `unknown panel '${panel}' — registered panels: ${UI_PANEL_IDS.join(", ")}`)
     }
     const openedBy = (optionalString(args, "actor_role") ?? "operator") as UiPanelOpener
-    if (!["monitor", "gardener", "operator"].includes(openedBy)) {
-      throw new RpcError(-32602, `actor_role must be monitor, gardener, or operator; got '${openedBy}'`)
+    if (!["monitor", "gardener", "remote_gardener", "operator"].includes(openedBy)) {
+      throw new RpcError(-32602, `actor_role must be monitor, gardener, remote_gardener, or operator; got '${openedBy}'`)
     }
     if (!panelOpenAllowed(panel, openedBy)) {
       return { ok: false, status: 0, message: `panel '${panel}' is not openable by ${openedBy}` }
@@ -467,8 +467,13 @@ export class StackMcpServer {
   async setMetaThreadTitle(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const actorRole = optionalString(args, "actor_role") ?? "gardener"
-    if (actorRole !== "gardener" && actorRole !== "operator" && actorRole !== "monitor") {
-      throw new RpcError(-32602, "actor_role must be gardener, monitor, or operator")
+    if (
+      actorRole !== "gardener" &&
+      actorRole !== "operator" &&
+      actorRole !== "monitor" &&
+      actorRole !== "remote_gardener"
+    ) {
+      throw new RpcError(-32602, "actor_role must be gardener, monitor, remote_gardener, or operator")
     }
     if (actorRole === "gardener" && !loadGardenerConfig(config.stackDataRoot).permissions.metaThreadTitle) {
       throw new RpcError(-32602, "gardener meta-thread title permission is disabled")
@@ -2311,7 +2316,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           panel: { type: "string", enum: [...UI_PANEL_IDS], description: "Registered panel id." },
           view: stringProperty("Optional view within the panel (monitor: events|thread|tape; gardener: portfolio|chat; ops: local|remote|hosted; threads: list)."),
           reason: stringProperty("One short sentence: why this deserves the operator's eyes now."),
-          actor_role: stringProperty("Who is opening: monitor, gardener, or operator."),
+          actor_role: stringProperty("Who is opening: monitor, gardener, remote_gardener, or operator."),
           actor_id: stringProperty("Optional concrete actor id for the audit event."),
         },
         ["thread_id", "panel", "reason"],
@@ -2328,7 +2333,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           thread_id: stringProperty("Worker Stack thread/session id."),
           panel: { type: "string", enum: [...UI_PANEL_IDS], description: "Registered panel id." },
           reason: stringProperty("Optional reason for the audit event."),
-          actor_role: stringProperty("Who is closing: monitor, gardener, or operator."),
+          actor_role: stringProperty("Who is closing: monitor, gardener, remote_gardener, or operator."),
           actor_id: stringProperty("Optional concrete actor id for the audit event."),
         },
         ["thread_id", "panel"],
@@ -2592,7 +2597,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           title: stringProperty("New short title, max 48 characters."),
           reason: stringProperty("Optional short rename reason."),
           actor_id: stringProperty("Optional actor id. Defaults to actor_role."),
-          actor_role: enumProperty(["gardener", "operator", "monitor"], "Actor role. Defaults to gardener."),
+          actor_role: enumProperty(["gardener", "operator", "monitor", "remote_gardener"], "Actor role. Defaults to gardener."),
         },
         ["meta_thread_id", "title"],
       ),
