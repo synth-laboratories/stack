@@ -22,7 +22,12 @@ import { runStackApp } from "./tui/app.js"
 import { resetTerminalAfterTui } from "./tui/terminal-cleanup.js"
 import { runUpdate } from "./update.js"
 import { runVoiceCheck, voiceStatusLine, writeVoiceStatus, resolveVoiceStatus } from "./voice/status.js"
-import { printStackVersion, stackAppRoot, wantsVersionFlag } from "./version.js"
+import { printStackVersion, stackAppRoot, stackVersion, wantsVersionFlag } from "./version.js"
+
+if (wantsHelpFlag(process.argv)) {
+  printStackHelp(process.argv)
+  process.exit(0)
+}
 
 if (wantsVersionFlag(process.argv)) {
   printStackVersion("stack")
@@ -127,4 +132,39 @@ try {
     console.error(`stack startup failed: ${String(error)}`)
   }
   process.exit(1)
+}
+
+function wantsHelpFlag(argv: string[]): boolean {
+  const args = argv.slice(2)
+  if (args.length === 0) return false
+  if (args[0] === "help" || args[0] === "--help" || args[0] === "-h") return true
+  return args[0] === "goal" && (args[1] === "--help" || args[1] === "-h")
+}
+
+function printStackHelp(argv: string[]): void {
+  const args = argv.slice(2)
+  console.log(`stack ${stackVersion(stackAppRoot())}`)
+  console.log("")
+  if (args[0] === "goal") {
+    console.log("Usage:")
+    console.log("  stack                         Open the TUI")
+    console.log("  /goal <objective>             Start a goal inside the TUI")
+    console.log("  /goal clear                   Clear the active in-app goal")
+    console.log("")
+    console.log("Goal mode is an in-app command, not a standalone CLI subcommand.")
+    return
+  }
+  console.log("Usage:")
+  console.log("  stack                         Open the TUI")
+  console.log("  stack doctor [--json]          Check local readiness")
+  console.log("  stack auth <command>           Manage optional Synth auth")
+  console.log("  stack inference <list|usage> [--json]")
+  console.log("  stack telemetry digest [--env dev|staging|prod]")
+  console.log("  stack crashes <command>")
+  console.log("  stack resume [query]")
+  console.log("  stack demo <command>")
+  console.log("  stack update")
+  console.log("  stack --version")
+  console.log("")
+  console.log("Local worker paths do not require SYNTH_API_KEY; sign-in unlocks hosted/cloud surfaces.")
 }
