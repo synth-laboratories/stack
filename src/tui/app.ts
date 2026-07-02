@@ -2796,6 +2796,13 @@ function handleTelemetryKey(
   return false
 }
 
+function telemetryKeyFromRawSequence(sequence: string): StackKeyEvent | undefined {
+  if (sequence === "\x1b") return { name: "escape", sequence }
+  if (sequence.length !== 1) return undefined
+  if (!["a", "b", "d", "l", "r"].includes(sequence)) return undefined
+  return { name: sequence, sequence }
+}
+
 function switcherFocusLabel(focusMode: FocusMode): string {
   if (focusMode === "model") return "model"
   if (focusMode === "effort") return "effort"
@@ -5103,6 +5110,9 @@ function handleRawInputInner(
   refreshRemoteOpsPanel: () => Promise<void>,
   cycleStackEnvironmentFromUi: (direction: number) => Promise<void>,
 ): boolean {
+  const telemetryKey = telemetryKeyFromRawSequence(sequence)
+  if (telemetryKey && handleTelemetryKey(telemetryKey, options, state, refresh)) return true
+
   if (sequence === "\x1b") {
     if (state.focusMode === "monitor" && state.monitorInputBuffer.length > 0) {
       state.monitorInputBuffer = ""

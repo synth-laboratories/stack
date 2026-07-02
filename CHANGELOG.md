@@ -19,6 +19,13 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 No changes yet.
 
+## [0.2.0-dev.20260701.4] - 2026-07-02
+
+### Fixed
+
+- **First-launch approval raw keys.** The telemetry approval modal now handles raw
+  `a`/`d`/`l` key sequences before agent input, matching the parsed key path.
+
 ## [0.2.0-dev.20260701.3] - 2026-07-02
 
 ### Fixed
