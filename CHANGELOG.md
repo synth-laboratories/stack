@@ -19,7 +19,7 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 No changes yet.
 
-## [0.3.0] - 2026-07-02
+## [0.3.0] - 2026-07-02 (pre-ship)
 
 ### Added
 
