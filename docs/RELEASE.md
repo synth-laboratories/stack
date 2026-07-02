@@ -101,7 +101,9 @@ make smoke-release-site-contract
 make smoke-first-run-local
 make smoke-launch-docs-alignment
 make smoke-telemetry-contract
+make smoke-telemetry-approval
 make smoke-stackd-telemetry
+make smoke-usage-ingestion
 make smoke-growth-ingestion
 ```
 
@@ -215,7 +217,9 @@ stack --version
 - [ ] `make smoke-artifact-security`
 - [ ] `make smoke-launch-docs-alignment`
 - [ ] `make smoke-telemetry-contract`
+- [ ] `make smoke-telemetry-approval`
 - [ ] `make smoke-stackd-telemetry`
+- [ ] `make smoke-usage-ingestion`
 - [ ] `make smoke-growth-ingestion`
 - [ ] `bun run smoke:meta-threads:contract` when handoff/meta-thread behavior is in scope
 - [ ] `bun run smoke:meta-threads:concurrency` when handoff/meta-thread behavior is in scope
@@ -235,7 +239,9 @@ stack --version
 - [ ] `make smoke-artifact-security`
 - [ ] `make smoke-launch-docs-alignment`
 - [ ] `make smoke-telemetry-contract`
+- [ ] `make smoke-telemetry-approval`
 - [ ] `make smoke-stackd-telemetry`
+- [ ] `make smoke-usage-ingestion`
 - [ ] `make smoke-growth-ingestion`
 - [ ] `make quality-release`
 - [ ] `bun run stackeval:run`

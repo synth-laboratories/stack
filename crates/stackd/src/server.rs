@@ -1,5 +1,5 @@
 use crate::handlers::{
-    checkpoints, export, health, logs, mcp, meta_threads, runtime, skills, telemetry, threads,
+    checkpoints, export, health, logs, mcp, meta, meta_threads, runtime, skills, telemetry, threads,
 };
 use crate::mcp_sidecar::McpSidecar;
 use crate::monitor_scheduler;
@@ -25,6 +25,7 @@ pub struct AppState {
     pub mcp_sidecar: Option<McpSidecar>,
     pub http_client: reqwest::Client,
     pub runtime_write_lock: Mutex<()>,
+    pub meta_tick_lock: Mutex<()>,
 }
 
 pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
@@ -52,6 +53,7 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
         mcp_sidecar,
         http_client: reqwest::Client::new(),
         runtime_write_lock: Mutex::new(()),
+        meta_tick_lock: Mutex::new(()),
     });
 
     if let Err(error) = stack_core::seed::ensure_stack_defaults(&state.paths) {
@@ -108,6 +110,12 @@ fn router(state: Arc<AppState>) -> Router {
             get(runtime::get_runtime_events).post(runtime::post_runtime_event),
         )
         .route("/runtime/tick", post(runtime::post_runtime_tick))
+        .route("/meta/tick", post(meta::post_meta_tick))
+        .route("/meta/status", get(meta::get_meta_status))
+        .route(
+            "/threads/:id/gardeners/:gardener_id/pass-complete",
+            post(meta::post_gardener_pass_complete),
+        )
         .route("/threads", get(threads::list_threads))
         .route("/threads/:id", get(threads::get_thread))
         .route("/threads/:id/status", get(threads::get_status))
@@ -119,7 +127,9 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/events/stream", get(threads::stream_events))
         .route("/logs/query", get(logs::query_logs_handler))
         .route("/telemetry/status", get(telemetry::telemetry_status))
+        .route("/telemetry/config", post(telemetry::update_telemetry_config))
         .route("/telemetry/events", post(telemetry::record_telemetry_event))
+        .route("/telemetry/flush", post(telemetry::flush_telemetry_events))
         .route(
             "/telemetry/crashes",
             get(telemetry::list_crash_reports).post(telemetry::record_crash_report),

@@ -1,4 +1,6 @@
 import { stackdCreateMetaThread, stackdUpdateMetaThreadGoal } from "../client/stackd.js"
+import { sanitizeThreadDisplayName } from "../thread-display-name.js"
+import { emitFeatureUsed } from "../telemetry/funnel.js"
 import { harnessModel, isCursorHarness, type StackConfig } from "../config.js"
 import { emptyGoalContext, mergeGoalContext, type CodexGoalSnapshot } from "../codex/goal-context.js"
 import { CodexAppServerSession } from "../codex/app-server-session.js"
@@ -25,7 +27,7 @@ import {
   appendGoalLifecycleEvent,
   shouldAppendGoalStarted,
 } from "../goal-session.js"
-import { enrichGameBenchGoalContext } from "../gamebench-goal.js"
+import { enrichGoalTaskContext } from "../codex/goal-task-contract.js"
 import { mergeMetaThreadGoalContext, readMetaThreadManifest } from "../meta-thread-goal.js"
 import { readThreadMetaEvents } from "../thread-events.js"
 import { writeSessionLog, type StackLocalSession } from "../session.js"
@@ -104,7 +106,7 @@ async function syncMetaThreadGoalFromObjective(
   objective: string,
   status = "active",
 ): Promise<void> {
-  const enriched = enrichGameBenchGoalContext(
+  const enriched = enrichGoalTaskContext(
     {
       objective,
       status,
@@ -276,7 +278,7 @@ async function ensureMetaThreadBound(
 ): Promise<void> {
   if (ctx.session.metaThreadId) return
   const title = objective.length > 80 ? `${objective.slice(0, 77)}...` : objective
-  const enriched = enrichGameBenchGoalContext({ objective, status, source: "meta_thread" }, ctx.config.workspaceRoot)
+  const enriched = enrichGoalTaskContext({ objective, status, source: "meta_thread" }, ctx.config.workspaceRoot)
   const created = await stackdCreateMetaThread({
     title,
     thread_id: ctx.session.id,
@@ -289,6 +291,12 @@ async function ensureMetaThreadBound(
   ctx.session.metaThreadId = created.id
   ctx.session.segmentId = created.head_segment_id
   ctx.session.segmentRole = "implement"
+  void emitFeatureUsed("goal_mode")
+  // Name the session from the goal title at bind so the threads rail never
+  // shows (empty) for a bound goal, even before any worker turn lands.
+  if (!ctx.session.displayName?.trim()) {
+    ctx.session.displayName = sanitizeThreadDisplayName(created.title?.trim() || title)
+  }
   state.metaThreadManifest = created
   state.goalContext = mergeGoalContext(mergeMetaThreadGoalContext(state.goalContext, created), enriched)
   await writeSessionLog(ctx.session, ctx.config.sessionLogDir, {

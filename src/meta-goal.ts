@@ -1,9 +1,8 @@
 /**
  * A meta goal is a short, human-memorable label derived from a thread's goal
- * objective — e.g. "find the gamebench craftax code policy setting, get the
- * baseline code policy score on 100 seeds, then grind another candidate
- * until we get one that's 2x better" → "Gamebench Craftax Code Policy
- * Setting". Purely derived (no LLM call, no persistence): recomputed from
+ * objective — e.g. "migrate the billing service to the new schema, backfill
+ * historical rows, then prove parity against the old read path" → "Migrate
+ * Billing Service Schema". Purely derived (no LLM call, no persistence): recomputed from
  * the objective text whenever it's needed.
  */
 

@@ -3,6 +3,7 @@ pub mod export;
 pub mod health;
 pub mod logs;
 pub mod mcp;
+pub mod meta;
 pub mod meta_threads;
 pub mod runtime;
 pub mod skills;

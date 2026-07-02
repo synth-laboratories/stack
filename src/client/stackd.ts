@@ -95,7 +95,6 @@ export type StackdRuntimeEvent = {
 
 export type StackdRuntimeCorrelation = {
   stack_session_id?: string | null
-  stackeval_packet_id?: string | null
   project_id?: string | null
   run_id?: string | null
   factory_id?: string | null
@@ -240,6 +239,14 @@ export type StackdTelemetryStatus = {
     reason: string
     endpoint_configured: boolean
   }
+  tiers: {
+    basic_dau: "on" | "off" | string
+    advanced_product: "unset" | "accepted" | "declined" | string
+    asked_at?: string | null
+    asked_version?: string | null
+    install_id_present: boolean
+    config_path: string
+  }
   crash_reporting: {
     enabled: boolean
     default: string
@@ -270,6 +277,27 @@ export type StackdTelemetryEventResponse = {
   reason: string
   outbox_path?: string
   event?: unknown
+}
+
+export type StackdTelemetryConfigRequest = {
+  basic_dau?: "on" | "off"
+  advanced_product?: "unset" | "accepted" | "declined"
+  asked_version?: string
+}
+
+export type StackdTelemetryConfigResponse = {
+  ok: boolean
+  tiers: StackdTelemetryStatus["tiers"]
+}
+
+export type StackdTelemetryFlushResponse = {
+  ok: boolean
+  endpoint_configured: boolean
+  attempted: number
+  sent: number
+  pending: number
+  sent_cursor_path: string
+  reason: string
 }
 
 export type StackdCrashReportRequest = {
@@ -537,6 +565,68 @@ export async function stackdStatus(baseUrl = stackdBaseUrl()): Promise<StackdSta
   return requestJson<StackdStatus>(baseUrl, "/status")
 }
 
+export type StackdMetaSidePanel = {
+  panel: string
+  view?: string | null
+  opened_by: string
+  reason?: string | null
+  opened_at?: string | null
+}
+
+export type StackdMetaThreadSnapshot = {
+  thread_id: string
+  meta_thread_id?: string | null
+  goal: { phase: string; objective?: string | null; status?: string | null }
+  actors: Array<{
+    actor_id: string
+    role: string
+    state: string
+    cursor?: string | null
+    queued_triggers: string[]
+    next_wake_on?: string[] | null
+    next_wake_at?: string | null
+  }>
+  ui: { side_panel?: StackdMetaSidePanel | null }
+  headline?: { headline?: string | null; note?: string | null; status?: string | null } | null
+}
+
+export type StackdMetaStatus = {
+  schema: string
+  generated_at: string
+  threads: StackdMetaThreadSnapshot[]
+}
+
+export type StackdGardenerPassCompleteRequest = {
+  cursor_event_id?: string
+  wake_reason?: string
+  workspace_garden_path?: string
+  gardener_garden_path?: string
+  inbox_pending?: number
+}
+
+export type StackdGardenerPassCompleteResponse = {
+  ok: boolean
+  event: unknown
+  actor: unknown
+}
+
+export async function stackdMetaStatus(baseUrl = stackdBaseUrl()): Promise<StackdMetaStatus> {
+  return requestJson<StackdMetaStatus>(baseUrl, "/meta/status")
+}
+
+export async function stackdGardenerPassComplete(
+  threadId: string,
+  gardenerId: string,
+  request: StackdGardenerPassCompleteRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdGardenerPassCompleteResponse> {
+  return requestJson<StackdGardenerPassCompleteResponse>(
+    baseUrl,
+    `/threads/${encodeURIComponent(threadId)}/gardeners/${encodeURIComponent(gardenerId)}/pass-complete`,
+    jsonPost(request),
+  )
+}
+
 export async function stackdRuntimeFactory(baseUrl = stackdBaseUrl()): Promise<StackdRuntimeFactoryResponse> {
   return requestJson<StackdRuntimeFactoryResponse>(baseUrl, "/runtime/factory")
 }
@@ -596,11 +686,22 @@ export async function stackdTelemetryStatus(baseUrl = stackdBaseUrl()): Promise<
   return requestJson<StackdTelemetryStatus>(baseUrl, "/telemetry/status")
 }
 
+export async function stackdUpdateTelemetryConfig(
+  request: StackdTelemetryConfigRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdTelemetryConfigResponse> {
+  return requestJson<StackdTelemetryConfigResponse>(baseUrl, "/telemetry/config", jsonPost(request))
+}
+
 export async function stackdRecordTelemetryEvent(
   request: StackdTelemetryEventRequest,
   baseUrl = stackdBaseUrl(),
 ): Promise<StackdTelemetryEventResponse> {
   return requestJson<StackdTelemetryEventResponse>(baseUrl, "/telemetry/events", jsonPost(request))
+}
+
+export async function stackdFlushTelemetryEvents(baseUrl = stackdBaseUrl()): Promise<StackdTelemetryFlushResponse> {
+  return requestJson<StackdTelemetryFlushResponse>(baseUrl, "/telemetry/flush", jsonPost({}))
 }
 
 export async function stackdRecordCrashReport(

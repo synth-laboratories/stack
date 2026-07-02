@@ -151,7 +151,7 @@ pub async fn export_thread(
     write_json(export_dir.join("metadata.json"), &metadata).await?;
 
     let manifest = json!({
-        "schema": "stackeval/export/v1",
+        "schema": "stack/export/v1",
         "generated_at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "stackd_version": env!("CARGO_PKG_VERSION"),
         "stack_version": state.stack_version,

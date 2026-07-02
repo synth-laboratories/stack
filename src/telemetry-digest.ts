@@ -33,7 +33,10 @@ export type TelemetryDigestView = {
   }
   local: {
     events_outbox_path: string | null
+    events_sent_cursor_path: string | null
     events_total_in_outbox: number
+    events_sent_count: number
+    events_pending_upload: number
     events_on_date: number
     events_by_name: Record<string, number>
     crashes_outbox_path: string | null
@@ -73,7 +76,10 @@ export async function readTelemetryDigestView(
     },
     local: {
       events_outbox_path: null,
+      events_sent_cursor_path: null,
       events_total_in_outbox: 0,
+      events_sent_count: 0,
+      events_pending_upload: 0,
       events_on_date: 0,
       events_by_name: {},
       crashes_outbox_path: null,
@@ -105,6 +111,13 @@ export async function readTelemetryDigestView(
     if (!parsed) continue
     view.local.events_outbox_path = path
     view.local.events_total_in_outbox = parsed.all.length
+    const sent = readSentTelemetryCursor(config, path)
+    view.local.events_sent_cursor_path = sent.path
+    view.local.events_sent_count = sent.ids.size
+    view.local.events_pending_upload = parsed.all.filter((row) => {
+      const eventId = typeof row.event_id === "string" ? row.event_id : ""
+      return eventId.length > 0 && !sent.ids.has(eventId)
+    }).length
     const onDay = parsed.all.filter((row) => observedOnUtcDate(row, options.dateUtc))
     view.local.events_on_date = onDay.length
     view.local.events_by_name = countBy(onDay, (row) => String(row.name ?? "unknown"))
@@ -310,6 +323,7 @@ function printTelemetryDigest(
   } else {
     console.log(`  outbox: ${view.local.events_outbox_path}`)
     console.log(`  total in file: ${view.local.events_total_in_outbox}`)
+    console.log(`  upload: pending=${view.local.events_pending_upload} · sent=${view.local.events_sent_count}`)
     console.log(`  on date: ${view.local.events_on_date}`)
     console.log(`  by name: ${formatCounts(view.local.events_by_name)}`)
   }
@@ -361,6 +375,24 @@ function printTelemetryDigest(
     console.log("")
     console.log("remote: skipped (pass --remote for growth funnel + cloud crash summary)")
   }
+}
+
+function readSentTelemetryCursor(
+  config: StackConfig,
+  outboxPath: string,
+): { path: string; ids: Set<string> } {
+  const envPath = process.env.STACK_TELEMETRY_SENT_CURSOR?.trim()
+  const path = envPath && envPath.length > 0
+    ? envPath
+    : outboxPath === join(config.stackDataRoot, "telemetry", "events.jsonl")
+      ? join(config.stackDataRoot, "telemetry", "events.sent.jsonl")
+      : join(config.appRoot, ".stack", "telemetry", "events.sent.jsonl")
+  const parsed = readJsonlFile(path)
+  const ids = new Set<string>()
+  for (const row of parsed?.all ?? []) {
+    if (typeof row.event_id === "string" && row.event_id.length > 0) ids.add(row.event_id)
+  }
+  return { path, ids }
 }
 
 function formatCounts(counts: Record<string, number>): string {

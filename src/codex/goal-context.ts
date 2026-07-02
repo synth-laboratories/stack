@@ -7,7 +7,7 @@ export type CodexGoalSnapshot = {
   status?: string
   acceptanceCriteria?: string[]
   blockers?: string[]
-  gamebenchTask?: CodexGoalTaskContext
+  taskContext?: CodexGoalTaskContext
   tokensUsed?: number
   tokenBudget?: string
   tokensRemaining?: string
@@ -15,21 +15,29 @@ export type CodexGoalSnapshot = {
   source: "none" | "tool" | "context" | "meta_thread"
 }
 
+// Task-specific goal context supplied by DATA (a task contract file or the goal binding),
+// never by code baked into Stack. Stack renders and enforces whatever the contract declares;
+// it has no knowledge of any particular benchmark, eval, or domain.
 export type CodexGoalTaskContext = {
-  kind: "gamebench"
-  taskType: "policy_opt" | "engine_rebuild" | "puzzle_diagnosis" | "unknown"
-  source: "task_toml" | "objective"
-  laneId?: string
-  lanePath?: string
+  kind: string
+  taskType?: string
+  source: "task_contract" | "binding"
+  taskId?: string
+  contractPath?: string
   title?: string
-  family?: string
   method?: string
-  benchmarkFamily?: string
   primaryScorePath?: string
   passThreshold?: number
   doneBar?: string
   milestoneChain?: string[]
   honestyPitfalls?: string[]
+  updateTerms?: string[]
+  phases?: Array<{
+    id: string
+    detectTerms: string[]
+    updateTerms: string[]
+    suggestedUpdate?: string
+  }>
   gates?: Array<{
     id: string
     path?: string
@@ -70,7 +78,7 @@ export function mergeGoalContext(current: CodexGoalSnapshot, incoming: CodexGoal
     status: incoming.status ?? current.status,
     acceptanceCriteria: incoming.acceptanceCriteria ?? current.acceptanceCriteria,
     blockers: incoming.blockers ?? current.blockers,
-    gamebenchTask: incoming.gamebenchTask ?? current.gamebenchTask,
+    taskContext: incoming.taskContext ?? current.taskContext,
     tokensUsed: incoming.tokensUsed ?? current.tokensUsed,
     tokenBudget: incoming.tokenBudget ?? current.tokenBudget,
     tokensRemaining: incoming.tokensRemaining ?? current.tokensRemaining,

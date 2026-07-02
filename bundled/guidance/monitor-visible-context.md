@@ -26,4 +26,4 @@ receive a raw dump of external memory trees.
 - Secrets, `.env` files, raw credentials, and private API responses
 
 Copy only the high-signal excerpt or record into `.stack/guidance/records/`
-when a monitor, StackEval run, or rollout harness should see it.
+when a monitor, eval harness, or rollout harness should see it.

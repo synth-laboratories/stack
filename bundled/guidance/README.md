@@ -26,8 +26,8 @@ searchable guidance through the same guidance index used by Stack MCP.
 
 Stable manifest: [`monitor-visible-context.md`](monitor-visible-context.md).
 
-Copy only high-signal excerpts into `.stack/guidance/` when a monitor, StackEval
-run, or rollout harness should see them.
+Copy only high-signal excerpts into `.stack/guidance/` when a monitor, eval
+harness, or rollout harness should see them.
 
 ## Events
 
@@ -48,4 +48,4 @@ per-thread JSONL events when a `thread_id` is supplied.
 ## Write
 
 - Local Stack operator memory goes here when it should be visible to Stack
-  monitor, StackEval, or rollout harnesses.
+  monitor, eval, or rollout harnesses.

@@ -2,7 +2,9 @@ use crate::server::AppState;
 use crate::victorialogs::append_thread_event_projected;
 use chrono::Utc;
 use serde_json::{json, Value};
-use stack_core::events::{read_thread_events, thread_monitor_actor_dir_path};
+use stack_core::actor_runtime::{events_after_cursor, latest_next_wake_hints, triggered_event_ids, ActorRole};
+use stack_core::events::read_thread_events;
+use stack_core::actor_runtime::thread_actor_dir_path;
 use stack_core::meta_thread::{manifest_is_archived, read_manifest};
 use stack_core::session::list_summaries;
 use std::collections::HashSet;
@@ -85,7 +87,7 @@ async fn process_thread(
     if events.is_empty() {
         return Ok(());
     }
-    let actor_path = thread_monitor_actor_dir_path(&state.paths.stack_dir, thread_id)?
+    let actor_path = thread_actor_dir_path(&state.paths.stack_dir, thread_id, ActorRole::Monitor)?
         .join(format!("{}.json", safe_segment(&config.actor_id)));
     let actor = read_actor_state(&actor_path).await;
     let effective_strictness = effective_strictness(config, &events, actor.as_ref());
@@ -127,7 +129,7 @@ async fn process_thread(
                 .map(str::to_string)
         })
         .or(bootstrap_cursor);
-    let pending = events_after_cursor(&events, last_event_id.as_deref());
+    let pending = events_after_cursor(&events, last_event_id.as_deref(), ActorRole::Monitor);
     if pending.is_empty() {
         if actor.is_none() && !has_monitor_events(&events) {
             let last_event = events.last();
@@ -148,14 +150,19 @@ async fn process_thread(
         }
         return Ok(());
     }
-    let triggered = triggered_event_ids(&events, &config.actor_id);
+    let triggered: HashSet<String> = triggered_event_ids(&events, ActorRole::Monitor, &config.actor_id)
+        .into_iter()
+        .collect();
     let Some(wake) =
         select_wake_candidate(state, config, actor.as_ref(), &pending, &triggered).await
     else {
         return Ok(());
     };
-    if !next_wake_allows(&events, &config.actor_id, wake_class(&wake.reason)) {
-        return Ok(());
+    let hints = latest_next_wake_hints(&events, ActorRole::Monitor, &config.actor_id);
+    if let Some(allowed) = &hints.next_wake_on {
+        if !allowed.iter().any(|value| value == wake_class(&wake.reason)) {
+            return Ok(());
+        }
     }
     if monitor_wake_budget_exhausted(&events, config.max_wakes_per_primary_turn, &wake.reason) {
         return Ok(());
@@ -554,50 +561,7 @@ async fn read_monitor_config(state: &AppState) -> MonitorRuntimeConfig {
     }
 }
 
-fn events_after_cursor<'a>(events: &'a [Value], last_event_id: Option<&str>) -> Vec<&'a Value> {
-    let index = last_event_id
-        .and_then(|id| events.iter().position(|event| event_id(event) == Some(id)))
-        .map(|index| index + 1)
-        .unwrap_or(0);
-    events
-        .iter()
-        .skip(index)
-        .filter(|event| {
-            !event_type(event)
-                .unwrap_or_default()
-                .starts_with("monitor.")
-        })
-        .filter(|event| event.get("actor_role").and_then(Value::as_str) != Some("monitor"))
-        .collect()
-}
 
-fn triggered_event_ids(events: &[Value], actor_id: &str) -> HashSet<String> {
-    let mut ids = HashSet::new();
-    for event in events {
-        if !matches!(
-            event_type(event),
-            Some("monitor.wake" | "monitor.trigger_queued")
-        ) {
-            continue;
-        }
-        if event.get("actor_id").and_then(Value::as_str) != Some(actor_id) {
-            continue;
-        }
-        let Some(trigger_ids) = event
-            .get("payload")
-            .and_then(|payload| payload.get("trigger_event_ids"))
-            .and_then(Value::as_array)
-        else {
-            continue;
-        };
-        for id in trigger_ids {
-            if let Some(id) = id.as_str() {
-                ids.insert(id.to_string());
-            }
-        }
-    }
-    ids
-}
 
 fn is_trigger_event(config: &MonitorRuntimeConfig, event: &Value) -> bool {
     match event_type(event) {
@@ -684,35 +648,7 @@ fn monitor_wake_budget_exhausted(events: &[Value], max_wakes: u64, reason: &str)
     wake_count >= max_wakes
 }
 
-fn next_wake_allows(events: &[Value], actor_id: &str, wake: &str) -> bool {
-    let Some(allowed) = latest_next_wake_on(events, actor_id) else {
-        return true;
-    };
-    allowed.iter().any(|value| value == wake)
-}
 
-fn latest_next_wake_on(events: &[Value], actor_id: &str) -> Option<Vec<String>> {
-    for event in events.iter().rev() {
-        if event_type(event) != Some("monitor.pause_for_restart") {
-            continue;
-        }
-        if event.get("actor_id").and_then(Value::as_str) != Some(actor_id) {
-            continue;
-        }
-        let values = event
-            .get("payload")
-            .and_then(|payload| payload.get("next_wake_on"))
-            .and_then(Value::as_array)?;
-        let allowed: Vec<String> = values
-            .iter()
-            .filter_map(Value::as_str)
-            .map(|value| value.trim().to_ascii_lowercase())
-            .filter(|value| !value.is_empty())
-            .collect();
-        return if allowed.is_empty() { None } else { Some(allowed) };
-    }
-    None
-}
 
 fn wake_class(reason: &str) -> &'static str {
     match reason {

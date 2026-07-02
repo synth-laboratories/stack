@@ -17,7 +17,7 @@ import { stackAppRoot } from "./version.js"
 import { estimateUsageSpendUsd, formatEstimatedSpend } from "./codex/usage-cost.js"
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
 import { detectRiskyPending, riskyPendingSummary } from "./risky-action.js"
-import { enrichGameBenchGoalContext } from "./gamebench-goal.js"
+import { enrichGoalTaskContext } from "./codex/goal-task-contract.js"
 import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import { readMetaThreadManifest } from "./meta-thread-goal.js"
@@ -252,7 +252,7 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
   },
   skills: {
     enabled: true,
-    allowedSkillIds: ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack", "stackeval"],
+    allowedSkillIds: ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack"],
     pushWhenConfident: false,
   },
   tools: {
@@ -407,7 +407,7 @@ export async function runMonitorAfterOperatorMessage(input: {
   goalContext: CodexGoalSnapshot
 }): Promise<{ event: StackThreadMetaEvent; snapshot: StackMonitorSnapshot }> {
   const runtimeRoot = monitorRuntimeRoot(input.config)
-  const goalContext = enrichGameBenchGoalContext(input.goalContext, input.config.workspaceRoot)
+  const goalContext = enrichGoalTaskContext(input.goalContext, input.config.workspaceRoot)
   const operatorEvent = appendMonitorOperatorMessage(runtimeRoot, input.session.id, input.message)
   if (shouldUseSidecarGoalChat(goalContext)) {
     const requestEvent = appendMonitorChatRequest({
@@ -746,7 +746,7 @@ export async function runMonitorForNewEvents(input: {
   const runtimeRoot = monitorRuntimeRoot(input.config)
   const monitorConfig = loadMonitorConfig(input.config.appRoot)
   const threadId = input.session.id
-  const goalContext = enrichGameBenchGoalContext(input.goalContext, input.config.workspaceRoot)
+  const goalContext = enrichGoalTaskContext(input.goalContext, input.config.workspaceRoot)
   const priorEvents = readThreadMetaEvents(runtimeRoot, threadId)
   const effective = effectiveMonitorState(monitorConfig, priorEvents)
   const actorId = monitorActorId(monitorConfig)
@@ -1405,9 +1405,6 @@ function repeatedFailureSteerMessage(pendingEvents: StackThreadMetaEvent[]): str
 }
 
 function repeatedFailureSteerForCommand(command: string): string {
-  if (/gamebench\.craftax\.run_candidate/.test(command)) {
-    return "Stop retrying the nonexistent `gamebench.craftax.run_candidate` module; find the real Craftax policy runner or importable entrypoint, then rerun the candidate."
-  }
   return `Stop retrying the failing command \`${truncate(command, 120)}\`; inspect the real entrypoint/path before rerunning.`
 }
 
@@ -1569,6 +1566,28 @@ type WakeCandidate = {
   reason: string
   triggerEventIds: string[]
   pendingEvents: StackThreadMetaEvent[]
+}
+
+export type StackMonitorWakeDecision = {
+  reason: string
+  triggerEventIds: string[]
+  pendingEventIds: string[]
+}
+
+export function selectMonitorWakeDecision(input: {
+  config: StackMonitorConfig
+  actorState?: StackMonitorActorRuntimeState
+  events: StackThreadMetaEvent[]
+  wakeReason?: string
+  triggerEventIds?: string[]
+}): StackMonitorWakeDecision | undefined {
+  const candidate = nextWakeCandidate(input)
+  if (!candidate) return undefined
+  return {
+    reason: candidate.reason,
+    triggerEventIds: candidate.triggerEventIds,
+    pendingEventIds: candidate.pendingEvents.map((event) => event.event_id),
+  }
 }
 
 type HandoffPreemptEvaluation = {
@@ -2464,17 +2483,17 @@ function inferAuditedTerminalGoalStatus(text: string): "goal_met" | "goal_failed
 
 function taskAwareProgressSummary(text: string, goalContext: CodexGoalSnapshot): string {
   const clean = stripDirectivePrefix(text)
-  const taskType = goalContext.gamebenchTask?.taskType
-  if (taskType === "policy_opt" && !/\b(policy|baseline|candidate|score|leaderboard|hillclimb)\b/i.test(clean)) {
-    return `Worker is in the policy-optimization phase: ${lowercaseFirst(clean)}`
-  }
-  if (taskType === "engine_rebuild" && !/\b(engine|scenario|parity|canonical|reward|nev|public state)\b/i.test(clean)) {
-    return `Worker is in the engine-rebuild phase: ${lowercaseFirst(clean)} It is establishing scenario/parity evidence before any canonical score can be audited.`
-  }
-  if (taskType === "puzzle_diagnosis" && !/\b(trace|verifier|puzzle|causal hypothesis)\b/i.test(clean)) {
-    return `Worker is in the puzzle-diagnosis phase: ${lowercaseFirst(clean)} It must build trace-backed diagnosis evidence before verifier pass can be audited.`
-  }
-  return clean
+  const task = goalContext.taskContext
+  const terms = task?.updateTerms ?? []
+  if (terms.length === 0) return clean
+  const mentionsTask = terms.some((term) => new RegExp(`\\b${escapeRegExpTerm(term)}\\b`, "i").test(clean))
+  if (mentionsTask) return clean
+  const label = task?.title ?? task?.taskType ?? task?.kind ?? "task"
+  return `Worker is mid-task (${label}): ${lowercaseFirst(clean)}`
+}
+
+function escapeRegExpTerm(term: string): string {
+  return term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function headlineForProgress(text: string): string {
@@ -2773,14 +2792,14 @@ function checkGoalProgress(config: StackMonitorConfig, goal: CodexGoalSnapshot):
 function checkSkills(config: StackMonitorConfig, context: AgentContextSnapshot, turn: StackCodexTurn): FocusCheck {
   if (!config.focus.skills || !config.skills.enabled) return disabled("skills")
   const text = `${turn.prompt}\n${turn.stdout}`.toLowerCase()
-  const likelyNeedsSkill = text.includes("stackeval") || text.includes("gepa") || text.includes("synth")
+  const likelyNeedsSkill = text.includes("gepa") || text.includes("synth")
   if (likelyNeedsSkill && context.usedSkills.length === 0) {
     return {
       focus: "skills",
       status: "warn",
       severity: config.strictness === "aggressive" ? "medium" : "low",
       summary: "turn appears to need Stack/Synth skills but no skill use was detected (load oss-gepa or gepa)",
-      evidence: "StackEval/GEPA/Synth keyword without used skill event",
+      evidence: "GEPA/Synth keyword without used skill event",
     }
   }
   return pass("skills", context.usedSkills.length > 0 ? "skill use detected" : "no skill need detected")
@@ -2929,7 +2948,7 @@ function recommendedSkillForMonitorPush(
   if (text.includes("gepa") && allowed.includes("gepa")) {
     return "gepa"
   }
-  if ((text.includes("stackeval") || text.includes("synth")) && allowed.includes("synth-via-stack")) {
+  if (text.includes("synth") && allowed.includes("synth-via-stack")) {
     return "synth-via-stack"
   }
   if (allowed.includes("stack-agent-bridge")) return "stack-agent-bridge"
@@ -2956,7 +2975,7 @@ function goalSnapshotFromContext(goal: CodexGoalSnapshot): Record<string, unknow
     token_budget: goal.tokenBudget ?? null,
     acceptance_criteria: goal.acceptanceCriteria ?? [],
     blockers: goal.blockers ?? [],
-    gamebench_task: goal.gamebenchTask ?? null,
+    task_context: goal.taskContext ?? null,
     criteria_done: criteria.done,
     criteria_total: criteria.total,
     criteria_pct: criteria.pct,
@@ -3318,7 +3337,7 @@ function defaultMonitorToml(): string {
     "",
     "[skills]",
     "enabled = true",
-    'allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack", "stackeval"]',
+    'allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack"]',
     "push_when_confident = false",
     "",
     "[tools]",

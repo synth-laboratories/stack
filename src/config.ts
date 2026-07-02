@@ -63,7 +63,8 @@ export type StackConfig = {
   stackDataRoot: string
   workspaceRoot: string
   workingDir: string
-  synthDevRoot: string
+  // Local synth dev-stack checkout; dev-slot management is off unless explicitly configured.
+  synthDevRoot?: string
   environmentName: StackEnvironmentName
   environment: StackEnvironmentConfig
   environments: Record<StackEnvironmentName, StackEnvironmentConfig>
@@ -95,10 +96,7 @@ export type StackConfig = {
   optimizerLogPath: string
   optimizerPidPath: string
   optimizerServiceUrl: string
-  evalCommand: string
-  readmeSmokeSuite: string
-  readmeSmokeTarget: string
-  readmeSmokeInstance: string
+  devSlotInstance: string
   initialPromptFile?: string
   autoSubmitInitialPrompt: boolean
   voice: StackVoiceConfig
@@ -109,11 +107,7 @@ type StackConfigFile = {
   synthDevRoot?: string
   defaultEnvironment?: string
   environments?: Partial<Record<StackEnvironmentName, Partial<Omit<StackEnvironmentConfig, "name">>>>
-  readmeSmoke?: {
-    suite?: string
-    target?: string
-    instance?: string
-  }
+  devSlotInstance?: string
   codexPricing?: Array<{
     model?: string
     inputPerMillion?: number
@@ -135,10 +129,8 @@ const loadedAuthEnvFiles = new Map<string, string>()
 
 export async function loadConfig(appRoot: string): Promise<StackConfig> {
   const fileConfig = readConfigFile(appRoot)
-  const synthDevRoot = resolveConfigPath(
-    appRoot,
-    process.env.STACK_SYNTH_DEV_ROOT ?? fileConfig.synthDevRoot ?? join(appRoot, "..", "synth-dev"),
-  )
+  const synthDevRootRaw = process.env.STACK_SYNTH_DEV_ROOT ?? fileConfig.synthDevRoot
+  const synthDevRoot = synthDevRootRaw ? resolveConfigPath(appRoot, synthDevRootRaw) : undefined
   const workingDir = resolveConfigPath(
     appRoot,
     process.env.STACK_WORKING_DIR ?? fileConfig.workingDir ?? appRoot,
@@ -250,19 +242,9 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
       process.env.STACK_OPTIMIZER_PID ?? join(appRoot, ".stack", "optimizers", "gepa-service.pid"),
     optimizerServiceUrl:
       process.env.STACK_OPTIMIZER_SERVICE_URL ?? environment.optimizerServiceUrl ?? optimizerServiceUrl(optimizerBind),
-    evalCommand:
-      process.env.STACK_EVAL_COMMAND ?? join(synthDevRoot, "scripts", "eval.sh"),
-    readmeSmokeSuite:
-      process.env.STACK_README_SMOKE_SUITE ??
-      fileConfig.readmeSmoke?.suite ??
-      "smr/suites/readme_smoke_docker_codex.toml",
-    readmeSmokeTarget:
-      process.env.STACK_README_SMOKE_TARGET ??
-      fileConfig.readmeSmoke?.target ??
-      "local-dockerized",
-    readmeSmokeInstance:
-      process.env.STACK_README_SMOKE_INSTANCE ??
-      fileConfig.readmeSmoke?.instance ??
+    devSlotInstance:
+      process.env.STACK_DEV_SLOT_INSTANCE ??
+      fileConfig.devSlotInstance ??
       "slot1",
     initialPromptFile: process.env.STACK_INITIAL_PROMPT_FILE
       ? resolveConfigPath(appRoot, process.env.STACK_INITIAL_PROMPT_FILE)

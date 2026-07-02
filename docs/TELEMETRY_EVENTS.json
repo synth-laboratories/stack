@@ -1,9 +1,8 @@
 {
-  "schema_version": 1,
-  "default_local_product_telemetry": "off",
+  "schema_version": 2,
   "identity_policy": {
     "signed_in": "backend_authenticated_user_org",
-    "signed_out": "no_local_product_events_unless_opted_in",
+    "signed_out": "pseudonymous install_id from .stack/config/telemetry.json",
     "public_acquisition": "request_level_or_short_retention_hmac"
   },
   "forbidden_fields": [
@@ -26,127 +25,321 @@
       "name": "stack_docs_cta_clicked",
       "class": "public_acquisition",
       "owner": "docs_frontend",
-      "payload": ["campaign", "source", "medium", "channel"]
+      "payload": [
+        "campaign",
+        "source",
+        "medium",
+        "channel"
+      ]
     },
     {
       "name": "stack_download_clicked",
       "class": "public_acquisition",
       "owner": "docs_frontend",
-      "payload": ["campaign", "source", "medium", "channel", "target"]
+      "payload": [
+        "campaign",
+        "source",
+        "medium",
+        "channel",
+        "target"
+      ]
     },
     {
       "name": "stack_release_asset_downloaded",
       "class": "public_acquisition",
       "owner": "release_edge",
-      "payload": ["channel", "version", "target", "asset_kind"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "asset_kind"
+      ]
     },
     {
       "name": "stack_installer_started",
       "class": "installer",
       "owner": "release_edge",
-      "payload": ["channel", "version", "target", "installer_version"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "installer_version"
+      ]
     },
     {
       "name": "stack_installer_succeeded",
       "class": "installer",
       "owner": "release_edge",
-      "payload": ["channel", "version", "target", "installer_version", "duration_bucket"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "installer_version",
+        "duration_bucket"
+      ]
     },
     {
       "name": "stack_installer_failed",
       "class": "installer",
       "owner": "release_edge",
-      "payload": ["channel", "version", "target", "installer_version", "error_code"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "installer_version",
+        "error_code"
+      ]
     },
     {
       "name": "stack_first_launch",
-      "class": "local_product_opt_in",
+      "class": "local_basic_dau",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "auth_state", "telemetry_state"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "auth_state",
+        "telemetry_state"
+      ],
+      "counts_for_dau": true
     },
     {
       "name": "stack_doctor_run",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "status", "check_counts"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "status",
+        "check_counts"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_local_demo_started",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "auth_state"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "auth_state"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_local_demo_succeeded",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "duration_bucket", "validator_status"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "duration_bucket",
+        "validator_status"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_receipt_created",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "receipt_kind", "mode", "validator_status"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "receipt_kind",
+        "mode",
+        "validator_status"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_update_check",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "requested_channel", "status"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "requested_channel",
+        "status"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_meta_thread_created",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "harness", "role"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "harness",
+        "role"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_handoff_sealed",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "harness", "reason", "artifact_count"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "harness",
+        "reason",
+        "artifact_count"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_handoff_continued",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "harness", "successor_role"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "harness",
+        "successor_role"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_agent_backend_configured",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "backend", "detected_via"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "backend",
+        "detected_via"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_codex_authenticated",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "auth_mode"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "auth_mode"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_synth_authenticated",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "environment", "org_present"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "environment",
+        "org_present"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_session_started",
-      "class": "local_product_opt_in",
+      "class": "local_basic_dau",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "agent_backend", "has_synth_auth"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "agent_backend",
+        "has_synth_auth"
+      ],
+      "counts_for_dau": true
     },
     {
       "name": "stack_first_agent_turn",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "agent_backend"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "agent_backend"
+      ],
+      "counts_for_dau": false
     },
     {
       "name": "stack_optimizer_run_started",
-      "class": "local_product_opt_in",
+      "class": "local_advanced_product",
       "owner": "stackd",
-      "payload": ["channel", "version", "target", "optimizer", "mode"]
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "optimizer",
+        "mode"
+      ],
+      "counts_for_dau": false
+    },
+    {
+      "name": "stack_session_ended",
+      "class": "local_advanced_product",
+      "owner": "stackd",
+      "counts_for_dau": false,
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "duration_bucket"
+      ]
+    },
+    {
+      "name": "stack_session_heartbeat",
+      "class": "local_advanced_product",
+      "owner": "stackd",
+      "counts_for_dau": false,
+      "payload": [
+        "channel",
+        "version",
+        "target"
+      ]
+    },
+    {
+      "name": "stack_feature_used",
+      "class": "local_advanced_product",
+      "owner": "stackd",
+      "counts_for_dau": false,
+      "payload": [
+        "channel",
+        "version",
+        "target",
+        "feature_id"
+      ],
+      "feature_ids": [
+        "goal_mode",
+        "monitor_sidecar",
+        "gardener_chat",
+        "side_panel_open",
+        "slash_command",
+        "meta_thread",
+        "handoff",
+        "optimizer_local"
+      ]
     }
-  ]
+  ],
+  "tiers": {
+    "local_basic_dau": {
+      "default": "on",
+      "consent": "turn_offable",
+      "purpose": "coarse UTC-day activity (DAU); no feature bodies"
+    },
+    "local_advanced_product": {
+      "default": "off",
+      "consent": "explicit_approval",
+      "purpose": "feature adoption and coarse session length to improve Stack"
+    }
+  }
 }
