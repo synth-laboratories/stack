@@ -32,7 +32,12 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
     check("version", "pass", `Stack ${stackVersion(config.appRoot)} (${stackChannel(config.appRoot)})`),
     check("local-mode", "pass", "Local ready; Synth sign-in optional"),
     await telemetryCheck(),
-    check("auth", auth.hasAuth ? "pass" : "warn", auth.hasAuth ? `${auth.authEnv} is present` : `${auth.authEnv} is not set; hosted features will ask for sign-in`),
+    check(
+      "auth",
+      auth.hasAuth ? "pass" : "warn",
+      auth.hasAuth ? `${auth.authEnv} is present; cloud features enabled` : "Local ready; sign in for cloud with stack auth open signin",
+      auth.message,
+    ),
     await stackdCheck(),
     await crashReportingCheck(config),
     await commandCheck("git", ["git", "--version"], "git"),

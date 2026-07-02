@@ -2926,7 +2926,7 @@ function environmentSwitcherLines(config: StackConfig, state: AppState): string[
 function environmentOptionLine(config: StackConfig, state: AppState, environmentName: StackEnvironmentName): string {
   const isCurrent = config.environmentName === environmentName
   const environment = config.environments[environmentName]
-  const authStatus = environmentAuthStatus(environment).hasAuth ? "key ok" : `needs ${environment.authEnv}`
+  const authStatus = environmentAuthStatus(environment).hasAuth ? "key ok" : "local ok signin"
   const accountStatus = isCurrent ? state.remoteAccountSnapshot.status : "—"
   return `${isCurrent ? ">" : " "} ${environmentName.padEnd(7)} ${environment.label.padEnd(8)} ${authStatus.padEnd(14)} ${accountStatus}`
 }
@@ -7046,7 +7046,7 @@ function statusLine(options: StackAppOptions, state: AppState): string {
     `auth=${options.config.codexAuthPlan}`,
     `effort=${options.config.codexReasoningEffort}`,
     `env=${options.config.environmentName}`,
-    `account=${state.remoteAccountSnapshot.status}`,
+    `synth=${synthHeaderAuthLabel(state.remoteAccountSnapshot)}`,
     `codex=${options.config.codexCommand} ${options.config.codexArgs.join(" ")}`,
     `bridge=${state.liveOpsMode}`,
     `bridge_tool=${bridgeStatusToolName(state)}`,
@@ -7193,6 +7193,21 @@ function stackMcpStatusLabel(config: StackConfig): string {
   const auth = environmentAuthStatus(config.environment)
   if (!auth.hasAuth) return `needs ${auth.authEnv}`
   return `env ${config.environmentName}`
+}
+
+function synthHeaderAuthLabel(snapshot: RemoteAccountSnapshot): string {
+  switch (snapshot.status) {
+    case "connected":
+      return snapshot.userEmail ? `connected ${inlineText(snapshot.userEmail, 24)}` : "connected"
+    case "invalid-auth":
+      return "auth rejected"
+    case "offline":
+      return snapshot.hasAuth ? "api offline" : "connect optional"
+    case "missing-auth":
+      return "connect optional"
+    case "unknown":
+      return snapshot.hasAuth ? "checking" : "connect optional"
+  }
 }
 
 function bridgeStatusToolName(state: AppState): string {
