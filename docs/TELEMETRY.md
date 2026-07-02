@@ -87,9 +87,11 @@ non-allowlisted payload fields, rejects object/array payload values, and writes
 to `.stack/telemetry/events.jsonl` only when the tier gate permits it.
 
 `POST /telemetry/flush` reads unsent local outbox rows, posts one consolidated
-payload to `STACK_TELEMETRY_ENDPOINT`, and appends sent event ids to
-`.stack/telemetry/events.sent.jsonl`. If no endpoint is configured, it reports
-pending rows without sending.
+payload to the Stack usage-ingestion endpoint, and appends sent event ids to
+`.stack/telemetry/events.sent.jsonl`. By default stackd sends to
+`https://api.usesynth.ai/api/v1/product/stack-usage-events`. Override with
+`STACK_TELEMETRY_ENDPOINT`, or set `STACK_TELEMETRY_API_BASE_URL` /
+`STACK_TELEMETRY_ENVIRONMENT` for staging/dev proof paths.
 
 The Synth backend accepts flushed local usage rows at
 `POST /api/v1/product/stack-usage-events`; the Stack funnel rollup reads them at
@@ -117,7 +119,8 @@ Hash ids before sending. Keep raw ids in local evidence only.
 
 Development proof can isolate the outbox with `STACK_TELEMETRY_OUTBOX=<path>`
 and the sent cursor with `STACK_TELEMETRY_SENT_CURSOR=<path>`. Configure upload
-with `STACK_TELEMETRY_ENDPOINT=<url>`.
+with `STACK_TELEMETRY_ENDPOINT=<url>` or route by base URL/environment using the
+override envs above.
 The Nightly 1 payload contract for public acquisition events is documented in
 [`GROWTH_INGESTION.md`](GROWTH_INGESTION.md) and validated by
 `make smoke-growth-ingestion`.
