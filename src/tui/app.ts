@@ -202,6 +202,7 @@ import {
   sendRemoteFactoryMessage,
   sendRemoteRunMessage,
   uploadRemoteRunFile,
+  wakeRemoteFactoryDue,
   type RemoteActionKind,
   type RemoteActionResult,
   type RemoteDownloadRecord,
@@ -8837,7 +8838,7 @@ async function handleRemoteKey(
     return
   }
   if (key.name === "w") {
-    setPendingRemoteAction(state, "preview-factory-wake")
+    setPendingRemoteAction(state, "wake-factory")
     refresh()
     return
   }
@@ -9290,6 +9291,10 @@ async function executeRemoteActionResult(
       return context.factory
         ? await previewRemoteFactoryWakeDue(options.config, context.factory)
         : { ok: false, status: 0, message: "no factory selected" }
+    case "wake-factory":
+      return context.factory
+        ? await wakeRemoteFactoryDue(options.config, context.factory)
+        : { ok: false, status: 0, message: "no factory selected" }
     case "pause-run":
     case "resume-run":
     case "stop-run":
@@ -9344,6 +9349,28 @@ async function recordRemoteTuiLeverEvent(
           status: context.result.status,
           message: context.result.message,
           body_preview: context.draft.slice(0, 160),
+        },
+      })
+      return
+    case "wake-factory":
+      if (!context.factory) return
+      await recordTuiRuntimeLeverEvent({
+        event_type: "lever.remote_factory.wake_requested",
+        source: "lever.stack_tui",
+        subject: { kind: "remote_factory", id: context.factory.factoryId },
+        correlation: {
+          factory_id: context.factory.factoryId,
+          project_id: context.factory.canonicalProjectId ?? context.factory.latestProjectId,
+        },
+        payload: {
+          environment: config.environmentName,
+          api_base_url: config.environment.apiBaseUrl,
+          action,
+          dry_run: false,
+          ok: context.result.ok,
+          status: context.result.status,
+          message: context.result.message,
+          factory_name: context.factory.name,
         },
       })
       return
@@ -9446,6 +9473,8 @@ function remoteActionLabel(action: LiveActionKind): string {
       return "stop selected run"
     case "preview-factory-wake":
       return "preview factory wake-due"
+    case "wake-factory":
+      return "wake selected factory"
     case "download-output":
       return "download selected output"
     case "preview-output":

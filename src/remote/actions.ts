@@ -9,6 +9,7 @@ export type RemoteActionKind =
   | "resume-run"
   | "stop-run"
   | "preview-factory-wake"
+  | "wake-factory"
   | "preview-output"
   | "preview-download"
   | "download-output"
@@ -220,6 +221,18 @@ export async function previewRemoteFactoryWakeDue(
 ): Promise<RemoteActionResult> {
   return postRemote(config, `/smr/factories/${encodeURIComponent(factory.factoryId)}/wake-due`, {
     dry_run: true,
+    limit: 10,
+    allow_overlap: false,
+    continue_on_error: true,
+  })
+}
+
+export async function wakeRemoteFactoryDue(
+  config: StackConfig,
+  factory: RemoteFactorySummary,
+): Promise<RemoteActionResult> {
+  return postRemote(config, `/smr/factories/${encodeURIComponent(factory.factoryId)}/wake-due`, {
+    dry_run: false,
     limit: 10,
     allow_overlap: false,
     continue_on_error: true,
