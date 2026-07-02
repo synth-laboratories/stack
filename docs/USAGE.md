@@ -642,16 +642,20 @@ The catalog has two lanes when the backend route is deployed:
 | Free aux | `/api/v1/stack-aux/openai/v1/responses` | monitor, gardener, remote gardener, aux |
 | Billed GLM | `/api/v1/stack-inference/openai/v1/responses` | monitor, gardener, remote gardener; worker only with explicit opt-in |
 
-Monitor profiles are opt-in:
+Monitor and gardener Synth profiles are opt-in:
 
 ```bash
 STACK_AUX_INFERENCE=1 STACK_MONITOR_PROFILE=free-aux stack
 STACK_SYNTH_INFERENCE=1 STACK_MONITOR_PROFILE=billed-glm stack
+STACK_AUX_INFERENCE=1 STACK_GARDENER_PROFILE=free-aux stack
+STACK_SYNTH_INFERENCE=1 STACK_GARDENER_PROFILE=billed-glm stack
 ```
 
 If a selected Synth monitor route is unavailable, Stack falls back to the Codex
-app-server monitor and records a visible fallback notice. Usage views show
-spend/budget summaries only; they do not include prompts or transcripts.
+app-server monitor and records a visible fallback notice. A selected Synth
+gardener profile fails visibly instead of silently switching providers. Usage
+views show spend/budget summaries only; they do not include prompts or
+transcripts.
 
 Optional: install [synth-optimizers](https://pypi.org/project/synth-optimizers/) for local GEPA.
 Advanced Synth monorepo eval wrappers are optional — set `STACK_SYNTH_DEV_ROOT` and

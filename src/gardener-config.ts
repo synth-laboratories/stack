@@ -425,6 +425,16 @@ function normalizeGeneratedPrompt(prompt: string): string {
 function assertGardenerProviderSupported(config: StackGardenerConfig): void {
   const provider = config.model.provider.trim().toLowerCase()
   if (provider === "openai" || provider === "codex") return
+  if (provider === "synth_aux") {
+    const enabled = ["1", "true", "yes", "on"].includes((process.env.STACK_AUX_INFERENCE ?? "").trim().toLowerCase())
+    if (enabled) return
+    throw new Error("gardener provider 'synth_aux' requires STACK_AUX_INFERENCE=1; default gardener remains Codex app-server")
+  }
+  if (provider === "synth_inference") {
+    const enabled = ["1", "true", "yes", "on"].includes((process.env.STACK_SYNTH_INFERENCE ?? "").trim().toLowerCase())
+    if (enabled) return
+    throw new Error("gardener provider 'synth_inference' requires STACK_SYNTH_INFERENCE=1; default gardener remains Codex app-server")
+  }
   throw new Error(
     `gardener model provider '${config.model.provider}' is not executable yet; Stack currently runs gardener through Codex app-server. Use stack_inference_catalog for catalog visibility, and do not configure Synth inference profiles until the direct execution path lands.`,
   )

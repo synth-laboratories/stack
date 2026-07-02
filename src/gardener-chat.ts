@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto"
 import { join } from "node:path"
 import { runCodexTurn } from "./codex/app-server-session.js"
 import type { StackConfig } from "./config.js"
@@ -16,6 +17,7 @@ import {
   type StackLocalSession,
   type StackSessionSummary,
 } from "./session.js"
+import { runSynthResponsesTurn } from "./synth-responses.js"
 import { blocksFromTurnStdout } from "./tui/transcript.js"
 import { resolveThreadDisplayLabel } from "./thread-display-name.js"
 
@@ -33,8 +35,23 @@ export async function runGardenerChatTurn(input: GardenerChatTurnInput): Promise
   const sessionPath = join(input.config.sessionLogDir, `${input.gardenerThreadId}.json`)
   const gardenerSession = await readSessionLog(sessionPath)
 
-  const workerHarness = snapshotWorkerHarness(input.config)
   const gardenerConfig = loadGardenerConfig(input.config.stackDataRoot)
+  const synthProvider = synthGardenerProvider(gardenerConfig)
+  if (synthProvider) {
+    const turn = await runSynthGardenerChatTurn(input, gardenerConfig, synthProvider)
+    gardenerSession.turns.push(turn)
+    await writeSessionLog(gardenerSession, input.config.sessionLogDir, {
+      codexModel: gardenerConfig.model.model,
+      pricingRows: input.config.codexPricing,
+    })
+    const response = turn.stdout.trim()
+    if (response) {
+      appendGardenerChatMessage(input.config.stackDataRoot, input.gardenerThreadId, "gardener", response)
+    }
+    return response || undefined
+  }
+
+  const workerHarness = snapshotWorkerHarness(input.config)
   applyGardenerHarnessToConfig(input.config, gardenerConfig)
   try {
     const turn = await runCodexTurn({
@@ -59,10 +76,63 @@ export async function runGardenerChatTurn(input: GardenerChatTurnInput): Promise
   }
 }
 
+async function runSynthGardenerChatTurn(
+  input: GardenerChatTurnInput,
+  gardenerConfig: StackGardenerConfig,
+  synthProvider: "synth_aux" | "synth_inference",
+): Promise<StackCodexTurn> {
+  const startedAt = new Date().toISOString()
+  const prompt = await buildGardenerChatPrompt(input.userMessage, input, gardenerConfig, { directSynth: true })
+  const result = await runSynthResponsesTurn({
+    stackConfig: input.config,
+    route: synthProvider === "synth_aux"
+      ? "/api/v1/stack-aux/openai/v1/responses"
+      : "/api/v1/stack-inference/openai/v1/responses",
+    authError: `Synth gardener requires ${input.config.environment.authEnv}; local worker remains Codex/BYOK`,
+    roleHeader: "gardener",
+    model: gardenerConfig.model.model,
+    prompt,
+    maxOutputTokens: 900,
+    metadata: {
+      thread_id: input.gardenerThreadId,
+      stack_thread_id: input.gardenerThreadId,
+      actor_role: "gardener",
+      actor_id: gardenerConfig.id,
+      worker_thread_id: input.workerSession.id,
+      worker_target_id: input.workerTargetId,
+      source: "stack_gardener",
+    },
+    timeoutEnv: synthProvider === "synth_aux"
+      ? "STACK_GARDENER_SYNTH_AUX_TIMEOUT_MS"
+      : "STACK_GARDENER_SYNTH_INFERENCE_TIMEOUT_MS",
+    defaultTimeoutMs: synthProvider === "synth_aux" ? 120_000 : 180_000,
+    failurePrefix: synthProvider === "synth_aux"
+      ? "Synth aux gardener request failed"
+      : "Synth inference gardener request failed",
+  })
+  const response = result.assistantText?.trim()
+  if (!response) {
+    throw new Error("Synth gardener completed without an assistant message")
+  }
+  input.onOutput?.(`${response}\n`)
+  return {
+    id: randomUUID(),
+    prompt,
+    selectedPaths: [],
+    startedAt,
+    finishedAt: new Date().toISOString(),
+    exitCode: 0,
+    usage: result.usage,
+    stdout: response,
+    stderr: "",
+  }
+}
+
 async function buildGardenerChatPrompt(
   message: string,
   input: GardenerChatTurnInput,
   gardenerConfig: StackGardenerConfig,
+  options?: { directSynth?: boolean },
 ): Promise<string> {
   const workers = (input.workerSummaries ?? [])
     .filter((summary) => summary.id !== input.gardenerThreadId)
@@ -76,6 +146,11 @@ async function buildGardenerChatPrompt(
   const metaThreadLines = await liveMetaThreadLines(input.config.stackDataRoot)
   return [
     systemPrompt,
+    ...(options?.directSynth
+      ? [
+          "Runtime note: this gardener turn is running through direct Synth Responses chat, not the Codex app-server. Do not claim to call tools, mutate Stack state, or dispatch workers. Explicit route, steer, queue, skill register, and skill suggest commands are handled by Stack before this prompt.",
+        ]
+      : []),
     ...(target ? [`Default worker target for explicit routing: ${target}`] : []),
     ...(workerLines.length > 0 ? ["Live worker threads:", ...workerLines] : []),
     ...(metaThreadLines.length > 0 ? ["Live meta-threads:", ...metaThreadLines] : []),
@@ -83,6 +158,12 @@ async function buildGardenerChatPrompt(
     "Operator message:",
     message,
   ].join("\n")
+}
+
+function synthGardenerProvider(config: StackGardenerConfig): "synth_aux" | "synth_inference" | undefined {
+  const provider = config.model.provider.trim().toLowerCase()
+  if (provider === "synth_aux" || provider === "synth_inference") return provider
+  return undefined
 }
 
 async function liveMetaThreadLines(stackDataRoot: string): Promise<string[]> {
