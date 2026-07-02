@@ -5720,7 +5720,31 @@ function globalConnectionBar(
         flexGrow: 1,
         gap: 0,
       },
-      Text({ content: connection.label, fg: connection.fg }),
+      Text({
+        content: ` ${oneLine(connection.label, Math.max(24, columns - 32))} `,
+        fg: accountSelected ? theme.fgOnAccent : connection.fg,
+        bg: accountSelected ? theme.bgChipActive : theme.bgSubtle,
+        onMouseDown(event) {
+          event.preventDefault?.()
+          event.stopPropagation?.()
+          state.focusMode = "account"
+          refresh()
+        },
+      }),
+      ...(connection.detail
+        ? [
+            Text({
+              content: oneLine(connection.detail, Math.max(28, columns - 32)),
+              fg: connection.detailFg ?? theme.fgMuted,
+              onMouseDown(event) {
+                event.preventDefault?.()
+                event.stopPropagation?.()
+                state.focusMode = "account"
+                refresh()
+              },
+            }),
+          ]
+        : []),
       Text({
         content: accountLabel,
         fg: accountSelected ? theme.fgPrimary : theme.fgMuted,
@@ -5820,28 +5844,48 @@ function environmentChip(
 function synthConnectionBadge(
   config: StackConfig,
   state: AppState,
-): { label: string; fg: string } {
+): { label: string; detail?: string; fg: string; detailFg?: string } {
   const env = config.environment.label
   const auth = environmentAuthStatus(config.environment)
   const snap = state.remoteAccountSnapshot
   const hint = snap.keyHint
 
   if (!auth.hasAuth) {
-    return { label: `○ ${env} · connect`, fg: theme.synth.amber }
+    return {
+      label: "○ Local ready · Sign in to Synth for cloud",
+      detail: `Synth ${env} · stack auth open signin`,
+      fg: theme.synth.amber,
+      detailFg: theme.fgMuted,
+    }
   }
   if (snap.status === "invalid-auth") {
-    return { label: `○ ${env} · bad key`, fg: theme.synth.red }
+    return {
+      label: `○ Synth ${env} · auth rejected`,
+      detail: "Local ready · refresh the Synth key for cloud",
+      fg: theme.synth.red,
+      detailFg: theme.fgMuted,
+    }
   }
   if (snap.status === "missing-auth") {
-    return { label: `○ ${env} · connect`, fg: theme.synth.amber }
+    return {
+      label: "○ Local ready · Sign in to Synth for cloud",
+      detail: `Synth ${env} · stack auth open signin`,
+      fg: theme.synth.amber,
+      detailFg: theme.fgMuted,
+    }
   }
   if (snap.status === "offline") {
-    return { label: `◐ ${env} · ${hint ?? "key"} offline`, fg: theme.synth.amber }
+    return {
+      label: `◐ Synth ${env} · ${hint ?? "key"} offline`,
+      detail: "Local ready · cloud sync waits for API",
+      fg: theme.synth.amber,
+      detailFg: theme.fgMuted,
+    }
   }
   if (snap.status === "connected") {
-    return { label: `● ${env} · ${hint ?? "key"}`, fg: theme.synth.gold }
+    return { label: `● Synth ${env} · ${hint ?? "key"}`, fg: theme.synth.gold }
   }
-  return { label: `◐ ${env} · ${hint ?? "key"}`, fg: theme.synth.warmMuted }
+  return { label: `◐ Synth ${env} · ${hint ?? "key"}`, fg: theme.synth.warmMuted }
 }
 
 async function applyStackEnvironment(

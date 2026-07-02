@@ -251,8 +251,8 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
     lines.push(`  ${oneLine(account.message, 52)}`)
   }
   if (usage.status === "missing-auth") {
-    lines.push("  Local ready · stack auth open signin for cloud")
-    lines.push("  Synth inference catalog unlocks with sign-in; worker stays Codex")
+    lines.push("  Local ready · Sign in to Synth for cloud")
+    lines.push("  stack auth open signin · worker stays Codex")
     return lines
   }
   if (usage.status === "offline") {
@@ -573,7 +573,9 @@ function formatProjectExperiments7d(project: RemoteProjectsPanelSnapshot["projec
 function projectsBody(snapshot: RemoteProjectsPanelSnapshot): string[] {
   const syncLines = remoteSyncLines(snapshot)
   if (snapshot.projects.length === 0) {
-    if (snapshot.status === "missing-auth") return [...syncLines, "  Local ready · stack auth open signin for cloud"]
+    if (snapshot.status === "missing-auth") {
+      return [...syncLines, "  Local ready · Sign in to Synth for cloud", "  stack auth open signin"]
+    }
     if (snapshot.status === "offline") return [...syncLines, "  start dev slot (see Setup above)"]
     if (snapshot.tagScope) return [...syncLines, "  (no live projects)", "", ...orgWideTagLines(snapshot.tagScope)]
     return [...syncLines, "  (no live projects)"]
@@ -716,7 +718,7 @@ function hostedHeader(snapshot: HostedOptimizerSnapshot): string {
 
 function hostedBody(snapshot: HostedOptimizerSnapshot, focus: OpsPanelFocus): string[] {
   if (snapshot.runs.length === 0) {
-    if (snapshot.status === "missing-auth") return ["  Local ready · stack auth open signin for hosted jobs"]
+    if (snapshot.status === "missing-auth") return ["  Local ready · Sign in to Synth for hosted jobs", "  stack auth open signin"]
     return ["  (no hosted optimizer jobs)"]
   }
   const lines = snapshot.runs.slice(0, 6).map((run, index) => {
@@ -755,7 +757,7 @@ function containersHeader(snapshot: ContainersPanelSnapshot): string {
 
 function containersBody(snapshot: ContainersPanelSnapshot): string[] {
   if (snapshot.containers.length === 0) {
-    if (snapshot.status === "missing-auth") return ["  Local ready · stack auth open signin for containers"]
+    if (snapshot.status === "missing-auth") return ["  Local ready · Sign in to Synth for containers", "  stack auth open signin"]
     if (snapshot.status === "offline") return ["  API offline — start dev slot or check /v1/containers"]
     return ["  (no containers) · synth-ai containers create …"]
   }

@@ -84,7 +84,7 @@ function runAge(run: { updatedAt?: string; createdAt?: string; finishedAt?: stri
 }
 
 function emptyProjectsLine(snapshot: RemoteProjectsPanelSnapshot): string {
-  if (snapshot.status === "missing-auth") return "Local ready · stack auth open signin for cloud"
+  if (snapshot.status === "missing-auth") return "Local ready · Sign in to Synth for cloud"
   if (snapshot.status === "offline") return "dev API offline — start slot1"
   return "(no live projects)"
 }

@@ -301,7 +301,7 @@ function runRecency(run: RemoteSmrRunSummary): number {
 }
 
 function emptyProjectsLine(snapshot: RemoteProjectsPanelSnapshot): string {
-  if (snapshot.status === "missing-auth") return "(Local ready · connect cloud)"
+  if (snapshot.status === "missing-auth") return "(Local ready · Sign in for cloud)"
   if (snapshot.status === "offline") return "(API offline)"
   return "(no live projects)"
 }
