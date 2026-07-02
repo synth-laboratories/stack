@@ -206,12 +206,14 @@ export async function submitHostedGepaRun(
   })
   const combined = `${result.stdout}\n${result.stderr}`
   const runId = readSubmittedRunId(combined)
+  const stdout = redactHostedOptimizerText(result.stdout)
+  const stderr = redactHostedOptimizerText(result.stderr)
   const ok = result.exitCode === 0 && !result.timedOut
   const message = ok
     ? `submitted hosted GEPA${runId ? ` run ${runId}` : ""}`
     : result.timedOut
       ? `hosted GEPA submit timed out after ${timeoutSeconds}s`
-      : result.stderr.trim().split(/\r?\n/).find((line) => line.trim().length > 0) ??
+      : stderr.trim().split(/\r?\n/).find((line) => line.trim().length > 0) ??
         `hosted GEPA submit exited ${result.exitCode ?? "unknown"}`
 
   return {
@@ -226,8 +228,8 @@ export async function submitHostedGepaRun(
     exitCode: result.exitCode,
     signal: result.signal,
     timedOut: result.timedOut,
-    stdout: result.stdout,
-    stderr: result.stderr,
+    stdout,
+    stderr,
     submittedAt,
     finishedAt: new Date().toISOString(),
   }
@@ -563,6 +565,19 @@ function readSubmittedRunId(text: string): string | undefined {
   if (jsonStyle?.[1]) return jsonStyle[1]
   const loose = /\brun_id[=\s:]+([A-Za-z0-9._:-]+)/.exec(text)
   return loose?.[1]
+}
+
+function redactHostedOptimizerText(value: string): string {
+  let redacted = value.replace(
+    /https?:\/\/[^\s"']*(?:AWSAccessKeyId|X-Amz-Credential|X-Amz-Signature|Signature)=[^\s"']*/g,
+    "<signed-url-redacted>",
+  )
+  for (const field of ["account_id", "account_email", "account_label", "registered_account_id", "registered_account_label"]) {
+    redacted = redacted.replace(new RegExp(`("${field}"\\s*:\\s*)"[^"]*"`, "g"), `$1"<redacted>"`)
+  }
+  redacted = redacted.replace(/("active_actor_claim_refs"\s*:\s*)\[[^\]]*\]/g, `$1[]`)
+  redacted = redacted.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "<email-redacted>")
+  return redacted
 }
 
 function runCommandTail(
