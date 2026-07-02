@@ -928,6 +928,91 @@ export class StackMcpServer {
     }) ?? null
   }
 
+  async recordRemoteGardenerPass(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const actorRole = optionalString(args, "actor_role") ?? "remote_gardener"
+    if (actorRole !== "remote_gardener" && actorRole !== "gardener" && actorRole !== "operator") {
+      throw new RpcError(-32602, "actor_role must be remote_gardener, gardener, or operator")
+    }
+    const actorId = optionalString(args, "actor_id") ?? actorRole
+    const threadId = optionalString(args, "thread_id")
+    const metaThreadId = optionalString(args, "meta_thread_id")
+    const projectId = optionalString(args, "project_id")
+    const runId = optionalString(args, "run_id")
+    const factoryId = optionalString(args, "factory_id")
+    const deploymentId = optionalString(args, "deployment_id")
+    const tick = optionalBoolean(args, "tick") ?? false
+    const runtime = tick
+      ? await stackdRuntimeTick().catch(errorToRuntimeUnavailable)
+      : await readStackRuntimeFactory()
+    const pass = remoteGardenerPassDigest(runtime, config, optionalString(args, "note"))
+    const subject = remoteGardenerPassSubject({
+      actorId,
+      projectId,
+      runId,
+      factoryId,
+      deploymentId,
+      metaThreadId,
+    })
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.remote_gardener.pass_recorded",
+      source: "lever.remote_gardener",
+      subject,
+      correlation: {
+        stack_session_id: threadId ?? undefined,
+        project_id: projectId ?? undefined,
+        run_id: runId ?? undefined,
+        factory_id: factoryId ?? undefined,
+        deployment_id: deploymentId ?? undefined,
+      },
+      payload: {
+        environment: pass.environment,
+        api_base_url: pass.api_base_url,
+        actor_role: actorRole,
+        actor_id: actorId,
+        thread_id: threadId ?? null,
+        meta_thread_id: metaThreadId ?? null,
+        project_id: projectId ?? null,
+        run_id: runId ?? null,
+        factory_id: factoryId ?? null,
+        deployment_id: deploymentId ?? null,
+        tick,
+        pass,
+        source: "stack_remote_gardener_pass",
+      },
+    })
+    let threadEvent: Record<string, unknown> | null = null
+    if (threadId) {
+      const event = {
+        event_id: stackEventId("remote_gardener_pass"),
+        type: "remote_gardener.sync_narrated",
+        thread_id: threadId,
+        observed_at: new Date().toISOString(),
+        actor_id: actorId,
+        actor_role: threadActorRole(actorRole),
+        meta_thread_id: metaThreadId,
+        payload: {
+          ...pass,
+          runtime_event: runtimeEvent,
+          source: "stack_remote_gardener_pass",
+        },
+      }
+      const path = appendThreadMetaEvent(config.stackDataRoot, event)
+      threadEvent = {
+        event_id: event.event_id,
+        event_type: event.type,
+        thread_event_log_path: path,
+      }
+    }
+    return toJsonValue({
+      ok: runtimeEvent.ok,
+      receipt: "lever.remote_gardener.pass_recorded",
+      pass,
+      runtime_event: runtimeEvent,
+      thread_event: threadEvent,
+    }) ?? null
+  }
+
   async getCloudLaunch(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const runId = requiredString(args, "run_id")
@@ -1980,6 +2065,137 @@ function remoteSyncSubject(input: {
   return { kind: "remote_sync_request", id: input.intent }
 }
 
+function remoteGardenerPassSubject(input: {
+  actorId: string
+  projectId?: string
+  runId?: string
+  factoryId?: string
+  deploymentId?: string
+  metaThreadId?: string
+}): { kind: string; id: string } {
+  if (input.deploymentId) return { kind: "remote_deployment", id: input.deploymentId }
+  if (input.factoryId) return { kind: "remote_factory", id: input.factoryId }
+  if (input.runId) return { kind: "remote_smr_run", id: input.runId }
+  if (input.projectId) return { kind: "remote_project", id: input.projectId }
+  if (input.metaThreadId) return { kind: "meta_thread", id: input.metaThreadId }
+  return { kind: "remote_gardener_pass", id: input.actorId }
+}
+
+function remoteGardenerPassDigest(
+  runtime: { status?: string; events_appended?: number | null; snapshot?: unknown } | undefined,
+  config: StackConfig,
+  note?: string,
+): JsonObject {
+  const rawSnapshot = runtime?.snapshot
+  const snapshot = rawSnapshot && typeof rawSnapshot === "object" && !Array.isArray(rawSnapshot)
+    ? rawSnapshot as StackdFactorySnapshot
+    : undefined
+  const remote = snapshot?.remote_synth
+  const runtimeEnvironment = remote
+    ? runtimeRemoteEnvironment(remote, config)
+    : { environmentName: config.environmentName, apiBaseUrl: config.environment.apiBaseUrl }
+  const deployments = remote?.deployments ?? []
+  const activeRun = remote?.runs.find((run) => !run.terminal) ?? remote?.runs[0]
+  const activeFactory = remote?.factories.find((factory) => factory.is_running) ?? remote?.factories[0]
+  const activeOptimizer = remote?.hosted_optimizers.find((run) => !run.terminal) ?? remote?.hosted_optimizers[0]
+  const degradedDeployment = deployments.find((deployment) =>
+    Boolean(deployment.degraded_reason) || (deployment.status ?? "").toLowerCase().includes("degrad")
+  )
+  const counts = {
+    projects: remote?.active_project_count ?? remote?.projects.length ?? 0,
+    smr_runs: remote?.active_run_count ?? remote?.runs.length ?? 0,
+    factories: remote?.active_factory_count ?? remote?.factories.length ?? 0,
+    hosted_optimizers: remote?.active_hosted_optimizer_count ?? remote?.hosted_optimizers.length ?? 0,
+    deployments: remote?.deployment_count ?? deployments.length,
+    degraded_deployments: remote?.degraded_deployment_count ?? (degradedDeployment ? 1 : 0),
+  }
+  const selected = {
+    project_id: remote?.projects[0]?.project_id ?? null,
+    run_id: activeRun?.run_id ?? null,
+    factory_id: activeFactory?.factory_id ?? null,
+    deployment_id: degradedDeployment?.deployment_id ?? deployments[0]?.deployment_id ?? null,
+    hosted_optimizer_run_id: activeOptimizer?.run_id ?? null,
+  }
+  const trimmedNote = note?.trim()
+  const narration = trimmedNote
+    ? trimmedNote.slice(0, 800)
+    : remoteGardenerGeneratedNarration({
+        runtimeStatus: runtime?.status ?? "unavailable",
+        environment: runtimeEnvironment.environmentName,
+        authStatus: remote?.auth_status ?? "unknown",
+        syncEnabled: remote?.sync_enabled ?? false,
+        counts,
+      })
+  return toJsonValue({
+    schema: "stack.remote_gardener.pass.v1",
+    environment: runtimeEnvironment.environmentName,
+    api_base_url: runtimeEnvironment.apiBaseUrl,
+    runtime_status: runtime?.status ?? "unavailable",
+    events_appended: runtime?.events_appended ?? null,
+    auth_status: remote?.auth_status ?? "unknown",
+    sync_enabled: remote?.sync_enabled ?? false,
+    control_state: snapshot?.control_state ?? "unknown",
+    last_ok_at: remote?.last_ok_at ?? null,
+    counts,
+    selected,
+    narration,
+    next_action: remoteGardenerNextAction({
+      runtimeStatus: runtime?.status ?? "unavailable",
+      authStatus: remote?.auth_status ?? "unknown",
+      syncEnabled: remote?.sync_enabled ?? false,
+      counts,
+    }),
+  }) as JsonObject
+}
+
+function remoteGardenerGeneratedNarration(input: {
+  runtimeStatus: string
+  environment: string
+  authStatus: string
+  syncEnabled: boolean
+  counts: {
+    projects: number
+    smr_runs: number
+    factories: number
+    hosted_optimizers: number
+    deployments: number
+    degraded_deployments: number
+  }
+}): string {
+  if (input.runtimeStatus === "unavailable") {
+    return "Remote runtime snapshot is unavailable; keep local work local and start stackd before cloud sync."
+  }
+  if (!input.syncEnabled || input.authStatus === "missing") {
+    return `Remote Synth is signed out for ${input.environment}; local Stack remains ready, and cloud sync waits for an optional sign-in.`
+  }
+  if (input.counts.degraded_deployments > 0) {
+    return `Remote ${input.environment} has ${input.counts.degraded_deployments} degraded deployment signal(s); inspect deployment status before push/pull actions.`
+  }
+  if (input.counts.smr_runs > 0 || input.counts.factories > 0 || input.counts.hosted_optimizers > 0) {
+    return `Remote ${input.environment} has ${input.counts.smr_runs} SMR run(s), ${input.counts.factories} Factory row(s), and ${input.counts.hosted_optimizers} hosted optimizer row(s) in the runtime snapshot.`
+  }
+  return `Remote ${input.environment} is connected but has no active hosted work in the runtime snapshot.`
+}
+
+function remoteGardenerNextAction(input: {
+  runtimeStatus: string
+  authStatus: string
+  syncEnabled: boolean
+  counts: { smr_runs: number; factories: number; degraded_deployments: number }
+}): string {
+  if (input.runtimeStatus === "unavailable") return "start stackd or rerun with tick=true before claiming sync state"
+  if (!input.syncEnabled || input.authStatus === "missing") return "sign in only if cloud sync is needed; local paths remain available"
+  if (input.counts.degraded_deployments > 0) return "inspect deployments and open Ops only if operator review is useful"
+  if (input.counts.smr_runs > 0 || input.counts.factories > 0) return "inspect the focused remote rows, then record push/pull requests with concrete ids"
+  return "prepare a promotion packet only when local proof is ready to graduate"
+}
+
+function threadActorRole(actorRole: string): "gardener" | "remote_gardener" | "system" {
+  if (actorRole === "remote_gardener") return "remote_gardener"
+  if (actorRole === "gardener") return "gardener"
+  return "system"
+}
+
 function remoteLaunchRunId(result: RemoteActionResult): string | undefined {
   const data = result.data
   if (!data) return undefined
@@ -2491,6 +2707,27 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["direction", "intent"],
       ),
       handler: (args) => server.requestRemoteSync(args),
+    },
+    {
+      name: "stack_remote_gardener_pass",
+      description:
+        "Record a remote gardener sync narration pass from the stackd runtime snapshot. Optionally emits a local thread event and always records a runtime receipt; this does not mutate cloud state.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          tick: { type: "boolean", description: "If true, request one stackd /runtime/tick before narrating sync state." },
+          thread_id: stringProperty("Optional local Stack thread/session id; when present, writes remote_gardener.sync_narrated to that thread log."),
+          meta_thread_id: stringProperty("Optional local Stack meta-thread id for correlation."),
+          project_id: stringProperty("Optional Synth project id to correlate this pass."),
+          run_id: stringProperty("Optional SMR run id to correlate this pass."),
+          factory_id: stringProperty("Optional Factory id to correlate this pass."),
+          deployment_id: stringProperty("Optional cloud deployment id to correlate this pass."),
+          note: stringProperty("Optional bounded narration. If omitted, Stack generates one from the runtime snapshot."),
+          actor_id: stringProperty("Optional actor id. Defaults to actor_role."),
+          actor_role: enumProperty(["remote_gardener", "gardener", "operator"], "Actor role. Defaults to remote_gardener."),
+        },
+      ),
+      handler: (args) => server.recordRemoteGardenerPass(args),
     },
     {
       name: "stack_get_cloud_launch",
