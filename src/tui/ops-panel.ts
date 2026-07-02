@@ -20,6 +20,8 @@ export type OpsPanelAgentUsage = {
   codexBudget?: string
 }
 
+type UsageBreakdownRows = NonNullable<RemoteUsageSnapshot["usageBreakdown"]>["byProject"]
+
 export type RightPanelMode = "hosted" | "local" | "actors"
 
 export type OpsPanelFocus = {
@@ -269,6 +271,8 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
   const stackAuxBudget = formatStackAuxBudgetLine(usage)
   if (stackAuxBudget) lines.push(stackAuxBudget)
   lines.push("  worker Codex by default; Synth inference opt-in only")
+  const inferenceLine = formatInferenceUsageLine(usage)
+  if (inferenceLine) lines.push(inferenceLine)
 
   lines.push(...formatAllowanceSummaryLines(usage.allowanceWindows))
 
@@ -283,6 +287,10 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
     spendParts.push(`30d charged ${formatUsd(usage.spend30dUsd)}`)
   }
   if (spendParts.length > 0) lines.push(`  ${oneLine(spendParts.join(" · "), 52)}`)
+  const topProject = formatTopUsageLine("top project", usage.usageBreakdown?.byProject)
+  if (topProject) lines.push(topProject)
+  const topActor = formatTopUsageLine("top actor", usage.usageBreakdown?.byActor)
+  if (topActor) lines.push(topActor)
 
   if (lines.length === 0) lines.push("  (no billing data)")
   return lines
@@ -308,6 +316,8 @@ export function subscriptionPanelLines(
   if (usage.usage7dUsd !== undefined && usage.usage7dUsd > 0) {
     lines.push(`  usage 7d ${formatUsd(usage.usage7dUsd)}`)
   }
+  const inferenceLine = formatInferenceUsageLine(usage)
+  if (inferenceLine) lines.push(inferenceLine)
   const breakdown = usage.usageBreakdown?.byType ?? []
   if (breakdown.length > 0) {
     lines.push("", "Usage by type (7d)")
@@ -315,6 +325,10 @@ export function subscriptionPanelLines(
       lines.push(`  ${row.label} ${formatUsd(row.costUsd)}`)
     }
   }
+  const topProjectLines = formatTopUsageSection("Top projects (7d)", usage.usageBreakdown?.byProject)
+  if (topProjectLines.length > 0) lines.push("", ...topProjectLines)
+  const topActorLines = formatTopUsageSection("Top actors (7d)", usage.usageBreakdown?.byActor)
+  if (topActorLines.length > 0) lines.push("", ...topActorLines)
   lines.push("", "Local agent")
   if (
     agentUsage.codexEmail &&
@@ -373,6 +387,28 @@ function formatStackAuxBudgetLine(usage: RemoteUsageSnapshot): string | undefine
     ? ""
     : ` · reset ${formatDuration(budget.orgDaily.resetsInSeconds)}`
   return `  Synth ${model} · ${oneLine(`${synthWide} · ${orgDaily}${reset}`, 50)}`
+}
+
+function formatInferenceUsageLine(usage: RemoteUsageSnapshot): string | undefined {
+  const inference = usage.usageBreakdown?.byType.find((row) => row.label.toLowerCase() === "inference")?.costUsd
+  const value = inference ?? usage.usage7dUsd
+  if (value === undefined) return undefined
+  return `  Synth inference 7d ${formatUsd(value)} · no prompts in usage rows`
+}
+
+function formatTopUsageLine(label: string, rows: UsageBreakdownRows | undefined): string | undefined {
+  const row = rows?.[0]
+  if (!row) return undefined
+  return `  ${label} ${oneLine(row.label, 24)} · ${formatUsd(row.costUsd)}`
+}
+
+function formatTopUsageSection(title: string, rows: UsageBreakdownRows | undefined): string[] {
+  if (!rows || rows.length === 0) return []
+  const lines = [title]
+  for (const row of rows.slice(0, 3)) {
+    lines.push(`  ${oneLine(row.label, 28)} ${formatUsd(row.costUsd)}`)
+  }
+  return lines
 }
 
 function formatDuration(seconds: number): string {
