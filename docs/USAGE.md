@@ -256,7 +256,8 @@ the Stack repo root. Point `environments.dev.apiBaseUrl` at your Synth API
     "staging": {
       "label": "Staging",
       "apiBaseUrl": "https://api-dev.usesynth.ai",
-      "authEnv": "SYNTH_STAGING_API_KEY"
+      "authEnv": "SYNTH_API_KEY",
+      "authEnvFile": "../synth-ai/.env"
     },
     "prod": {
       "label": "Prod",
