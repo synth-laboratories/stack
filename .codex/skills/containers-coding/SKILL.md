@@ -53,9 +53,10 @@ not the live API route.
 7. Extract the patch, report, logs, and verifier result from artifacts.
 
 When using Stack MCP, prefer Stack-hosted artifact and WorkProduct tools for SMR
-outputs. For container pool discovery and health, use `stack_list_container_pools`
-and `stack_container_health`; use Synth API pool/rollout routes for deeper
-container-native artifacts that are not wrapped yet.
+outputs. For container pool discovery, health, and synchronous rollout smoke, use
+`stack_list_container_pools`, `stack_container_health`, and `stack_container_rollout`;
+use Synth API pool/rollout routes for deeper container-native artifacts that are
+not wrapped yet.
 
 ## Evidence Expectations
 

@@ -47,6 +47,17 @@ export type ContainerPoolHealthResult = {
   data?: Record<string, unknown>
 }
 
+export type ContainerPoolRolloutResult = {
+  ok: boolean
+  status: number
+  environmentName: string
+  apiBaseUrl: string
+  poolId: string
+  taskId?: string
+  message: string
+  data?: Record<string, unknown>
+}
+
 export type ContainersPanelSnapshot = {
   status: ContainersPanelStatus
   environmentName: string
@@ -149,6 +160,45 @@ export async function readContainerPoolHealth(
   }
 }
 
+export async function executeContainerPoolRollout(
+  config: StackConfig,
+  options: { poolId: string; taskId?: string; body: Record<string, unknown>; timeoutSeconds?: number },
+): Promise<ContainerPoolRolloutResult> {
+  const auth = environmentAuthStatus(config.environment)
+  const base = {
+    environmentName: config.environmentName,
+    apiBaseUrl: config.environment.apiBaseUrl,
+    poolId: options.poolId,
+    ...(options.taskId ? { taskId: options.taskId } : {}),
+  }
+  if (!auth.hasAuth) {
+    return {
+      ...base,
+      ok: false,
+      status: 0,
+      message: auth.message,
+    }
+  }
+
+  const poolId = encodeURIComponent(options.poolId)
+  const path = options.taskId
+    ? `/v1/pools/${poolId}/tasks/${encodeURIComponent(options.taskId)}/container/rollout`
+    : `/v1/pools/${poolId}/container/rollout`
+  const timeoutMs = clampInteger(options.timeoutSeconds, 120, 5, 900) * 1000
+  const result = await requestJson(config, path, {
+    method: "POST",
+    body: options.body,
+    timeoutMs,
+  })
+  return {
+    ...base,
+    ok: result.ok,
+    status: result.status,
+    message: result.ok ? "container rollout completed" : result.message,
+    data: asRecord(result.data) ?? { value: result.data },
+  }
+}
+
 function readPools(value: unknown): ContainerPoolSummary[] {
   return firstNonEmptyArray(value)
     .map(readPool)
@@ -191,6 +241,7 @@ function readPool(value: unknown): ContainerPoolSummary | undefined {
 async function requestJson(
   config: StackConfig,
   path: string,
+  options: { method?: "GET" | "POST"; body?: Record<string, unknown>; timeoutMs?: number } = {},
 ): Promise<{ ok: boolean; status: number; message: string; data?: unknown }> {
   const token = process.env[config.environment.authEnv]
   if (!token) {
@@ -198,18 +249,22 @@ async function requestJson(
   }
   try {
     const response = await fetch(`${config.environment.apiBaseUrl.replace(/\/+$/, "")}${path}`, {
+      method: options.method ?? "GET",
       headers: {
         Authorization: `Bearer ${token}`,
         Accept: "application/json",
+        ...(options.body ? { "Content-Type": "application/json" } : {}),
       },
-      signal: AbortSignal.timeout(15000),
+      ...(options.body ? { body: JSON.stringify(options.body) } : {}),
+      signal: AbortSignal.timeout(options.timeoutMs ?? 15000),
     })
-    const text = await response.text()
-    const data = parseJson(text)
+    const rawText = await response.text()
+    const data = sanitizeResponseValue(parseJson(rawText))
+    const messageText = redactSignedUrls(rawText)
     return {
       ok: response.ok,
       status: response.status,
-      message: response.ok ? "ok" : text.slice(0, 500) || response.statusText,
+      message: response.ok ? "ok" : messageText.slice(0, 500) || response.statusText,
       data,
     }
   } catch (error) {
@@ -237,6 +292,26 @@ function readString(value: unknown): string | undefined {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined
+}
+
+function sanitizeResponseValue(value: unknown): unknown {
+  if (typeof value === "string") return redactSignedUrls(value)
+  if (Array.isArray(value)) return value.map(sanitizeResponseValue)
+  const record = asRecord(value)
+  if (!record) return value
+  return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, sanitizeResponseValue(item)]))
+}
+
+function redactSignedUrls(value: string): string {
+  return value.replace(
+    /https?:\/\/[^\s"']*(?:AWSAccessKeyId|X-Amz-Credential|X-Amz-Signature|Signature)=[^\s"']*/g,
+    "<signed-url-redacted>",
+  )
+}
+
+function clampInteger(value: number | undefined, fallback: number, min: number, max: number): number {
+  if (value === undefined || !Number.isFinite(value)) return fallback
+  return Math.max(min, Math.min(Math.floor(value), max))
 }
 
 function errorMessage(error: unknown): string {

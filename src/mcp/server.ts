@@ -89,7 +89,7 @@ import {
   type HostedGepaTunnelProvider,
 } from "../remote/optimizers.js"
 import { readHostedOptimizerSnapshot } from "../remote/optimizers.js"
-import { readContainerPoolHealth, readContainerPools } from "../remote/containers.js"
+import { executeContainerPoolRollout, readContainerPoolHealth, readContainerPools } from "../remote/containers.js"
 import { readRemoteInferenceCatalog } from "../remote/inference.js"
 import { readRemoteInferenceUsage } from "../remote/inference-usage.js"
 import {
@@ -1462,6 +1462,33 @@ export class StackMcpServer {
       task_id: result.taskId ?? null,
       message: result.message,
       health: toJsonValue(result.data ?? {}) ?? {},
+    }
+  }
+
+  async containerRollout(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const poolId = requiredString(args, "pool_id")
+    const taskId = optionalString(args, "task_id")
+    const body = requiredJsonObject(args, "body")
+    const timeoutSeconds = optionalInteger(args, "timeout_seconds")
+    if (timeoutSeconds !== undefined && (timeoutSeconds < 5 || timeoutSeconds > 900)) {
+      throw new RpcError(-32602, "timeout_seconds must be between 5 and 900")
+    }
+    const result = await executeContainerPoolRollout(config, {
+      poolId,
+      taskId,
+      body,
+      timeoutSeconds,
+    })
+    return {
+      ok: result.ok,
+      status: result.status,
+      environment: result.environmentName,
+      api_base_url: result.apiBaseUrl,
+      pool_id: result.poolId,
+      task_id: result.taskId ?? null,
+      message: result.message,
+      response: toJsonValue(result.data ?? {}) ?? {},
     }
   }
 
@@ -3752,6 +3779,21 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.containerHealth(args),
     },
     {
+      name: "stack_container_rollout",
+      description: "Run a bounded synchronous rollout through /v1/pools/{pool_id}/container/rollout, or the task-scoped route when task_id is provided. Pass the container-native JSON body unchanged.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          pool_id: stringProperty("Synth container pool id."),
+          task_id: stringProperty("Optional pool task id for task-scoped container rollout."),
+          body: jsonObjectProperty("Container-native rollout request JSON body."),
+          timeout_seconds: numberProperty("Maximum wait for the rollout response. Defaults to 120, max 900."),
+        },
+        ["pool_id", "body"],
+      ),
+      handler: (args) => server.containerRollout(args),
+    },
+    {
       name: "stack_open_hosted_artifact",
       description: "Launch the system browser to the hosted artifact (or public shell) for a run. Returns receipt string on success. Does not embed; uses external browser (same split as Codex browser vs Sites).",
       inputSchema: objectSchema({
@@ -4704,6 +4746,12 @@ function optionalJsonObject(args: JsonObject, key: string): Record<string, unkno
     throw new RpcError(-32602, `${key} must be an object`)
   }
   return value as Record<string, unknown>
+}
+
+function requiredJsonObject(args: JsonObject, key: string): Record<string, unknown> {
+  const value = optionalJsonObject(args, key)
+  if (!value) throw new RpcError(-32602, `${key} is required`)
+  return value
 }
 
 function optionalActorRole(args: JsonObject): "primary" | "monitor" | "system" | "unknown" | undefined {

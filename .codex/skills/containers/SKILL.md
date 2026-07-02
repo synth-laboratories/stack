@@ -72,6 +72,7 @@ Stack MCP wrappers for the common read paths:
 
 - `stack_list_container_pools`
 - `stack_container_health`
+- `stack_container_rollout`
 
 Use the wrappers first from Stack agents; drop to raw HTTP only when a route is not wrapped.
 
