@@ -87,6 +87,7 @@ import {
 } from "../remote/optimizers.js"
 import { readHostedOptimizerSnapshot } from "../remote/optimizers.js"
 import { readRemoteInferenceCatalog } from "../remote/inference.js"
+import { readRemoteInferenceUsage } from "../remote/inference-usage.js"
 import {
   readRemoteResearchSnapshot,
   readRemoteProjectsPanelSnapshot,
@@ -1086,6 +1087,11 @@ export class StackMcpServer {
   async inferenceCatalog(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     return toJsonValue(await readRemoteInferenceCatalog(config)) ?? null
+  }
+
+  async inferenceUsage(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(await readRemoteInferenceUsage(config)) ?? null
   }
 
   async getCloudLaunch(args: JsonObject): Promise<JsonValue> {
@@ -2783,6 +2789,15 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         environment: environmentProperty(),
       }),
       handler: (args) => server.inferenceCatalog(args),
+    },
+    {
+      name: "stack_inference_usage",
+      description:
+        "Read Synth inference usage visibility from backend owner endpoints: free aux promo budget, inference spend summaries, top project/actor rows, and the primary-worker opt-in invariant. Does not include prompts or transcripts.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+      }),
+      handler: (args) => server.inferenceUsage(args),
     },
     {
       name: "stack_sidecar_pause_for_restart",
