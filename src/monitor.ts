@@ -19,6 +19,7 @@ import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
 import { detectRiskyPending, riskyPendingSummary } from "./risky-action.js"
 import { enrichGoalTaskContext } from "./codex/goal-task-contract.js"
 import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
+import { runMonitorSynthAuxTurn } from "./monitor-synth-aux.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import { readMetaThreadManifest } from "./meta-thread-goal.js"
 import {
@@ -544,7 +545,7 @@ type SidecarChatReplyResult = {
   citedEventIds: string[]
   criteriaRefs: number[]
   operatorUpdate?: MonitorOperatorUpdate
-  source: "codex-app-server"
+  source: "codex-app-server" | "synth-aux"
   monitorCodexThreadId?: string
 }
 
@@ -2079,7 +2080,7 @@ type MonitorPassResult = {
   operatorUpdate?: MonitorOperatorUpdate
   workerSteerMessage?: string
   userProgressUpdate?: string
-  source: "codex-app-server"
+  source: "codex-app-server" | "synth-aux"
   monitorThreadId?: string
   monitorCodexThreadId?: string
   usage?: MonitorUsageEstimate
@@ -2118,7 +2119,7 @@ export type EtaBand = {
   rationale: string
 }
 
-type MonitorUsageEstimate = {
+export type MonitorUsageEstimate = {
   inputTokens: number
   cachedInputTokens?: number
   outputTokens: number
@@ -2142,6 +2143,45 @@ async function runMonitorPass(input: {
   goalContext: CodexGoalSnapshot
   checks: FocusCheck[]
 }): Promise<MonitorPassResult> {
+  if (input.config.model.provider.trim().toLowerCase() === "synth_aux") {
+    const aux = await runMonitorSynthAuxTurn({
+      stackConfig: input.stackConfig,
+      monitorConfig: input.config,
+      threadId: input.threadId,
+      actorId: input.actorState.monitor_actor_id,
+      wakeId: input.wakeId,
+      wakeReason: input.wakeReason,
+      triggerEventIds: input.triggerEventIds,
+      priorEvents: input.priorEvents,
+      pendingEvents: input.pendingEvents,
+      goalContext: input.goalContext,
+    })
+    const summary = aux.assistantText?.trim()
+    if (!summary) {
+      throw new Error("Synth aux monitor completed without an assistant message")
+    }
+    const directives = parseSidecarDirectives(summary)
+    return {
+      checks: input.checks,
+      severity: combineSeverity(input.config, input.checks),
+      summary,
+      queueItems: queueItemsFor(input.config, input.checks),
+      checkpointSummary: summary,
+      operatorUpdate: directives.progressUpdate
+        ? {
+            working_on: input.goalContext.objective,
+            progress_note: directives.progressUpdate,
+            goal_status: input.goalContext.status ?? "active",
+            criteria_progress: criteriaProgressFromGoal(input.goalContext),
+          }
+        : undefined,
+      workerSteerMessage: directives.steerMessage,
+      userProgressUpdate: directives.progressUpdate,
+      source: "synth-aux",
+      usage: aux.usage ?? estimateMonitorUsage(input.pendingEvents, summary),
+    }
+  }
+
   const codex = await runMonitorCodexSidecarTurn({
     stackConfig: input.stackConfig,
     monitorConfig: input.config,
@@ -2184,9 +2224,9 @@ async function runMonitorPass(input: {
 
 function defaultMonitorBuiltinPrompt(): string {
   return [
-    "The Stack monitor is a persistent Codex sidecar agent.",
+    "The Stack monitor normally runs as a persistent Codex sidecar agent.",
     "It watches the primary worker event stream, answers operator sidecar chat, and pauses with stack_sidecar_pause_for_restart after each monitoring round.",
-    "There are no alternate monitor workers.",
+    "Synth aux inference is available only through an explicit monitor profile and never changes the primary worker.",
   ].join("\n")
 }
 
@@ -3290,6 +3330,11 @@ function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Rec
 function assertMonitorProviderSupported(config: StackMonitorConfig): void {
   const provider = config.model.provider.trim().toLowerCase()
   if (provider === "openai" || provider === "codex") return
+  if (provider === "synth_aux") {
+    const enabled = ["1", "true", "yes", "on"].includes((process.env.STACK_AUX_INFERENCE ?? "").trim().toLowerCase())
+    if (enabled) return
+    throw new Error("monitor provider 'synth_aux' requires STACK_AUX_INFERENCE=1; default monitor remains Codex app-server")
+  }
   throw new Error(
     `monitor model provider '${config.model.provider}' is not executable yet; Stack currently runs monitor through Codex app-server. Use stack_inference_catalog for catalog visibility, and do not configure Synth inference profiles until the direct execution path lands.`,
   )
