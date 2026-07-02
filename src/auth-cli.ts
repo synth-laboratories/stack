@@ -24,14 +24,11 @@ export async function runAuthCli(config: StackConfig, argv: string[]): Promise<n
   const sub = argv[0]
   const action = argv[1]
   const json = argv.includes("--json")
+  const help = wantsAuthHelp(argv)
 
-  if (sub !== "auth" || !action) {
-    console.error("usage: stack auth <open|verify|status|urls|test> …")
-    console.error("  stack auth open signup|signin|keys [--no-browser]")
-    console.error("  stack auth verify|status [--json]")
-    console.error("  stack auth urls [--json]")
-    console.error("  stack auth test signup|signin  # run Playwright auth harness (testing repo)")
-    return 2
+  if (sub !== "auth" || !action || help) {
+    printAuthUsage(action)
+    return help ? 0 : 2
   }
 
   if (action === "urls") {
@@ -126,4 +123,32 @@ export async function runAuthCli(config: StackConfig, argv: string[]): Promise<n
 
   console.error(`unknown stack auth command: ${action}`)
   return 2
+}
+
+function wantsAuthHelp(argv: string[]): boolean {
+  return argv.includes("--help") || argv.includes("-h")
+}
+
+function printAuthUsage(action?: string): void {
+  if (action === "open") {
+    console.error("usage: stack auth open signup|signin|keys [--no-browser] [--json]")
+    return
+  }
+  if (action === "verify" || action === "status") {
+    console.error("usage: stack auth verify|status [--json]")
+    return
+  }
+  if (action === "urls") {
+    console.error("usage: stack auth urls [--json]")
+    return
+  }
+  if (action === "test") {
+    console.error("usage: stack auth test signup|signin")
+    return
+  }
+  console.error("usage: stack auth <open|verify|status|urls|test> …")
+  console.error("  stack auth open signup|signin|keys [--no-browser]")
+  console.error("  stack auth verify|status [--json]")
+  console.error("  stack auth urls [--json]")
+  console.error("  stack auth test signup|signin  # run Playwright auth harness (testing repo)")
 }

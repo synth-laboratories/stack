@@ -147,6 +147,9 @@ function wantsHelpFlag(argv: string[]): boolean {
   const args = argv.slice(2)
   if (args.length === 0) return false
   if (args[0] === "help" || args[0] === "--help" || args[0] === "-h") return true
+  if (["auth", "login", "signup", "whoami"].includes(args[0])) {
+    return args.includes("--help") || args.includes("-h")
+  }
   return args[0] === "goal" && (args[1] === "--help" || args[1] === "-h")
 }
 
@@ -161,6 +164,51 @@ function printStackHelp(argv: string[]): void {
     console.log("  /goal clear                   Clear the active in-app goal")
     console.log("")
     console.log("Goal mode is an in-app command, not a standalone CLI subcommand.")
+    return
+  }
+  if (args[0] === "login") {
+    console.log("Usage:")
+    console.log("  stack login [--no-browser] [--json]")
+    console.log("")
+    console.log("Opens optional Synth sign-in. Local Stack paths remain available without sign-in.")
+    return
+  }
+  if (args[0] === "signup") {
+    console.log("Usage:")
+    console.log("  stack signup [--no-browser] [--json]")
+    console.log("")
+    console.log("Opens optional Synth signup. Local Stack paths remain available without signup.")
+    return
+  }
+  if (args[0] === "whoami") {
+    console.log("Usage:")
+    console.log("  stack whoami [--json]")
+    console.log("")
+    console.log("Checks Synth account status; missing auth is not a local readiness failure.")
+    return
+  }
+  if (args[0] === "auth") {
+    console.log("Usage:")
+    if (args[1] === "open") {
+      console.log("  stack auth open signup|signin|keys [--no-browser] [--json]")
+      return
+    }
+    if (args[1] === "verify" || args[1] === "status") {
+      console.log("  stack auth verify|status [--json]")
+      return
+    }
+    if (args[1] === "urls") {
+      console.log("  stack auth urls [--json]")
+      return
+    }
+    if (args[1] === "test") {
+      console.log("  stack auth test signup|signin")
+      return
+    }
+    console.log("  stack auth open signup|signin|keys [--no-browser] [--json]")
+    console.log("  stack auth verify|status [--json]")
+    console.log("  stack auth urls [--json]")
+    console.log("  stack auth test signup|signin")
     return
   }
   console.log("Usage:")
