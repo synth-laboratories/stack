@@ -104,11 +104,18 @@ function styleRuntimeSnapshotLine(
   const remoteDeployments = deploymentCount > 0
     ? ` dep:${deploymentCount}${degradedDeploymentCount > 0 ? `!${degradedDeploymentCount}` : ""}`
     : ""
+  const pendingPush = snapshot.remote_synth.pending_push?.length ?? 0
+  const pendingPull = snapshot.remote_synth.pending_pull?.length ?? 0
+  const linkedSmrRuns = snapshot.remote_synth.linked_smr_runs?.length ?? 0
+  const gardenerPasses = snapshot.remote_synth.recent_remote_gardener_passes?.length ?? 0
+  const syncState = pendingPush > 0 || pendingPull > 0 || linkedSmrRuns > 0 || gardenerPasses > 0
+    ? ` sync:${pendingPush}/${pendingPull}/${linkedSmrRuns}/${gardenerPasses}`
+    : ""
   const localRuns = snapshot.local_gepa.active_run_count > 0
     ? ` gepa:${snapshot.local_gepa.active_run_count}`
     : ""
   const state = snapshot.control_state
-  const text = oneLine(`runtime ${state} local:${localStatus} synth${remoteEnvironment}:${remoteAuth}${remoteRuns}${remoteOptimizers}${remoteDeployments}${localRuns}${eventSeq}${tickEvents}`, columns)
+  const text = oneLine(`runtime ${state} local:${localStatus} synth${remoteEnvironment}:${remoteAuth}${remoteRuns}${remoteOptimizers}${remoteDeployments}${syncState}${localRuns}${eventSeq}${tickEvents}`, columns)
   const color = state === "degraded"
     ? theme.synth.red
     : remoteAuth === "ready" || localStatus === "running"

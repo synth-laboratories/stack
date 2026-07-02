@@ -101,6 +101,66 @@ export type RemoteFactorySummary = {
   isRunning?: boolean
 }
 
+export type RemoteSyncRequestSummary = {
+  eventId: string
+  observedAt: string
+  direction: string
+  intent: string
+  subjectKind: string
+  subjectId: string
+  projectId?: string
+  runId?: string
+  factoryId?: string
+  deploymentId?: string
+  metaThreadId?: string
+  threadId?: string
+  actorRole?: string
+  actorId?: string
+  note?: string
+}
+
+export type RemoteGardenerPassSummary = {
+  eventId: string
+  observedAt: string
+  subjectKind: string
+  subjectId: string
+  projectId?: string
+  runId?: string
+  factoryId?: string
+  deploymentId?: string
+  metaThreadId?: string
+  threadId?: string
+  actorRole?: string
+  actorId?: string
+  narration?: string
+  nextAction?: string
+  runtimeStatus?: string
+  authStatus?: string
+}
+
+export type RemoteSmrBindingSummary = {
+  eventId: string
+  observedAt: string
+  metaThreadId?: string
+  threadId?: string
+  projectId?: string
+  runId: string
+  factoryId?: string
+  deploymentId?: string
+  bindingId?: string
+  objective?: string
+  remoteStatus?: string
+  actorRole?: string
+  actorId?: string
+}
+
+export type RemoteSyncSnapshot = {
+  pendingPush: RemoteSyncRequestSummary[]
+  pendingPull: RemoteSyncRequestSummary[]
+  recentRemoteGardenerPasses: RemoteGardenerPassSummary[]
+  linkedSmrRuns: RemoteSmrBindingSummary[]
+}
+
 export type RemoteResearchSnapshot = {
   status: RemoteResearchStatus
   environmentName: string
@@ -111,6 +171,7 @@ export type RemoteResearchSnapshot = {
   factories: RemoteFactorySummary[]
   runDetails: Record<string, RemoteRunDetail>
   hostedArtifacts: Record<string, HostedArtifactStatus>
+  sync?: RemoteSyncSnapshot
 }
 
 export type RemoteTagScopeSummary = {
@@ -130,6 +191,7 @@ export type RemoteProjectsPanelSnapshot = {
   message?: string
   projects: RemoteProjectPanelEntry[]
   tagScope?: RemoteTagScopeSummary
+  sync?: RemoteSyncSnapshot
 }
 
 export type RemoteProjectPanelEntry = {

@@ -131,7 +131,7 @@ function styledOpsLine(line: string): TextChunk[] {
   if (line.includes("multi_agent off")) return styledStatusLine(line, "multi_agent off", theme.synth.red)
   if (line.includes("features.multi_agent=true")) return styledStatusLine(line, "true", "#3fb950")
   if (line.includes("features.multi_agent=false")) return styledStatusLine(line, "false", theme.synth.red)
-  if (line === "Launch config" || line === "Actors" || line === "Meta events") {
+  if (line === "Launch config" || line === "Actors" || line === "Meta events" || line === "Sync receipts") {
     return [fg(theme.fgAccentStrong)(line)]
   }
   if (line.includes("(none yet)") || line.includes("F2 preview")) {
@@ -504,7 +504,8 @@ function projectsHeader(snapshot: RemoteProjectsPanelSnapshot): string {
   const tag = snapshot.tagScope ? ` · tag ${oneLine(snapshot.tagScope.name, 12)}` : ""
   const experiments7d = formatExperiments7dTotal(snapshot.projects)
   const experiments = experiments7d ? ` · ${experiments7d}` : ""
-  return `${snapshot.status}${message}${tag}${experiments} · factories + runs`
+  const sync = snapshot.sync ? ` · ${remoteSyncHeader(snapshot.sync)}` : ""
+  return `${snapshot.status}${message}${tag}${experiments}${sync} · factories + runs`
 }
 
 function formatExperiments7dTotal(
@@ -532,13 +533,15 @@ function formatProjectExperiments7d(project: RemoteProjectsPanelSnapshot["projec
 }
 
 function projectsBody(snapshot: RemoteProjectsPanelSnapshot): string[] {
+  const syncLines = remoteSyncLines(snapshot)
   if (snapshot.projects.length === 0) {
-    if (snapshot.status === "missing-auth") return ["  Local ready · stack auth open signin for cloud"]
-    if (snapshot.status === "offline") return ["  start dev slot (see Setup above)"]
-    if (snapshot.tagScope) return ["  (no live projects)", "", ...orgWideTagLines(snapshot.tagScope)]
-    return ["  (no live projects)"]
+    if (snapshot.status === "missing-auth") return [...syncLines, "  Local ready · stack auth open signin for cloud"]
+    if (snapshot.status === "offline") return [...syncLines, "  start dev slot (see Setup above)"]
+    if (snapshot.tagScope) return [...syncLines, "  (no live projects)", "", ...orgWideTagLines(snapshot.tagScope)]
+    return [...syncLines, "  (no live projects)"]
   }
-  const lines: string[] = []
+  const lines: string[] = [...syncLines]
+  if (lines.length > 0) lines.push("")
   const orgWideTag =
     snapshot.tagScope && !snapshot.tagScope.factoryId && !snapshot.tagScope.defaultProjectId
       ? snapshot.tagScope
@@ -570,6 +573,54 @@ function projectsBody(snapshot: RemoteProjectsPanelSnapshot): string[] {
   }
   if (lines.at(-1) === "") lines.pop()
   return lines
+}
+
+function remoteSyncHeader(sync: NonNullable<RemoteProjectsPanelSnapshot["sync"]>): string {
+  const parts = []
+  if (sync.pendingPush.length > 0) parts.push(`push ${sync.pendingPush.length}`)
+  if (sync.pendingPull.length > 0) parts.push(`pull ${sync.pendingPull.length}`)
+  if (sync.linkedSmrRuns.length > 0) parts.push(`bind ${sync.linkedSmrRuns.length}`)
+  if (sync.recentRemoteGardenerPasses.length > 0) parts.push(`pass ${sync.recentRemoteGardenerPasses.length}`)
+  return parts.length > 0 ? `sync ${parts.join("/")}` : "sync clear"
+}
+
+function remoteSyncLines(snapshot: RemoteProjectsPanelSnapshot): string[] {
+  const sync = snapshot.sync
+  if (!sync) return []
+  const lines = ["Sync receipts"]
+  for (const item of sync.pendingPush.slice(0, 2)) {
+    lines.push(`  push ${oneLine(item.intent, 18)} · ${remoteSyncSubjectLabel(item)}`)
+  }
+  for (const item of sync.pendingPull.slice(0, 2)) {
+    lines.push(`  pull ${oneLine(item.intent, 18)} · ${remoteSyncSubjectLabel(item)}`)
+  }
+  for (const item of sync.linkedSmrRuns.slice(0, 2)) {
+    const meta = item.metaThreadId ? ` · meta ${item.metaThreadId.slice(0, 8)}` : ""
+    lines.push(`  bind ${item.runId.slice(0, 8)}${meta}`)
+  }
+  const pass = sync.recentRemoteGardenerPasses[0]
+  if (pass) {
+    lines.push(`  pass ${oneLine(pass.narration ?? pass.nextAction ?? pass.subjectId, 42)}`)
+  }
+  if (lines.length === 1) return []
+  return lines
+}
+
+function remoteSyncSubjectLabel(item: {
+  runId?: string
+  projectId?: string
+  factoryId?: string
+  deploymentId?: string
+  metaThreadId?: string
+  subjectKind: string
+  subjectId: string
+}): string {
+  if (item.runId) return `run ${item.runId.slice(0, 8)}`
+  if (item.projectId) return `proj ${item.projectId.slice(0, 8)}`
+  if (item.factoryId) return `fac ${item.factoryId.slice(0, 8)}`
+  if (item.deploymentId) return `dep ${item.deploymentId.slice(0, 8)}`
+  if (item.metaThreadId) return `meta ${item.metaThreadId.slice(0, 8)}`
+  return `${item.subjectKind} ${item.subjectId.slice(0, 8)}`
 }
 
 function projectLevelTagScope(

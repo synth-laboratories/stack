@@ -233,6 +233,7 @@ import {
   type RemoteRunDetail,
   type RemoteResearchSnapshot,
   type RemoteSmrRunSummary,
+  type RemoteSyncSnapshot,
 } from "../remote/research.js"
 import {
   ensureSessionInHistory,
@@ -7457,6 +7458,8 @@ function remoteResearchText(state: AppState): string[] {
     state.pendingRemoteAction ? `pending: ${remoteActionLabel(state.pendingRemoteAction)}` : "",
     state.remoteActionMessage ? `action: ${oneLine(state.remoteActionMessage, 40)}` : "",
     "",
+    ...remoteResearchSyncLines(snapshot),
+    ...(snapshot.sync ? [""] : []),
     `jobs: ${snapshot.jobs.length} recent  active ${jobCounts.active}`,
     "  state     at     run",
     ...remoteJobRows(state, 4),
@@ -7470,6 +7473,37 @@ function remoteResearchText(state: AppState): string[] {
     "Selected Factory",
     ...(selectedFactory ? selectedRemoteFactoryText(selectedFactory) : ["none"]),
   ].filter((line) => line.length > 0)
+}
+
+function remoteResearchSyncLines(snapshot: RemoteResearchSnapshot): string[] {
+  const sync = snapshot.sync
+  if (!sync) return []
+  const lines = [
+    `sync: push ${sync.pendingPush.length} · pull ${sync.pendingPull.length} · bind ${sync.linkedSmrRuns.length} · pass ${sync.recentRemoteGardenerPasses.length}`,
+  ]
+  const request = sync.pendingPush[0] ?? sync.pendingPull[0]
+  if (request) {
+    lines.push(`  ${request.direction} ${oneLine(request.intent, 18)} · ${remoteSyncRequestTarget(request)}`)
+  }
+  const binding = sync.linkedSmrRuns[0]
+  if (binding) {
+    const meta = binding.metaThreadId ? ` · meta ${binding.metaThreadId.slice(0, 8)}` : ""
+    lines.push(`  bind ${binding.runId.slice(0, 8)}${meta}`)
+  }
+  const pass = sync.recentRemoteGardenerPasses[0]
+  if (pass) {
+    lines.push(`  pass ${oneLine(pass.narration ?? pass.nextAction ?? pass.subjectId, 38)}`)
+  }
+  return lines
+}
+
+function remoteSyncRequestTarget(request: RemoteSyncSnapshot["pendingPush"][number]): string {
+  if (request.runId) return `run ${request.runId.slice(0, 8)}`
+  if (request.projectId) return `proj ${request.projectId.slice(0, 8)}`
+  if (request.factoryId) return `fac ${request.factoryId.slice(0, 8)}`
+  if (request.deploymentId) return `dep ${request.deploymentId.slice(0, 8)}`
+  if (request.metaThreadId) return `meta ${request.metaThreadId.slice(0, 8)}`
+  return `${request.subjectKind} ${request.subjectId.slice(0, 8)}`
 }
 
 
@@ -10075,10 +10109,12 @@ function remoteResearchSnapshotFromRuntime(
   const runtimeEnvironment = runtimeRemoteEnvironment(remote, config)
   const deployments = remote.deployments ?? []
   const deploymentCount = remote.deployment_count ?? deployments.length
+  const sync = remoteSyncSnapshotFromRuntime(remote)
   const hasRemoteState =
     remote.runs.length > 0 ||
     remote.factories.length > 0 ||
     deployments.length > 0 ||
+    Boolean(sync) ||
     remote.active_run_count > 0 ||
     remote.active_factory_count > 0 ||
     deploymentCount > 0
@@ -10129,11 +10165,12 @@ function remoteResearchSnapshotFromRuntime(
     environmentName: runtimeEnvironment.environmentName,
     apiBaseUrl: runtimeEnvironment.apiBaseUrl,
     checkedAt: snapshot.updated_at,
-    message: `runtime ${jobs.length} SMR runs, ${factories.length} factories, ${deploymentCount} deployments`,
+    message: `runtime ${jobs.length} SMR runs, ${factories.length} factories, ${deploymentCount} deployments${sync ? `, ${remoteSyncSummaryLabel(sync)}` : ""}`,
     jobs,
     factories,
     runDetails: fallback?.runDetails ?? {},
     hostedArtifacts: fallback?.hostedArtifacts ?? {},
+    ...(sync ? { sync } : {}),
   }
 }
 
@@ -10169,7 +10206,8 @@ function remoteProjectsPanelFromRuntime(
   const projects = remote?.projects ?? []
   const runtimeRuns = remote?.runs ?? []
   const runtimeFactories = remote?.factories ?? []
-  if (!remote || projects.length === 0) return undefined
+  const sync = remote ? remoteSyncSnapshotFromRuntime(remote) : undefined
+  if (!remote || (projects.length === 0 && !sync)) return undefined
   const runtimeEnvironment = runtimeRemoteEnvironment(remote, config)
   const runsById = new Map(runtimeRuns.map((run) => [run.run_id, run]))
   const factoriesById = new Map(runtimeFactories.map((factory) => [factory.factory_id, factory]))
@@ -10178,7 +10216,8 @@ function remoteProjectsPanelFromRuntime(
     environmentName: runtimeEnvironment.environmentName,
     apiBaseUrl: runtimeEnvironment.apiBaseUrl,
     checkedAt: snapshot.updated_at,
-    message: `runtime ${projects.length} projects`,
+    message: `runtime ${projects.length} projects${sync ? `, ${remoteSyncSummaryLabel(sync)}` : ""}`,
+    ...(sync ? { sync } : {}),
     projects: projects.map((project) => {
       const linkedRuns = project.run_ids
         .map((runId) => runsById.get(runId))
@@ -10224,6 +10263,101 @@ function remoteProjectsPanelFromRuntime(
       }
     }),
   }
+}
+
+function remoteSyncSnapshotFromRuntime(
+  remote: StackdFactorySnapshot["remote_synth"],
+): RemoteSyncSnapshot | undefined {
+  const pendingPush = remote.pending_push ?? []
+  const pendingPull = remote.pending_pull ?? []
+  const recentRemoteGardenerPasses = remote.recent_remote_gardener_passes ?? []
+  const linkedSmrRuns = remote.linked_smr_runs ?? []
+  if (
+    pendingPush.length === 0 &&
+    pendingPull.length === 0 &&
+    recentRemoteGardenerPasses.length === 0 &&
+    linkedSmrRuns.length === 0
+  ) {
+    return undefined
+  }
+  return {
+    pendingPush: pendingPush.map((item) => ({
+      eventId: item.event_id,
+      observedAt: item.observed_at,
+      direction: item.direction,
+      intent: item.intent,
+      subjectKind: item.subject_kind,
+      subjectId: item.subject_id,
+      projectId: item.project_id ?? undefined,
+      runId: item.run_id ?? undefined,
+      factoryId: item.factory_id ?? undefined,
+      deploymentId: item.deployment_id ?? undefined,
+      metaThreadId: item.meta_thread_id ?? undefined,
+      threadId: item.thread_id ?? undefined,
+      actorRole: item.actor_role ?? undefined,
+      actorId: item.actor_id ?? undefined,
+      note: item.note ?? undefined,
+    })),
+    pendingPull: pendingPull.map((item) => ({
+      eventId: item.event_id,
+      observedAt: item.observed_at,
+      direction: item.direction,
+      intent: item.intent,
+      subjectKind: item.subject_kind,
+      subjectId: item.subject_id,
+      projectId: item.project_id ?? undefined,
+      runId: item.run_id ?? undefined,
+      factoryId: item.factory_id ?? undefined,
+      deploymentId: item.deployment_id ?? undefined,
+      metaThreadId: item.meta_thread_id ?? undefined,
+      threadId: item.thread_id ?? undefined,
+      actorRole: item.actor_role ?? undefined,
+      actorId: item.actor_id ?? undefined,
+      note: item.note ?? undefined,
+    })),
+    recentRemoteGardenerPasses: recentRemoteGardenerPasses.map((item) => ({
+      eventId: item.event_id,
+      observedAt: item.observed_at,
+      subjectKind: item.subject_kind,
+      subjectId: item.subject_id,
+      projectId: item.project_id ?? undefined,
+      runId: item.run_id ?? undefined,
+      factoryId: item.factory_id ?? undefined,
+      deploymentId: item.deployment_id ?? undefined,
+      metaThreadId: item.meta_thread_id ?? undefined,
+      threadId: item.thread_id ?? undefined,
+      actorRole: item.actor_role ?? undefined,
+      actorId: item.actor_id ?? undefined,
+      narration: item.narration ?? undefined,
+      nextAction: item.next_action ?? undefined,
+      runtimeStatus: item.runtime_status ?? undefined,
+      authStatus: item.auth_status ?? undefined,
+    })),
+    linkedSmrRuns: linkedSmrRuns.map((item) => ({
+      eventId: item.event_id,
+      observedAt: item.observed_at,
+      metaThreadId: item.meta_thread_id ?? undefined,
+      threadId: item.thread_id ?? undefined,
+      projectId: item.project_id ?? undefined,
+      runId: item.run_id,
+      factoryId: item.factory_id ?? undefined,
+      deploymentId: item.deployment_id ?? undefined,
+      bindingId: item.binding_id ?? undefined,
+      objective: item.objective ?? undefined,
+      remoteStatus: item.remote_status ?? undefined,
+      actorRole: item.actor_role ?? undefined,
+      actorId: item.actor_id ?? undefined,
+    })),
+  }
+}
+
+function remoteSyncSummaryLabel(sync: RemoteSyncSnapshot): string {
+  const parts = []
+  if (sync.pendingPush.length > 0) parts.push(`push ${sync.pendingPush.length}`)
+  if (sync.pendingPull.length > 0) parts.push(`pull ${sync.pendingPull.length}`)
+  if (sync.linkedSmrRuns.length > 0) parts.push(`bind ${sync.linkedSmrRuns.length}`)
+  if (sync.recentRemoteGardenerPasses.length > 0) parts.push(`pass ${sync.recentRemoteGardenerPasses.length}`)
+  return parts.length > 0 ? `sync ${parts.join("/")}` : "sync clear"
 }
 
 function runtimeRemoteEnvironment(
