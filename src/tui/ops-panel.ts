@@ -619,6 +619,7 @@ function remoteSyncHeader(sync: NonNullable<RemoteProjectsPanelSnapshot["sync"]>
   if (sync.pendingPull.length > 0) parts.push(`pull ${sync.pendingPull.length}`)
   if (sync.linkedSmrRuns.length > 0) parts.push(`bind ${sync.linkedSmrRuns.length}`)
   if (sync.recentRemoteGardenerPasses.length > 0) parts.push(`pass ${sync.recentRemoteGardenerPasses.length}`)
+  if (sync.recentRunEvents.length > 0) parts.push(`events ${sync.recentRunEvents.length}`)
   return parts.length > 0 ? `sync ${parts.join("/")}` : "sync clear"
 }
 
@@ -639,6 +640,12 @@ function remoteSyncLines(snapshot: RemoteProjectsPanelSnapshot): string[] {
   const pass = sync.recentRemoteGardenerPasses[0]
   if (pass) {
     lines.push(`  pass ${oneLine(pass.narration ?? pass.nextAction ?? pass.subjectId, 42)}`)
+  }
+  const runEvent = sync.recentRunEvents[0]
+  if (runEvent) {
+    const verb = runEvent.action ?? runEvent.status ?? runEvent.mode ?? runEvent.sender ?? "message"
+    const body = runEvent.body ? ` · ${oneLine(runEvent.body, 30)}` : ""
+    lines.push(`  event ${runEvent.runId.slice(0, 8)} · ${oneLine(verb, 14)}${body}`)
   }
   if (lines.length === 1) return []
   return lines

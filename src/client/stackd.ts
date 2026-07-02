@@ -176,6 +176,7 @@ export type StackdFactorySnapshot = {
     pending_pull?: StackdRemoteSyncRequestSnapshot[]
     recent_remote_gardener_passes?: StackdRemoteGardenerPassSnapshot[]
     linked_smr_runs?: StackdRemoteSmrRunBindingSnapshot[]
+    recent_run_events?: StackdRemoteRunEventSnapshot[]
   }
   recent_events: StackdRuntimeEventRef[]
 }
@@ -297,6 +298,24 @@ export type StackdRemoteSmrRunBindingSnapshot = {
   remote_status?: string | null
   actor_role?: string | null
   actor_id?: string | null
+}
+
+export type StackdRemoteRunEventSnapshot = {
+  event_id: string
+  seq: number
+  observed_at: string
+  environment_name?: string | null
+  api_base_url?: string | null
+  message_id: string
+  project_id?: string | null
+  run_id: string
+  status?: string | null
+  mode?: string | null
+  sender?: string | null
+  target?: string | null
+  action?: string | null
+  body?: string | null
+  created_at?: string | null
 }
 
 export type StackdExport = {

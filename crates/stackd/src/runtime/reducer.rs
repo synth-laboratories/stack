@@ -2,8 +2,8 @@ use chrono::Utc;
 use stack_core::runtime_event::RuntimeEvent;
 use stack_core::runtime_state::{
     FactorySnapshot, RemoteDeploymentSnapshot, RemoteFactorySnapshot, RemoteGardenerPassSnapshot,
-    RemoteHostedOptimizerSnapshot, RemoteProjectSnapshot, RemoteRunSnapshot,
-    RemoteSmrRunBindingSnapshot, RemoteSyncRequestSnapshot, RuntimeEventRef,
+    RemoteHostedOptimizerSnapshot, RemoteProjectSnapshot, RemoteRunEventSnapshot,
+    RemoteRunSnapshot, RemoteSmrRunBindingSnapshot, RemoteSyncRequestSnapshot, RuntimeEventRef,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -22,6 +22,7 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
     let mut pending_pull = Vec::<RemoteSyncRequestSnapshot>::new();
     let mut remote_gardener_passes = Vec::<RemoteGardenerPassSnapshot>::new();
     let mut linked_smr_runs = BTreeMap::<String, RemoteSmrRunBindingSnapshot>::new();
+    let mut remote_run_events = Vec::<RemoteRunEventSnapshot>::new();
     let mut sensor_degraded = false;
 
     for event in events {
@@ -107,6 +108,7 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
                 pending_pull.clear();
                 remote_gardener_passes.clear();
                 linked_smr_runs.clear();
+                remote_run_events.clear();
                 snapshot.remote_synth.sync_enabled = false;
                 snapshot.remote_synth.auth_status = "unknown".to_string();
                 snapshot.remote_synth.last_ok_at = None;
@@ -227,6 +229,9 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
                 let binding = remote_smr_run_binding_snapshot(event);
                 linked_smr_runs.insert(remote_smr_run_binding_key(&binding), binding);
             }
+            "sensor.remote_synth.run_event" => {
+                remote_run_events.push(remote_run_event_snapshot(event));
+            }
             _ => {}
         }
     }
@@ -287,6 +292,8 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
     let mut linked_smr_runs = linked_smr_runs.into_values().collect::<Vec<_>>();
     linked_smr_runs.sort_by(compare_remote_smr_run_binding_snapshot);
     snapshot.remote_synth.linked_smr_runs = linked_smr_runs.into_iter().take(50).collect();
+    remote_run_events.sort_by(compare_remote_run_event_snapshot);
+    snapshot.remote_synth.recent_run_events = remote_run_events.into_iter().take(20).collect();
     snapshot.recent_events = events
         .iter()
         .rev()
@@ -408,6 +415,13 @@ fn compare_remote_gardener_pass_snapshot(
 fn compare_remote_smr_run_binding_snapshot(
     left: &RemoteSmrRunBindingSnapshot,
     right: &RemoteSmrRunBindingSnapshot,
+) -> std::cmp::Ordering {
+    right.seq.cmp(&left.seq)
+}
+
+fn compare_remote_run_event_snapshot(
+    left: &RemoteRunEventSnapshot,
+    right: &RemoteRunEventSnapshot,
 ) -> std::cmp::Ordering {
     right.seq.cmp(&left.seq)
 }
@@ -612,6 +626,29 @@ fn remote_smr_run_binding_snapshot(event: &RuntimeEvent) -> RemoteSmrRunBindingS
         remote_status: payload_string(event, "remote_status"),
         actor_role: payload_string(event, "actor_role"),
         actor_id: payload_string(event, "actor_id"),
+    }
+}
+
+fn remote_run_event_snapshot(event: &RuntimeEvent) -> RemoteRunEventSnapshot {
+    RemoteRunEventSnapshot {
+        event_id: event.event_id.clone(),
+        seq: event.seq,
+        observed_at: event.observed_at.clone(),
+        environment_name: payload_string(event, "environment"),
+        api_base_url: payload_string(event, "api_base_url"),
+        message_id: payload_string(event, "message_id").unwrap_or_else(|| event.subject.id.clone()),
+        project_id: payload_string(event, "project_id")
+            .or_else(|| event.correlation.project_id.clone()),
+        run_id: payload_string(event, "run_id")
+            .or_else(|| event.correlation.run_id.clone())
+            .unwrap_or_else(|| event.subject.id.clone()),
+        status: payload_string(event, "status"),
+        mode: payload_string(event, "mode"),
+        sender: payload_string(event, "sender"),
+        target: payload_string(event, "target"),
+        action: payload_string(event, "action"),
+        body: payload_string(event, "body"),
+        created_at: payload_string(event, "created_at"),
     }
 }
 

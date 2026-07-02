@@ -7506,7 +7506,7 @@ function remoteResearchSyncLines(snapshot: RemoteResearchSnapshot): string[] {
   const sync = snapshot.sync
   if (!sync) return []
   const lines = [
-    `sync: push ${sync.pendingPush.length} · pull ${sync.pendingPull.length} · bind ${sync.linkedSmrRuns.length} · pass ${sync.recentRemoteGardenerPasses.length}`,
+    `sync: push ${sync.pendingPush.length} · pull ${sync.pendingPull.length} · bind ${sync.linkedSmrRuns.length} · pass ${sync.recentRemoteGardenerPasses.length} · events ${sync.recentRunEvents.length}`,
   ]
   const request = sync.pendingPush[0] ?? sync.pendingPull[0]
   if (request) {
@@ -7521,6 +7521,10 @@ function remoteResearchSyncLines(snapshot: RemoteResearchSnapshot): string[] {
   if (pass) {
     lines.push(`  pass ${oneLine(pass.narration ?? pass.nextAction ?? pass.subjectId, 38)}`)
   }
+  const runEvent = sync.recentRunEvents[0]
+  if (runEvent) {
+    lines.push(`  event ${remoteRunEventLabel(runEvent)}`)
+  }
   return lines
 }
 
@@ -7531,6 +7535,12 @@ function remoteSyncRequestTarget(request: RemoteSyncSnapshot["pendingPush"][numb
   if (request.deploymentId) return `dep ${request.deploymentId.slice(0, 8)}`
   if (request.metaThreadId) return `meta ${request.metaThreadId.slice(0, 8)}`
   return `${request.subjectKind} ${request.subjectId.slice(0, 8)}`
+}
+
+function remoteRunEventLabel(event: RemoteSyncSnapshot["recentRunEvents"][number]): string {
+  const verb = event.action ?? event.status ?? event.mode ?? event.sender ?? "message"
+  const body = event.body ? ` · ${oneLine(event.body, 28)}` : ""
+  return `${event.runId.slice(0, 8)} · ${oneLine(verb, 14)}${body}`
 }
 
 
@@ -10358,11 +10368,13 @@ function remoteSyncSnapshotFromRuntime(
   const pendingPull = remote.pending_pull ?? []
   const recentRemoteGardenerPasses = remote.recent_remote_gardener_passes ?? []
   const linkedSmrRuns = remote.linked_smr_runs ?? []
+  const recentRunEvents = remote.recent_run_events ?? []
   if (
     pendingPush.length === 0 &&
     pendingPull.length === 0 &&
     recentRemoteGardenerPasses.length === 0 &&
-    linkedSmrRuns.length === 0
+    linkedSmrRuns.length === 0 &&
+    recentRunEvents.length === 0
   ) {
     return undefined
   }
@@ -10434,6 +10446,20 @@ function remoteSyncSnapshotFromRuntime(
       actorRole: item.actor_role ?? undefined,
       actorId: item.actor_id ?? undefined,
     })),
+    recentRunEvents: recentRunEvents.map((item) => ({
+      eventId: item.event_id,
+      observedAt: item.observed_at,
+      messageId: item.message_id,
+      projectId: item.project_id ?? undefined,
+      runId: item.run_id,
+      status: item.status ?? undefined,
+      mode: item.mode ?? undefined,
+      sender: item.sender ?? undefined,
+      target: item.target ?? undefined,
+      action: item.action ?? undefined,
+      body: item.body ?? undefined,
+      createdAt: item.created_at ?? undefined,
+    })),
   }
 }
 
@@ -10443,6 +10469,7 @@ function remoteSyncSummaryLabel(sync: RemoteSyncSnapshot): string {
   if (sync.pendingPull.length > 0) parts.push(`pull ${sync.pendingPull.length}`)
   if (sync.linkedSmrRuns.length > 0) parts.push(`bind ${sync.linkedSmrRuns.length}`)
   if (sync.recentRemoteGardenerPasses.length > 0) parts.push(`pass ${sync.recentRemoteGardenerPasses.length}`)
+  if (sync.recentRunEvents.length > 0) parts.push(`events ${sync.recentRunEvents.length}`)
   return parts.length > 0 ? `sync ${parts.join("/")}` : "sync clear"
 }
 

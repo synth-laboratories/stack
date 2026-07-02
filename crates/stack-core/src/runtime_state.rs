@@ -47,6 +47,8 @@ pub struct RemoteSynthSnapshot {
     pub recent_remote_gardener_passes: Vec<RemoteGardenerPassSnapshot>,
     #[serde(default)]
     pub linked_smr_runs: Vec<RemoteSmrRunBindingSnapshot>,
+    #[serde(default)]
+    pub recent_run_events: Vec<RemoteRunEventSnapshot>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -177,6 +179,25 @@ pub struct RemoteSmrRunBindingSnapshot {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RemoteRunEventSnapshot {
+    pub event_id: String,
+    pub seq: i64,
+    pub observed_at: String,
+    pub environment_name: Option<String>,
+    pub api_base_url: Option<String>,
+    pub message_id: String,
+    pub project_id: Option<String>,
+    pub run_id: String,
+    pub status: Option<String>,
+    pub mode: Option<String>,
+    pub sender: Option<String>,
+    pub target: Option<String>,
+    pub action: Option<String>,
+    pub body: Option<String>,
+    pub created_at: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RuntimeEventRef {
     pub seq: i64,
     pub event_type: String,
@@ -222,6 +243,7 @@ impl FactorySnapshot {
                 pending_pull: Vec::new(),
                 recent_remote_gardener_passes: Vec::new(),
                 linked_smr_runs: Vec::new(),
+                recent_run_events: Vec::new(),
             },
             recent_events: Vec::new(),
         }

@@ -2542,6 +2542,7 @@ function remoteGardenerPassDigest(
   const pendingPush = remote?.pending_push ?? []
   const pendingPull = remote?.pending_pull ?? []
   const linkedSmrRuns = remote?.linked_smr_runs ?? []
+  const recentRunEvents = remote?.recent_run_events ?? []
   const degradedDeployment = deployments.find((deployment) =>
     Boolean(deployment.degraded_reason) || (deployment.status ?? "").toLowerCase().includes("degrad")
   )
@@ -2555,6 +2556,7 @@ function remoteGardenerPassDigest(
     pending_push: pendingPush.length,
     pending_pull: pendingPull.length,
     linked_smr_runs: linkedSmrRuns.length,
+    recent_run_events: recentRunEvents.length,
   }
   const selected = {
     project_id: remote?.projects[0]?.project_id ?? null,
@@ -2589,6 +2591,7 @@ function remoteGardenerPassDigest(
     pending_push: pendingPush.slice(0, 5),
     pending_pull: pendingPull.slice(0, 5),
     linked_smr_runs: linkedSmrRuns.slice(0, 5),
+    recent_run_events: recentRunEvents.slice(0, 5),
     narration,
     next_action: remoteGardenerNextAction({
       runtimeStatus: runtime?.status ?? "unavailable",
@@ -2614,6 +2617,7 @@ function remoteGardenerGeneratedNarration(input: {
     pending_push: number
     pending_pull: number
     linked_smr_runs: number
+    recent_run_events: number
   }
 }): string {
   if (input.runtimeStatus === "unavailable") {
@@ -2630,6 +2634,9 @@ function remoteGardenerGeneratedNarration(input: {
   }
   if (input.counts.linked_smr_runs > 0) {
     return `Remote ${input.environment} has ${input.counts.linked_smr_runs} local meta-thread to SMR run binding(s) in the runtime snapshot.`
+  }
+  if (input.counts.recent_run_events > 0) {
+    return `Remote ${input.environment} has ${input.counts.recent_run_events} recent SMR runtime message event(s) in the runtime snapshot.`
   }
   if (input.counts.smr_runs > 0 || input.counts.factories > 0 || input.counts.hosted_optimizers > 0) {
     return `Remote ${input.environment} has ${input.counts.smr_runs} SMR run(s), ${input.counts.factories} Factory row(s), and ${input.counts.hosted_optimizers} hosted optimizer row(s) in the runtime snapshot.`
@@ -2708,6 +2715,7 @@ function runtimeSummaryFromFactory(snapshot: StackdFactorySnapshot | null | unde
       pending_pull: StackdFactorySnapshot["remote_synth"]["pending_pull"]
       recent_remote_gardener_passes: StackdFactorySnapshot["remote_synth"]["recent_remote_gardener_passes"]
       linked_smr_runs: StackdFactorySnapshot["remote_synth"]["linked_smr_runs"]
+      recent_run_events: StackdFactorySnapshot["remote_synth"]["recent_run_events"]
     }
     hosted_artifact_for_first: null
   }
@@ -2729,6 +2737,7 @@ function runtimeSummaryFromFactory(snapshot: StackdFactorySnapshot | null | unde
   const pendingPull = remote.pending_pull ?? []
   const recentRemoteGardenerPasses = remote.recent_remote_gardener_passes ?? []
   const linkedSmrRuns = remote.linked_smr_runs ?? []
+  const recentRunEvents = remote.recent_run_events ?? []
   const deploymentCount = remote.deployment_count ?? deployments.length
   const hasRemoteState =
     remote.projects.length > 0 ||
@@ -2739,6 +2748,7 @@ function runtimeSummaryFromFactory(snapshot: StackdFactorySnapshot | null | unde
     pendingPull.length > 0 ||
     recentRemoteGardenerPasses.length > 0 ||
     linkedSmrRuns.length > 0 ||
+    recentRunEvents.length > 0 ||
     remote.hosted_optimizers.length > 0 ||
     remote.active_run_count > 0 ||
     remote.active_factory_count > 0 ||
@@ -2770,6 +2780,7 @@ function runtimeSummaryFromFactory(snapshot: StackdFactorySnapshot | null | unde
         pending_pull: pendingPull,
         recent_remote_gardener_passes: recentRemoteGardenerPasses,
         linked_smr_runs: linkedSmrRuns,
+        recent_run_events: recentRunEvents,
       },
       hosted_artifact_for_first: null,
     },
@@ -2793,8 +2804,9 @@ function remoteProjectsMcpFromRuntime(
   const remote = snapshot?.remote_synth
   const projects = remote?.projects ?? []
   const runtimeDeployments = remote?.deployments ?? []
+  const recentRunEvents = remote?.recent_run_events ?? []
   const deploymentCount = remote?.deployment_count ?? runtimeDeployments.length
-  if (!remote || (projects.length === 0 && deploymentCount === 0)) return undefined
+  if (!remote || (projects.length === 0 && deploymentCount === 0 && recentRunEvents.length === 0)) return undefined
   const runtimeEnvironment = runtimeRemoteEnvironment(remote, config)
   const runtimeRuns = remote.runs ?? []
   const runtimeFactories = remote.factories ?? []
@@ -2840,6 +2852,7 @@ function remoteProjectsMcpFromRuntime(
       pending_pull: remote.pending_pull ?? [],
       recent_remote_gardener_passes: remote.recent_remote_gardener_passes ?? [],
       linked_smr_runs: remote.linked_smr_runs ?? [],
+      recent_run_events: recentRunEvents,
     },
     projects: projects.map((project) => {
       const linkedRuns = project.run_ids
@@ -2905,7 +2918,8 @@ function liveSmrsMcpFromRuntime(
 ): JsonValue | undefined {
   const remote = snapshot?.remote_synth
   const runs = remote?.runs ?? []
-  if (!remote || runs.length === 0) return undefined
+  const recentRunEvents = remote?.recent_run_events ?? []
+  if (!remote || (runs.length === 0 && recentRunEvents.length === 0)) return undefined
   const runtimeEnvironment = runtimeRemoteEnvironment(remote, config)
   return toJsonValue({
     environment: runtimeEnvironment.environmentName,
@@ -2915,6 +2929,7 @@ function liveSmrsMcpFromRuntime(
     message: `runtime ${runs.length} SMR runs`,
     count: runs.length,
     control_state: snapshot.control_state,
+    recent_run_events: recentRunEvents,
     runs: runs.map((run) => ({
       run_id: run.run_id,
       project_id: run.project_id,

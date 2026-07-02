@@ -154,11 +154,27 @@ export type RemoteSmrBindingSummary = {
   actorId?: string
 }
 
+export type RemoteRunEventSummary = {
+  eventId: string
+  observedAt: string
+  messageId: string
+  projectId?: string
+  runId: string
+  status?: string
+  mode?: string
+  sender?: string
+  target?: string
+  action?: string
+  body?: string
+  createdAt?: string
+}
+
 export type RemoteSyncSnapshot = {
   pendingPush: RemoteSyncRequestSummary[]
   pendingPull: RemoteSyncRequestSummary[]
   recentRemoteGardenerPasses: RemoteGardenerPassSummary[]
   linkedSmrRuns: RemoteSmrBindingSummary[]
+  recentRunEvents: RemoteRunEventSummary[]
 }
 
 export type RemoteResearchSnapshot = {

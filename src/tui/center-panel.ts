@@ -108,8 +108,9 @@ function styleRuntimeSnapshotLine(
   const pendingPull = snapshot.remote_synth.pending_pull?.length ?? 0
   const linkedSmrRuns = snapshot.remote_synth.linked_smr_runs?.length ?? 0
   const gardenerPasses = snapshot.remote_synth.recent_remote_gardener_passes?.length ?? 0
-  const syncState = pendingPush > 0 || pendingPull > 0 || linkedSmrRuns > 0 || gardenerPasses > 0
-    ? ` sync:${pendingPush}/${pendingPull}/${linkedSmrRuns}/${gardenerPasses}`
+  const runEvents = snapshot.remote_synth.recent_run_events?.length ?? 0
+  const syncState = pendingPush > 0 || pendingPull > 0 || linkedSmrRuns > 0 || gardenerPasses > 0 || runEvents > 0
+    ? ` sync:${pendingPush}/${pendingPull}/${linkedSmrRuns}/${gardenerPasses}/${runEvents}`
     : ""
   const localRuns = snapshot.local_gepa.active_run_count > 0
     ? ` gepa:${snapshot.local_gepa.active_run_count}`
