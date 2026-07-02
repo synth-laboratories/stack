@@ -158,7 +158,7 @@ function policyModels(availability: RemoteInferenceAvailability): RemoteInferenc
       billingTier: "billed",
       provider: "baseten",
       source: "stack_policy",
-      route: "/smr/agent-models",
+      route: "/api/v1/stack-inference/openai/v1/responses",
       wire: "openai_responses",
       actorRoles: ["monitor", "gardener", "remote_gardener", "worker_opt_in"],
       blockedActorRoles: ["worker_without_explicit_profile"],
@@ -182,6 +182,7 @@ function readSynthModels(payload: unknown): RemoteInferenceModel[] {
     if (!id) continue
     const lane: RemoteInferenceLane = id.includes("nemotron") ? "free_aux" : "billed_glm"
     const promo = asRecord(record.promo)
+    const billing = asRecord(record.billing)
     const blockedActorRoles = readStringArray(record.blocked_actor_roles)
     const workerBlocked = blockedActorRoles.some((role) =>
       ["worker", "primary", "codex", "cursor"].includes(role),
@@ -198,8 +199,11 @@ function readSynthModels(payload: unknown): RemoteInferenceModel[] {
       wire: readString(record.wire),
       actorRoles: readStringArray(record.actor_roles),
       blockedActorRoles,
-      aliases: [],
-      contextWindowTokens: readNumber(record.context_window_default),
+      aliases: readStringArray(record.aliases),
+      contextWindowTokens: readNumber(record.context_window_default) ?? readNumber(record.context_window_tokens),
+      usageRequired: readBoolean(record.usage_required),
+      pricingPresent: readBoolean(record.pricing_present) ?? Boolean(billing),
+      pricing: readPricing(record.pricing) ?? readBillingPricing(billing),
       promo: promo ? { ...promo } : undefined,
       availability: "available",
       workerOptInRequired: !workerBlocked && lane === "billed_glm",
@@ -223,7 +227,7 @@ function readSmrGlmModel(payload: unknown): RemoteInferenceModel | undefined {
       billingTier: "billed",
       provider: readString(record.provider) ?? "baseten",
       source: "smr_agent_models",
-      route: "/smr/agent-models",
+      route: "/api/v1/stack-inference/openai/v1/responses",
       wire: "openai_responses",
       actorRoles: ["monitor", "gardener", "remote_gardener", "worker_opt_in"],
       blockedActorRoles: ["worker_without_explicit_profile"],
@@ -264,6 +268,20 @@ function readPricing(value: unknown): RemoteInferencePricing | undefined {
     reasoningOutputUsd: readNumber(record.reasoning_output_usd),
     source: readString(record.source),
   }
+}
+
+function readBillingPricing(value: unknown): RemoteInferencePricing | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+  return {
+    inputUsd: perMillionToTokenUsd(readNumber(record.input_usd_per_1m)),
+    outputUsd: perMillionToTokenUsd(readNumber(record.output_usd_per_1m)),
+    source: readString(record.provider) ? "synth_models_billing" : undefined,
+  }
+}
+
+function perMillionToTokenUsd(value: number | undefined): number | undefined {
+  return value === undefined ? undefined : value / 1_000_000
 }
 
 function laneOrder(lane: RemoteInferenceLane): number {

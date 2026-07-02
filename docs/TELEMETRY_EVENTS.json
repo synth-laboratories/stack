@@ -326,7 +326,10 @@
         "slash_command",
         "meta_thread",
         "handoff",
-        "optimizer_local"
+        "optimizer_local",
+        "hosted_ops",
+        "remote_sync",
+        "synth_inference"
       ]
     }
   ],

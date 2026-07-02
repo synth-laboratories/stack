@@ -1,0 +1,83 @@
+[monitor]
+id = "billed-glm"
+label = "Monitor (Synth GLM)"
+enabled = true
+mode = "observe_summarize_queue_steer"
+policy = "conservative"
+strictness = "conservative"
+
+[focus]
+selection = "any"
+style = true
+goal_progress = true
+skills = true
+tool_use = true
+scope_control = true
+acceptance = true
+
+[model]
+provider = "synth_inference"
+model = "glm-5.2"
+reasoning_effort = "low"
+
+[prompt]
+system_file = ".stack/monitors/default.system.md"
+
+[wake]
+max_wakes_per_primary_turn = 4
+on_turn_completed = true
+on_tool_completed = true
+on_tool_failed = true
+event_batch_size = 4
+event_batch_min_interval_ms = 12000
+default_interval_ms = 90000
+stale_worker_interval_ms = 300000
+delta_events = 8
+weight_threshold = 6
+cooldown_ms = 15000
+turn_cooldown_ms = 15000
+batch_cooldown_ms = 60000
+max_delay_ms = 120000
+policy_script = "scripts/monitor_wake_policy.py"
+monty_python_bin = "python3"
+
+[intervention]
+max_queued_items_per_thread = 8
+skill_context_push = "queue_or_steer"
+
+[skills]
+enabled = true
+allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack"]
+push_when_confident = false
+
+[tools]
+allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer"]
+deny = ["codex.interrupt"]
+
+[handoff_preempt]
+enabled = false
+wake_on_context_pressure = true
+context_token_threshold = 100000
+context_fraction_threshold = 0.75
+turn_threshold = 0
+idle_before_preempt_ms = 0
+min_turns_before_preempt = 6
+max_preempts_per_segment = 1
+cooldown_ms = 300000
+require_meta_thread = true
+successor_role = "same"
+successor_role_name = ""
+successor_model = ""
+successor_reasoning_effort = ""
+auto_seal = true
+auto_approve = false
+auto_continue = false
+pause_worker_before_seal = true
+segment_policy_file = ".stack/meta-threads/segment-policy.toml"
+
+[permissions]
+queue = true
+steer = true
+skill_push = true
+pause_worker = false
+block_before_action = false

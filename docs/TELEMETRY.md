@@ -105,7 +105,7 @@ Allowed local product events, subject to telemetry config:
 | `stack_first_agent_turn` | Advanced activation moment after approval. |
 | `stack_session_ended` | Advanced coarse session-length bucket after approval. |
 | `stack_session_heartbeat` | Advanced low-rate foreground session marker after approval. |
-| `stack_feature_used` | Advanced allowlisted feature adoption after approval. |
+| `stack_feature_used` | Advanced allowlisted feature adoption after approval (`goal_mode`, side panels, hosted ops, remote sync, Synth inference, local optimizer, handoff). |
 | `stack_doctor_run` | Advanced supportability and common environment failures. |
 | `stack_meta_thread_created` | Advanced continuity feature adoption. |
 | `stack_handoff_sealed` | Advanced handoff creation count by reason enum. |

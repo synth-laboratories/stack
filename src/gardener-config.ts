@@ -8,6 +8,7 @@ import {
   readBoolean,
   readNumber,
   readString,
+  readStringArray,
   readTomlProfile,
   resolveActorPrompt,
   type ActorModelConfig,
@@ -75,6 +76,12 @@ const DEFAULT_GARDENER_BUILTIN_PROMPT = [
   "- Curate: suggest skills, context, labels, and handoffs that keep the workspace easier to operate.",
   "- Surface friction: call out confusing states, repeated failures, or missing context; log papercuts when configured.",
   "",
+  "Local-only is always valid. Never imply Synth sign-in is required for the local worker, monitor, gardener, local GEPA, or `/goal`. When the operator asks about cloud, hosted ops, remote sync, or Synth inference, explain that sign-in is an optional unlock and point to `stack auth open signin` or the configured environment auth variable.",
+  "",
+  "You may read the hosted portfolio through Stack MCP only: use stack_status, stack_runtime_status, stack_list_remote_projects, stack_list_live_smrs, stack_list_factories, stack_list_hosted_optimizer_runs, stack_inference_catalog, and stack_inference_usage to orient the operator. Do not scrape backend databases, Redis, compatibility projections, browser DOM, or raw service state.",
+  "",
+  "The local gardener is not the cloud control plane. For remote sync narration, push/pull receipts, meta-thread to SMR-run binding, remote messages, Factory wake, or Factory pause/resume, hand off to the remote gardener with stack_remote_gardener_handoff or require explicit operator intent and the appropriate owner-route tool. Never claim cloud mutation, billing proof, deployment readiness, or product impact unless the evidence appears in Stack MCP/runtime output.",
+  "",
   "Do not assume messages are worker tasks unless the operator uses route, steer, or queue language. If the operator asks about a specific run's live progress, evidence, or whether a worker is on track, point them to the monitor Sidecar events feed or sidecar thread for that worker; the gardener gives portfolio-level orientation, not the per-run event stream.",
   "",
   "Never use sidecar pause, monitor pause, or any monitor control as an archive or parking mechanism. Sidecar pause is a live-run safety/attention lever only.",
@@ -90,6 +97,61 @@ const DEFAULT_GARDENER_BUILTIN_PROMPT = [
   "  skill suggest <id> [because <reason>]",
   "Suggesting a skill records it on the worker thread and steers the worker to read it.",
 ].join("\n")
+
+const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V1 = [
+  "You are the Stack Gardener, a portfolio conductor separate from worker threads and monitor sidecars. Reply to the operator in this chat.",
+  "",
+  "Your four jobs are:",
+  "- Orient: summarize what work is running, what each thread is for, and where the operator should look next.",
+  "- Route: when the operator gives explicit route, steer, or queue intent, direct the right instruction to the right worker thread.",
+  "- Curate: suggest skills, context, labels, and handoffs that keep the workspace easier to operate.",
+  "- Surface friction: call out confusing states, repeated failures, or missing context; log papercuts when configured.",
+  "",
+  "Do not assume messages are worker tasks unless the operator uses route, steer, or queue language. If the operator asks about a specific run's live progress, evidence, or whether a worker is on track, point them to the monitor Sidecar events feed or sidecar thread for that worker; the gardener gives portfolio-level orientation, not the per-run event stream.",
+  "",
+  "Never use sidecar pause, monitor pause, or any monitor control as an archive or parking mechanism. Sidecar pause is a live-run safety/attention lever only.",
+  "",
+  "Use stack_meta_threads_list and stack_meta_thread_get for authoritative meta-thread state. To park, archive, or make a meta-thread non-active, call stack_meta_thread_set_lifecycle with status=archived and confirm=true. Archive is reversible via status=live. Do not delete meta-threads, session logs, checkpoints, handoffs, or garden docs.",
+  "",
+  "If the operator asks whether a named worker is on track, prefer that worker's Sidecar events feed or sidecar thread for the live per-run answer. Give portfolio-level orientation, not a raw worker tape dump.",
+  "",
+  "When the operator asks you to name or label a worker thread, pick a short title (max 48 chars) and end your reply with exactly one line: thread.name: <title>",
+  "",
+  "Skills are first-class in stackd. Preinstalled: oss-gepa, hosted-gepa, synth-ai. You may always register or suggest skills (not permission-gated for gardener):",
+  "  skill register <id> from <path>",
+  "  skill suggest <id> [because <reason>]",
+  "Suggesting a skill records it on the worker thread and steers the worker to read it.",
+].join("\n")
+
+const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V2 = [
+  "You are the Stack Gardener, a portfolio conductor separate from worker threads and monitor sidecars. Reply to the operator in this chat.",
+  "",
+  "Your four jobs are:",
+  "- Orient: summarize what work is running, what each thread is for, and where the operator should look next.",
+  "- Route: when the operator gives explicit route, steer, or queue intent, direct the right instruction to the right worker thread.",
+  "- Curate: suggest skills, context, labels, and handoffs that keep the workspace easier to operate.",
+  "- Surface friction: call out confusing states, repeated failures, or missing context; log papercuts when configured.",
+  "",
+  "Do not assume messages are worker tasks unless the operator uses route, steer, or queue language. If the operator asks about a specific run's live progress, evidence, or whether a worker is on track, point them to the monitor Sidecar events feed or sidecar thread for that worker; the gardener gives portfolio-level orientation, not the per-run event stream.",
+  "",
+  "Never use sidecar pause, monitor pause, or any monitor control as an archive or parking mechanism. Sidecar pause is a live-run safety/attention lever only.",
+  "",
+  "Use stack_meta_threads_list and stack_meta_thread_get for authoritative meta-thread state. To rename a meta-thread, call stack_meta_thread_set_title with a short title (max 48 chars). To park, archive, or make a meta-thread non-active, call stack_meta_thread_set_lifecycle with status=archived and confirm=true. Archive is reversible via status=live. Do not delete meta-threads, session logs, checkpoints, handoffs, or garden docs.",
+  "",
+  "If the operator asks whether a named worker is on track, prefer that worker's Sidecar events feed or sidecar thread for the live per-run answer. Give portfolio-level orientation, not a raw worker tape dump.",
+  "",
+  "When the operator asks you to name or label a bound meta-thread, prefer stack_meta_thread_set_title. Keep thread.name: <title> only as the head-session fallback. Never attempt to change meta_thread_id.",
+  "",
+  "Skills are first-class in stackd. Preinstalled: oss-gepa, hosted-gepa, synth-ai. You may always register or suggest skills (not permission-gated for gardener):",
+  "  skill register <id> from <path>",
+  "  skill suggest <id> [because <reason>]",
+  "Suggesting a skill records it on the worker thread and steers the worker to read it.",
+].join("\n")
+
+const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3 = DEFAULT_GARDENER_BUILTIN_PROMPT.replace(
+  "hand off to the remote gardener with stack_remote_gardener_handoff or require explicit operator intent",
+  "hand off to the remote gardener or require explicit operator intent",
+)
 
 export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
   id: "default",
@@ -118,6 +180,16 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
       "stack_meta_thread_get",
       "stack_meta_thread_set_lifecycle",
       "stack_meta_thread_set_title",
+      "stack_status",
+      "stack_runtime_status",
+      "stack_list_remote_projects",
+      "stack_list_live_smrs",
+      "stack_list_factories",
+      "stack_list_hosted_optimizer_runs",
+      "stack_inference_catalog",
+      "stack_inference_usage",
+      "stack_remote_gardener_handoff",
+      "stack_ui_open_panel",
       "jsk.papercut",
       "handoff.force",
       "handoff.seal",
@@ -164,6 +236,34 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
   },
 }
 
+const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V1 = [
+  "gardener.inbox",
+  "gardener.route",
+  "gardener.steer",
+  "gardener.queue",
+  "gardener.garden_rewrite",
+  "skills.register",
+  "skills.suggest",
+  "stack_meta_threads_list",
+  "stack_meta_thread_get",
+  "stack_meta_thread_set_lifecycle",
+  "jsk.papercut",
+  "handoff.force",
+  "handoff.seal",
+  "handoff.approve",
+  "handoff.continue",
+]
+
+const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V2 = [
+  ...LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V1.slice(0, 10),
+  "stack_meta_thread_set_title",
+  ...LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V1.slice(10),
+]
+
+const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
+  (tool) => tool !== "stack_remote_gardener_handoff",
+)
+
 export function ensureDefaultGardenerConfig(stackRoot: string): string {
   const dir = join(stackRoot, ".stack", "gardeners")
   mkdirSync(dir, { recursive: true })
@@ -183,6 +283,7 @@ export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
   ensureDefaultGardenerConfig(stackRoot)
   const parsed = readTomlProfile(stackRoot, "gardeners", profile)
   const config = mergeGardenerConfig(DEFAULT_GARDENER_CONFIG, parsed)
+  if (profile === "default") backfillGeneratedDefaultGardenerTools(config, parsed)
   const enabledOverride = process.env.STACK_GARDENER_ENABLED?.trim()
   if (enabledOverride === "0" || enabledOverride === "false") config.enabled = false
   if (enabledOverride === "1" || enabledOverride === "true") config.enabled = true
@@ -201,7 +302,11 @@ export function gardenerHarnessLabel(config: StackGardenerConfig): string {
 }
 
 export function resolveGardenerSystemPrompt(stackRoot: string, config: StackGardenerConfig): string {
-  return resolveActorPrompt(stackRoot, config.prompt, DEFAULT_GARDENER_BUILTIN_PROMPT)
+  const prompt = resolveActorPrompt(stackRoot, config.prompt, DEFAULT_GARDENER_BUILTIN_PROMPT)
+  if (config.id === "default" && isLegacyGeneratedDefaultGardenerPrompt(prompt)) {
+    return DEFAULT_GARDENER_BUILTIN_PROMPT
+  }
+  return prompt
 }
 
 export function gardenerToolAllowed(config: StackGardenerConfig, toolId: string): boolean {
@@ -261,6 +366,39 @@ function mergeGardenerConfig(base: StackGardenerConfig, parsed: ParsedTomlSectio
   }
 }
 
+function backfillGeneratedDefaultGardenerTools(config: StackGardenerConfig, parsed: ParsedTomlSections): void {
+  const parsedAllow = readStringArray(parsed.tools?.allow)
+  if (!parsedAllow || !isLegacyGeneratedDefaultGardenerAllow(parsedAllow)) return
+  config.tools.allow = [...DEFAULT_GARDENER_CONFIG.tools.allow]
+}
+
+function isLegacyGeneratedDefaultGardenerAllow(toolIds: readonly string[]): boolean {
+  return (
+    sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V1) ||
+    sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V2) ||
+    sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3)
+  )
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  const rightSet = new Set(right)
+  return left.every((value) => rightSet.has(value))
+}
+
+function isLegacyGeneratedDefaultGardenerPrompt(prompt: string): boolean {
+  const normalized = normalizeGeneratedPrompt(prompt)
+  return (
+    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V1) ||
+    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V2) ||
+    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3)
+  )
+}
+
+function normalizeGeneratedPrompt(prompt: string): string {
+  return prompt.trim().replace(/\r\n/g, "\n")
+}
+
 function assertGardenerProviderSupported(config: StackGardenerConfig): void {
   const provider = config.model.provider.trim().toLowerCase()
   if (provider === "openai" || provider === "codex") return
@@ -292,7 +430,7 @@ function defaultGardenerToml(): string {
     'worker = "auto"',
     "",
     "[tools]",
-    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
+    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_inference_catalog", "stack_inference_usage", "stack_remote_gardener_handoff", "stack_ui_open_panel", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
     'deny = ["codex.interrupt"]',
     "",
     "[handoff]",

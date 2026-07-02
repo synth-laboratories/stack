@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
-import { dirname, resolve } from "node:path"
+import { dirname, join, resolve } from "node:path"
 import {
   environmentAuthStatus,
   loadConfig,
@@ -98,6 +99,7 @@ import {
   type RemoteRunDetail,
   type RemoteSmrRunSummary,
 } from "../remote/research.js"
+import { emitFeatureUsed } from "../telemetry/funnel.js"
 import { STACK_MCP_SERVER_NAME, printStackVersion, stackVersion, wantsVersionFlag } from "../version.js"
 
 type JsonValue = null | boolean | number | string | JsonValue[] | { [key: string]: JsonValue }
@@ -120,13 +122,27 @@ type ParsedMessage = {
 
 const PROTOCOL_VERSION = "2024-11-05"
 const SERVER_NAME = STACK_MCP_SERVER_NAME
+const MCP_TOOL_ALLOW_ENV = "STACK_MCP_TOOL_ALLOW"
+const MCP_TOOL_DENY_ENV = "STACK_MCP_TOOL_DENY"
+const MCP_TOOL_ALLOWED_TOOLS_ENV = "STACK_MCP_ALLOWED_TOOLS"
+const MCP_TOOL_DENIED_TOOLS_ENV = "STACK_MCP_DENIED_TOOLS"
+
+type McpToolFilter = {
+  allow?: Set<string>
+  deny: Set<string>
+}
 
 export class StackMcpServer {
   private readonly tools: Map<string, ToolDefinition>
   private httpMode = false
 
   constructor(private readonly appRoot: string) {
-    this.tools = new Map(buildTools(this).map((tool) => [tool.name, tool]))
+    const filter = mcpToolFilterFromEnv()
+    this.tools = new Map(
+      buildTools(this)
+        .filter((tool) => mcpToolAllowed(tool.name, filter))
+        .map((tool) => [tool.name, tool]),
+    )
   }
 
   async handleJsonRpc(request: JsonObject): Promise<JsonObject | undefined> {
@@ -572,6 +588,7 @@ export class StackMcpServer {
   async agentStatus(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const mode = optionalBridgeMode(args) ?? "all"
+    if (mode !== "local") void emitFeatureUsed("hosted_ops")
     const auth = environmentAuthStatus(config.environment)
     const [local, runtime, telemetry] = await Promise.all([
       mode === "remote" ? Promise.resolve(undefined) : readOptimizerSnapshot(config),
@@ -681,6 +698,7 @@ export class StackMcpServer {
 
   async listLiveSmrs(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    void emitFeatureUsed("hosted_ops")
     const tick = optionalBoolean(args, "tick") ?? false
     const runtime = tick
       ? await stackdRuntimeTick().catch(() => undefined)
@@ -786,6 +804,8 @@ export class StackMcpServer {
 
   async listRemoteProjects(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    void emitFeatureUsed("hosted_ops")
+    void emitFeatureUsed("remote_sync")
     const tick = optionalBoolean(args, "tick") ?? false
     const runtime = tick
       ? await stackdRuntimeTick().catch(() => undefined)
@@ -937,6 +957,7 @@ export class StackMcpServer {
 
   async requestRemoteSync(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    void emitFeatureUsed("remote_sync")
     const direction = requiredString(args, "direction")
     if (direction !== "push" && direction !== "pull") {
       throw new RpcError(-32602, "direction must be push or pull")
@@ -999,8 +1020,132 @@ export class StackMcpServer {
     }) ?? null
   }
 
+  async handoffRemoteGardener(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    void emitFeatureUsed("remote_sync")
+    const threadId = requiredString(args, "thread_id")
+    const reason = requiredString(args, "reason")
+    const actorRole = optionalString(args, "actor_role") ?? "gardener"
+    if (actorRole !== "gardener" && actorRole !== "operator") {
+      throw new RpcError(-32602, "actor_role must be gardener or operator")
+    }
+    const actorId = optionalString(args, "actor_id") ?? (actorRole === "gardener" ? "gardener_default" : "operator")
+    const remoteGardenerId = optionalString(args, "remote_gardener_id") ?? "remote_gardener_default"
+    const metaThreadId = optionalString(args, "meta_thread_id")
+    const projectId = optionalString(args, "project_id")
+    const runId = optionalString(args, "run_id")
+    const factoryId = optionalString(args, "factory_id")
+    const deploymentId = optionalString(args, "deployment_id")
+    ensureRemoteGardenerActorState(config.stackDataRoot, threadId, remoteGardenerId)
+    const observedAt = new Date().toISOString()
+    const handoffEvent = {
+      event_id: stackEventId("remote_gardener_handoff"),
+      type: "gardener.remote_handoff_requested",
+      thread_id: threadId,
+      observed_at: observedAt,
+      actor_id: actorId,
+      actor_role: actorRole === "gardener" ? "gardener" as const : "system" as const,
+      meta_thread_id: metaThreadId,
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        reason,
+        note: optionalString(args, "note") ?? null,
+        actor_role: actorRole,
+        actor_id: actorId,
+        remote_gardener_id: remoteGardenerId,
+        project_id: projectId ?? null,
+        run_id: runId ?? null,
+        factory_id: factoryId ?? null,
+        deployment_id: deploymentId ?? null,
+        source: "stack_remote_gardener_handoff",
+      },
+    }
+    const triggerEvent = {
+      event_id: stackEventId("remote_gardener_trigger_queued"),
+      type: "remote_gardener.trigger_queued",
+      thread_id: threadId,
+      observed_at: observedAt,
+      actor_id: remoteGardenerId,
+      actor_role: "remote_gardener" as const,
+      meta_thread_id: metaThreadId,
+      payload: {
+        wake_reason: "local_gardener_handoff",
+        reason,
+        trigger_event_ids: [handoffEvent.event_id],
+        queued_for: "remote-gardener-pass",
+        requested_by_actor_role: actorRole,
+        requested_by_actor_id: actorId,
+        project_id: projectId ?? null,
+        run_id: runId ?? null,
+        factory_id: factoryId ?? null,
+        deployment_id: deploymentId ?? null,
+        source: "stack_remote_gardener_handoff",
+      },
+    }
+    const handoffPath = appendThreadMetaEvent(config.stackDataRoot, handoffEvent)
+    appendThreadMetaEvent(config.stackDataRoot, triggerEvent)
+    const subject = remoteGardenerHandoffSubject({
+      actorId: remoteGardenerId,
+      projectId,
+      runId,
+      factoryId,
+      deploymentId,
+      metaThreadId,
+    })
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.remote_gardener.wake_requested",
+      source: "lever.gardener",
+      subject,
+      correlation: {
+        stack_session_id: threadId,
+        project_id: projectId ?? undefined,
+        run_id: runId ?? undefined,
+        factory_id: factoryId ?? undefined,
+        deployment_id: deploymentId ?? undefined,
+      },
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        actor_role: actorRole,
+        actor_id: actorId,
+        remote_gardener_id: remoteGardenerId,
+        thread_id: threadId,
+        meta_thread_id: metaThreadId ?? null,
+        project_id: projectId ?? null,
+        run_id: runId ?? null,
+        factory_id: factoryId ?? null,
+        deployment_id: deploymentId ?? null,
+        reason,
+        note: optionalString(args, "note") ?? null,
+        handoff_event_id: handoffEvent.event_id,
+        trigger_event_id: triggerEvent.event_id,
+        source: "stack_remote_gardener_handoff",
+      },
+    })
+    return toJsonValue({
+      ok: runtimeEvent.ok,
+      receipt: "lever.remote_gardener.wake_requested",
+      thread_id: threadId,
+      meta_thread_id: metaThreadId ?? null,
+      remote_gardener_id: remoteGardenerId,
+      handoff_event: {
+        event_id: handoffEvent.event_id,
+        event_type: handoffEvent.type,
+        thread_event_log_path: handoffPath,
+      },
+      trigger_event: {
+        event_id: triggerEvent.event_id,
+        event_type: triggerEvent.type,
+        thread_event_log_path: handoffPath,
+      },
+      runtime_event: runtimeEvent,
+    }) ?? null
+  }
+
   async recordRemoteGardenerPass(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    void emitFeatureUsed("remote_sync")
     const actorRole = optionalString(args, "actor_role") ?? "remote_gardener"
     if (actorRole !== "remote_gardener" && actorRole !== "gardener" && actorRole !== "operator") {
       throw new RpcError(-32602, "actor_role must be remote_gardener, gardener, or operator")
@@ -1052,6 +1197,37 @@ export class StackMcpServer {
         source: "stack_remote_gardener_pass",
       },
     })
+    let threadWakeEvent: Record<string, unknown> | null = null
+    if (threadId && actorRole === "remote_gardener") {
+      const triggerEventIds = unconsumedRemoteGardenerTriggerIds(
+        readThreadMetaEvents(config.stackDataRoot, threadId),
+        actorId,
+      )
+      if (triggerEventIds.length > 0) {
+        ensureRemoteGardenerActorState(config.stackDataRoot, threadId, actorId)
+        const event = {
+          event_id: stackEventId("remote_gardener_wake"),
+          type: "remote_gardener.wake",
+          thread_id: threadId,
+          observed_at: new Date().toISOString(),
+          actor_id: actorId,
+          actor_role: "remote_gardener" as const,
+          meta_thread_id: metaThreadId,
+          payload: {
+            wake_reason: "local_gardener_handoff",
+            trigger_event_ids: triggerEventIds,
+            runtime_event: runtimeEvent,
+            source: "stack_remote_gardener_pass",
+          },
+        }
+        const path = appendThreadMetaEvent(config.stackDataRoot, event)
+        threadWakeEvent = {
+          event_id: event.event_id,
+          event_type: event.type,
+          thread_event_log_path: path,
+        }
+      }
+    }
     let threadEvent: Record<string, unknown> | null = null
     if (threadId) {
       const event = {
@@ -1080,17 +1256,20 @@ export class StackMcpServer {
       receipt: "lever.remote_gardener.pass_recorded",
       pass,
       runtime_event: runtimeEvent,
+      thread_wake_event: threadWakeEvent,
       thread_event: threadEvent,
     }) ?? null
   }
 
   async inferenceCatalog(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    void emitFeatureUsed("synth_inference")
     return toJsonValue(await readRemoteInferenceCatalog(config)) ?? null
   }
 
   async inferenceUsage(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    void emitFeatureUsed("synth_inference")
     return toJsonValue(await readRemoteInferenceUsage(config)) ?? null
   }
 
@@ -1240,6 +1419,7 @@ export class StackMcpServer {
 
   async listFactories(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    void emitFeatureUsed("hosted_ops")
     const tick = optionalBoolean(args, "tick") ?? false
     const runtime = tick
       ? await stackdRuntimeTick().catch(() => undefined)
@@ -1271,6 +1451,7 @@ export class StackMcpServer {
 
   async listHostedOptimizerRuns(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    void emitFeatureUsed("hosted_ops")
     const tick = optionalBoolean(args, "tick") ?? false
     const runtime = tick
       ? await stackdRuntimeTick().catch(() => undefined)
@@ -2142,6 +2323,29 @@ export class StackMcpServer {
   }
 }
 
+function mcpToolFilterFromEnv(): McpToolFilter {
+  return {
+    allow: readMcpToolSet(process.env[MCP_TOOL_ALLOW_ENV] ?? process.env[MCP_TOOL_ALLOWED_TOOLS_ENV]),
+    deny: readMcpToolSet(process.env[MCP_TOOL_DENY_ENV] ?? process.env[MCP_TOOL_DENIED_TOOLS_ENV]) ?? new Set(),
+  }
+}
+
+function readMcpToolSet(value: string | undefined): Set<string> | undefined {
+  if (value === undefined) return undefined
+  const toolIds = value
+    .split(/[\s,]+/)
+    .map((part) => part.trim())
+    .filter(Boolean)
+  if (toolIds.length === 0) return undefined
+  return new Set(toolIds)
+}
+
+function mcpToolAllowed(name: string, filter: McpToolFilter): boolean {
+  if (filter.deny.has(name)) return false
+  if (filter.allow && !filter.allow.has(name)) return false
+  return true
+}
+
 function runDetailToMcp(detail: RemoteRunDetail): JsonObject {
   return toJsonValue({
     run_id: detail.runId,
@@ -2237,6 +2441,22 @@ function remoteSyncSubject(input: {
   return { kind: "remote_sync_request", id: input.intent }
 }
 
+function remoteGardenerHandoffSubject(input: {
+  actorId: string
+  projectId?: string
+  runId?: string
+  factoryId?: string
+  deploymentId?: string
+  metaThreadId?: string
+}): { kind: string; id: string } {
+  if (input.deploymentId) return { kind: "remote_deployment", id: input.deploymentId }
+  if (input.factoryId) return { kind: "remote_factory", id: input.factoryId }
+  if (input.runId) return { kind: "remote_smr_run", id: input.runId }
+  if (input.projectId) return { kind: "remote_project", id: input.projectId }
+  if (input.metaThreadId) return { kind: "meta_thread", id: input.metaThreadId }
+  return { kind: "remote_gardener", id: input.actorId }
+}
+
 function remoteGardenerPassSubject(input: {
   actorId: string
   projectId?: string
@@ -2251,6 +2471,55 @@ function remoteGardenerPassSubject(input: {
   if (input.projectId) return { kind: "remote_project", id: input.projectId }
   if (input.metaThreadId) return { kind: "meta_thread", id: input.metaThreadId }
   return { kind: "remote_gardener_pass", id: input.actorId }
+}
+
+function unconsumedRemoteGardenerTriggerIds(events: Array<{ type: string; actor_id?: string; event_id: string; payload: Record<string, unknown> }>, actorId: string): string[] {
+  const queued: string[] = []
+  for (const event of events) {
+    if (event.actor_id !== actorId) continue
+    if (event.type !== "remote_gardener.trigger_queued" && event.type !== "remote_gardener.wake") continue
+    const ids = Array.isArray(event.payload.trigger_event_ids)
+      ? event.payload.trigger_event_ids.filter((value): value is string => typeof value === "string")
+      : []
+    if (event.type === "remote_gardener.trigger_queued") {
+      for (const id of ids) if (!queued.includes(id)) queued.push(id)
+    } else {
+      for (const id of ids) {
+        const index = queued.indexOf(id)
+        if (index >= 0) queued.splice(index, 1)
+      }
+    }
+  }
+  return queued
+}
+
+function ensureRemoteGardenerActorState(stackRoot: string, threadId: string, actorId: string): void {
+  const dir = join(stackRoot, ".stack", "actors", safeStackPathSegment(threadId), "remote_gardeners")
+  const safeActorId = safeStackPathSegment(actorId)
+  const path = join(dir, `${safeActorId}.json`)
+  if (existsSync(path)) return
+  mkdirSync(dir, { recursive: true })
+  writeFileSync(
+    path,
+    `${JSON.stringify(
+      {
+        schema: "stack/remote-gardener-actor-state/v1",
+        thread_id: threadId,
+        actor_id: actorId,
+        state: "idle",
+        wake_counts: 0,
+        queue_counts: 0,
+      },
+      null,
+      2,
+    )}\n`,
+  )
+}
+
+function safeStackPathSegment(value: string): string {
+  const safe = value.trim().replace(/[^A-Za-z0-9_.-]/g, "_")
+  if (!safe || safe === "." || safe === "..") throw new RpcError(-32602, `invalid path segment: ${value}`)
+  return safe
 }
 
 function remoteGardenerPassDigest(
@@ -2943,6 +3212,29 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["direction", "intent"],
       ),
       handler: (args) => server.requestRemoteSync(args),
+    },
+    {
+      name: "stack_remote_gardener_handoff",
+      description:
+        "Record a local-gardener to remote-gardener handoff and queue a remote gardener wake. This writes local thread events plus a stackd runtime receipt; it does not mutate cloud state.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Local Stack thread/session id where the handoff happened."),
+          meta_thread_id: stringProperty("Optional local Stack meta-thread id for correlation."),
+          reason: stringProperty("Short reason the local gardener is escalating cloud/sync confusion."),
+          note: stringProperty("Optional operator-facing handoff note."),
+          project_id: stringProperty("Optional Synth project id."),
+          run_id: stringProperty("Optional SMR run id."),
+          factory_id: stringProperty("Optional Factory id."),
+          deployment_id: stringProperty("Optional cloud deployment id."),
+          actor_id: stringProperty("Optional local gardener actor id. Defaults to gardener_default."),
+          actor_role: enumProperty(["gardener", "operator"], "Who is requesting the handoff. Defaults to gardener."),
+          remote_gardener_id: stringProperty("Optional remote gardener actor id. Defaults to remote_gardener_default."),
+        },
+        ["thread_id", "reason"],
+      ),
+      handler: (args) => server.handoffRemoteGardener(args),
     },
     {
       name: "stack_remote_gardener_pass",

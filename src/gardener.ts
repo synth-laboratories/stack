@@ -27,6 +27,8 @@ import {
 export type { StackGardenerConfig } from "./gardener-config.js"
 export { DEFAULT_GARDENER_CONFIG, loadGardenerConfig } from "./gardener-config.js"
 
+const NO_STACK_MCP_TOOLS_SENTINEL = "__stack_no_mcp_tools__"
+
 /** @deprecated Use loadGardenerConfig(stackRoot).model.model */
 export function gardenerCodexModel(stackRoot: string): string {
   return loadGardenerConfig(stackRoot).model.model
@@ -67,6 +69,30 @@ export function applyGardenerHarnessToConfig(config: StackConfig, gardenerConfig
   setCodexModel(config, resolved.model.model)
   setCodexReasoningEffort(config, resolved.model.reasoningEffort)
   refreshCodexArgs(config)
+  applyGardenerMcpToolFilter(config, resolved)
+}
+
+function applyGardenerMcpToolFilter(config: StackConfig, gardenerConfig: StackGardenerConfig): void {
+  if (!config.stackMcpEnabled || !config.stackMcpCommand || config.codexArgsLocked) return
+  const allowed = stackMcpToolIds(gardenerConfig.tools.allow)
+  const denied = stackMcpToolIds(gardenerConfig.tools.deny)
+  if (gardenerConfig.tools.allow.length > 0) {
+    const allowValue = allowed.length > 0 ? allowed.join(",") : NO_STACK_MCP_TOOLS_SENTINEL
+    config.codexArgs.push(
+      "-c",
+      `mcp_servers.stack_live_ops.env.STACK_MCP_TOOL_ALLOW=${JSON.stringify(allowValue)}`,
+    )
+  }
+  if (denied.length > 0) {
+    config.codexArgs.push(
+      "-c",
+      `mcp_servers.stack_live_ops.env.STACK_MCP_TOOL_DENY=${JSON.stringify(denied.join(","))}`,
+    )
+  }
+}
+
+function stackMcpToolIds(toolIds: readonly string[]): string[] {
+  return [...new Set(toolIds.filter((toolId) => toolId.startsWith("stack_")))]
 }
 
 export function restoreSessionHarnessToConfig(config: StackConfig, session: StackLocalSession): void {

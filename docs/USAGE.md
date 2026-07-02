@@ -330,6 +330,9 @@ The server reads `stack.config.json` and supports both JSONL and
   project/run hints
 - `stack_list_hosted_optimizer_runs`: list hosted optimizer runs with selected
   detail, artifact names, events, and cancellation hints
+- `stack_list_remote_projects`: list hosted projects from the stackd runtime
+  snapshot when available, including linked runs, Factories, deployments, and
+  remote-sync receipt summaries
 - `stack_launch_read_smoke`: launch the configured README-smoke SMR eval
 - `stack_live_status`: account health, live SMR runs, Factories, hosted
   optimizer runs, and README-smoke launch state
@@ -337,6 +340,16 @@ The server reads `stack.config.json` and supports both JSONL and
 - `stack_message_factory_project`: send an operator message through the
   Factory-owned message route
 - `stack_control_live_run`: pause, resume, or stop a live SMR run
+- `stack_wake_factory`: request a confirmed Factory wake through the Factory
+  owner route and record a Stack receipt
+- `stack_control_factory`: pause or resume a Factory through the Factory owner
+  route and record a Stack receipt
+- `stack_meta_thread_bind_smr_run`: bind a local meta-thread to a hosted SMR
+  run and emit cross-navigation receipts
+- `stack_remote_sync_request`: record a bounded push or pull request receipt
+  for remote gardener review
+- `stack_remote_gardener_pass`: record remote gardener sync narration and the
+  next safe action in the local thread event stream
 - `stack_cancel_hosted_optimizer`: cancel a hosted optimizer run
 - `stack_preview_hosted_optimizer_artifact`: preview bounded text from a hosted
   optimizer artifact through the optimizer owner route
@@ -391,6 +404,11 @@ The server reads `stack.config.json` and supports both JSONL and
 - `stack_guidance_events`: list the local guidance SQLite event ledger
 - `stack_skills_push_context`: record a visible monitor-to-primary skill context
   push and append it to the thread meta-harness event log
+- `stack_inference_catalog`: list Synth inference lanes visible to Stack,
+  including free aux, billed GLM, billing tier, role eligibility, and the
+  primary-worker opt-in invariant
+- `stack_inference_usage`: read Synth inference usage and free-aux budget
+  summaries from backend owner endpoints without prompts or transcripts
 
 Codex should load **`synth-stack-productivity`** first, then domain skills:
 
@@ -563,6 +581,73 @@ stack auth test signin              # optional Playwright harness (testing repo)
 
 Signup/signin URLs carry `product=stack` for activation funnel rollup. Synth sign-in remains
 optional for local goal mode — `stack doctor` reports `synth_sign_in_optional: true`.
+
+### Local-only and hosted unlocks
+
+Stack's local path does not require a Synth account. A signed-out install can
+launch the cockpit, run the local Codex worker, use `/goal`, read local threads,
+start local GEPA when installed, and inspect local receipts. Hosted SMR,
+Factory, hosted optimizers, remote sync, and Synth inference catalog calls show
+point-of-need connect copy instead of blocking boot.
+
+`stack doctor --json` reports both sides:
+
+- `local_ready=true` means the local cockpit path is usable.
+- `synth_sign_in_optional=true` means missing Synth auth is not a local blocker.
+- The inference section says the primary worker remains Codex/BYOK unless an
+  explicit Synth inference profile opts in.
+
+Use `stack auth open signin` when you want cloud features. Keep keys in the
+environment or `authEnvFile`; do not paste them into prompts, tickets, or logs.
+
+### Local to cloud sync
+
+stackd is the local to cloud boundary. Remote sensors observe hosted projects,
+SMR runs, Factories, deployments, and hosted optimizers through backend owner
+routes, then reduce events into the runtime snapshot. TUI and MCP surfaces read
+that snapshot first.
+
+Stack-side levers record receipts such as:
+
+- `lever.remote.push_requested` and `lever.remote.pull_requested`
+- `lever.remote_gardener.pass_recorded`
+- `lever.remote_smr.run.bound`
+- `lever.remote_factory.wake_requested`
+- `lever.remote_factory.paused` and `lever.remote_factory.resumed`
+
+Those receipts are local audit records. They do not claim that the laptop owns
+cloud scheduling or backend persistence. Cloud mutations still go through typed
+owner routes and require explicit confirmation.
+
+### Synth inference through Stack
+
+Stack exposes Synth inference as an optional hosted lane. The default worker
+stays Codex/BYOK.
+
+```bash
+stack inference list
+stack inference usage
+stack inference list --json
+stack inference usage --json
+```
+
+The catalog has two lanes when the backend route is deployed:
+
+| Lane | Route | Default roles |
+| --- | --- | --- |
+| Free aux | `/api/v1/stack-aux/openai/v1/responses` | monitor, gardener, remote gardener, aux |
+| Billed GLM | `/api/v1/stack-inference/openai/v1/responses` | monitor, gardener, remote gardener; worker only with explicit opt-in |
+
+Monitor profiles are opt-in:
+
+```bash
+STACK_AUX_INFERENCE=1 STACK_MONITOR_PROFILE=free-aux stack
+STACK_SYNTH_INFERENCE=1 STACK_MONITOR_PROFILE=billed-glm stack
+```
+
+If a selected Synth monitor route is unavailable, Stack falls back to the Codex
+app-server monitor and records a visible fallback notice. Usage views show
+spend/budget summaries only; they do not include prompts or transcripts.
 
 Optional: install [synth-optimizers](https://pypi.org/project/synth-optimizers/) for local GEPA.
 Advanced Synth monorepo eval wrappers are optional — set `STACK_SYNTH_DEV_ROOT` and

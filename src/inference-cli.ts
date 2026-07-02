@@ -1,6 +1,7 @@
 import type { StackConfig } from "./config.js"
 import { readRemoteInferenceCatalog, type RemoteInferenceCatalogSnapshot } from "./remote/inference.js"
 import { readRemoteInferenceUsage, type RemoteInferenceUsageSnapshot } from "./remote/inference-usage.js"
+import { emitFeatureUsed } from "./telemetry/funnel.js"
 
 export async function runInferenceCli(config: StackConfig, argv: string[]): Promise<number> {
   const [, action] = argv
@@ -10,6 +11,7 @@ export async function runInferenceCli(config: StackConfig, argv: string[]): Prom
   }
 
   if (action === "usage") {
+    void emitFeatureUsed("synth_inference")
     const usage = await readRemoteInferenceUsage(config)
     if (argv.includes("--json")) {
       console.log(JSON.stringify(usage, null, 2))
@@ -19,6 +21,7 @@ export async function runInferenceCli(config: StackConfig, argv: string[]): Prom
     return usage.status === "offline" ? 1 : 0
   }
 
+  void emitFeatureUsed("synth_inference")
   const snapshot = await readRemoteInferenceCatalog(config)
   if (argv.includes("--json")) {
     console.log(JSON.stringify(snapshot, null, 2))

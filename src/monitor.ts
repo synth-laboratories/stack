@@ -19,7 +19,7 @@ import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
 import { detectRiskyPending, riskyPendingSummary } from "./risky-action.js"
 import { enrichGoalTaskContext } from "./codex/goal-task-contract.js"
 import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
-import { runMonitorSynthAuxTurn } from "./monitor-synth-aux.js"
+import { runMonitorSynthAuxTurn, runMonitorSynthInferenceTurn } from "./monitor-synth-aux.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import { readMetaThreadManifest } from "./meta-thread-goal.js"
 import {
@@ -545,7 +545,7 @@ type SidecarChatReplyResult = {
   citedEventIds: string[]
   criteriaRefs: number[]
   operatorUpdate?: MonitorOperatorUpdate
-  source: "codex-app-server" | "synth-aux"
+  source: "codex-app-server" | "synth-aux" | "synth-inference"
   monitorCodexThreadId?: string
 }
 
@@ -2080,7 +2080,7 @@ type MonitorPassResult = {
   operatorUpdate?: MonitorOperatorUpdate
   workerSteerMessage?: string
   userProgressUpdate?: string
-  source: "codex-app-server" | "synth-aux"
+  source: "codex-app-server" | "synth-aux" | "synth-inference"
   monitorThreadId?: string
   monitorCodexThreadId?: string
   usage?: MonitorUsageEstimate
@@ -2127,7 +2127,7 @@ export type MonitorUsageEstimate = {
   estimatedSpendUsd?: number
 }
 
-async function runMonitorPass(input: {
+type MonitorPassInput = {
   stackConfig: StackConfig
   stackRoot: string
   config: StackMonitorConfig
@@ -2142,46 +2142,102 @@ async function runMonitorPass(input: {
   agentContext: AgentContextSnapshot
   goalContext: CodexGoalSnapshot
   checks: FocusCheck[]
-}): Promise<MonitorPassResult> {
+}
+
+async function runMonitorPass(input: MonitorPassInput): Promise<MonitorPassResult> {
   if (input.config.model.provider.trim().toLowerCase() === "synth_aux") {
-    const aux = await runMonitorSynthAuxTurn({
-      stackConfig: input.stackConfig,
-      monitorConfig: input.config,
-      threadId: input.threadId,
-      actorId: input.actorState.monitor_actor_id,
-      wakeId: input.wakeId,
-      wakeReason: input.wakeReason,
-      triggerEventIds: input.triggerEventIds,
-      priorEvents: input.priorEvents,
-      pendingEvents: input.pendingEvents,
-      goalContext: input.goalContext,
-    })
-    const summary = aux.assistantText?.trim()
-    if (!summary) {
-      throw new Error("Synth aux monitor completed without an assistant message")
-    }
-    const directives = parseSidecarDirectives(summary)
-    return {
-      checks: input.checks,
-      severity: combineSeverity(input.config, input.checks),
-      summary,
-      queueItems: queueItemsFor(input.config, input.checks),
-      checkpointSummary: summary,
-      operatorUpdate: directives.progressUpdate
-        ? {
-            working_on: input.goalContext.objective,
-            progress_note: directives.progressUpdate,
-            goal_status: input.goalContext.status ?? "active",
-            criteria_progress: criteriaProgressFromGoal(input.goalContext),
-          }
-        : undefined,
-      workerSteerMessage: directives.steerMessage,
-      userProgressUpdate: directives.progressUpdate,
-      source: "synth-aux",
-      usage: aux.usage ?? estimateMonitorUsage(input.pendingEvents, summary),
+    try {
+      const aux = await runMonitorSynthAuxTurn({
+        stackConfig: input.stackConfig,
+        monitorConfig: input.config,
+        threadId: input.threadId,
+        actorId: input.actorState.monitor_actor_id,
+        wakeId: input.wakeId,
+        wakeReason: input.wakeReason,
+        triggerEventIds: input.triggerEventIds,
+        priorEvents: input.priorEvents,
+        pendingEvents: input.pendingEvents,
+        goalContext: input.goalContext,
+      })
+      const summary = aux.assistantText?.trim()
+      if (!summary) {
+        throw new Error("Synth aux monitor completed without an assistant message")
+      }
+      const directives = parseSidecarDirectives(summary)
+      return {
+        checks: input.checks,
+        severity: combineSeverity(input.config, input.checks),
+        summary,
+        queueItems: queueItemsFor(input.config, input.checks),
+        checkpointSummary: summary,
+        operatorUpdate: directives.progressUpdate
+          ? {
+              working_on: input.goalContext.objective,
+              progress_note: directives.progressUpdate,
+              goal_status: input.goalContext.status ?? "active",
+              criteria_progress: criteriaProgressFromGoal(input.goalContext),
+            }
+          : undefined,
+        workerSteerMessage: directives.steerMessage,
+        userProgressUpdate: directives.progressUpdate,
+        source: "synth-aux",
+        usage: aux.usage ?? estimateMonitorUsage(input.pendingEvents, summary),
+      }
+    } catch (error) {
+      return await runCodexMonitorPass(input, monitorFallbackNotice("Synth aux monitor", error))
     }
   }
 
+  if (input.config.model.provider.trim().toLowerCase() === "synth_inference") {
+    try {
+      const inference = await runMonitorSynthInferenceTurn({
+        stackConfig: input.stackConfig,
+        monitorConfig: input.config,
+        threadId: input.threadId,
+        actorId: input.actorState.monitor_actor_id,
+        wakeId: input.wakeId,
+        wakeReason: input.wakeReason,
+        triggerEventIds: input.triggerEventIds,
+        priorEvents: input.priorEvents,
+        pendingEvents: input.pendingEvents,
+        goalContext: input.goalContext,
+      })
+      const summary = inference.assistantText?.trim()
+      if (!summary) {
+        throw new Error("Synth inference monitor completed without an assistant message")
+      }
+      const directives = parseSidecarDirectives(summary)
+      return {
+        checks: input.checks,
+        severity: combineSeverity(input.config, input.checks),
+        summary,
+        queueItems: queueItemsFor(input.config, input.checks),
+        checkpointSummary: summary,
+        operatorUpdate: directives.progressUpdate
+          ? {
+              working_on: input.goalContext.objective,
+              progress_note: directives.progressUpdate,
+              goal_status: input.goalContext.status ?? "active",
+              criteria_progress: criteriaProgressFromGoal(input.goalContext),
+            }
+          : undefined,
+        workerSteerMessage: directives.steerMessage,
+        userProgressUpdate: directives.progressUpdate,
+        source: "synth-inference",
+        usage: inference.usage ?? estimateMonitorUsage(input.pendingEvents, summary),
+      }
+    } catch (error) {
+      return await runCodexMonitorPass(input, monitorFallbackNotice("Synth billed inference monitor", error))
+    }
+  }
+
+  return await runCodexMonitorPass(input)
+}
+
+async function runCodexMonitorPass(
+  input: MonitorPassInput,
+  fallbackNotice?: string,
+): Promise<MonitorPassResult> {
   const codex = await runMonitorCodexSidecarTurn({
     stackConfig: input.stackConfig,
     monitorConfig: input.config,
@@ -2199,13 +2255,14 @@ async function runMonitorPass(input: {
   if (!summary) {
     throw new Error("Codex sidecar monitor completed without an assistant message")
   }
+  const checkpointSummary = fallbackNotice ? `${fallbackNotice}\n\n${summary}` : summary
   const directives = parseSidecarDirectives(summary)
   return {
     checks: input.checks,
     severity: combineSeverity(input.config, input.checks),
-    summary,
+    summary: checkpointSummary,
     queueItems: queueItemsFor(input.config, input.checks),
-    checkpointSummary: summary,
+    checkpointSummary,
     operatorUpdate: directives.progressUpdate
       ? {
           working_on: input.goalContext.objective,
@@ -2218,8 +2275,18 @@ async function runMonitorPass(input: {
     userProgressUpdate: directives.progressUpdate,
     source: "codex-app-server",
     monitorCodexThreadId: codex.codexThreadId,
-    usage: codexUsageEstimate(codex.usage, summary),
+    usage: codexUsageEstimate(codex.usage, checkpointSummary),
   }
+}
+
+function monitorFallbackNotice(label: string, error: unknown): string {
+  return `${label} unavailable; Stack fell back to the Codex app-server monitor. ${shortErrorMessage(error)}`
+}
+
+function shortErrorMessage(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error)
+  const normalized = raw.replace(/\s+/g, " ").trim()
+  return truncate(normalized || "No error detail was provided.", 240)
 }
 
 function defaultMonitorBuiltinPrompt(): string {
@@ -3334,6 +3401,11 @@ function assertMonitorProviderSupported(config: StackMonitorConfig): void {
     const enabled = ["1", "true", "yes", "on"].includes((process.env.STACK_AUX_INFERENCE ?? "").trim().toLowerCase())
     if (enabled) return
     throw new Error("monitor provider 'synth_aux' requires STACK_AUX_INFERENCE=1; default monitor remains Codex app-server")
+  }
+  if (provider === "synth_inference") {
+    const enabled = ["1", "true", "yes", "on"].includes((process.env.STACK_SYNTH_INFERENCE ?? "").trim().toLowerCase())
+    if (enabled) return
+    throw new Error("monitor provider 'synth_inference' requires STACK_SYNTH_INFERENCE=1; default monitor remains Codex app-server")
   }
   throw new Error(
     `monitor model provider '${config.model.provider}' is not executable yet; Stack currently runs monitor through Codex app-server. Use stack_inference_catalog for catalog visibility, and do not configure Synth inference profiles until the direct execution path lands.`,

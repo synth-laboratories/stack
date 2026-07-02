@@ -24,6 +24,7 @@ export type TelemetryDigestView = {
   channel: string
   environment: string
   api_base_url: string
+  evidence_path?: string
   stackd: {
     reachable: boolean
     local_product_telemetry: Record<string, unknown> | null
@@ -184,13 +185,15 @@ export async function runTelemetryDigest(config: StackConfig, argv: string[]): P
   if (writeEvidence) {
     const dir = join(
       config.stackDataRoot,
+      ".stack",
       "evidence",
       "telemetry-digest",
       `${utcStamp()}-${dateUtc}`,
     )
     mkdirSync(dir, { recursive: true })
-    writeFileSync(join(dir, "summary.json"), `${JSON.stringify(view, null, 2)}\n`, "utf8")
-    if (!json) console.log(`evidence: ${dir}/summary.json`)
+    view.evidence_path = join(dir, "summary.json")
+    writeFileSync(view.evidence_path, `${JSON.stringify(view, null, 2)}\n`, "utf8")
+    if (!json) console.log(`evidence: ${view.evidence_path}`)
   }
 
   if (json) {

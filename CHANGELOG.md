@@ -19,6 +19,58 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 No changes yet.
 
+## [0.3.0] - 2026-07-02 (pre-ship)
+
+### Added
+
+- **Hosted Synth cockpit surfaces.** Stack now treats hosted SMR runs,
+  projects, Factories, cloud deployments, and hosted optimizers as first-class
+  remote state in the ops panel and Stack MCP. The surfaces are environment
+  aware (`dev`, `staging`, `prod`) and remain separate from the local research
+  loop.
+- **Local to cloud sync receipts.** stackd records typed remote-sync receipts
+  for push/pull requests, remote gardener passes, Factory wake/pause/resume
+  requests, and meta-thread to SMR-run binding. TUI and MCP projections read
+  those receipts from the runtime snapshot instead of scraping backend storage.
+- **Remote gardener actor foundation.** Stack adds a `remote_gardener` role,
+  default remote gardener profile, bounded sync narration receipts, and MCP
+  tools for recording remote gardener passes.
+- **Synth inference through Stack.** `stack inference list` and
+  `stack inference usage` show the Synth inference catalog, free aux lane,
+  billed GLM lane, usage visibility, and the invariant that the primary worker
+  stays Codex/BYOK unless an explicit Synth inference profile opts in.
+- **Opt-in monitor profiles for Synth inference.** `free-aux` routes monitor
+  turns to the free aux endpoint when `STACK_AUX_INFERENCE=1`; `billed-glm`
+  routes monitor turns to the billed GLM gateway when `STACK_SYNTH_INFERENCE=1`.
+  If the selected Synth monitor route is unavailable, Stack falls back to the
+  Codex app-server monitor with a visible notice.
+- **Prominent optional Synth auth.** The TUI header, hosted empty states,
+  inference catalog, and `stack doctor` now say local is ready while pointing to
+  `stack auth open signin` for hosted unlocks.
+- **Feature telemetry allowlist for `.3`.** Advanced product telemetry can now
+  count hosted ops, remote sync, and Synth inference feature usage after the
+  operator approves advanced telemetry.
+
+### Changed
+
+- Remote SMR, Factory, hosted optimizer, and deployment rows prefer stackd
+  runtime snapshots and owner-route receipts over direct UI polling when
+  snapshot state is available.
+- Factory levers now require explicit confirmation and record Stack-side
+  receipts after owner-route calls.
+- `GET /api/v1/synth/models` can advertise both free aux and billed GLM Stack
+  inference lanes when the backend gateway is deployed.
+
+### Known limitations
+
+- This `.3` section is a pre-ship release note. Live staging/prod write proofs,
+  billed GLM usage-row proof, telemetry flush/rollup proof, crash route proof,
+  and the final `0.3.0` package cut remain tracked in the private release
+  packet until ship.
+- The default primary worker remains Codex/BYOK. Synth billed inference for a
+  primary worker is intentionally not automatic and requires an explicit
+  opt-in profile.
+
 ## [0.2.0-dev.20260701.4] - 2026-07-02
 
 ### Fixed
@@ -194,6 +246,9 @@ Stack MCP).
 - Product label in transcript harness: **Stack · semver** (replacing “Prototype 0 · 0.0.0”)
 
 [Unreleased]: https://github.com/synth-laboratories/stack/compare/HEAD...HEAD
+[0.3.0]: https://github.com/synth-laboratories/stack/compare/v0.2.0-dev.20260701.4...HEAD
+[0.2.0-dev.20260701.4]: https://github.com/synth-laboratories/stack/releases/tag/v0.2.0-dev.20260701.4
+[0.2.0-dev.20260701.3]: https://github.com/synth-laboratories/stack/releases/tag/v0.2.0-dev.20260701.3
 [0.2.0-dev.20260701.2]: https://github.com/synth-laboratories/stack/compare/c55e68f...HEAD
 [0.2.0-dev.20260701.1]: https://github.com/synth-laboratories/stack/commit/c55e68f
 [0.1.0]: https://github.com/synth-laboratories/stack/releases/tag/v0.1.0

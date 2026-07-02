@@ -3573,10 +3573,19 @@ function appendUiPanelOpened(
       },
     })
     void emitFeatureUsed("side_panel_open")
+    for (const featureId of panelFeatureIds(panel, view)) {
+      void emitFeatureUsed(featureId)
+    }
     state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
   } catch (error) {
     appendStackBlock(state.blocks, `ui panel open audit failed: ${errorMessage(error)}`)
   }
+}
+
+function panelFeatureIds(panel: UiPanelId, view: string | undefined): string[] {
+  if (panel === "ops" && view === "remote") return ["hosted_ops", "remote_sync"]
+  if (panel === "ops" && view === "hosted") return ["hosted_ops"]
+  return []
 }
 
 function recordSlashFeatureUsage(): void {

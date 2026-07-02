@@ -20,38 +20,93 @@ export async function runMonitorSynthAuxTurn(input: {
   pendingEvents: StackThreadMetaEvent[]
   goalContext: CodexGoalSnapshot
 }): Promise<MonitorSynthAuxRunResult> {
+  return await runMonitorSynthTurn({
+    ...input,
+    route: "/api/v1/stack-aux/openai/v1/responses",
+    authError: `Synth aux monitor requires ${input.stackConfig.environment.authEnv}; local worker remains Codex/BYOK`,
+    roleHeader: "monitor",
+    promptKind: "Synth free aux inference",
+    timeoutEnv: "STACK_MONITOR_SYNTH_AUX_TIMEOUT_MS",
+    defaultTimeoutMs: 120_000,
+    failurePrefix: "Synth aux monitor request failed",
+  })
+}
+
+export async function runMonitorSynthInferenceTurn(input: {
+  stackConfig: StackConfig
+  monitorConfig: StackMonitorConfig
+  threadId: string
+  actorId: string
+  wakeId: string
+  wakeReason: string
+  triggerEventIds: string[]
+  priorEvents: StackThreadMetaEvent[]
+  pendingEvents: StackThreadMetaEvent[]
+  goalContext: CodexGoalSnapshot
+}): Promise<MonitorSynthAuxRunResult> {
+  return await runMonitorSynthTurn({
+    ...input,
+    route: "/api/v1/stack-inference/openai/v1/responses",
+    authError: `Synth billed inference monitor requires ${input.stackConfig.environment.authEnv}; local worker remains Codex/BYOK`,
+    roleHeader: "monitor",
+    promptKind: "Synth billed GLM inference",
+    timeoutEnv: "STACK_MONITOR_SYNTH_INFERENCE_TIMEOUT_MS",
+    defaultTimeoutMs: 180_000,
+    failurePrefix: "Synth inference monitor request failed",
+  })
+}
+
+async function runMonitorSynthTurn(input: {
+  stackConfig: StackConfig
+  monitorConfig: StackMonitorConfig
+  threadId: string
+  actorId: string
+  wakeId: string
+  wakeReason: string
+  triggerEventIds: string[]
+  priorEvents: StackThreadMetaEvent[]
+  pendingEvents: StackThreadMetaEvent[]
+  goalContext: CodexGoalSnapshot
+  route: string
+  authError: string
+  roleHeader: string
+  promptKind: string
+  timeoutEnv: string
+  defaultTimeoutMs: number
+  failurePrefix: string
+}): Promise<MonitorSynthAuxRunResult> {
   const auth = environmentAuthStatus(input.stackConfig.environment)
   const token = process.env[input.stackConfig.environment.authEnv]
   if (!auth.hasAuth || !token) {
-    throw new Error(`Synth aux monitor requires ${input.stackConfig.environment.authEnv}; local worker remains Codex/BYOK`)
+    throw new Error(input.authError)
   }
 
-  const response = await fetch(`${input.stackConfig.environment.apiBaseUrl.replace(/\/+$/, "")}/api/v1/stack-aux/openai/v1/responses`, {
+  const response = await fetch(`${input.stackConfig.environment.apiBaseUrl.replace(/\/+$/, "")}${input.route}`, {
     method: "POST",
     headers: {
       Authorization: `Bearer ${token}`,
       "Content-Type": "application/json",
-      "X-Stack-Actor-Role": "monitor",
+      "X-Stack-Actor-Role": input.roleHeader,
     },
     body: JSON.stringify({
       model: input.monitorConfig.model.model,
-      input: synthAuxMonitorPrompt(input),
+      input: synthAuxMonitorPrompt(input, input.promptKind),
       max_output_tokens: 700,
       metadata: {
         thread_id: input.threadId,
         stack_thread_id: input.threadId,
-        actor_role: "monitor",
+        actor_role: input.roleHeader,
         actor_id: input.actorId,
         wake_id: input.wakeId,
         source: "stack_monitor",
       },
     }),
-    signal: AbortSignal.timeout(synthAuxTimeoutMs()),
+    signal: AbortSignal.timeout(synthTimeoutMs(input.timeoutEnv, input.defaultTimeoutMs)),
   })
 
   const payload = await response.json().catch(() => undefined)
   if (!response.ok) {
-    throw new Error(`Synth aux monitor request failed: ${response.status} ${readErrorMessage(payload) ?? response.statusText}`)
+    throw new Error(`${input.failurePrefix}: ${response.status} ${readErrorMessage(payload) ?? response.statusText}`)
   }
 
   return {
@@ -69,9 +124,9 @@ function synthAuxMonitorPrompt(input: {
   priorEvents: StackThreadMetaEvent[]
   pendingEvents: StackThreadMetaEvent[]
   goalContext: CodexGoalSnapshot
-}): string {
+}, promptKind = "Synth free aux inference"): string {
   return [
-    "You are the Stack monitor running on Synth free aux inference.",
+    `You are the Stack monitor running on ${promptKind}.`,
     "Review the worker event batch and produce a concise monitor summary.",
     "Do not claim to call tools. Stack will record monitor events after your response.",
     "If the human needs a progress update, include a line exactly like `PROGRESS_UPDATE: <one sentence>`.",
@@ -146,11 +201,11 @@ function readErrorMessage(payload: unknown): string | undefined {
   return readString(error?.message)
 }
 
-function synthAuxTimeoutMs(): number {
-  const raw = process.env.STACK_MONITOR_SYNTH_AUX_TIMEOUT_MS
-  if (!raw) return 120_000
+function synthTimeoutMs(envName: string, defaultMs: number): number {
+  const raw = process.env[envName]
+  if (!raw) return defaultMs
   const parsed = Number.parseInt(raw, 10)
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : 120_000
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : defaultMs
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {
