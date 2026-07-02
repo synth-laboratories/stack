@@ -7,7 +7,13 @@ use std::path::{Path, PathBuf};
 use thiserror::Error;
 
 pub const SKILLS_REGISTRY_SCHEMA: &str = "stack/skills-registry/v1";
-pub const PREINSTALLED_SKILL_IDS: &[&str] = &["oss-gepa", "hosted-gepa", "synth-ai"];
+pub const PREINSTALLED_SKILL_IDS: &[&str] = &[
+    "oss-gepa",
+    "hosted-gepa",
+    "synth-ai",
+    "containers",
+    "containers-coding",
+];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

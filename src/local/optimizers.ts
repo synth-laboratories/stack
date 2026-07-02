@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from "node:child_process"
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync, writeFileSync } from "node:fs"
-import { dirname } from "node:path"
+import { basename, dirname, join } from "node:path"
 import type { StackConfig } from "../config.js"
 import { stackdRuntimeAppendEvent } from "../client/stackd.js"
 import { emitOptimizerRunStarted } from "../telemetry/funnel.js"
@@ -44,6 +44,29 @@ export type OptimizerSnapshot = {
   oldestQueuedAgeSeconds?: number
   lastProgressAt?: string
   runs: OptimizerRunSummary[]
+}
+
+export type LocalGepaLaunchOptions = {
+  configPath: string
+  requestId?: string
+  metadata?: Record<string, unknown>
+  startService?: boolean
+}
+
+export type LocalGepaLaunchResult = {
+  ok: boolean
+  status: number
+  message: string
+  service: OptimizerSnapshot
+  run?: OptimizerRunSummary
+  container?: LocalGepaContainerLaunch
+  response?: Record<string, unknown>
+}
+
+export type LocalGepaContainerLaunch = {
+  url: string
+  pid?: number
+  logPath: string
 }
 
 type WorkspacePayload = {
@@ -173,6 +196,293 @@ export async function startOptimizerService(config: StackConfig): Promise<Optimi
   return snapshot
 }
 
+export async function launchLocalGepaRun(
+  config: StackConfig,
+  options: LocalGepaLaunchOptions,
+): Promise<LocalGepaLaunchResult> {
+  const service = options.startService === false
+    ? await readOptimizerSnapshot(config)
+    : await startOptimizerService(config)
+  if (service.status !== "running") {
+    return {
+      ok: false,
+      status: 0,
+      message: service.message ?? `GEPA service is not running at ${config.optimizerServiceUrl}`,
+      service,
+    }
+  }
+
+  const jsonMode = await servicePrefersJsonRuns(config.optimizerServiceUrl)
+  const jsonRequest = jsonMode ? readLocalGepaServiceRequest(options.configPath) : undefined
+  const container = jsonRequest ? await startLocalGepaContainer(config, options.configPath, jsonRequest) : undefined
+  const requestBody: Record<string, unknown> = jsonRequest ? localGepaRequestBody(jsonRequest) : {
+    config_path: options.configPath,
+    ...(options.requestId ? { request_id: options.requestId } : {}),
+    ...(options.metadata ? { metadata: options.metadata } : {}),
+  }
+  const result = await postJson(`${config.optimizerServiceUrl}/runs`, requestBody, {
+    ...(options.requestId ? { "idempotency-key": options.requestId } : {}),
+  })
+  const payload = asRecord(result.data) ?? {}
+  const run = readRun(payload) ?? readRun(asRecord(payload.run)) ?? readRun(asRecord(payload.request))
+  await recordOptimizerLeverEvent(config, "lever.local_gepa.run.submit_requested", {
+    ok: result.ok,
+    status: result.status,
+    message: result.message,
+    config_path: options.configPath,
+    request_id: options.requestId ?? null,
+    run_id: run?.runId ?? readString(payload.run_id) ?? readString(payload.id) ?? null,
+    submit_mode: jsonRequest ? "json" : "config_path",
+    container_url: container?.url ?? null,
+    container_pid: container?.pid ?? null,
+  })
+  return {
+    ok: result.ok,
+    status: result.status,
+    message: result.ok ? `submitted local GEPA run${run?.runId ? ` ${run.runId}` : ""}` : result.message,
+    service,
+    ...(run ? { run } : {}),
+    ...(container ? { container } : {}),
+    response: payload,
+  }
+}
+
+function localGepaRequestBody(request: LocalGepaServiceRequest): Record<string, unknown> {
+  const body: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(request)) {
+    if (key.startsWith("__")) continue
+    body[key] = value
+  }
+  return body
+}
+
+async function servicePrefersJsonRuns(serviceUrl: string): Promise<boolean> {
+  try {
+    const runs = asRecord(await getJson(`${serviceUrl}/runs?limit=1`))
+    if (Array.isArray(runs?.items)) return true
+  } catch {
+    // Older services may expose only /status and accept config_path submissions.
+  }
+  try {
+    const workspace = asRecord(await getJson(`${serviceUrl}/workspace`))
+    if (asRecord(workspace?.scheduler) || asRecord(workspace?.run_status)) return true
+  } catch {
+    // Keep config_path mode when workspace discovery is unavailable.
+  }
+  return false
+}
+
+type LocalGepaServiceRequest = {
+  container_url: string
+  output_dir?: string
+  policy: Record<string, unknown>
+  proposer: Record<string, unknown>
+  taskset: Record<string, unknown>
+  task_pools: Record<string, unknown>
+  manual_step: boolean
+  stop_conditions: Record<string, unknown>[]
+  advanced: Record<string, unknown>
+  __container_command?: string[]
+  __container_cwd?: string
+  __container_startup_timeout_seconds?: number
+}
+
+function readLocalGepaServiceRequest(configPath: string): LocalGepaServiceRequest {
+  const config = Bun.TOML.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>
+  const container = requiredRecord(config.container, "container")
+  const run = optionalRecord(config.run)
+  const policy = optionalRecord(config.policy)
+  const proposer = optionalRecord(config.proposer)
+  const taskset = optionalRecord(config.taskset)
+  const gepa = optionalRecord(config.gepa)
+  const pipeline = optionalRecord(gepa.pipeline)
+  const taskPools = optionalRecord(gepa.task_pools)
+  const trainIds = readStringArray(taskset.train_ids)
+  const heldoutIds = readStringArray(taskset.heldout_ids)
+  const maxTotalRollouts = readInteger(gepa.max_total_rollouts, 1)
+  const maxCostUsd = readFiniteNumber(gepa.max_cost_usd, 0)
+  const stopConditions: Record<string, unknown>[] = [
+    {
+      kind: "max_rollouts",
+      n: maxTotalRollouts,
+      train: readInteger(gepa.max_train_rollouts, maxTotalRollouts),
+      heldout: readInteger(gepa.max_heldout_rollouts, 1),
+    },
+    { kind: "max_generations", n: readInteger(gepa.max_generations, 1) },
+  ]
+  if (maxCostUsd > 0) stopConditions.push({ kind: "max_cost_usd", value: maxCostUsd })
+
+  const proposerAuthMode = readStringValue(proposer.auth_mode, "chatgpt")
+  const request: LocalGepaServiceRequest = {
+    container_url: readRequiredString(container.url, "container.url"),
+    output_dir: readString(run?.output_dir),
+    policy: stripUndefined({
+      provider: readStringValue(policy.provider, "openai"),
+      model: readStringValue(policy.model, "gemini-3.1-flash-lite"),
+      api_family: readStringValue(policy.api_family, "chat_completions"),
+      credentials: { resolver: "env", env_var: readStringValue(policy.api_key_env, "GEMINI_API_KEY") },
+      base_url: readString(policy.base_url),
+      inference_url: readString(policy.inference_url),
+      disable_reasoning: readStringValue(policy.disable_reasoning, "auto"),
+    }),
+    proposer: stripUndefined({
+      provider: readStringValue(proposer.provider, "openai"),
+      model: readStringValue(proposer.model, "gpt-5.4-mini"),
+      api_family: readStringValue(proposer.api_family, "chat_completions"),
+      auth_mode: proposerAuthMode,
+      credentials: { resolver: "env", env_var: readStringValue(proposer.api_key_env, "OPENAI_API_KEY") },
+      copy_host_auth: readBoolean(proposer.copy_host_auth, proposerAuthMode === "chatgpt" || proposerAuthMode === "host"),
+      codex_home: readString(proposer.codex_home),
+      base_url: readString(proposer.base_url),
+    }),
+    taskset: {
+      train_ids: trainIds,
+      heldout_ids: heldoutIds,
+    },
+    task_pools: {
+      pareto: readStringArray(taskPools.pareto, trainIds),
+      minibatch: readStringArray(taskPools.minibatch, trainIds),
+      reflection: readStringArray(taskPools.reflection, trainIds),
+      heldout: readStringArray(taskPools.heldout, heldoutIds),
+    },
+    manual_step: false,
+    stop_conditions: stopConditions,
+    advanced: {
+      pipeline: {
+        mode: readStringValue(pipeline.mode, "sync_serial"),
+        max_generations: readInteger(gepa.max_generations, 1),
+        proposals_per_generation: readInteger(gepa.proposals_per_generation, 1),
+        minibatch_size: readInteger(gepa.minibatch_size, 1),
+        rollout_chunk_size: readInteger(gepa.rollout_chunk_size, readInteger(gepa.minibatch_size, 1)),
+      },
+      budgets: {
+        max_train_rollouts: readInteger(gepa.max_train_rollouts, maxTotalRollouts),
+        max_heldout_rollouts: readInteger(gepa.max_heldout_rollouts, heldoutIds.length || 1),
+      },
+      proposer_io: stripUndefined({
+        timeout_seconds: readInteger(proposer.timeout_seconds, 300),
+        codex_home: readString(proposer.codex_home),
+      }),
+      adaptive_rollout_concurrency: false,
+    },
+    __container_command: readStringArray(container.command),
+    __container_cwd: readString(container.cwd),
+    __container_startup_timeout_seconds: readInteger(container.startup_timeout_seconds, 120),
+  }
+  return stripUndefined(request) as LocalGepaServiceRequest
+}
+
+function requiredRecord(value: unknown, label: string): Record<string, unknown> {
+  const record = optionalRecord(value)
+  if (!record) throw new Error(`GEPA config missing [${label}]`)
+  return record
+}
+
+function optionalRecord(value: unknown): Record<string, unknown> {
+  return asRecord(value) ?? {}
+}
+
+function readRequiredString(value: unknown, label: string): string {
+  const text = readString(value)
+  if (!text) throw new Error(`GEPA config missing ${label}`)
+  return text
+}
+
+function readStringValue(value: unknown, fallback: string): string {
+  return readString(value) ?? fallback
+}
+
+function readStringArray(value: unknown, fallback: string[] = []): string[] {
+  if (!Array.isArray(value)) return fallback
+  return value.map((item) => String(item))
+}
+
+function readInteger(value: unknown, fallback: number): number {
+  const number = typeof value === "number" ? value : Number.parseInt(String(value ?? ""), 10)
+  return Number.isFinite(number) ? Math.trunc(number) : fallback
+}
+
+function readFiniteNumber(value: unknown, fallback: number): number {
+  const number = typeof value === "number" ? value : Number.parseFloat(String(value ?? ""))
+  return Number.isFinite(number) ? number : fallback
+}
+
+function readBoolean(value: unknown, fallback: boolean): boolean {
+  return typeof value === "boolean" ? value : fallback
+}
+
+function stripUndefined<T>(value: T): T {
+  if (Array.isArray(value)) {
+    return value.map((item) => stripUndefined(item)) as T
+  }
+  if (value !== null && typeof value === "object") {
+    const next: Record<string, unknown> = {}
+    for (const [key, item] of Object.entries(value)) {
+      if (item !== undefined) next[key] = stripUndefined(item)
+    }
+    return next as T
+  }
+  return value
+}
+
+function safeFileSegment(value: string): string {
+  const segment = value.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "")
+  return segment || "gepa"
+}
+
+async function startLocalGepaContainer(
+  config: StackConfig,
+  configPath: string,
+  request: LocalGepaServiceRequest,
+): Promise<LocalGepaContainerLaunch> {
+  const command = request.__container_command
+  if (!command?.length) {
+    throw new Error("GEPA JSON service mode requires [container].command in the TOML config")
+  }
+  mkdirSync(dirname(config.optimizerLogPath), { recursive: true })
+  const segment = safeFileSegment(basename(configPath, ".toml"))
+  const logPath = join(dirname(config.optimizerLogPath), `${segment}.container.log`)
+  const logFd = openSync(logPath, "a")
+  let child
+  try {
+    child = spawn(command[0] ?? "", command.slice(1), {
+      cwd: request.__container_cwd,
+      detached: true,
+      stdio: ["ignore", logFd, logFd],
+      env: process.env,
+    })
+  } catch (error) {
+    closeSync(logFd)
+    throw error
+  }
+  const spawnError = await immediateSpawnError(child)
+  closeSync(logFd)
+  if (spawnError) throw spawnError
+  child.unref()
+  await waitForLocalGepaContainer(request.container_url, request.__container_startup_timeout_seconds ?? 120)
+  return {
+    url: request.container_url,
+    pid: child.pid,
+    logPath,
+  }
+}
+
+async function waitForLocalGepaContainer(containerUrl: string, timeoutSeconds: number): Promise<void> {
+  const deadline = Date.now() + timeoutSeconds * 1000
+  let lastError = ""
+  while (Date.now() < deadline) {
+    try {
+      await getJson(`${containerUrl.replace(/\/+$/, "")}/health`)
+      await getJson(`${containerUrl.replace(/\/+$/, "")}/program`)
+      return
+    } catch (error) {
+      lastError = errorMessage(error)
+      await sleep(1000)
+    }
+  }
+  throw new Error(`GEPA container is not ready at ${containerUrl}: ${lastError}`)
+}
+
 async function waitForOptimizerService(config: StackConfig): Promise<OptimizerSnapshot> {
   let last = await readOptimizerSnapshot(config)
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -250,16 +560,25 @@ function immediateSpawnError(child: ReturnType<typeof spawn>): Promise<Error | u
 
 async function recordOptimizerLeverEvent(
   config: StackConfig,
-  eventType: "lever.local_gepa.service.start_requested" | "lever.local_gepa.service.start_failed",
+  eventType:
+    | "lever.local_gepa.service.start_requested"
+    | "lever.local_gepa.service.start_failed"
+    | "lever.local_gepa.run.submit_requested",
   payload: Record<string, unknown>,
 ): Promise<void> {
+  const subject = eventType === "lever.local_gepa.run.submit_requested"
+    ? {
+        kind: "local_gepa_run",
+        id: String(payload.run_id ?? payload.request_id ?? payload.config_path ?? config.optimizerServiceUrl),
+      }
+    : {
+        kind: "local_gepa_service",
+        id: config.optimizerServiceUrl,
+      }
   await stackdRuntimeAppendEvent({
     event_type: eventType,
     source: "lever.local_gepa",
-    subject: {
-      kind: "local_gepa_service",
-      id: config.optimizerServiceUrl,
-    },
+    subject,
     payload: {
       service_url: config.optimizerServiceUrl,
       bind: config.optimizerBind,
@@ -321,6 +640,44 @@ async function getJson(url: string): Promise<unknown> {
     const response = await fetch(url, { signal: controller.signal })
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
     return await response.json()
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function postJson(
+  url: string,
+  body: Record<string, unknown>,
+  headers: Record<string, string> = {},
+): Promise<{ ok: boolean; status: number; message: string; data?: unknown }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10_000)
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json", ...headers },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    const text = await response.text()
+    let data: unknown
+    try {
+      data = text.trim() ? JSON.parse(text) : {}
+    } catch {
+      data = { text }
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      message: response.ok ? response.statusText || "ok" : `${response.status} ${response.statusText}: ${text.slice(0, 500)}`,
+      data,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      message: errorMessage(error),
+    }
   } finally {
     clearTimeout(timeout)
   }

@@ -4,6 +4,7 @@ import { environmentAuthStatus, type StackConfig } from "./config.js"
 import { stackdListCrashReports, stackdTelemetryStatus } from "./client/stackd.js"
 import { readRemoteInferenceCatalog, type RemoteInferenceCatalogSnapshot } from "./remote/inference.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
+import { readStackProfile } from "./operator-profile.js"
 import { stackChannel, stackReleaseVersion, stackVersion } from "./version.js"
 
 type DoctorLevel = "pass" | "warn" | "fail"
@@ -32,6 +33,7 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
   const checks: DoctorCheck[] = [
     check("version", "pass", `Stack ${stackVersion(config.appRoot)} (${stackChannel(config.appRoot)})`),
     check("local-mode", "pass", "Local ready; Synth sign-in optional"),
+    profileCheck(config),
     await telemetryCheck(),
     check(
       "auth",
@@ -64,6 +66,25 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
   }
 
   return report.local_ready ? 0 : 1
+}
+
+function profileCheck(config: StackConfig): DoctorCheck {
+  try {
+    const profile = readStackProfile(config.stackDataRoot)
+    return check(
+      "profile",
+      "pass",
+      `Stack profile ${profile.active}`,
+      profile.explicit ? profile.path : `default ${profile.active}; ${profile.path} not written yet`,
+    )
+  } catch (error) {
+    return check(
+      "profile",
+      "fail",
+      "Stack profile config is invalid",
+      error instanceof Error ? error.message : String(error),
+    )
+  }
 }
 
 function check(id: string, level: DoctorLevel, summary: string, detail?: string): DoctorCheck {

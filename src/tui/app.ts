@@ -112,6 +112,14 @@ import {
 } from "../gardener.js"
 import { loadGardenerConfig } from "../gardener-config.js"
 import {
+  STACK_PROFILE_DEFAULTS,
+  nextStackProfile,
+  normalizeStackProfileName,
+  readStackProfile,
+  writeStackProfile,
+  type StackProfileName,
+} from "../operator-profile.js"
+import {
   executeGardenerSkillRegister,
   executeGardenerSkillSuggest,
   formatSkillRegisterHelp,
@@ -2953,6 +2961,7 @@ function buildSlashCommandContext(options: StackAppOptions, state: AppState): Sl
     railsVisible: state.railsVisible,
     agentViewEnabled: state.agentViewEnabled,
     environmentName: options.config.environmentName,
+    profileName: readStackProfile(options.config.stackDataRoot).active,
     model: workerHarness.codexModel,
     effort: workerHarness.codexReasoningEffort,
     goalObjective: objective,
@@ -4605,6 +4614,16 @@ function buildSlashDispatchHooks(
       void refreshAfterEnvironmentChange(name as StackEnvironmentName)
       return true
     },
+    cycleProfile: (direction) => {
+      const current = readStackProfile(options.config.stackDataRoot).active
+      applyStackProfile(nextStackProfile(current, direction), options, state, refresh)
+    },
+    setProfile: (name) => {
+      const profile = normalizeStackProfileName(name)
+      if (!profile) return false
+      applyStackProfile(profile, options, state, refresh)
+      return true
+    },
     openModelSwitcher: () => {
       state.focusMode = "model"
       refresh()
@@ -5936,6 +5955,22 @@ async function applyStackEnvironment(
   await refreshRemotes()
 }
 
+function applyStackProfile(
+  profile: StackProfileName,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  writeStackProfile(options.config.stackDataRoot, profile)
+  const defaults = STACK_PROFILE_DEFAULTS[profile]
+  setCodexModel(options.config, defaults.codexModel)
+  setCodexReasoningEffort(options.config, defaults.codexReasoningEffort)
+  state.monitorSnapshot = emptyMonitorSnapshot(options.config.stackDataRoot)
+  syncMonitorRightPanel(state)
+  appendStackBlock(state.blocks, `profile ${profile}`)
+  refresh()
+}
+
 function isLeftPanelFocused(state: AppState): boolean {
   if (state.focusMode === "gardener") return true
   if (state.focusMode === "history") return true
@@ -6887,7 +6922,9 @@ function buildOpsPanelInput(options: StackAppOptions, state: AppState) {
     containers: state.containersSnapshot,
     localOptimizers: state.optimizerSnapshot,
     actors: {
-      primaryModel: harnessModel(options.config),
+      primaryModel: options.config.synthWorkerInferenceEnabled
+        ? options.config.synthWorkerInferenceModel
+        : harnessModel(options.config),
       primaryStatus: state.status,
       turnCount: options.session.turns.length + (state.status === "running" ? 1 : 0),
       currentTurnStartedAt: state.currentTurnStartedAt,
@@ -6896,6 +6933,8 @@ function buildOpsPanelInput(options: StackAppOptions, state: AppState) {
       codexSubagentModel: options.config.codexSubagentModel,
       codexSubagentReasoningEffort: options.config.codexSubagentReasoningEffort,
       codexArgsLocked: options.config.codexArgsLocked,
+      synthWorkerInferenceEnabled: options.config.synthWorkerInferenceEnabled,
+      synthWorkerInferenceModel: options.config.synthWorkerInferenceModel,
       codexArgs: options.config.codexArgs,
       subagents: state.subagentLogs,
     },
@@ -7220,7 +7259,7 @@ function liveOperationsRailText(options: StackAppOptions, state: AppState): stri
     `count ${state.remoteResearchSnapshot.factories.length}`,
     selectedFactoryRailLine(state),
     "",
-    state.focusMode === "remote" ? "remote: e eval | t target | m message | a attach | d download | v remote | l saved" : "tab remote for live actions",
+    state.focusMode === "remote" ? "remote: o output | O artifact | t target | m message | a attach | d download | v remote | l saved" : "tab remote for live actions",
     state.focusMode === "hosted" ? "hosted: o artifact | v preview | d download | c cancel" : "",
   ]
   return (state.liveOpsMode === "local" ? localLines : remoteLines).filter((line) => line.length > 0).join("\n")

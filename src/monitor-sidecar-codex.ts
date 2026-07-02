@@ -11,7 +11,7 @@ import {
   type JsonRpcServerRequest,
 } from "./codex/app-server-client.js"
 import { autoApproveServerRequest, CodexAppServerEventBridge } from "./codex/app-server-bridge.js"
-import type { StackMonitorConfig } from "./monitor.js"
+import { resolveMonitorSystemPrompt, type StackMonitorConfig } from "./monitor.js"
 import type { StackCodexUsage } from "./session.js"
 import { stackVersion } from "./version.js"
 import type { StackThreadMetaEvent } from "./thread-events.js"
@@ -281,6 +281,7 @@ function stackMcpToolIds(toolIds: readonly string[]): string[] {
 }
 
 function monitorCodexDeveloperPrompt(input: {
+  stackConfig: StackConfig
   threadId: string
   actorId: string
   monitorConfig: StackMonitorConfig
@@ -293,7 +294,17 @@ function monitorCodexDeveloperPrompt(input: {
           "ACTIVITY DENSITY IS SET TO RICH: the operator has asked for a fuller sense of what the worker is doing right now. In addition to the update rules above, when a wake batch shows the worker sustaining a distinct kind of work (e.g. exploring the config surface, running the eval loop, editing a specific module), post ONE `stack_monitor_goal_status` update with `status: \"working\"` and `for_human: true` naming that activity concretely — even between formal phase shifts. Still never post an update that only says there is nothing new; rich density widens what counts as reportable activity, it does not license no-progress filler.",
         ]
       : []
+  const configuredProfilePrompt = input.monitorConfig.id === "default"
+    ? ""
+    : resolveMonitorSystemPrompt(input.stackConfig.stackDataRoot, input.monitorConfig).trim()
   return [
+    ...(configuredProfilePrompt
+      ? [
+          "Configured Stack monitor profile guidance:",
+          configuredProfilePrompt,
+          "Core sidecar operating rules:",
+        ]
+      : []),
     "You are the Stack sidecar monitor, a persistent Codex agent paired with one primary worker thread.",
     "Your job is to watch the worker's event stream, explain progress to the operator, identify risks, and answer sidecar chat.",
     "During goal runs, act as the middle layer between the goal-seeking worker and the human operator.",

@@ -1,6 +1,6 @@
 ---
 name: stack-agent-bridge
-description: Use when Codex operates the Stack cockpit or Stack MCP bridge for Synth hosted live ops on usesynth.ai — dev/staging/prod env, auth checks, README-smoke SMR evals, live SMRs or Factories, hosted optimizer runs, WorkProduct preview/download. Load synth-stack-productivity first for OSS+hosted map; pair with synth-via-stack for optimizer/container workflows.
+description: Use when Codex operates the Stack cockpit or Stack MCP bridge for Synth hosted live ops on usesynth.ai — dev/staging/prod env, auth checks, live SMRs or Factories, hosted optimizer runs, WorkProduct preview/download. Load synth-stack-productivity first for OSS+hosted map; pair with synth-via-stack for optimizer/container workflows.
 ---
 
 # Stack Agent Bridge
@@ -40,13 +40,12 @@ For Factory work:
 3. Use `stack_message_factory_project` for operator messages.
 4. Include the factory id and project id in the final summary.
 
-For README-smoke proof:
+For SMR or eval proof:
 
-1. Call `stack_launch_read_smoke`.
-2. Poll `stack_readme_smoke_eval_status`.
-3. Once a run id is known, call `stack_list_live_smrs`.
-4. Preview the first WorkProduct with `stack_preview_run_output`.
-5. Report project id, run id, terminal status, verifier failures, and preview/download evidence.
+1. Launch the eval from the owning `evals` or `synth-dev` workflow; Stack does not launch StackEval-era README-smoke jobs.
+2. Once a project/run id is known, call `stack_list_live_smrs` or `stack_inspect_live_run`.
+3. Preview the first WorkProduct with `stack_preview_run_output` before downloading.
+4. Report project id, run id, terminal status, verifier failures, and preview/download evidence.
 
 For hosted optimizers:
 

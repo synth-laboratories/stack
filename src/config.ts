@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { defaultCodexPricing, type CodexModelPricing } from "./codex/usage-cost.js"
 import { loadOpenAiPricing } from "./codex/openai-pricing.js"
+import { readStackProfile, STACK_PROFILE_DEFAULTS } from "./operator-profile.js"
 
 const DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
 const DEFAULT_CODEX_REASONING_EFFORT = "medium"
@@ -14,6 +15,7 @@ const DEFAULT_HARNESS = "codex"
 const DEFAULT_OPTIMIZER_BIND = "127.0.0.1:8879"
 const DEFAULT_OPTIMIZER_WORKERS = 4
 const DEFAULT_ENVIRONMENT = "dev"
+const DEFAULT_SYNTH_WORKER_INFERENCE_MODEL = "baseten/zai-org/GLM-5.2"
 const DEFAULT_VOICE_STT_PROVIDER = "groq"
 const DEFAULT_VOICE_STT_FALLBACK = "openai"
 const DEFAULT_VOICE_STT_MODEL_GROQ = "whisper-large-v3-turbo"
@@ -86,6 +88,8 @@ export type StackConfig = {
   codexPricingSource?: string
   codexPricingOverrides: CodexModelPricing[]
   codexArgsLocked: boolean
+  synthWorkerInferenceEnabled: boolean
+  synthWorkerInferenceModel: string
   stackMcpEnabled: boolean
   stackMcpCommand: string
   sessionLogDir: string
@@ -135,19 +139,6 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     appRoot,
     process.env.STACK_WORKING_DIR ?? fileConfig.workingDir ?? appRoot,
   )
-  const codexModelProfile = parseCodexModelProfile(process.env.STACK_CODEX_MODEL)
-  const codexModel = normalizeOption(
-    codexModelProfile.model,
-    CODEX_MODEL_OPTIONS,
-    DEFAULT_CODEX_MODEL,
-    "STACK_CODEX_MODEL",
-  )
-  const codexReasoningEffort = normalizeOption(
-    process.env.STACK_CODEX_REASONING_EFFORT ?? codexModelProfile.reasoningEffort,
-    CODEX_REASONING_EFFORT_OPTIONS,
-    DEFAULT_CODEX_REASONING_EFFORT,
-    "STACK_CODEX_REASONING_EFFORT",
-  )
   const environments = resolveEnvironmentAuthFiles(appRoot, readEnvironments(fileConfig))
   const environmentName = normalizeOption(
     process.env.STACK_ENVIRONMENT ?? fileConfig.defaultEnvironment,
@@ -166,9 +157,16 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
   )
   const stackMcpCommand = resolveStackMcpCommand(appRoot)
   const stackMcpEnabled = process.env.STACK_CODEX_STACK_MCP !== "0"
-  const codexSubagentsEnabled = readBooleanEnv(process.env.STACK_CODEX_SUBAGENTS, true)
+  const codexSubagentsEnabled = readBooleanEnv(process.env.STACK_CODEX_SUBAGENTS, true, "STACK_CODEX_SUBAGENTS")
   const codexSubagentModel = process.env.STACK_CODEX_SUBAGENT_MODEL ?? "gpt-5.4-mini"
   const codexSubagentReasoningEffort = process.env.STACK_CODEX_SUBAGENT_REASONING_EFFORT ?? "medium"
+  const synthWorkerInferenceEnabled = readBooleanEnv(
+    process.env.STACK_SYNTH_WORKER_INFERENCE,
+    false,
+    "STACK_SYNTH_WORKER_INFERENCE",
+  )
+  const synthWorkerInferenceModel =
+    process.env.STACK_SYNTH_WORKER_INFERENCE_MODEL ?? DEFAULT_SYNTH_WORKER_INFERENCE_MODEL
   const harness = normalizeOption(
     process.env.STACK_HARNESS,
     STACK_HARNESS_OPTIONS,
@@ -196,6 +194,33 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     explicitStackRoot ?? (explicitWorkingDir && existsSync(join(workingDir, ".stack")) ? workingDir : workspaceHome)
   const sessionLogDir = process.env.STACK_SESSION_DIR ?? join(stackDataHome, ".stack", "sessions")
   const stackDataRoot = stackDataRootFromSessionDir(sessionLogDir) ?? stackDataHome
+  const activeProfile = readStackProfile(stackDataRoot).active
+  const profileDefaults = STACK_PROFILE_DEFAULTS[activeProfile]
+  const profileDefaultModel = normalizeOption(
+    profileDefaults.codexModel,
+    CODEX_MODEL_OPTIONS,
+    DEFAULT_CODEX_MODEL,
+    `profile ${activeProfile} codexModel`,
+  )
+  const profileDefaultReasoningEffort = normalizeOption(
+    profileDefaults.codexReasoningEffort,
+    CODEX_REASONING_EFFORT_OPTIONS,
+    DEFAULT_CODEX_REASONING_EFFORT,
+    `profile ${activeProfile} codexReasoningEffort`,
+  )
+  const codexModelProfile = parseCodexModelProfile(process.env.STACK_CODEX_MODEL)
+  const codexModel = normalizeOption(
+    codexModelProfile.model,
+    CODEX_MODEL_OPTIONS,
+    profileDefaultModel,
+    "STACK_CODEX_MODEL",
+  )
+  const codexReasoningEffort = normalizeOption(
+    process.env.STACK_CODEX_REASONING_EFFORT ?? codexModelProfile.reasoningEffort,
+    CODEX_REASONING_EFFORT_OPTIONS,
+    profileDefaultReasoningEffort,
+    "STACK_CODEX_REASONING_EFFORT",
+  )
 
   return {
     appRoot,
@@ -215,6 +240,13 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
           codexSubagentsEnabled,
           stackMcpEnabled ? stackMcpCommand : undefined,
           environmentName,
+          synthWorkerInferenceEnabled
+            ? {
+                apiBaseUrl: environment.apiBaseUrl,
+                authEnv: environment.authEnv,
+                model: synthWorkerInferenceModel,
+              }
+            : undefined,
         ),
     codexModel,
     codexReasoningEffort,
@@ -231,6 +263,8 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     codexPricing: defaultCodexPricing(),
     codexPricingOverrides: readCodexPricingOverrides(fileConfig),
     codexArgsLocked: Boolean(process.env.STACK_CODEX_ARGS),
+    synthWorkerInferenceEnabled,
+    synthWorkerInferenceModel,
     stackMcpEnabled,
     stackMcpCommand,
     sessionLogDir,
@@ -451,6 +485,13 @@ export function refreshCodexArgs(config: StackConfig): void {
     config.codexSubagentsEnabled,
     config.stackMcpEnabled ? config.stackMcpCommand : undefined,
     config.environmentName,
+    config.synthWorkerInferenceEnabled
+      ? {
+          apiBaseUrl: config.environment.apiBaseUrl,
+          authEnv: config.environment.authEnv,
+          model: config.synthWorkerInferenceModel,
+        }
+      : undefined,
   )
 }
 
@@ -460,7 +501,13 @@ export function defaultCodexArgs(
   subagentsEnabled: boolean,
   stackMcpCommand?: string,
   stackEnvironmentName?: StackEnvironmentName,
+  synthWorkerInference?: {
+    apiBaseUrl: string
+    authEnv: string
+    model: string
+  },
 ): string[] {
+  const effectiveModel = synthWorkerInference?.model ?? model
   const args = [
     "exec",
     "--json",
@@ -468,7 +515,7 @@ export function defaultCodexArgs(
     "never",
     "--skip-git-repo-check",
     "-m",
-    model,
+    effectiveModel,
     "-c",
     `model_reasoning_effort="${reasoningEffort}"`,
     "-c",
@@ -486,6 +533,24 @@ export function defaultCodexArgs(
       `mcp_servers.stack_live_ops.env.STACK_ENVIRONMENT=${tomlString(stackEnvironmentName ?? DEFAULT_ENVIRONMENT)}`,
     )
   }
+  if (synthWorkerInference) {
+    const providerId = "synth_stack_inference"
+    const baseUrl = `${synthWorkerInference.apiBaseUrl.replace(/\/+$/, "")}/api/v1/stack-inference/openai/v1`
+    args.push(
+      "-c",
+      `model_provider=${tomlString(providerId)}`,
+      "-c",
+      `model_providers.${providerId}.name=${tomlString("Synth Stack inference")}`,
+      "-c",
+      `model_providers.${providerId}.base_url=${tomlString(baseUrl)}`,
+      "-c",
+      `model_providers.${providerId}.wire_api=${tomlString("responses")}`,
+      "-c",
+      `model_providers.${providerId}.env_key=${tomlString(synthWorkerInference.authEnv)}`,
+      "-c",
+      `model_providers.${providerId}.http_headers={"X-Stack-Actor-Role"="worker","X-Stack-Worker-Opt-In"="explicit"}`,
+    )
+  }
   return args
 }
 
@@ -500,12 +565,12 @@ function parseArgs(value: string): string[] {
     .filter((part) => part.length > 0)
 }
 
-function readBooleanEnv(value: string | undefined, fallback: boolean): boolean {
+function readBooleanEnv(value: string | undefined, fallback: boolean, label: string): boolean {
   if (value === undefined || value.trim().length === 0) return fallback
   const normalized = value.trim().toLowerCase()
   if (["1", "true", "yes", "on", "enabled"].includes(normalized)) return true
   if (["0", "false", "no", "off", "disabled"].includes(normalized)) return false
-  throw new Error(`STACK_CODEX_SUBAGENTS=${JSON.stringify(value)} is not supported; expected on/off`)
+  throw new Error(`${label}=${JSON.stringify(value)} is not supported; expected on/off`)
 }
 
 function normalizeOption<T extends string>(

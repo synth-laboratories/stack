@@ -52,6 +52,8 @@ export type OpsPanelActors = {
   codexSubagentModel: string
   codexSubagentReasoningEffort: string
   codexArgsLocked: boolean
+  synthWorkerInferenceEnabled: boolean
+  synthWorkerInferenceModel: string
   codexArgs: string[]
   subagents: SubagentLog[]
 }
@@ -270,9 +272,13 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
 
   const stackAuxBudget = formatStackAuxBudgetLine(usage)
   if (stackAuxBudget) lines.push(stackAuxBudget)
-  lines.push("  worker Codex by default; Synth inference opt-in only")
+  const stackInferenceBudget = formatStackInferenceBudgetLine(usage)
+  if (stackInferenceBudget) lines.push(stackInferenceBudget)
+  lines.push(formatWorkerSynthInferenceLine(usage))
   const inferenceLine = formatInferenceUsageLine(usage)
   if (inferenceLine) lines.push(inferenceLine)
+  const billedActor = formatTopUsageLine("billed actor", usage.stackInferenceBudget?.spend7d.byActor)
+  if (billedActor) lines.push(billedActor)
 
   lines.push(...formatAllowanceSummaryLines(usage.allowanceWindows))
 
@@ -327,6 +333,8 @@ export function subscriptionPanelLines(
   }
   const topProjectLines = formatTopUsageSection("Top projects (7d)", usage.usageBreakdown?.byProject)
   if (topProjectLines.length > 0) lines.push("", ...topProjectLines)
+  const billedActorLines = formatTopUsageSection("Billed actors (7d)", usage.stackInferenceBudget?.spend7d.byActor)
+  if (billedActorLines.length > 0) lines.push("", ...billedActorLines)
   const topActorLines = formatTopUsageSection("Top actors (7d)", usage.usageBreakdown?.byActor)
   if (topActorLines.length > 0) lines.push("", ...topActorLines)
   lines.push("", "Local agent")
@@ -389,9 +397,27 @@ function formatStackAuxBudgetLine(usage: RemoteUsageSnapshot): string | undefine
   return `  Synth ${model} · ${oneLine(`${synthWide} · ${orgDaily}${reset}`, 50)}`
 }
 
+function formatStackInferenceBudgetLine(usage: RemoteUsageSnapshot): string | undefined {
+  const budget = usage.stackInferenceBudget
+  if (!budget) return undefined
+  const model = budget.model ? oneLine(budget.model, 18) : "billed GLM"
+  const orgDaily = `${formatUsd(budget.orgDaily.remainingUsd)} / ${formatUsd(budget.orgDaily.capUsd)} org today`
+  const reset = budget.orgDaily.resetsInSeconds === undefined
+    ? ""
+    : ` · reset ${formatDuration(budget.orgDaily.resetsInSeconds)}`
+  const spent = budget.spend7d.eventCount > 0
+    ? `7d ${formatUsd(budget.spend7d.spentUsd)} · ${budget.spend7d.eventCount} calls`
+    : "7d no usage"
+  return `  Billed ${model} · ${oneLine(`${spent} · ${orgDaily}${reset}`, 50)}`
+}
+
+function formatWorkerSynthInferenceLine(usage: RemoteUsageSnapshot): string {
+  return `  ${oneLine(usage.workerSynthInferenceMessage ?? "worker Codex by default; Synth inference opt-in only", 56)}`
+}
+
 function formatInferenceUsageLine(usage: RemoteUsageSnapshot): string | undefined {
   const inference = usage.usageBreakdown?.byType.find((row) => row.label.toLowerCase() === "inference")?.costUsd
-  const value = inference ?? usage.usage7dUsd
+  const value = usage.stackInferenceBudget?.spend7d.spentUsd ?? inference ?? usage.usage7dUsd
   if (value === undefined) return undefined
   return `  Synth inference 7d ${formatUsd(value)} · no prompts in usage rows`
 }
@@ -475,6 +501,7 @@ function actorsLines(actors: OpsPanelActors): string[] {
     `Launch config`,
     `  multi_agent ${enabled} · ${locked}`,
     `  ${oneLine(featuresMultiAgentArg(actors.codexArgs), 46)}`,
+    `  worker route ${actors.synthWorkerInferenceEnabled ? `Synth ${oneLine(actors.synthWorkerInferenceModel, 18)}` : "Codex/BYOK"}`,
     `  subagent model ${oneLine(actors.codexSubagentModel, 18)} · ${actors.codexSubagentReasoningEffort}`,
     "",
     `Actors`,
@@ -789,7 +816,7 @@ function containersHeader(snapshot: ContainersPanelSnapshot): string {
 function containersBody(snapshot: ContainersPanelSnapshot): string[] {
   if (snapshot.containers.length === 0) {
     if (snapshot.status === "missing-auth") return ["  Local ready · Sign in to Synth for containers", "  stack auth open signin"]
-    if (snapshot.status === "offline") return ["  API offline — start dev slot or check /v1/containers"]
+    if (snapshot.status === "offline") return ["  API offline — start dev slot or check /v1/pools"]
     return ["  (no containers) · synth-ai containers create …"]
   }
   return snapshot.containers.slice(0, 8).map((container) => {

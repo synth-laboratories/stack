@@ -32,9 +32,8 @@
   output for the selected run. `t` cycles the mediation target across the
   selected run, selected Factory, and selected hosted optimizer. Type a message
   draft in the Agent input, move focus to Remote SMR, then press `m` to stage a
-  live run or Factory-project message. `e` stages a README smoke SMR eval launch
-  when `STACK_SYNTH_DEV_ROOT` and `STACK_EVAL_COMMAND` point at a Synth eval
-  wrapper (optional advanced setup). Type a local path in
+  live run or Factory-project message. `O` opens the selected run's hosted
+  artifact after a HEAD precheck when one is available. Type a local path in
   the Agent input, optionally as `local/path -> remote/path`, then press `a` to
   stage run-file upload for the selected run. `p`, `u`, `s`, `w`, `d`, `v`, and
   `l` stage other remote actions; `Enter` confirms the staged action. `v`
@@ -54,7 +53,7 @@ Stack writes local session logs under `.stack/sessions/`. Current release includ
 read-only remote SMR visibility for jobs, run artifacts, WorkProducts, and
 factories, hosted optimizer job visibility/detail, and local optimizer job
 visibility. The implemented remote action surface covers live SMR/Factory
-messages, SMR lifecycle controls, README-smoke eval launch/status, run-file
+messages, SMR lifecycle controls, run-file
 upload, WorkProduct/artifact preview/download, persisted saved-download
 preview, hosted optimizer cancel, and hosted optimizer artifact
 preview/download.
@@ -286,8 +285,9 @@ optimizer jobs, recent remote SMR jobs, selected-run artifact and WorkProduct
 summaries, selected-run file mounts, and remote factories. Local optimizer state remains local; hosted
 optimizers, remote SMR, and Factory views use the selected environment profile.
 
-The Remote SMR `e` action starts the configured README smoke when
-`STACK_EVAL_COMMAND` is set (optional — requires a Synth eval checkout):
+Stack does not launch eval tasks. Create remote SMR runs from the owning
+`evals` or `synth-dev` workflow, then use Stack to inspect the resulting
+run/project ids:
 
 ```bash
 # Example when STACK_SYNTH_DEV_ROOT points at a synth-dev checkout:
@@ -295,20 +295,10 @@ The Remote SMR `e` action starts the configured README smoke when
 #   --target local-dockerized --instance slot1
 ```
 
-Stack persists README-smoke launch state under
-`.stack/evals/readme-smoke-<environment>.json`, keeps a bounded stdout/stderr
-tail in the Live Ops rail, keeps recent failure lines from the wrapper, parses
-run/project ids and post-terminal verifier fields when the wrapper emits them,
-and refreshes the remote SMR snapshot so the created run can be monitored from
-the same cockpit. If the wrapper emits only a project id, Stack correlates it to
-the recent remote job list to recover the run id. When the run is known and
-present in the remote snapshot, Stack selects it as the current remote run and
-mediation target. The selected run view shows the active WorkProduct/artifact
-index, id, status/type, linked artifact id, creation time, preview text, and
-latest saved download path. Override the launch path with `STACK_SYNTH_DEV_ROOT`,
-`STACK_EVAL_COMMAND`,
-`STACK_README_SMOKE_SUITE`, `STACK_README_SMOKE_TARGET`, and
-`STACK_README_SMOKE_INSTANCE`.
+Stack refreshes the remote SMR snapshot so created runs can be monitored from
+the same cockpit. The selected run view shows the active WorkProduct/artifact
+index, id, status/type, linked artifact id, creation time, preview text, hosted
+artifact status, and latest saved download path.
 
 ### Stack MCP
 
@@ -334,9 +324,8 @@ The server reads `stack.config.json` and supports both JSONL and
 - `stack_list_remote_projects`: list hosted projects from the stackd runtime
   snapshot when available, including linked runs, Factories, deployments, and
   remote-sync receipt summaries
-- `stack_launch_read_smoke`: launch the configured README-smoke SMR eval
 - `stack_live_status`: account health, live SMR runs, Factories, hosted
-  optimizer runs, and README-smoke launch state
+  optimizer runs, and suggested next actions
 - `stack_message_live_run`: send an operator message to a live SMR run
 - `stack_message_factory_project`: send an operator message through the
   Factory-owned message route
@@ -366,9 +355,6 @@ The server reads `stack.config.json` and supports both JSONL and
   Stack download without calling the backend
 - `stack_upload_run_file`: upload a local file to a live SMR run through the
   run-file owner route
-- `stack_start_readme_smoke_eval`: launch the configured README-smoke SMR eval
-- `stack_readme_smoke_eval_status`: read the persisted launcher status,
-  parsed verifier context, and bounded output tail
 - `stack_query_logs`: query VictoriaLogs through stackd's native LogSQL client for
   Stack/GEPA/meta-harness telemetry. Defaults to `slot1`, `minutes=60`, and
   `limit=100`; supports `event_domain`, `service`, `run_id`, and `thread_id`
@@ -642,20 +628,25 @@ The catalog has two lanes when the backend route is deployed:
 | Free aux | `/api/v1/stack-aux/openai/v1/responses` | monitor, gardener, remote gardener, aux |
 | Billed GLM | `/api/v1/stack-inference/openai/v1/responses` | monitor, gardener, remote gardener; worker only with explicit opt-in |
 
-Monitor profiles are opt-in:
+Monitor and gardener Synth profiles are opt-in:
 
 ```bash
 STACK_AUX_INFERENCE=1 STACK_MONITOR_PROFILE=free-aux stack
 STACK_SYNTH_INFERENCE=1 STACK_MONITOR_PROFILE=billed-glm stack
+STACK_AUX_INFERENCE=1 STACK_GARDENER_PROFILE=free-aux stack
+STACK_SYNTH_INFERENCE=1 STACK_GARDENER_PROFILE=billed-glm stack
 ```
 
 If a selected Synth monitor route is unavailable, Stack falls back to the Codex
-app-server monitor and records a visible fallback notice. Usage views show
-spend/budget summaries only; they do not include prompts or transcripts.
+app-server monitor and records a visible fallback notice. A selected Synth
+gardener profile fails visibly instead of silently switching providers. Usage
+views show spend/budget summaries only; they do not include prompts or
+transcripts.
 
 Optional: install [synth-optimizers](https://pypi.org/project/synth-optimizers/) for local GEPA.
-Advanced Synth monorepo eval wrappers are optional — set `STACK_SYNTH_DEV_ROOT` and
-`STACK_EVAL_COMMAND` only if you use them.
+Advanced Synth monorepo eval wrappers now live outside Stack. Launch those from
+the owning checkout, then inspect the resulting SMR runs through Stack remote
+panels or MCP tools.
 
 Bootstrap logs: `.stack/bootstrap/dev-slot.log`, `.stack/optimizers/gepa-service.log`.
 
