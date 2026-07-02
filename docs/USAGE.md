@@ -574,9 +574,12 @@ stack
 Signed-out install stays local-first; hosted SMR/Factory/optimizers need a Synth account.
 
 ```bash
+stack login --no-browser           # print Synth sign-in URL without starting stackd
+stack signup                       # open optional Synth signup
+stack whoami --json                # alias for auth verification/status
 stack auth urls --json              # signup/signin/keys URLs (product=stack attribution)
 stack auth open signup              # open browser (or --no-browser to print URL only)
-stack auth verify --json            # remote account snapshot; exit 0 when connected
+stack auth status --json            # remote account snapshot; exit 0 when connected or local-only
 stack auth test signin              # optional Playwright harness (testing repo)
 ```
 

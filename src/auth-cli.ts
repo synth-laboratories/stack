@@ -26,9 +26,9 @@ export async function runAuthCli(config: StackConfig, argv: string[]): Promise<n
   const json = argv.includes("--json")
 
   if (sub !== "auth" || !action) {
-    console.error("usage: stack auth <open|verify|urls|test> …")
+    console.error("usage: stack auth <open|verify|status|urls|test> …")
     console.error("  stack auth open signup|signin|keys [--no-browser]")
-    console.error("  stack auth verify [--json]")
+    console.error("  stack auth verify|status [--json]")
     console.error("  stack auth urls [--json]")
     console.error("  stack auth test signup|signin  # run Playwright auth harness (testing repo)")
     return 2
@@ -53,7 +53,7 @@ export async function runAuthCli(config: StackConfig, argv: string[]): Promise<n
     return 0
   }
 
-  if (action === "verify") {
+  if (action === "verify" || action === "status") {
     const auth = environmentAuthStatus(config.environment)
     const snapshot = await readRemoteAccountSnapshot(config)
     const payload = {

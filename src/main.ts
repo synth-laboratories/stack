@@ -48,6 +48,15 @@ try {
     const { runAuthCli } = await import("./auth-cli.js")
     process.exit(await runAuthCli(config, process.argv.slice(2)))
   }
+  if (process.argv[2] === "login" || process.argv[2] === "signup") {
+    const { runAuthCli } = await import("./auth-cli.js")
+    const target = process.argv[2] === "signup" ? "signup" : "signin"
+    process.exit(await runAuthCli(config, ["auth", "open", target, ...process.argv.slice(3)]))
+  }
+  if (process.argv[2] === "whoami") {
+    const { runAuthCli } = await import("./auth-cli.js")
+    process.exit(await runAuthCli(config, ["auth", "verify", ...process.argv.slice(3)]))
+  }
   if (process.argv[2] === "inference") {
     const { runInferenceCli } = await import("./inference-cli.js")
     process.exit(await runInferenceCli(config, process.argv.slice(2)))
@@ -156,6 +165,9 @@ function printStackHelp(argv: string[]): void {
   }
   console.log("Usage:")
   console.log("  stack                         Open the TUI")
+  console.log("  stack login [--no-browser]    Open optional Synth sign-in")
+  console.log("  stack signup [--no-browser]   Open optional Synth signup")
+  console.log("  stack whoami [--json]          Check Synth account status")
   console.log("  stack doctor [--json]          Check local readiness")
   console.log("  stack auth <command>           Manage optional Synth auth")
   console.log("  stack inference <list|usage> [--json]")

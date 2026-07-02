@@ -48,7 +48,7 @@ fi
 if [[ "${1:-}" == "goal" && ( "${2:-}" == "--help" || "${2:-}" == "-h" ) ]]; then
   exec bun run "$SCRIPT_DIR/src/main.ts" "$@"
 fi
-if [[ "${1:-}" == "auth" ]]; then
+if [[ "${1:-}" == "auth" || "${1:-}" == "login" || "${1:-}" == "signup" || "${1:-}" == "whoami" ]]; then
   exec bun run "$SCRIPT_DIR/src/main.ts" "$@"
 fi
 
