@@ -1,6 +1,7 @@
-import { spawn } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
+import { existsSync } from "node:fs"
 import { mkdir, writeFile } from "node:fs/promises"
-import { basename, join } from "node:path"
+import { basename, join, resolve } from "node:path"
 import { environmentAuthStatus, type StackConfig } from "../config.js"
 
 export type HostedOptimizerStatus = "ready" | "missing-auth" | "offline"
@@ -83,6 +84,11 @@ export type HostedGepaSubmitResult = {
   stderr: string
   submittedAt: string
   finishedAt: string
+}
+
+type CommandInvocation = {
+  command: string
+  args: string[]
 }
 
 export type HostedOptimizerArtifactPreview = {
@@ -191,8 +197,10 @@ export async function submitHostedGepaRun(
   if (options.containerTaskId) args.push("--container-task-id", options.containerTaskId)
   if (follow) args.push("--follow")
 
+  const invocation = hostedGepaCommandInvocation(config, args)
+
   const timeoutSeconds = clampInteger(options.timeoutSeconds, follow ? 3600 : 300, 30, 86400)
-  const result = await runCommandTail(config.optimizerCommand, args, {
+  const result = await runCommandTail(invocation.command, invocation.args, {
     cwd: config.workspaceRoot,
     timeoutMs: timeoutSeconds * 1000,
   })
@@ -212,8 +220,8 @@ export async function submitHostedGepaRun(
     message,
     environmentName: config.environmentName,
     apiBaseUrl: config.environment.apiBaseUrl,
-    command: config.optimizerCommand,
-    args,
+    command: invocation.command,
+    args: invocation.args,
     ...(runId ? { runId } : {}),
     exitCode: result.exitCode,
     signal: result.signal,
@@ -223,6 +231,37 @@ export async function submitHostedGepaRun(
     submittedAt,
     finishedAt: new Date().toISOString(),
   }
+}
+
+function hostedGepaCommandInvocation(config: StackConfig, args: string[]): CommandInvocation {
+  if (config.optimizerCommand !== "synth-optimizers" || commandSupportsHostedSubmit(config.optimizerCommand)) {
+    return { command: config.optimizerCommand, args }
+  }
+  const optimizersRoot = resolveOptimizersRoot(config)
+  if (!optimizersRoot) return { command: config.optimizerCommand, args }
+  return {
+    command: "uv",
+    args: ["run", "--project", optimizersRoot, "synth-optimizers", ...args],
+  }
+}
+
+function commandSupportsHostedSubmit(command: string): boolean {
+  const result = spawnSync(command, ["gepa", "submit", "--help"], {
+    encoding: "utf8",
+    timeout: 2500,
+  })
+  const output = `${result.stdout ?? ""}\n${result.stderr ?? ""}`
+  return result.status === 0 || output.includes("--tunnel-url")
+}
+
+function resolveOptimizersRoot(config: StackConfig): string | undefined {
+  const candidates = [
+    process.env.STACK_SYNTH_OPTIMIZERS_ROOT,
+    join(config.workspaceRoot, "optimizers"),
+    resolve(config.appRoot, "..", "optimizers"),
+    resolve(config.appRoot, "..", "..", "optimizers"),
+  ].filter((candidate): candidate is string => Boolean(candidate))
+  return candidates.find((candidate) => existsSync(join(candidate, "pyproject.toml")))
 }
 
 export async function cancelHostedOptimizerRun(
