@@ -753,7 +753,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   history = pinGardenerThreadToTop(history, gardenerEnsured.threadId)
   const defaultWorker = history.find((summary) => summary.id !== gardenerEnsured.threadId)
   const state: AppState = {
-    focusMode: "agent",
+    // First-launch approval must own key focus: with the agent input focused, printable
+    // keys never reach the global telemetry key handler, so the modal's a/d/l keys go dead.
+    focusMode: shouldShowTelemetryApproval(telemetrySnapshot) ? "telemetry" : "agent",
     liveOpsMode: "local",
     railsVisible: false,
     leftPanelOpen: false,
@@ -2688,6 +2690,7 @@ async function refreshTelemetryStatus(state: AppState, refresh: () => void): Pro
     state.telemetryStatus = await stackdTelemetryStatus()
     state.telemetryNotice = undefined
     state.telemetryApprovalVisible = shouldShowTelemetryApproval(state.telemetryStatus)
+    if (state.telemetryApprovalVisible && state.focusMode === "agent") state.focusMode = "telemetry"
   } catch (error) {
     state.telemetryNotice = `telemetry status unavailable: ${error instanceof Error ? error.message : String(error)}`
   }
@@ -2721,6 +2724,7 @@ async function setTelemetryAdvanced(
       asked_version: stackVersion(options.config.appRoot),
     })
     state.telemetryStatus = mergeTelemetryTiers(state.telemetryStatus, response.tiers)
+    if (state.telemetryApprovalVisible && state.focusMode === "telemetry") state.focusMode = "agent"
     state.telemetryApprovalVisible = false
     state.telemetryNotice =
       advancedProduct === "accepted"
