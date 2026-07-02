@@ -17,6 +17,24 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260702.3] - 2026-07-02
+
+### Added
+
+- **Stack 0.4 profiles and research tools.** Added research, engineering, and
+  product operator profiles, profile switching, hosted optimizer submit helpers,
+  hosted container pool and rollout tools, and Synth inference-aware gardener
+  profiles.
+- **Container and hosted GEPA skills.** Added bundled guidance for Synth
+  containers, coding containers, hosted GEPA submit flows, and public pool /
+  rollout route usage.
+
+### Changed
+
+- Hosted optimizer and container panels now read richer owner-route snapshots,
+  clarify `/v1/pools` as the live backend route, and redact command diagnostics
+  before surfacing optimizer failures.
+
 ### Added
 
 - **Agents own the side panels.** The monitor and gardener profiles now grant
