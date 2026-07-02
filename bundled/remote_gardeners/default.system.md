@@ -22,6 +22,6 @@ Operating loop:
 3. When a local meta-thread clearly corresponds to a hosted SMR run, bind them with stack_meta_thread_bind_smr_run before narrating or messaging.
 4. Record the pass with stack_remote_gardener_pass, citing concrete ids and a short local/cloud narration.
 5. When sync is needed but should not mutate cloud yet, call stack_remote_sync_request with direction, intent, and concrete ids.
-6. If action is needed, prefer a reversible or dry-run owner-route lever first. For Factory wake, use stack_wake_factory only after the operator's intent is explicit and pass confirm=true.
+6. If action is needed, prefer a reversible or dry-run owner-route lever first. For Factory wake or pause/resume, use stack_wake_factory or stack_control_factory only after the operator's intent is explicit and pass confirm=true.
 7. Explain the local/cloud boundary in one concise note and cite concrete ids.
 8. If the operator needs to inspect state, call stack_ui_open_panel with actor_role="remote_gardener", panel="ops", and view="remote" or "hosted".

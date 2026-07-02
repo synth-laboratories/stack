@@ -61,6 +61,7 @@ import {
   createRemoteLaunch,
   decideRemoteRunApproval,
   downloadRemoteOutput,
+  executeRemoteFactoryAction,
   executeRemoteRunAction,
   getRemoteLaunch,
   listRemoteRunApprovals,
@@ -1383,6 +1384,53 @@ export class StackMcpServer {
         api_base_url: config.environment.apiBaseUrl,
         action: "wake-factory",
         dry_run: false,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+        factory_name: factory.name,
+      },
+    })
+    return actionResultWithData(result, { runtime_event: runtimeEvent })
+  }
+
+  async controlFactory(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const factoryId = requiredString(args, "factory_id")
+    const action = requiredString(args, "action")
+    if (action !== "pause-factory" && action !== "resume-factory") {
+      throw new RpcError(-32602, "action must be pause-factory or resume-factory")
+    }
+    const projectId = optionalString(args, "project_id")
+    const confirm = optionalBoolean(args, "confirm") ?? false
+    if (!confirm) {
+      return {
+        ok: false,
+        status: 0,
+        message: "confirm=true is required to pause or resume a Factory",
+      }
+    }
+    let factory: RemoteFactorySummary = {
+      factoryId,
+      name: optionalString(args, "factory_name") ?? factoryId,
+      canonicalProjectId: projectId,
+    }
+    if (!projectId) {
+      const snapshot = await readRemoteResearchSnapshot(config)
+      factory = snapshot.factories.find((item) => item.factoryId === factoryId) ?? factory
+    }
+    const result = await executeRemoteFactoryAction(config, factory, action)
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: `lever.remote_factory.${action === "pause-factory" ? "paused" : "resumed"}` as `lever.${string}`,
+      source: "lever.stack_mcp",
+      subject: { kind: "remote_factory", id: factoryId },
+      correlation: {
+        factory_id: factoryId,
+        project_id: projectId ?? factory.canonicalProjectId ?? factory.latestProjectId ?? undefined,
+      },
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        action,
         ok: result.ok,
         status: result.status,
         message: result.message,
@@ -3178,6 +3226,22 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["factory_id", "confirm"],
       ),
       handler: (args) => server.wakeFactory(args),
+    },
+    {
+      name: "stack_control_factory",
+      description: "Pause or resume a Factory through the backend-owned Factory patch route. Requires confirm=true and records a runtime receipt.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          factory_id: stringProperty("Factory id."),
+          factory_name: stringProperty("Optional display name."),
+          project_id: stringProperty("Optional project id for receipt correlation."),
+          action: enumProperty(["pause-factory", "resume-factory"], "Control action."),
+          confirm: { type: "boolean", description: "Required true to pause or resume a Factory." },
+        },
+        ["factory_id", "action", "confirm"],
+      ),
+      handler: (args) => server.controlFactory(args),
     },
     {
       name: "stack_control_live_run",

@@ -193,6 +193,7 @@ import type { WorkspaceInfo } from "../local/workspace.js"
 import { authSetupHint, readRemoteAccountSnapshot, type RemoteAccountSnapshot } from "../remote/account.js"
 import {
   downloadRemoteOutput,
+  executeRemoteFactoryAction,
   executeRemoteRunAction,
   openUrlInSystemBrowser,
   previewRemoteOutput,
@@ -8823,12 +8824,12 @@ async function handleRemoteKey(
     return
   }
   if (key.name === "p") {
-    setPendingRemoteAction(state, "pause-run")
+    setPendingRemoteAction(state, state.mediationTargetKind === "factory" ? "pause-factory" : "pause-run")
     refresh()
     return
   }
   if (key.name === "u") {
-    setPendingRemoteAction(state, "resume-run")
+    setPendingRemoteAction(state, state.mediationTargetKind === "factory" ? "resume-factory" : "resume-run")
     refresh()
     return
   }
@@ -9295,6 +9296,11 @@ async function executeRemoteActionResult(
       return context.factory
         ? await wakeRemoteFactoryDue(options.config, context.factory)
         : { ok: false, status: 0, message: "no factory selected" }
+    case "pause-factory":
+    case "resume-factory":
+      return context.factory
+        ? await executeRemoteFactoryAction(options.config, context.factory, action)
+        : { ok: false, status: 0, message: "no factory selected" }
     case "pause-run":
     case "resume-run":
     case "stop-run":
@@ -9367,6 +9373,28 @@ async function recordRemoteTuiLeverEvent(
           api_base_url: config.environment.apiBaseUrl,
           action,
           dry_run: false,
+          ok: context.result.ok,
+          status: context.result.status,
+          message: context.result.message,
+          factory_name: context.factory.name,
+        },
+      })
+      return
+    case "pause-factory":
+    case "resume-factory":
+      if (!context.factory) return
+      await recordTuiRuntimeLeverEvent({
+        event_type: `lever.remote_factory.${action === "pause-factory" ? "paused" : "resumed"}` as `lever.${string}`,
+        source: "lever.stack_tui",
+        subject: { kind: "remote_factory", id: context.factory.factoryId },
+        correlation: {
+          factory_id: context.factory.factoryId,
+          project_id: context.factory.canonicalProjectId ?? context.factory.latestProjectId,
+        },
+        payload: {
+          environment: config.environmentName,
+          api_base_url: config.environment.apiBaseUrl,
+          action,
           ok: context.result.ok,
           status: context.result.status,
           message: context.result.message,
@@ -9475,6 +9503,10 @@ function remoteActionLabel(action: LiveActionKind): string {
       return "preview factory wake-due"
     case "wake-factory":
       return "wake selected factory"
+    case "pause-factory":
+      return "pause selected factory"
+    case "resume-factory":
+      return "resume selected factory"
     case "download-output":
       return "download selected output"
     case "preview-output":

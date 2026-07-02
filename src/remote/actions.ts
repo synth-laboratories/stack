@@ -10,6 +10,8 @@ export type RemoteActionKind =
   | "stop-run"
   | "preview-factory-wake"
   | "wake-factory"
+  | "pause-factory"
+  | "resume-factory"
   | "preview-output"
   | "preview-download"
   | "download-output"
@@ -174,6 +176,15 @@ export async function executeRemoteRunAction(
     ? `/smr/projects/${encodeURIComponent(run.projectId)}/runs/${encodeURIComponent(run.runId)}`
     : `/smr/runs/${encodeURIComponent(run.runId)}`
   return postRemote(config, `${basePath}/${suffix}`)
+}
+
+export async function executeRemoteFactoryAction(
+  config: StackConfig,
+  factory: RemoteFactorySummary,
+  action: "pause-factory" | "resume-factory",
+): Promise<RemoteActionResult> {
+  const status = action === "pause-factory" ? "paused" : "active"
+  return patchRemote(config, `/smr/factories/${encodeURIComponent(factory.factoryId)}`, { status })
 }
 
 export async function sendRemoteRunMessage(
@@ -483,6 +494,43 @@ async function postRemote(config: StackConfig, path: string, body?: Record<strin
         ...(body ? { "Content-Type": "application/json" } : {}),
       },
       body: body ? JSON.stringify(body) : undefined,
+      signal: AbortSignal.timeout(5000),
+    })
+    const text = await response.text()
+    const data = payloadRecord(text)
+    return {
+      ok: response.ok,
+      status: response.status,
+      message: response.ok ? summarizePayload(text) || `${path} ok` : summarizePayload(text) || `${response.status} ${response.statusText}`,
+      ...(data ? { data } : {}),
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      message: error instanceof Error ? error.message : String(error),
+    }
+  }
+}
+
+async function patchRemote(config: StackConfig, path: string, body: Record<string, unknown>): Promise<RemoteActionResult> {
+  const token = process.env[config.environment.authEnv]
+  if (!token) {
+    return {
+      ok: false,
+      status: 0,
+      message: environmentAuthStatus(config.environment).message,
+    }
+  }
+
+  try {
+    const response = await fetch(`${config.environment.apiBaseUrl.replace(/\/+$/, "")}${path}`, {
+      method: "PATCH",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
       signal: AbortSignal.timeout(5000),
     })
     const text = await response.text()
