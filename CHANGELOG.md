@@ -19,6 +19,14 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 No changes yet.
 
+## [0.2.0-dev.20260701.3] - 2026-07-02
+
+### Fixed
+
+- **Release launcher stackd autostart.** Packaged installs now preserve the
+  checkout launcher behavior that starts `stackd` before the TUI, so fresh
+  installs can read telemetry status and show the first-launch approval modal.
+
 ## [0.2.0-dev.20260701.2] - 2026-07-01
 
 ### Added
