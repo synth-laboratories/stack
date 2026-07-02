@@ -160,7 +160,10 @@ async function runMonitorCodexSidecarPrompt(input: {
   const client = await CodexAppServerClient.start({
     launch: {
       command: input.stackConfig.codexCommand,
-      args: codexAppServerArgs(input.stackConfig.codexArgs),
+      args: [
+        ...codexAppServerArgs(input.stackConfig.codexArgs),
+        ...monitorMcpToolFilterArgs(input.stackConfig, input.monitorConfig),
+      ],
       cwd: input.stackConfig.workspaceRoot,
     },
     clientName: "stack-sidecar",
@@ -252,10 +255,44 @@ async function runMonitorCodexSidecarPrompt(input: {
   }
 }
 
+// Monitor profile-as-data (C7): the sidecar's Stack MCP tool surface is the TOML
+// `[tools] allow/deny` stack_* subset, enforced the same way the gardener's is
+// (STACK_MCP_TOOL_ALLOW/DENY on the stack_live_ops server). Without this the
+// sidecar would inherit the full unfiltered stack_* tool set.
+const NO_STACK_MCP_TOOLS_SENTINEL = "__stack_no_mcp_tools__"
+
+function monitorMcpToolFilterArgs(stackConfig: StackConfig, monitorConfig: StackMonitorConfig): string[] {
+  if (!stackConfig.stackMcpEnabled || !stackConfig.stackMcpCommand) return []
+  const args: string[] = []
+  const allowed = stackMcpToolIds(monitorConfig.tools.allow)
+  const denied = stackMcpToolIds(monitorConfig.tools.deny)
+  if (monitorConfig.tools.allow.length > 0) {
+    const allowValue = allowed.length > 0 ? allowed.join(",") : NO_STACK_MCP_TOOLS_SENTINEL
+    args.push("-c", `mcp_servers.stack_live_ops.env.STACK_MCP_TOOL_ALLOW=${JSON.stringify(allowValue)}`)
+  }
+  if (denied.length > 0) {
+    args.push("-c", `mcp_servers.stack_live_ops.env.STACK_MCP_TOOL_DENY=${JSON.stringify(denied.join(","))}`)
+  }
+  return args
+}
+
+function stackMcpToolIds(toolIds: readonly string[]): string[] {
+  return [...new Set(toolIds.filter((toolId) => toolId.startsWith("stack_")))]
+}
+
 function monitorCodexDeveloperPrompt(input: {
   threadId: string
   actorId: string
+  monitorConfig: StackMonitorConfig
 }): string {
+  // C5 — activity density is a profile knob: rich narrates phase-level current activity,
+  // quiet (default) reports transitions and concerns only. Never "no update" spam either way.
+  const densityLines =
+    input.monitorConfig.activityDensity === "rich"
+      ? [
+          "ACTIVITY DENSITY IS SET TO RICH: the operator has asked for a fuller sense of what the worker is doing right now. In addition to the update rules above, when a wake batch shows the worker sustaining a distinct kind of work (e.g. exploring the config surface, running the eval loop, editing a specific module), post ONE `stack_monitor_goal_status` update with `status: \"working\"` and `for_human: true` naming that activity concretely — even between formal phase shifts. Still never post an update that only says there is nothing new; rich density widens what counts as reportable activity, it does not license no-progress filler.",
+        ]
+      : []
   return [
     "You are the Stack sidecar monitor, a persistent Codex agent paired with one primary worker thread.",
     "Your job is to watch the worker's event stream, explain progress to the operator, identify risks, and answer sidecar chat.",
@@ -279,11 +316,12 @@ function monitorCodexDeveloperPrompt(input: {
     "If `current_goal.taskContext` is present, it is authoritative: apply its `doneBar` EXACTLY (that is the real bar for this task — do not emit goal_met unless the doneBar is met), frame progress against its `milestoneChain`, and actively watch for its `honestyPitfalls` (refute a worker claim that hits one). An artifact existing, a service starting, or a partial result table is not completion unless the doneBar says it is.",
     "Otherwise — routine tool completions (reads, listings, greps), trivial batches, or when there is simply no new goal progress — stay quiet: do NOT call `stack_monitor_goal_status` with `for_human: true`. NEVER post an update that announces the absence of progress or restates prior status; a for_human update that says 'no new progress' or re-summarizes what you already reported is a defect. The runtime emits a dim `monitor.checkin` row for quiet passes — you do not need to narrate 'no update' yourself.",
     "The Sidecar events panel renders each for_human update as `type · headline` over one content line, so keep headlines tight and put the detail in the note. Your own long-running transcript is shown in the Sidecar thread panel.",
-    "The operator's default view is the agent panel ONLY — your feed is not on screen unless a side panel is open. On a HIGH-SIGNAL review moment (an audited goal_met or goal_failed, a blocked verdict, a steer you issued, or a risky pending action) you may call `stack_ui_open_panel` with `panel: \"monitor\"`, `actor_role: \"monitor\"`, and a one-sentence reason to put the sidecar feed in front of the operator — at most ONCE per distinct signature; if `recent_context_events` shows you already opened a panel for this same issue, do not open it again. Routine progress NEVER opens a panel. The operator's Esc closes it and wins until your next open.",
+    "The operator's default view is the agent panel ONLY — your feed is not on screen unless a side panel is open. On a HIGH-SIGNAL review moment (an audited goal_met or goal_failed, a blocked verdict, a steer you issued, or a risky pending action) you may call `stack_ui_open_panel` with `panel: \"monitor\"`, `actor_role: \"monitor\"`, and a one-sentence reason to put the sidecar feed in front of the operator — at most ONCE per distinct signature; if `recent_context_events` shows you already opened a panel for this same issue, do not open it again. Routine progress NEVER opens a panel. The operator's Esc closes it and wins until your next open. When the issue that justified an open is resolved (the blocker clears, the steer lands, the risky action is confirmed or cancelled), close the panel you opened with `stack_ui_close_panel` — you may only close panels you opened.",
     "When the worker is bound to a meta-thread and a concise portfolio label would help the operator find the run, you may call `stack_meta_thread_set_title` with `actor_role: \"monitor\"` and a max-48-char title. This is naming only; never change `meta_thread_id`, lifecycle, archive state, or durable ids through the title tool.",
     "When you finish reviewing the current event batch, call the Stack MCP tool `stack_sidecar_pause_for_restart` with the worker thread id, your actor id, and a short reason.",
     "The pause tool is mandatory. Do not substitute a textual waiting message for it.",
     "Do not claim unseen tool output. Cite event ids when useful.",
+    ...densityLines,
     `Worker thread id: ${input.threadId}`,
     `Sidecar actor id: ${input.actorId}`,
   ].join("\n")

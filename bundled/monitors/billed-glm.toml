@@ -5,6 +5,8 @@ enabled = true
 mode = "observe_summarize_queue_steer"
 policy = "conservative"
 strictness = "conservative"
+# C5 activity density: quiet = transitions/concerns only; rich = also phase-level current-activity updates.
+activity_density = "quiet"
 
 [focus]
 selection = "any"
@@ -51,7 +53,7 @@ allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "syn
 push_when_confident = false
 
 [tools]
-allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer"]
+allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer", "stack_monitor_goal_status", "stack_sidecar_pause_for_restart", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel"]
 deny = ["codex.interrupt"]
 
 [handoff_preempt]
