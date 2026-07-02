@@ -864,6 +864,70 @@ export class StackMcpServer {
     return actionResultWithData(result, { dry_run: false, promotion_packet: packet, runtime_event: runtimeEvent })
   }
 
+  async requestRemoteSync(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const direction = requiredString(args, "direction")
+    if (direction !== "push" && direction !== "pull") {
+      throw new RpcError(-32602, "direction must be push or pull")
+    }
+    const intent = requiredString(args, "intent")
+    const actorRole = optionalString(args, "actor_role") ?? "remote_gardener"
+    if (actorRole !== "remote_gardener" && actorRole !== "gardener" && actorRole !== "operator") {
+      throw new RpcError(-32602, "actor_role must be remote_gardener, gardener, or operator")
+    }
+    const projectId = optionalString(args, "project_id")
+    const runId = optionalString(args, "run_id")
+    const factoryId = optionalString(args, "factory_id")
+    const deploymentId = optionalString(args, "deployment_id")
+    const threadId = optionalString(args, "thread_id")
+    const metaThreadId = optionalString(args, "meta_thread_id")
+    const subject = remoteSyncSubject({
+      projectId,
+      runId,
+      factoryId,
+      deploymentId,
+      metaThreadId,
+      intent,
+    })
+    const eventType = `lever.remote.${direction}_requested` as `lever.${string}`
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: eventType,
+      source: "lever.remote_gardener",
+      subject,
+      correlation: {
+        stack_session_id: threadId ?? undefined,
+        project_id: projectId ?? undefined,
+        run_id: runId ?? undefined,
+        factory_id: factoryId ?? undefined,
+        deployment_id: deploymentId ?? undefined,
+      },
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        direction,
+        intent,
+        actor_role: actorRole,
+        actor_id: optionalString(args, "actor_id") ?? actorRole,
+        thread_id: threadId ?? null,
+        meta_thread_id: metaThreadId ?? null,
+        project_id: projectId ?? null,
+        run_id: runId ?? null,
+        factory_id: factoryId ?? null,
+        deployment_id: deploymentId ?? null,
+        note: optionalString(args, "note") ?? null,
+        source: "stack_remote_sync_request",
+      },
+    })
+    return toJsonValue({
+      ok: runtimeEvent.ok,
+      receipt: eventType,
+      direction,
+      intent,
+      subject,
+      runtime_event: runtimeEvent,
+    }) ?? null
+  }
+
   async getCloudLaunch(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const runId = requiredString(args, "run_id")
@@ -1900,6 +1964,22 @@ async function recordRuntimeLeverEvent(
   }
 }
 
+function remoteSyncSubject(input: {
+  projectId?: string
+  runId?: string
+  factoryId?: string
+  deploymentId?: string
+  metaThreadId?: string
+  intent: string
+}): { kind: string; id: string } {
+  if (input.deploymentId) return { kind: "remote_deployment", id: input.deploymentId }
+  if (input.factoryId) return { kind: "remote_factory", id: input.factoryId }
+  if (input.runId) return { kind: "remote_smr_run", id: input.runId }
+  if (input.projectId) return { kind: "remote_project", id: input.projectId }
+  if (input.metaThreadId) return { kind: "meta_thread", id: input.metaThreadId }
+  return { kind: "remote_sync_request", id: input.intent }
+}
+
 function remoteLaunchRunId(result: RemoteActionResult): string | undefined {
   const data = result.data
   if (!data) return undefined
@@ -2376,6 +2456,41 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         confirm: { type: "boolean", description: "Required as true when dry_run=false." },
       }),
       handler: (args) => server.launchCloudPromotion(args),
+    },
+    {
+      name: "stack_remote_sync_request",
+      description: "Record a remote gardener push/pull sync request receipt in stackd runtime events. This does not mutate cloud state; use owner-route tools for the actual action.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          direction: enumProperty(["push", "pull"], "Sync direction. push means local-to-cloud request; pull means cloud-to-local request."),
+          intent: enumProperty(
+            [
+              "promotion_packet",
+              "workspace_upload",
+              "message_run",
+              "message_factory",
+              "objective",
+              "task_status",
+              "artifact_refs",
+              "deployment_status",
+              "factory_status",
+            ],
+            "Requested sync intent.",
+          ),
+          thread_id: stringProperty("Optional local Stack thread/session id for correlation."),
+          meta_thread_id: stringProperty("Optional local Stack meta-thread id for correlation."),
+          project_id: stringProperty("Optional Synth project id."),
+          run_id: stringProperty("Optional SMR run id."),
+          factory_id: stringProperty("Optional Factory id."),
+          deployment_id: stringProperty("Optional cloud deployment id."),
+          note: stringProperty("Short reason or operator-facing narration for the requested sync."),
+          actor_id: stringProperty("Optional actor id. Defaults to actor_role."),
+          actor_role: enumProperty(["remote_gardener", "gardener", "operator"], "Actor role. Defaults to remote_gardener."),
+        },
+        ["direction", "intent"],
+      ),
+      handler: (args) => server.requestRemoteSync(args),
     },
     {
       name: "stack_get_cloud_launch",
