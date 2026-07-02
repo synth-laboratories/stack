@@ -192,6 +192,7 @@ export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
   if (modelOverride) config.model.model = modelOverride
   const effortOverride = process.env.STACK_GARDENER_REASONING_EFFORT?.trim()
   if (effortOverride) config.model.reasoningEffort = effortOverride
+  assertGardenerProviderSupported(config)
   return config
 }
 
@@ -258,6 +259,14 @@ function mergeGardenerConfig(base: StackGardenerConfig, parsed: ParsedTomlSectio
       },
     },
   }
+}
+
+function assertGardenerProviderSupported(config: StackGardenerConfig): void {
+  const provider = config.model.provider.trim().toLowerCase()
+  if (provider === "openai" || provider === "codex") return
+  throw new Error(
+    `gardener model provider '${config.model.provider}' is not executable yet; Stack currently runs gardener through Codex app-server. Use stack_inference_catalog for catalog visibility, and do not configure Synth inference profiles until the direct execution path lands.`,
+  )
 }
 
 function defaultGardenerToml(): string {

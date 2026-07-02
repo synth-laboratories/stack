@@ -319,6 +319,7 @@ export function loadMonitorConfig(stackRoot: string): StackMonitorConfig {
   if (enabledOverride === "1" || enabledOverride === "true") config.enabled = true
   const strictnessOverride = process.env.STACK_MONITOR_STRICTNESS?.trim()
   if (strictnessOverride) config.strictness = normalizeStrictness(strictnessOverride, config.strictness)
+  assertMonitorProviderSupported(config)
   return config
 }
 
@@ -3284,6 +3285,14 @@ function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Rec
         readString(parsed.handoff_preempt?.segment_policy_file) ?? base.handoffPreempt.segmentPolicyFile,
     },
   }
+}
+
+function assertMonitorProviderSupported(config: StackMonitorConfig): void {
+  const provider = config.model.provider.trim().toLowerCase()
+  if (provider === "openai" || provider === "codex") return
+  throw new Error(
+    `monitor model provider '${config.model.provider}' is not executable yet; Stack currently runs monitor through Codex app-server. Use stack_inference_catalog for catalog visibility, and do not configure Synth inference profiles until the direct execution path lands.`,
+  )
 }
 
 function defaultMonitorToml(): string {
