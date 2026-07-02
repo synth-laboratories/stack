@@ -52,6 +52,8 @@ export type OpsPanelActors = {
   codexSubagentModel: string
   codexSubagentReasoningEffort: string
   codexArgsLocked: boolean
+  synthWorkerInferenceEnabled: boolean
+  synthWorkerInferenceModel: string
   codexArgs: string[]
   subagents: SubagentLog[]
 }
@@ -495,6 +497,7 @@ function actorsLines(actors: OpsPanelActors): string[] {
     `Launch config`,
     `  multi_agent ${enabled} · ${locked}`,
     `  ${oneLine(featuresMultiAgentArg(actors.codexArgs), 46)}`,
+    `  worker route ${actors.synthWorkerInferenceEnabled ? `Synth ${oneLine(actors.synthWorkerInferenceModel, 18)}` : "Codex/BYOK"}`,
     `  subagent model ${oneLine(actors.codexSubagentModel, 18)} · ${actors.codexSubagentReasoningEffort}`,
     "",
     `Actors`,

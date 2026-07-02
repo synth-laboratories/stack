@@ -6922,7 +6922,9 @@ function buildOpsPanelInput(options: StackAppOptions, state: AppState) {
     containers: state.containersSnapshot,
     localOptimizers: state.optimizerSnapshot,
     actors: {
-      primaryModel: harnessModel(options.config),
+      primaryModel: options.config.synthWorkerInferenceEnabled
+        ? options.config.synthWorkerInferenceModel
+        : harnessModel(options.config),
       primaryStatus: state.status,
       turnCount: options.session.turns.length + (state.status === "running" ? 1 : 0),
       currentTurnStartedAt: state.currentTurnStartedAt,
@@ -6931,6 +6933,8 @@ function buildOpsPanelInput(options: StackAppOptions, state: AppState) {
       codexSubagentModel: options.config.codexSubagentModel,
       codexSubagentReasoningEffort: options.config.codexSubagentReasoningEffort,
       codexArgsLocked: options.config.codexArgsLocked,
+      synthWorkerInferenceEnabled: options.config.synthWorkerInferenceEnabled,
+      synthWorkerInferenceModel: options.config.synthWorkerInferenceModel,
       codexArgs: options.config.codexArgs,
       subagents: state.subagentLogs,
     },

@@ -180,7 +180,11 @@ function parseUsageSnapshot(
     workerDefault: stackInferenceBudget?.workerDefault ?? "codex_byok",
     workerSynthInference,
     workerSynthInferenceEligible,
-    workerSynthInferenceMessage: workerSynthInferenceMessage(workerSynthInferenceEligible, workerSynthInference),
+    workerSynthInferenceMessage: workerSynthInferenceMessage(
+      workerSynthInferenceEligible,
+      workerSynthInference,
+      config.synthWorkerInferenceEnabled,
+    ),
   }
 }
 
@@ -604,7 +608,13 @@ function stackInferenceWorkerPlanEligible(planTier: string | undefined): boolean
   return normalized === "standard" || normalized === "max"
 }
 
-function workerSynthInferenceMessage(eligible: boolean, workerSynthInference: string): string {
+function workerSynthInferenceMessage(
+  eligible: boolean,
+  workerSynthInference: string,
+  configured: boolean,
+): string {
+  if (configured && !eligible) return "worker Synth inference configured; Standard or Max plan required"
+  if (configured) return "worker Synth inference enabled via STACK_SYNTH_WORKER_INFERENCE"
   if (!eligible) return "worker Codex by default; Synth worker requires Standard or Max"
   if (workerSynthInference === "explicit_profile_only") {
     return "worker Codex by default; Synth worker eligible with explicit profile"
