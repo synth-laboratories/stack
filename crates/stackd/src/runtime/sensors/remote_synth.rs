@@ -27,6 +27,7 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
         cursor.factories.clear();
         cursor.optimizers.clear();
         cursor.deployments.clear();
+        cursor.run_messages.clear();
     }
     cursor.environment_name = Some(profile.environment_name.clone());
     cursor.api_base_url = Some(profile.api_base_url.clone());
@@ -111,6 +112,19 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
                                     previous.cloned(),
                                 ));
                             }
+                            if !run.is_terminal() {
+                                poll_run_messages(
+                                    client,
+                                    &api_key,
+                                    &base_url,
+                                    &run,
+                                    &observed_at,
+                                    &profile,
+                                    &mut cursor,
+                                    &mut events,
+                                )
+                                .await;
+                            }
                             cursor.runs.insert(run.run_id.clone(), run);
                         }
                     }
@@ -160,6 +174,9 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
                         &profile,
                         Some(run.clone()),
                     ));
+                    cursor
+                        .run_messages
+                        .retain(|_, message| message.run_id != run.run_id);
                     cursor.runs.remove(&run.run_id);
                 }
                 cursor.projects.remove(&project.project_id);
@@ -184,6 +201,9 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
                     &profile,
                     Some(run.clone()),
                 ));
+                cursor
+                    .run_messages
+                    .retain(|_, message| message.run_id != run.run_id);
                 cursor.runs.remove(&run.run_id);
             }
         }
@@ -573,6 +593,64 @@ async fn fetch_json(
         .await
 }
 
+async fn poll_run_messages(
+    client: &Client,
+    api_key: &str,
+    base_url: &str,
+    run: &RemoteRunCursor,
+    observed_at: &str,
+    profile: &RemoteSynthProfile,
+    cursor: &mut RemoteSynthCursor,
+    events: &mut Vec<RuntimeEventDraft>,
+) {
+    let path = if let Some(project_id) = run.project_id.as_deref() {
+        format!(
+            "/smr/projects/{}/runs/{}/runtime/messages?limit=20",
+            project_id, run.run_id
+        )
+    } else {
+        format!("/smr/runs/{}/runtime/messages?limit=20", run.run_id)
+    };
+    match fetch_json(client, api_key, base_url, &path).await {
+        Ok(payload) => {
+            let mut observed_message_ids = BTreeSet::new();
+            for message in read_run_messages(&payload, run) {
+                observed_message_ids.insert(message.message_id.clone());
+                let previous = cursor.run_messages.get(&message.message_id);
+                if previous.is_none_or(|prior| message.changed(prior)) {
+                    events.push(run_message_event(
+                        "sensor.remote_synth.run_event",
+                        &message,
+                        observed_at,
+                        profile,
+                        previous.cloned(),
+                    ));
+                }
+                cursor
+                    .run_messages
+                    .insert(message.message_id.clone(), message);
+            }
+            cursor.run_messages.retain(|_, message| {
+                message.run_id != run.run_id || observed_message_ids.contains(&message.message_id)
+            });
+        }
+        Err(error) => events.push(fetch_failed_event(
+            "sensor.remote_synth.run_events.fetch_failed",
+            "remote_smr_run",
+            &run.run_id,
+            observed_at,
+            &path,
+            error,
+            profile,
+            RuntimeCorrelation {
+                project_id: run.project_id.clone(),
+                run_id: Some(run.run_id.clone()),
+                ..RuntimeCorrelation::default()
+            },
+        )),
+    }
+}
+
 fn environment_event(observed_at: &str, profile: &RemoteSynthProfile) -> RuntimeEventDraft {
     RuntimeEventDraft {
         event_type: "sensor.remote.environment.selected".to_string(),
@@ -709,6 +787,44 @@ fn run_event(
     }
 }
 
+fn run_message_event(
+    event_type: &str,
+    message: &RemoteRunMessageCursor,
+    observed_at: &str,
+    profile: &RemoteSynthProfile,
+    previous: Option<RemoteRunMessageCursor>,
+) -> RuntimeEventDraft {
+    RuntimeEventDraft {
+        event_type: event_type.to_string(),
+        source: "sensor.remote_synth".to_string(),
+        observed_at: observed_at.to_string(),
+        subject: RuntimeSubject {
+            kind: "remote_smr_run_message".to_string(),
+            id: message.message_id.clone(),
+        },
+        correlation: RuntimeCorrelation {
+            project_id: message.project_id.clone(),
+            run_id: Some(message.run_id.clone()),
+            ..RuntimeCorrelation::default()
+        },
+        payload: json!({
+            "environment": profile.environment_name,
+            "api_base_url": profile.api_base_url,
+            "message_id": message.message_id,
+            "run_id": message.run_id,
+            "project_id": message.project_id,
+            "status": message.status,
+            "mode": message.mode,
+            "sender": message.sender,
+            "target": message.target,
+            "action": message.action,
+            "body": message.body,
+            "created_at": message.created_at,
+            "previous": previous,
+        }),
+    }
+}
+
 fn factory_event(
     event_type: &str,
     factory: &RemoteFactoryCursor,
@@ -835,6 +951,8 @@ struct RemoteSynthCursor {
     optimizers: BTreeMap<String, RemoteOptimizerCursor>,
     #[serde(default)]
     deployments: BTreeMap<String, RemoteDeploymentCursor>,
+    #[serde(default)]
+    run_messages: BTreeMap<String, RemoteRunMessageCursor>,
 }
 
 impl RemoteSynthCursor {
@@ -849,6 +967,7 @@ impl RemoteSynthCursor {
             factories: BTreeMap::new(),
             optimizers: BTreeMap::new(),
             deployments: BTreeMap::new(),
+            run_messages: BTreeMap::new(),
         })
     }
 
@@ -910,6 +1029,34 @@ impl RemoteRunCursor {
             || state.contains("cancel")
             || state.contains("terminal")
             || state.contains("stopped")
+    }
+}
+
+#[derive(Clone, serde::Serialize, serde::Deserialize)]
+struct RemoteRunMessageCursor {
+    message_id: String,
+    run_id: String,
+    project_id: Option<String>,
+    status: Option<String>,
+    mode: Option<String>,
+    sender: Option<String>,
+    target: Option<String>,
+    action: Option<String>,
+    body: Option<String>,
+    created_at: Option<String>,
+}
+
+impl RemoteRunMessageCursor {
+    fn changed(&self, prior: &Self) -> bool {
+        self.run_id != prior.run_id
+            || self.project_id != prior.project_id
+            || self.status != prior.status
+            || self.mode != prior.mode
+            || self.sender != prior.sender
+            || self.target != prior.target
+            || self.action != prior.action
+            || self.body != prior.body
+            || self.created_at != prior.created_at
     }
 }
 
@@ -1116,6 +1263,28 @@ fn read_runs(value: &Value, fallback_project_id: Option<String>) -> Vec<RemoteRu
                 updated_at: read_string(&item, "updated_at")
                     .or_else(|| read_string(&item, "started_at"))
                     .or_else(|| read_string(&item, "created_at")),
+            })
+        })
+        .collect()
+}
+
+fn read_run_messages(value: &Value, run: &RemoteRunCursor) -> Vec<RemoteRunMessageCursor> {
+    array_payload(value)
+        .into_iter()
+        .filter_map(|item| {
+            let message_id =
+                read_string(&item, "message_id").or_else(|| read_string(&item, "id"))?;
+            Some(RemoteRunMessageCursor {
+                message_id,
+                run_id: run.run_id.clone(),
+                project_id: read_string(&item, "project_id").or_else(|| run.project_id.clone()),
+                status: read_string(&item, "status"),
+                mode: read_string(&item, "mode"),
+                sender: read_string(&item, "sender"),
+                target: read_string(&item, "target"),
+                action: read_string(&item, "action"),
+                body: read_string(&item, "body"),
+                created_at: read_string(&item, "created_at"),
             })
         })
         .collect()

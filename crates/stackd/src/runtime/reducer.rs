@@ -124,6 +124,7 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
             }
             "sensor.remote.projects.fetch_failed"
             | "sensor.remote.project_runs.fetch_failed"
+            | "sensor.remote_synth.run_events.fetch_failed"
             | "sensor.remote.factories.fetch_failed"
             | "sensor.remote.factory_projects.fetch_failed"
             | "sensor.remote.factory_status.fetch_failed"
