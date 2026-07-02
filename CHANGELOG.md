@@ -17,7 +17,29 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
-No changes yet.
+### Added
+
+- **Agents own the side panels.** The monitor and gardener profiles now grant
+  `stack_ui_open_panel`/`stack_ui_close_panel` (plus the monitor's
+  `stack_monitor_goal_status`, `stack_sidecar_pause_for_restart`, and
+  `stack_meta_thread_set_title`), so the sidecar can pull its feed in front of
+  the operator at review moments and the gardener can open the portfolio panel
+  when orienting. Existing untouched default profiles upgrade automatically;
+  customized profiles are left alone.
+- **Monitor profile is authoritative for sidecar tools.** The sidecar Codex
+  session now receives the profile's `[tools]` allow/deny as its Stack MCP
+  tool filter, matching how the gardener has always been scoped.
+- **`pause_before_action`.** When a monitor profile sets
+  `[permissions] pause_worker = true`, a risky-pending verdict (destructive
+  command about to run) requests a worker pause; the TUI interrupts the
+  in-flight turn and records an audited pause receipt. Off by default.
+- **Activity density knob.** `[monitor] activity_density = "quiet" | "rich"`:
+  rich adds phase-level "what the worker is doing now" updates to the events
+  feed without licensing no-progress filler. Default stays quiet.
+- **Audited panel walk.** The TUI emits `ui.panel_opened` when it opens a
+  panel itself (`/goal` auto-open, goal sidecar chat) and `ui.panel_focus`
+  when it applies an agent-opened panel from stackd, so every panel the
+  operator sees is provable from the thread event log.
 
 ## [0.3.0] - 2026-07-02 (pre-ship)
 
