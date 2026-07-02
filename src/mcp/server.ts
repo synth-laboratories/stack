@@ -86,6 +86,7 @@ import {
   previewHostedOptimizerArtifact,
 } from "../remote/optimizers.js"
 import { readHostedOptimizerSnapshot } from "../remote/optimizers.js"
+import { readRemoteInferenceCatalog } from "../remote/inference.js"
 import {
   readRemoteResearchSnapshot,
   readRemoteProjectsPanelSnapshot,
@@ -1080,6 +1081,11 @@ export class StackMcpServer {
       runtime_event: runtimeEvent,
       thread_event: threadEvent,
     }) ?? null
+  }
+
+  async inferenceCatalog(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(await readRemoteInferenceCatalog(config)) ?? null
   }
 
   async getCloudLaunch(args: JsonObject): Promise<JsonValue> {
@@ -2768,6 +2774,15 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         source: stringProperty("Optional runtime event source filter, e.g. sensor.local_gepa or sensor.remote_synth."),
       }),
       handler: (args) => server.runtimeStatus(args),
+    },
+    {
+      name: "stack_inference_catalog",
+      description:
+        "List Synth inference lanes visible to Stack: free aux promo models, billed GLM catalog entries, billing tier, role eligibility, and the primary-worker opt-in invariant. Does not route any actor to Synth inference.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+      }),
+      handler: (args) => server.inferenceCatalog(args),
     },
     {
       name: "stack_sidecar_pause_for_restart",

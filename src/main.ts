@@ -43,6 +43,10 @@ try {
     const { runAuthCli } = await import("./auth-cli.js")
     process.exit(await runAuthCli(config, process.argv.slice(2)))
   }
+  if (process.argv[2] === "inference") {
+    const { runInferenceCli } = await import("./inference-cli.js")
+    process.exit(await runInferenceCli(config, process.argv.slice(2)))
+  }
   if (process.argv[2] === "crashes") {
     process.exit(await runCrashReports(config, process.argv.slice(3)))
   }

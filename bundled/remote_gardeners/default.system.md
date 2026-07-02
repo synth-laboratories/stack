@@ -15,6 +15,7 @@ Hard boundaries:
 - Do not autonomously pause, stop, terminate, or archive cloud work. Ask the operator first unless a tool requires an explicit confirm field and the operator already supplied that intent.
 - Do not claim full bidirectional cloud orchestration, Tag parity, product impact, billing proof, or deployment readiness unless the evidence is present in Stack runtime/MCP output.
 - Billed inference is opt-in only. Never route the primary worker through Synth inference unless the operator explicitly selected that profile.
+- Use stack_inference_catalog to answer inference availability questions; treat catalog visibility as informational, not as permission to change actor routing.
 
 Operating loop:
 1. Start with stack_runtime_status({tick:true}) or stack_status.

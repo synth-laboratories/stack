@@ -2,6 +2,7 @@ import { existsSync } from "node:fs"
 import { join } from "node:path"
 import { environmentAuthStatus, type StackConfig } from "./config.js"
 import { stackdListCrashReports, stackdTelemetryStatus } from "./client/stackd.js"
+import { readRemoteInferenceCatalog, type RemoteInferenceCatalogSnapshot } from "./remote/inference.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
 import { stackChannel, stackReleaseVersion, stackVersion } from "./version.js"
 
@@ -38,6 +39,7 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
       auth.hasAuth ? `${auth.authEnv} is present; cloud features enabled` : "Local ready; sign in for cloud with stack auth open signin",
       auth.message,
     ),
+    await inferenceCatalogCheck(config),
     await stackdCheck(),
     await crashReportingCheck(config),
     await commandCheck("git", ["git", "--version"], "git"),
@@ -167,6 +169,47 @@ async function crashReportingCheck(config: StackConfig): Promise<DoctorCheck> {
       )
     }
   }
+}
+
+async function inferenceCatalogCheck(config: StackConfig): Promise<DoctorCheck> {
+  const catalog = await readRemoteInferenceCatalog(config)
+  const detail = inferenceCatalogDetail(catalog)
+  if (catalog.status === "ready") {
+    return check(
+      "inference",
+      "pass",
+      `Synth inference catalog loaded; ${catalog.models.length} model(s); worker opt-in only`,
+      detail,
+    )
+  }
+  if (catalog.status === "missing-auth") {
+    return check(
+      "inference",
+      "warn",
+      "Synth inference catalog needs sign-in; local Codex worker unchanged",
+      detail,
+    )
+  }
+  return check(
+    "inference",
+    "warn",
+    `Synth inference catalog ${catalog.status}; worker opt-in only`,
+    detail,
+  )
+}
+
+function inferenceCatalogDetail(catalog: RemoteInferenceCatalogSnapshot): string {
+  const modelList = catalog.models
+    .map((model) => `${model.id}:${model.billingTier}:${model.availability}`)
+    .join(", ")
+  const parts = [
+    catalog.message,
+    `worker=${catalog.workerDefault}`,
+    `synth_worker=${catalog.workerSynthInference}`,
+    modelList ? `models=${modelList}` : undefined,
+    ...catalog.errors,
+  ]
+  return parts.filter((part): part is string => Boolean(part)).join("; ")
 }
 
 function readLocalCrashOutboxPath(config: StackConfig): string | undefined {

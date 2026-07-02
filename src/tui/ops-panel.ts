@@ -250,6 +250,7 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
   }
   if (usage.status === "missing-auth") {
     lines.push("  Local ready · stack auth open signin for cloud")
+    lines.push("  Synth inference catalog unlocks with sign-in; worker stays Codex")
     return lines
   }
   if (usage.status === "offline") {
@@ -267,6 +268,7 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
 
   const stackAuxBudget = formatStackAuxBudgetLine(usage)
   if (stackAuxBudget) lines.push(stackAuxBudget)
+  lines.push("  worker Codex by default; Synth inference opt-in only")
 
   lines.push(...formatAllowanceSummaryLines(usage.allowanceWindows))
 
