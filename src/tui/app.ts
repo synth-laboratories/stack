@@ -112,6 +112,14 @@ import {
 } from "../gardener.js"
 import { loadGardenerConfig } from "../gardener-config.js"
 import {
+  STACK_PROFILE_DEFAULTS,
+  nextStackProfile,
+  normalizeStackProfileName,
+  readStackProfile,
+  writeStackProfile,
+  type StackProfileName,
+} from "../operator-profile.js"
+import {
   executeGardenerSkillRegister,
   executeGardenerSkillSuggest,
   formatSkillRegisterHelp,
@@ -2953,6 +2961,7 @@ function buildSlashCommandContext(options: StackAppOptions, state: AppState): Sl
     railsVisible: state.railsVisible,
     agentViewEnabled: state.agentViewEnabled,
     environmentName: options.config.environmentName,
+    profileName: readStackProfile(options.config.stackDataRoot).active,
     model: workerHarness.codexModel,
     effort: workerHarness.codexReasoningEffort,
     goalObjective: objective,
@@ -4605,6 +4614,16 @@ function buildSlashDispatchHooks(
       void refreshAfterEnvironmentChange(name as StackEnvironmentName)
       return true
     },
+    cycleProfile: (direction) => {
+      const current = readStackProfile(options.config.stackDataRoot).active
+      applyStackProfile(nextStackProfile(current, direction), options, state, refresh)
+    },
+    setProfile: (name) => {
+      const profile = normalizeStackProfileName(name)
+      if (!profile) return false
+      applyStackProfile(profile, options, state, refresh)
+      return true
+    },
     openModelSwitcher: () => {
       state.focusMode = "model"
       refresh()
@@ -5934,6 +5953,22 @@ async function applyStackEnvironment(
   }
   refresh()
   await refreshRemotes()
+}
+
+function applyStackProfile(
+  profile: StackProfileName,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  writeStackProfile(options.config.stackDataRoot, profile)
+  const defaults = STACK_PROFILE_DEFAULTS[profile]
+  setCodexModel(options.config, defaults.codexModel)
+  setCodexReasoningEffort(options.config, defaults.codexReasoningEffort)
+  state.monitorSnapshot = emptyMonitorSnapshot(options.config.stackDataRoot)
+  syncMonitorRightPanel(state)
+  appendStackBlock(state.blocks, `profile ${profile}`)
+  refresh()
 }
 
 function isLeftPanelFocused(state: AppState): boolean {

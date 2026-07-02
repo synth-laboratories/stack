@@ -14,6 +14,9 @@ import {
   type ActorModelConfig,
   type ParsedTomlSections,
 } from "./actor-config.js"
+import { readStackProfile } from "./operator-profile.js"
+import { ensureStackDefaults } from "./seed/defaults.js"
+import { stackAppRoot } from "./version.js"
 
 export type StackGardenerConfig = {
   id: string
@@ -92,7 +95,7 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4 = [
   "",
   "When the operator asks you to name or label a bound meta-thread, prefer stack_meta_thread_set_title. Keep thread.name: <title> only as the head-session fallback. Never attempt to change meta_thread_id.",
   "",
-  "Skills are first-class in stackd. Preinstalled: oss-gepa, hosted-gepa, synth-ai. You may always register or suggest skills (not permission-gated for gardener):",
+  "Skills are first-class in stackd. Preinstalled: oss-gepa, hosted-gepa, synth-ai, containers, containers-coding. You may always register or suggest skills (not permission-gated for gardener):",
   "  skill register <id> from <path>",
   "  skill suggest <id> [because <reason>]",
   "Suggesting a skill records it on the worker thread and steers the worker to read it.",
@@ -117,7 +120,7 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V1 = [
   "",
   "When the operator asks you to name or label a worker thread, pick a short title (max 48 chars) and end your reply with exactly one line: thread.name: <title>",
   "",
-  "Skills are first-class in stackd. Preinstalled: oss-gepa, hosted-gepa, synth-ai. You may always register or suggest skills (not permission-gated for gardener):",
+  "Skills are first-class in stackd. Preinstalled: oss-gepa, hosted-gepa, synth-ai, containers, containers-coding. You may always register or suggest skills (not permission-gated for gardener):",
   "  skill register <id> from <path>",
   "  skill suggest <id> [because <reason>]",
   "Suggesting a skill records it on the worker thread and steers the worker to read it.",
@@ -142,7 +145,7 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V2 = [
   "",
   "When the operator asks you to name or label a bound meta-thread, prefer stack_meta_thread_set_title. Keep thread.name: <title> only as the head-session fallback. Never attempt to change meta_thread_id.",
   "",
-  "Skills are first-class in stackd. Preinstalled: oss-gepa, hosted-gepa, synth-ai. You may always register or suggest skills (not permission-gated for gardener):",
+  "Skills are first-class in stackd. Preinstalled: oss-gepa, hosted-gepa, synth-ai, containers, containers-coding. You may always register or suggest skills (not permission-gated for gardener):",
   "  skill register <id> from <path>",
   "  skill suggest <id> [because <reason>]",
   "Suggesting a skill records it on the worker thread and steers the worker to read it.",
@@ -278,6 +281,7 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4 = DEFAULT_GARDENER_CONFIG.tools
 )
 
 export function ensureDefaultGardenerConfig(stackRoot: string): string {
+  ensureStackDefaults(stackRoot, stackAppRoot())
   const dir = join(stackRoot, ".stack", "gardeners")
   mkdirSync(dir, { recursive: true })
   const tomlPath = join(dir, "default.toml")
@@ -292,8 +296,12 @@ export function ensureDefaultGardenerConfig(stackRoot: string): string {
 }
 
 export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
-  const profile = process.env.STACK_GARDENER_PROFILE?.trim() || "default"
+  const profile = process.env.STACK_GARDENER_PROFILE?.trim() || readStackProfile(stackRoot).active
   ensureDefaultGardenerConfig(stackRoot)
+  const configPath = join(stackRoot, ".stack", "gardeners", `${profile}.toml`)
+  if (!existsSync(configPath)) {
+    throw new Error(`gardener profile not found: ${profile} (${configPath})`)
+  }
   const parsed = readTomlProfile(stackRoot, "gardeners", profile)
   const config = mergeGardenerConfig(DEFAULT_GARDENER_CONFIG, parsed)
   if (profile === "default") backfillGeneratedDefaultGardenerTools(config, parsed)

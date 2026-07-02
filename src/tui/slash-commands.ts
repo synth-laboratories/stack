@@ -9,6 +9,7 @@ export type SlashCommandContext = {
   railsVisible: boolean
   agentViewEnabled: boolean
   environmentName: string
+  profileName: string
   model?: string
   effort?: string
   goalObjective?: string
@@ -51,6 +52,12 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     args: "[dev|staging|prod]",
     description: "Cycle or set environment",
     describe: (ctx) => `Environment (currently ${ctx.environmentName})`,
+  },
+  {
+    command: "profile",
+    args: "[research|engineering|product]",
+    description: "Cycle or set Stack profile",
+    describe: (ctx) => `Stack profile (currently ${ctx.profileName})`,
   },
   {
     command: "model",
@@ -313,6 +320,8 @@ export type SlashDispatchHooks = {
   messageMonitor: (message: string) => void
   cycleEnvironment: (direction: number) => void
   setEnvironment: (name: string) => boolean
+  cycleProfile: (direction: number) => void
+  setProfile: (name: string) => boolean
   openModelSwitcher: () => void
   setModel: (name: string) => boolean
   cycleEffort: () => void
@@ -384,6 +393,15 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
         }
       } else {
         hooks.cycleEnvironment(1)
+      }
+      return true
+    case "profile":
+      if (args) {
+        if (!hooks.setProfile(args)) {
+          hooks.feedback(`unknown profile ${args} · use research, engineering, or product`)
+        }
+      } else {
+        hooks.cycleProfile(1)
       }
       return true
     case "model":

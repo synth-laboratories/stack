@@ -46,6 +46,22 @@ export type OptimizerSnapshot = {
   runs: OptimizerRunSummary[]
 }
 
+export type LocalGepaLaunchOptions = {
+  configPath: string
+  requestId?: string
+  metadata?: Record<string, unknown>
+  startService?: boolean
+}
+
+export type LocalGepaLaunchResult = {
+  ok: boolean
+  status: number
+  message: string
+  service: OptimizerSnapshot
+  run?: OptimizerRunSummary
+  response?: Record<string, unknown>
+}
+
 type WorkspacePayload = {
   total?: number
   by_status?: Record<string, number>
@@ -173,6 +189,48 @@ export async function startOptimizerService(config: StackConfig): Promise<Optimi
   return snapshot
 }
 
+export async function launchLocalGepaRun(
+  config: StackConfig,
+  options: LocalGepaLaunchOptions,
+): Promise<LocalGepaLaunchResult> {
+  const service = options.startService === false
+    ? await readOptimizerSnapshot(config)
+    : await startOptimizerService(config)
+  if (service.status !== "running") {
+    return {
+      ok: false,
+      status: 0,
+      message: service.message ?? `GEPA service is not running at ${config.optimizerServiceUrl}`,
+      service,
+    }
+  }
+
+  const requestBody: Record<string, unknown> = {
+    config_path: options.configPath,
+    ...(options.requestId ? { request_id: options.requestId } : {}),
+    ...(options.metadata ? { metadata: options.metadata } : {}),
+  }
+  const result = await postJson(`${config.optimizerServiceUrl}/runs`, requestBody)
+  const payload = asRecord(result.data) ?? {}
+  const run = readRun(payload) ?? readRun(asRecord(payload.run)) ?? readRun(asRecord(payload.request))
+  await recordOptimizerLeverEvent(config, "lever.local_gepa.run.submit_requested", {
+    ok: result.ok,
+    status: result.status,
+    message: result.message,
+    config_path: options.configPath,
+    request_id: options.requestId ?? null,
+    run_id: run?.runId ?? readString(payload.run_id) ?? readString(payload.id) ?? null,
+  })
+  return {
+    ok: result.ok,
+    status: result.status,
+    message: result.ok ? `submitted local GEPA run${run?.runId ? ` ${run.runId}` : ""}` : result.message,
+    service,
+    ...(run ? { run } : {}),
+    response: payload,
+  }
+}
+
 async function waitForOptimizerService(config: StackConfig): Promise<OptimizerSnapshot> {
   let last = await readOptimizerSnapshot(config)
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -250,16 +308,25 @@ function immediateSpawnError(child: ReturnType<typeof spawn>): Promise<Error | u
 
 async function recordOptimizerLeverEvent(
   config: StackConfig,
-  eventType: "lever.local_gepa.service.start_requested" | "lever.local_gepa.service.start_failed",
+  eventType:
+    | "lever.local_gepa.service.start_requested"
+    | "lever.local_gepa.service.start_failed"
+    | "lever.local_gepa.run.submit_requested",
   payload: Record<string, unknown>,
 ): Promise<void> {
+  const subject = eventType === "lever.local_gepa.run.submit_requested"
+    ? {
+        kind: "local_gepa_run",
+        id: String(payload.run_id ?? payload.request_id ?? payload.config_path ?? config.optimizerServiceUrl),
+      }
+    : {
+        kind: "local_gepa_service",
+        id: config.optimizerServiceUrl,
+      }
   await stackdRuntimeAppendEvent({
     event_type: eventType,
     source: "lever.local_gepa",
-    subject: {
-      kind: "local_gepa_service",
-      id: config.optimizerServiceUrl,
-    },
+    subject,
     payload: {
       service_url: config.optimizerServiceUrl,
       bind: config.optimizerBind,
@@ -321,6 +388,43 @@ async function getJson(url: string): Promise<unknown> {
     const response = await fetch(url, { signal: controller.signal })
     if (!response.ok) throw new Error(`${response.status} ${response.statusText}`)
     return await response.json()
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+async function postJson(
+  url: string,
+  body: Record<string, unknown>,
+): Promise<{ ok: boolean; status: number; message: string; data?: unknown }> {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), 10_000)
+  try {
+    const response = await fetch(url, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    })
+    const text = await response.text()
+    let data: unknown
+    try {
+      data = text.trim() ? JSON.parse(text) : {}
+    } catch {
+      data = { text }
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      message: response.ok ? response.statusText || "ok" : `${response.status} ${response.statusText}: ${text.slice(0, 500)}`,
+      data,
+    }
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      message: errorMessage(error),
+    }
   } finally {
     clearTimeout(timeout)
   }

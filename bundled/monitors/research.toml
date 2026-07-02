@@ -1,0 +1,32 @@
+[monitor]
+id = "research"
+label = "Research monitor"
+enabled = true
+activity_density = "rich"
+
+[model]
+provider = "openai"
+model = "gpt-5.5"
+reasoning_effort = "high"
+
+[prompt]
+system_file = ".stack/monitors/research.system.md"
+
+[wake]
+max_wakes_per_primary_turn = 8
+
+[skills]
+enabled = true
+allowed_skill_ids = ["synth-stack-productivity", "synth-via-stack", "stack-agent-bridge", "synth-ai", "hosted-gepa", "oss-gepa", "containers", "containers-coding", "gepa"]
+push_when_confident = true
+
+[tools]
+allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_launch_gepa", "stack_list_hosted_artifacts", "stack_get_run_artifact_status", "stack_open_hosted_artifact", "stack_list_run_work_products", "stack_download_work_product", "stack_monitor_goal_status", "stack_sidecar_pause_for_restart", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel"]
+deny = ["codex.interrupt"]
+
+[permissions]
+queue = true
+steer = true
+skill_push = true
+pause_worker = false
+block_before_action = false
