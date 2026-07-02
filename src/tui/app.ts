@@ -10185,7 +10185,7 @@ function hostedOptimizerSnapshotFromRuntime(
   }
 }
 
-function remoteResearchSnapshotFromRuntime(
+export function remoteResearchSnapshotFromRuntime(
   snapshot: StackdFactorySnapshot | null | undefined,
   config: StackConfig,
   fallback?: RemoteResearchSnapshot,
@@ -10284,7 +10284,7 @@ function compareOptionalIsoDesc(left: string | null | undefined, right: string |
   return safeRight - safeLeft
 }
 
-function remoteProjectsPanelFromRuntime(
+export function remoteProjectsPanelFromRuntime(
   snapshot: StackdFactorySnapshot | null | undefined,
   config: StackConfig,
 ): RemoteProjectsPanelSnapshot | undefined {
