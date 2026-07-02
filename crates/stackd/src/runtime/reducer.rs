@@ -1,8 +1,9 @@
 use chrono::Utc;
 use stack_core::runtime_event::RuntimeEvent;
 use stack_core::runtime_state::{
-    FactorySnapshot, RemoteDeploymentSnapshot, RemoteFactorySnapshot,
-    RemoteHostedOptimizerSnapshot, RemoteProjectSnapshot, RemoteRunSnapshot, RuntimeEventRef,
+    FactorySnapshot, RemoteDeploymentSnapshot, RemoteFactorySnapshot, RemoteGardenerPassSnapshot,
+    RemoteHostedOptimizerSnapshot, RemoteProjectSnapshot, RemoteRunSnapshot,
+    RemoteSmrRunBindingSnapshot, RemoteSyncRequestSnapshot, RuntimeEventRef,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -17,6 +18,10 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
     let mut remote_factory_map = BTreeMap::<String, RemoteFactorySnapshot>::new();
     let mut remote_hosted_optimizer_map = BTreeMap::<String, RemoteHostedOptimizerSnapshot>::new();
     let mut remote_deployment_map = BTreeMap::<String, RemoteDeploymentSnapshot>::new();
+    let mut pending_push = Vec::<RemoteSyncRequestSnapshot>::new();
+    let mut pending_pull = Vec::<RemoteSyncRequestSnapshot>::new();
+    let mut remote_gardener_passes = Vec::<RemoteGardenerPassSnapshot>::new();
+    let mut linked_smr_runs = BTreeMap::<String, RemoteSmrRunBindingSnapshot>::new();
     let mut sensor_degraded = false;
 
     for event in events {
@@ -98,6 +103,10 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
                 remote_factory_map.clear();
                 remote_hosted_optimizer_map.clear();
                 remote_deployment_map.clear();
+                pending_push.clear();
+                pending_pull.clear();
+                remote_gardener_passes.clear();
+                linked_smr_runs.clear();
                 snapshot.remote_synth.sync_enabled = false;
                 snapshot.remote_synth.auth_status = "unknown".to_string();
                 snapshot.remote_synth.last_ok_at = None;
@@ -204,6 +213,19 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
                     .unwrap_or_else(|| event.subject.id.clone());
                 remote_deployment_map.remove(&deployment_id);
             }
+            "lever.remote.push_requested" => {
+                pending_push.push(remote_sync_request_snapshot(event, "push"));
+            }
+            "lever.remote.pull_requested" => {
+                pending_pull.push(remote_sync_request_snapshot(event, "pull"));
+            }
+            "lever.remote_gardener.pass_recorded" => {
+                remote_gardener_passes.push(remote_gardener_pass_snapshot(event));
+            }
+            "lever.remote_smr.run.bound" => {
+                let binding = remote_smr_run_binding_snapshot(event);
+                linked_smr_runs.insert(remote_smr_run_binding_key(&binding), binding);
+            }
             _ => {}
         }
     }
@@ -254,6 +276,16 @@ pub fn reduce(events: &[RuntimeEvent]) -> FactorySnapshot {
     let mut deployments = remote_deployment_map.into_values().collect::<Vec<_>>();
     deployments.sort_by(compare_remote_deployment_snapshot);
     snapshot.remote_synth.deployments = deployments.into_iter().take(50).collect();
+    pending_push.sort_by(compare_remote_sync_request_snapshot);
+    snapshot.remote_synth.pending_push = pending_push.into_iter().take(20).collect();
+    pending_pull.sort_by(compare_remote_sync_request_snapshot);
+    snapshot.remote_synth.pending_pull = pending_pull.into_iter().take(20).collect();
+    remote_gardener_passes.sort_by(compare_remote_gardener_pass_snapshot);
+    snapshot.remote_synth.recent_remote_gardener_passes =
+        remote_gardener_passes.into_iter().take(10).collect();
+    let mut linked_smr_runs = linked_smr_runs.into_values().collect::<Vec<_>>();
+    linked_smr_runs.sort_by(compare_remote_smr_run_binding_snapshot);
+    snapshot.remote_synth.linked_smr_runs = linked_smr_runs.into_iter().take(50).collect();
     snapshot.recent_events = events
         .iter()
         .rev()
@@ -356,6 +388,27 @@ fn compare_remote_deployment_snapshot(
             compare_optional_iso_desc(left.updated_at.as_deref(), right.updated_at.as_deref())
         })
         .then_with(|| left.deployment_id.cmp(&right.deployment_id))
+}
+
+fn compare_remote_sync_request_snapshot(
+    left: &RemoteSyncRequestSnapshot,
+    right: &RemoteSyncRequestSnapshot,
+) -> std::cmp::Ordering {
+    right.seq.cmp(&left.seq)
+}
+
+fn compare_remote_gardener_pass_snapshot(
+    left: &RemoteGardenerPassSnapshot,
+    right: &RemoteGardenerPassSnapshot,
+) -> std::cmp::Ordering {
+    right.seq.cmp(&left.seq)
+}
+
+fn compare_remote_smr_run_binding_snapshot(
+    left: &RemoteSmrRunBindingSnapshot,
+    right: &RemoteSmrRunBindingSnapshot,
+) -> std::cmp::Ordering {
+    right.seq.cmp(&left.seq)
 }
 
 fn factory_is_active(factory: &RemoteFactorySnapshot) -> bool {
@@ -473,6 +526,102 @@ fn remote_factory_snapshot(event: &RuntimeEvent) -> RemoteFactorySnapshot {
     }
 }
 
+fn remote_sync_request_snapshot(
+    event: &RuntimeEvent,
+    fallback_direction: &str,
+) -> RemoteSyncRequestSnapshot {
+    RemoteSyncRequestSnapshot {
+        event_id: event.event_id.clone(),
+        seq: event.seq,
+        observed_at: event.observed_at.clone(),
+        direction: payload_string(event, "direction")
+            .unwrap_or_else(|| fallback_direction.to_string()),
+        intent: payload_string(event, "intent").unwrap_or_else(|| event.subject.id.clone()),
+        subject_kind: event.subject.kind.clone(),
+        subject_id: event.subject.id.clone(),
+        environment_name: payload_string(event, "environment"),
+        api_base_url: payload_string(event, "api_base_url"),
+        project_id: payload_string(event, "project_id")
+            .or_else(|| event.correlation.project_id.clone()),
+        run_id: payload_string(event, "run_id").or_else(|| event.correlation.run_id.clone()),
+        factory_id: payload_string(event, "factory_id")
+            .or_else(|| event.correlation.factory_id.clone()),
+        deployment_id: payload_string(event, "deployment_id")
+            .or_else(|| event.correlation.deployment_id.clone()),
+        meta_thread_id: payload_string(event, "meta_thread_id"),
+        thread_id: payload_string(event, "thread_id")
+            .or_else(|| event.correlation.stack_session_id.clone()),
+        actor_role: payload_string(event, "actor_role"),
+        actor_id: payload_string(event, "actor_id"),
+        note: payload_string(event, "note"),
+    }
+}
+
+fn remote_gardener_pass_snapshot(event: &RuntimeEvent) -> RemoteGardenerPassSnapshot {
+    RemoteGardenerPassSnapshot {
+        event_id: event.event_id.clone(),
+        seq: event.seq,
+        observed_at: event.observed_at.clone(),
+        subject_kind: event.subject.kind.clone(),
+        subject_id: event.subject.id.clone(),
+        environment_name: payload_string(event, "environment")
+            .or_else(|| payload_object_string(event, "pass", "environment")),
+        api_base_url: payload_string(event, "api_base_url")
+            .or_else(|| payload_object_string(event, "pass", "api_base_url")),
+        actor_role: payload_string(event, "actor_role"),
+        actor_id: payload_string(event, "actor_id"),
+        meta_thread_id: payload_string(event, "meta_thread_id"),
+        thread_id: payload_string(event, "thread_id")
+            .or_else(|| event.correlation.stack_session_id.clone()),
+        project_id: payload_string(event, "project_id")
+            .or_else(|| event.correlation.project_id.clone()),
+        run_id: payload_string(event, "run_id").or_else(|| event.correlation.run_id.clone()),
+        factory_id: payload_string(event, "factory_id")
+            .or_else(|| event.correlation.factory_id.clone()),
+        deployment_id: payload_string(event, "deployment_id")
+            .or_else(|| event.correlation.deployment_id.clone()),
+        narration: payload_object_string(event, "pass", "narration"),
+        next_action: payload_object_string(event, "pass", "next_action"),
+        runtime_status: payload_object_string(event, "pass", "runtime_status"),
+        auth_status: payload_object_string(event, "pass", "auth_status"),
+    }
+}
+
+fn remote_smr_run_binding_snapshot(event: &RuntimeEvent) -> RemoteSmrRunBindingSnapshot {
+    RemoteSmrRunBindingSnapshot {
+        event_id: event.event_id.clone(),
+        seq: event.seq,
+        observed_at: event.observed_at.clone(),
+        environment_name: payload_string(event, "environment"),
+        api_base_url: payload_string(event, "api_base_url"),
+        meta_thread_id: payload_string(event, "meta_thread_id"),
+        thread_id: payload_string(event, "thread_id")
+            .or_else(|| event.correlation.stack_session_id.clone()),
+        project_id: payload_string(event, "project_id")
+            .or_else(|| event.correlation.project_id.clone()),
+        run_id: payload_string(event, "run_id")
+            .or_else(|| event.correlation.run_id.clone())
+            .unwrap_or_else(|| event.subject.id.clone()),
+        factory_id: payload_string(event, "factory_id")
+            .or_else(|| event.correlation.factory_id.clone()),
+        deployment_id: payload_string(event, "deployment_id")
+            .or_else(|| event.correlation.deployment_id.clone()),
+        binding_id: payload_string(event, "binding_id"),
+        objective: payload_string(event, "objective"),
+        remote_status: payload_string(event, "remote_status"),
+        actor_role: payload_string(event, "actor_role"),
+        actor_id: payload_string(event, "actor_id"),
+    }
+}
+
+fn remote_smr_run_binding_key(binding: &RemoteSmrRunBindingSnapshot) -> String {
+    format!(
+        "{}:{}",
+        binding.meta_thread_id.as_deref().unwrap_or(""),
+        binding.run_id
+    )
+}
+
 fn factory_project_ids(factory: &RemoteFactorySnapshot) -> Vec<&str> {
     let mut ids = Vec::new();
     for project_id in &factory.project_ids {
@@ -540,6 +689,15 @@ fn payload_string(event: &RuntimeEvent, key: &str) -> Option<String> {
     event
         .payload
         .get(key)
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn payload_object_string(event: &RuntimeEvent, object_key: &str, key: &str) -> Option<String> {
+    event
+        .payload
+        .get(object_key)
+        .and_then(|value| value.get(key))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
 }

@@ -172,6 +172,10 @@ export type StackdFactorySnapshot = {
     factories: StackdRemoteFactorySnapshot[]
     hosted_optimizers: StackdRemoteHostedOptimizerSnapshot[]
     deployments?: StackdRemoteDeploymentSnapshot[]
+    pending_push?: StackdRemoteSyncRequestSnapshot[]
+    pending_pull?: StackdRemoteSyncRequestSnapshot[]
+    recent_remote_gardener_passes?: StackdRemoteGardenerPassSnapshot[]
+    linked_smr_runs?: StackdRemoteSmrRunBindingSnapshot[]
   }
   recent_events: StackdRuntimeEventRef[]
 }
@@ -231,6 +235,68 @@ export type StackdRemoteDeploymentSnapshot = {
   substrate?: string | null
   updated_at?: string | null
   ready?: boolean | null
+}
+
+export type StackdRemoteSyncRequestSnapshot = {
+  event_id: string
+  seq: number
+  observed_at: string
+  direction: string
+  intent: string
+  subject_kind: string
+  subject_id: string
+  environment_name?: string | null
+  api_base_url?: string | null
+  project_id?: string | null
+  run_id?: string | null
+  factory_id?: string | null
+  deployment_id?: string | null
+  meta_thread_id?: string | null
+  thread_id?: string | null
+  actor_role?: string | null
+  actor_id?: string | null
+  note?: string | null
+}
+
+export type StackdRemoteGardenerPassSnapshot = {
+  event_id: string
+  seq: number
+  observed_at: string
+  subject_kind: string
+  subject_id: string
+  environment_name?: string | null
+  api_base_url?: string | null
+  actor_role?: string | null
+  actor_id?: string | null
+  meta_thread_id?: string | null
+  thread_id?: string | null
+  project_id?: string | null
+  run_id?: string | null
+  factory_id?: string | null
+  deployment_id?: string | null
+  narration?: string | null
+  next_action?: string | null
+  runtime_status?: string | null
+  auth_status?: string | null
+}
+
+export type StackdRemoteSmrRunBindingSnapshot = {
+  event_id: string
+  seq: number
+  observed_at: string
+  environment_name?: string | null
+  api_base_url?: string | null
+  meta_thread_id?: string | null
+  thread_id?: string | null
+  project_id?: string | null
+  run_id: string
+  factory_id?: string | null
+  deployment_id?: string | null
+  binding_id?: string | null
+  objective?: string | null
+  remote_status?: string | null
+  actor_role?: string | null
+  actor_id?: string | null
 }
 
 export type StackdExport = {
