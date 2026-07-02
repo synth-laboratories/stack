@@ -35,6 +35,7 @@ import { appendThreadMetaEvent, readThreadMetaEvents, stackEventId } from "../th
 import { isUiPanelId, panelOpenAllowed, panelViewAllowed, UI_PANEL_IDS, UI_PANELS, type UiPanelOpener } from "../ui/vocabulary.js"
 import {
   stackdExport,
+  stackdBindMetaThreadRemoteSmrRun,
   stackdMetaThread,
   stackdMetaThreads,
   stackdRuntimeAppendEvent,
@@ -495,6 +496,72 @@ export class StackMcpServer {
       event_id: response.event_id ?? null,
       manifest,
       receipt: "lever.stack_mcp meta_thread.title_updated",
+    }) ?? null
+  }
+
+  async bindMetaThreadSmrRun(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const actorRole = optionalString(args, "actor_role") ?? "remote_gardener"
+    if (actorRole !== "remote_gardener" && actorRole !== "gardener" && actorRole !== "operator") {
+      throw new RpcError(-32602, "actor_role must be remote_gardener, gardener, or operator")
+    }
+    const actorId = optionalString(args, "actor_id") ?? actorRole
+    const metaThreadId = requiredString(args, "meta_thread_id")
+    const runId = requiredString(args, "run_id")
+    const projectId = optionalString(args, "project_id")
+    const factoryId = optionalString(args, "factory_id")
+    const deploymentId = optionalString(args, "deployment_id")
+    const result = await stackdBindMetaThreadRemoteSmrRun(metaThreadId, {
+      smr_run_id: runId,
+      environment: config.environmentName,
+      api_base_url: config.environment.apiBaseUrl,
+      project_id: projectId,
+      factory_id: factoryId,
+      deployment_id: deploymentId,
+      objective: optionalString(args, "objective"),
+      remote_status: optionalString(args, "remote_status"),
+      actor_id: actorId,
+      reason: optionalString(args, "reason"),
+    })
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.remote_smr.run.bound",
+      source: "lever.remote_gardener",
+      subject: { kind: "remote_smr_run", id: runId },
+      correlation: {
+        run_id: runId,
+        project_id: projectId ?? undefined,
+        factory_id: factoryId ?? undefined,
+        deployment_id: deploymentId ?? undefined,
+        stack_session_id: result.manifest.head_thread_id,
+      },
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        actor_role: actorRole,
+        actor_id: actorId,
+        meta_thread_id: metaThreadId,
+        thread_id: result.manifest.head_thread_id,
+        project_id: projectId ?? null,
+        run_id: runId,
+        factory_id: factoryId ?? null,
+        deployment_id: deploymentId ?? null,
+        objective: optionalString(args, "objective") ?? null,
+        remote_status: optionalString(args, "remote_status") ?? null,
+        reason: optionalString(args, "reason") ?? null,
+        binding_id: result.binding.binding_id,
+        meta_event_id: result.event_id,
+        source: "stack_meta_thread_bind_smr_run",
+      },
+    })
+    return toJsonValue({
+      ok: true,
+      receipt: "lever.remote_smr.run.bound",
+      meta_thread_id: metaThreadId,
+      run_id: runId,
+      binding: result.binding,
+      event_id: result.event_id,
+      runtime_event: runtimeEvent,
+      manifest: result.manifest,
     }) ?? null
   }
 
@@ -2730,6 +2797,28 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.recordRemoteGardenerPass(args),
     },
     {
+      name: "stack_meta_thread_bind_smr_run",
+      description:
+        "Bind a local Stack meta-thread to a remote SMR run. Writes smr_run_id on the meta-thread manifest, appends a meta-thread bind event, and records a runtime receipt. Does not mutate the remote run.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          meta_thread_id: stringProperty("Local Stack meta-thread id."),
+          run_id: stringProperty("Remote SMR run id to bind."),
+          project_id: stringProperty("Optional Synth project id."),
+          factory_id: stringProperty("Optional Factory id."),
+          deployment_id: stringProperty("Optional cloud deployment id."),
+          objective: stringProperty("Optional remote objective or local objective mapped to this run."),
+          remote_status: stringProperty("Optional current remote run state/status."),
+          reason: stringProperty("Short reason for the binding."),
+          actor_id: stringProperty("Optional actor id. Defaults to actor_role."),
+          actor_role: enumProperty(["remote_gardener", "gardener", "operator"], "Actor role. Defaults to remote_gardener."),
+        },
+        ["meta_thread_id", "run_id"],
+      ),
+      handler: (args) => server.bindMetaThreadSmrRun(args),
+    },
+    {
       name: "stack_get_cloud_launch",
       description: "Read one Managed Research cloud launch through the launch owner route.",
       inputSchema: objectSchema(
@@ -3435,6 +3524,8 @@ function metaThreadListItem(stackRoot: string, manifest: {
   archived_by?: string
   archive_reason?: string
   active_goal?: { objective?: string; status?: string }
+  smr_run_id?: string
+  remote_bindings?: Array<{ kind?: string; smr_run_id?: string }>
   head_thread_id?: string
   head_segment_id?: string
   monitor_profile?: string
@@ -3458,6 +3549,8 @@ function metaThreadListItem(stackRoot: string, manifest: {
       : null,
     head_thread_id: manifest.head_thread_id ?? null,
     head_segment_id: manifest.head_segment_id ?? null,
+    smr_run_id: manifest.smr_run_id ?? null,
+    remote_bindings: manifest.remote_bindings ?? [],
     monitor_profile: manifest.monitor_profile ?? null,
     monitor_headline: monitorHeadline ?? null,
     updated_at: manifest.updated_at ?? null,

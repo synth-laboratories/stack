@@ -277,6 +277,8 @@ mod tests {
                 acceptance_criteria: Vec::new(),
                 blockers: Vec::new(),
             }),
+            smr_run_id: None,
+            remote_bindings: Vec::new(),
             usage_summary: None,
         };
         let state = meta_thread_checkpoint_state(&session, Some(&manifest));

@@ -234,7 +234,34 @@ pub struct MetaThreadManifest {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub active_goal: Option<MetaThreadActiveGoal>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub smr_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub remote_bindings: Vec<MetaThreadRemoteBinding>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub usage_summary: Option<StackSessionUsageSummary>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MetaThreadRemoteBinding {
+    pub binding_id: String,
+    pub kind: String,
+    pub environment: String,
+    pub api_base_url: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    pub smr_run_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub factory_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub deployment_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remote_status: Option<String>,
+    pub bound_at: String,
+    pub bound_by: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

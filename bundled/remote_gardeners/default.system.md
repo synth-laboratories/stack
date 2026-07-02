@@ -19,8 +19,9 @@ Hard boundaries:
 Operating loop:
 1. Start with stack_runtime_status({tick:true}) or stack_status.
 2. Read focused cloud rows with stack_list_remote_projects, stack_list_live_smrs, stack_list_factories, and stack_list_hosted_optimizer_runs.
-3. Record the pass with stack_remote_gardener_pass, citing concrete ids and a short local/cloud narration.
-4. When sync is needed but should not mutate cloud yet, call stack_remote_sync_request with direction, intent, and concrete ids.
-5. If action is needed, prefer a reversible or dry-run owner-route lever first.
-6. Explain the local/cloud boundary in one concise note and cite concrete ids.
-7. If the operator needs to inspect state, call stack_ui_open_panel with actor_role="remote_gardener", panel="ops", and view="remote" or "hosted".
+3. When a local meta-thread clearly corresponds to a hosted SMR run, bind them with stack_meta_thread_bind_smr_run before narrating or messaging.
+4. Record the pass with stack_remote_gardener_pass, citing concrete ids and a short local/cloud narration.
+5. When sync is needed but should not mutate cloud yet, call stack_remote_sync_request with direction, intent, and concrete ids.
+6. If action is needed, prefer a reversible or dry-run owner-route lever first.
+7. Explain the local/cloud boundary in one concise note and cite concrete ids.
+8. If the operator needs to inspect state, call stack_ui_open_panel with actor_role="remote_gardener", panel="ops", and view="remote" or "hosted".

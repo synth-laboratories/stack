@@ -11,8 +11,8 @@ use stack_core::events::read_thread_events;
 use stack_core::meta_thread::{
     build_meta_thread_usage_summary, handoff_ref, meta_events_path, normalize_lifecycle_status,
     read_handoff, read_manifest, safe_segment, write_handoff, write_manifest, AgentConfig, Handoff,
-    MetaThreadActiveGoal, MetaThreadArtifactRef, MetaThreadManifest, MetaThreadSegment, MonitorHeadline,
-    META_THREAD_SCHEMA,
+    MetaThreadActiveGoal, MetaThreadArtifactRef, MetaThreadManifest, MetaThreadRemoteBinding,
+    MetaThreadSegment, MonitorHeadline, META_THREAD_SCHEMA,
 };
 use stack_core::session::{
     build_usage_summary, read_session_by_id, read_usage_from_stdout, session_path,
@@ -98,10 +98,31 @@ pub struct UpdateTitleRequest {
     pub actor_id: Option<String>,
 }
 
+#[derive(Debug, Deserialize)]
+pub struct BindRemoteSmrRunRequest {
+    pub smr_run_id: String,
+    pub environment: String,
+    pub api_base_url: String,
+    pub project_id: Option<String>,
+    pub factory_id: Option<String>,
+    pub deployment_id: Option<String>,
+    pub objective: Option<String>,
+    pub remote_status: Option<String>,
+    pub actor_id: Option<String>,
+    pub reason: Option<String>,
+}
+
 #[derive(Debug, Serialize)]
 pub struct UpdateTitleResponse {
     pub manifest: MetaThreadManifest,
     pub event_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct BindRemoteSmrRunResponse {
+    pub manifest: MetaThreadManifest,
+    pub binding: MetaThreadRemoteBinding,
+    pub event_id: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -278,6 +299,72 @@ pub async fn update_title(
     }))
 }
 
+pub async fn bind_remote_smr_run(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<BindRemoteSmrRunRequest>,
+) -> Result<Json<BindRemoteSmrRunResponse>, ApiError> {
+    let smr_run_id = normalized_non_empty(&request.smr_run_id, "smr_run_id")?;
+    let environment = normalized_non_empty(&request.environment, "environment")?;
+    let api_base_url = normalized_non_empty(&request.api_base_url, "api_base_url")?;
+    let actor_id = request
+        .actor_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("remote_gardener")
+        .to_string();
+    let reason = normalize_optional_string(request.reason.as_deref());
+    let mut manifest = read_manifest(&state.paths.stack_dir, &id)
+        .await
+        .map_err(ApiError::from)?;
+    let binding = MetaThreadRemoteBinding {
+        binding_id: format!("bind_remote_smr_{}", unique_suffix()),
+        kind: "smr_run".to_string(),
+        environment,
+        api_base_url,
+        project_id: normalize_optional_string(request.project_id.as_deref()),
+        smr_run_id: smr_run_id.clone(),
+        factory_id: normalize_optional_string(request.factory_id.as_deref()),
+        deployment_id: normalize_optional_string(request.deployment_id.as_deref()),
+        objective: normalize_optional_string(request.objective.as_deref()),
+        remote_status: normalize_optional_string(request.remote_status.as_deref()),
+        bound_at: now(),
+        bound_by: actor_id.clone(),
+        reason: reason.clone(),
+    };
+    manifest.smr_run_id = Some(smr_run_id.clone());
+    manifest
+        .remote_bindings
+        .retain(|existing| !(existing.kind == "smr_run" && existing.smr_run_id == smr_run_id));
+    manifest.remote_bindings.push(binding.clone());
+    manifest.updated_at = binding.bound_at.clone();
+    write_manifest(&state.paths.stack_dir, &manifest)
+        .await
+        .map_err(ApiError::from)?;
+    let event_id = append_meta_event(
+        &state,
+        &manifest.id,
+        "meta_thread.remote_smr_run_bound",
+        &manifest.head_thread_id,
+        Some(&manifest.head_segment_id),
+        None,
+        json!({
+            "binding": binding,
+            "smr_run_id": smr_run_id,
+            "actor_id": actor_id,
+            "actor_role": "remote_gardener",
+            "reason": reason,
+        }),
+    )
+    .await?;
+    Ok(Json(BindRemoteSmrRunResponse {
+        manifest,
+        binding,
+        event_id,
+    }))
+}
+
 pub async fn get_meta_thread(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -298,6 +385,20 @@ fn normalized_title(raw: &str) -> Result<String, ApiError> {
         return Err(ApiError::bad_request("title must be 48 characters or fewer"));
     }
     Ok(title.to_string())
+}
+
+fn normalized_non_empty(raw: &str, field: &str) -> Result<String, ApiError> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Err(ApiError::bad_request(format!("{field} is required")));
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_optional_string(raw: Option<&str>) -> Option<String> {
+    raw.map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_string)
 }
 
 /// Clamps an auto-derived title (from a goal objective) to the 48-char max instead of rejecting
@@ -398,6 +499,8 @@ pub async fn create_meta_thread(
         monitor_profile: request.monitor_profile,
         monitor_headline: None,
         active_goal: request.active_goal,
+        smr_run_id: None,
+        remote_bindings: Vec::new(),
         usage_summary: None,
     };
     manifest.usage_summary = build_meta_thread_usage_summary(&manifest);

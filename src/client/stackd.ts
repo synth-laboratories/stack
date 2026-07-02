@@ -393,6 +393,22 @@ export type StackdMetaThreadActiveGoal = {
   blockers: string[]
 }
 
+export type StackdMetaThreadRemoteBinding = {
+  binding_id: string
+  kind: "smr_run" | string
+  environment: string
+  api_base_url: string
+  project_id?: string
+  smr_run_id: string
+  factory_id?: string
+  deployment_id?: string
+  objective?: string
+  remote_status?: string
+  bound_at: string
+  bound_by: string
+  reason?: string
+}
+
 export type StackdMonitorHeadline = {
   status: string
   headline: string
@@ -425,6 +441,8 @@ export type StackdMetaThreadManifest = {
   monitor_profile?: string
   monitor_headline?: StackdMonitorHeadline
   active_goal?: StackdMetaThreadActiveGoal
+  smr_run_id?: string
+  remote_bindings?: StackdMetaThreadRemoteBinding[]
   usage_summary?: StackSessionUsageSummary
 }
 
@@ -497,6 +515,25 @@ export type StackdUpdateMetaThreadTitleRequest = {
 export type StackdUpdateMetaThreadTitleResponse = {
   manifest: StackdMetaThreadManifest
   event_id?: string | null
+}
+
+export type StackdBindMetaThreadRemoteSmrRunRequest = {
+  smr_run_id: string
+  environment: string
+  api_base_url: string
+  project_id?: string
+  factory_id?: string
+  deployment_id?: string
+  objective?: string
+  remote_status?: string
+  actor_id?: string
+  reason?: string
+}
+
+export type StackdBindMetaThreadRemoteSmrRunResponse = {
+  manifest: StackdMetaThreadManifest
+  binding: StackdMetaThreadRemoteBinding
+  event_id: string
 }
 
 export type StackdMetaThreadSealRequest = {
@@ -839,6 +876,18 @@ export async function stackdUpdateMetaThreadTitle(
   return requestJson<StackdUpdateMetaThreadTitleResponse>(
     baseUrl,
     `/meta-threads/${encodeURIComponent(metaThreadId)}/title`,
+    jsonPatch(request),
+  )
+}
+
+export async function stackdBindMetaThreadRemoteSmrRun(
+  metaThreadId: string,
+  request: StackdBindMetaThreadRemoteSmrRunRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdBindMetaThreadRemoteSmrRunResponse> {
+  return requestJson<StackdBindMetaThreadRemoteSmrRunResponse>(
+    baseUrl,
+    `/meta-threads/${encodeURIComponent(metaThreadId)}/remote-smr-run`,
     jsonPatch(request),
   )
 }

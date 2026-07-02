@@ -19,7 +19,7 @@ reasoning_effort = "low"
 worker = "auto"
 
 [tools]
-allow = ["stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_inspect_live_run", "stack_list_run_interactions", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_prepare_cloud_promotion_packet", "stack_launch_cloud_promotion", "stack_remote_sync_request", "stack_remote_gardener_pass", "stack_message_live_run", "stack_message_factory_project", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel", "stack_skills_search", "stack_skills_read", "stack_search_guidance", "skills.suggest"]
+allow = ["stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_inspect_live_run", "stack_list_run_interactions", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_prepare_cloud_promotion_packet", "stack_launch_cloud_promotion", "stack_remote_sync_request", "stack_remote_gardener_pass", "stack_meta_thread_bind_smr_run", "stack_message_live_run", "stack_message_factory_project", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel", "stack_skills_search", "stack_skills_read", "stack_search_guidance", "skills.suggest"]
 deny = ["codex.interrupt", "raw.redis", "raw.postgres", "backend.db"]
 
 [sync]
