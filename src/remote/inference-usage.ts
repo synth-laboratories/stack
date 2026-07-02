@@ -48,6 +48,6 @@ export async function readRemoteInferenceUsage(config: StackConfig): Promise<Rem
     spend7dUsd: usage.spend7dUsd,
     spend30dUsd: usage.spend30dUsd,
     topProjects: usage.usageBreakdown?.byProject ?? [],
-    topActors: usage.usageBreakdown?.byActor ?? [],
+    topActors: usage.stackInferenceBudget?.spend7d.byActor ?? usage.usageBreakdown?.byActor ?? [],
   }
 }

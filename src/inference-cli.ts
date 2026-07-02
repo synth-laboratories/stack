@@ -62,6 +62,13 @@ function printInferenceUsage(snapshot: RemoteInferenceUsageSnapshot): void {
     console.log(
       `billed ${billed.model ?? "GLM"}: 7d ${formatUsd(billed.spend7d.spentUsd)} across ${billed.spend7d.eventCount} calls; org today ${formatUsd(billed.orgDaily.remainingUsd)} / ${formatUsd(billed.orgDaily.capUsd)} left; synth today ${formatUsd(billed.synthWideDaily.remainingUsd)} / ${formatUsd(billed.synthWideDaily.capUsd)} left`,
     )
+    if (billed.spend7d.byActor.length > 0) {
+      console.log("billed actors:")
+      for (const row of billed.spend7d.byActor.slice(0, 3)) {
+        const calls = row.eventCount === undefined ? "" : ` across ${row.eventCount} calls`
+        console.log(`  ${row.label}: ${formatUsd(row.costUsd)}${calls}`)
+      }
+    }
   }
 
   if (snapshot.topProjects.length > 0) {

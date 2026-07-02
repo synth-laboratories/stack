@@ -277,6 +277,8 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
   lines.push(formatWorkerSynthInferenceLine(usage))
   const inferenceLine = formatInferenceUsageLine(usage)
   if (inferenceLine) lines.push(inferenceLine)
+  const billedActor = formatTopUsageLine("billed actor", usage.stackInferenceBudget?.spend7d.byActor)
+  if (billedActor) lines.push(billedActor)
 
   lines.push(...formatAllowanceSummaryLines(usage.allowanceWindows))
 
@@ -331,6 +333,8 @@ export function subscriptionPanelLines(
   }
   const topProjectLines = formatTopUsageSection("Top projects (7d)", usage.usageBreakdown?.byProject)
   if (topProjectLines.length > 0) lines.push("", ...topProjectLines)
+  const billedActorLines = formatTopUsageSection("Billed actors (7d)", usage.stackInferenceBudget?.spend7d.byActor)
+  if (billedActorLines.length > 0) lines.push("", ...billedActorLines)
   const topActorLines = formatTopUsageSection("Top actors (7d)", usage.usageBreakdown?.byActor)
   if (topActorLines.length > 0) lines.push("", ...topActorLines)
   lines.push("", "Local agent")

@@ -52,6 +52,7 @@ export type RemoteStackInferenceBudget = {
     spentUsd: number
     eventCount: number
     lastUsedAt?: string
+    byActor: RemoteUsageBreakdownRow[]
   }
   synthWideDaily: RemoteStackAuxBudgetWindow
   orgDaily: RemoteStackAuxBudgetWindow & {
@@ -592,6 +593,7 @@ function readStackInferenceBudget(payload: unknown): RemoteStackInferenceBudget 
       spentUsd: readNumber(spend7d?.spent_usd) ?? centsToUsd(readNumber(spend7d?.spent_cents)) ?? 0,
       eventCount: readNumber(spend7d?.event_count) ?? 0,
       lastUsedAt: readString(spend7d?.last_used_at),
+      byActor: readStackInferenceActorRows(spend7d?.by_actor),
     },
     synthWideDaily,
     orgDaily: {
@@ -601,6 +603,22 @@ function readStackInferenceBudget(payload: unknown): RemoteStackInferenceBudget 
     workerDefault: readString(record.worker_default),
     workerSynthInference: readString(record.worker_synth_inference),
   }
+}
+
+function readStackInferenceActorRows(value: unknown): RemoteUsageBreakdownRow[] {
+  const rows: RemoteUsageBreakdownRow[] = []
+  for (const entry of asArray(value)) {
+    const record = asRecord(entry)
+    if (!record) continue
+    const actorRole = readString(record.actor_role)
+    if (!actorRole) continue
+    rows.push({
+      label: shortenActorLabel(actorRole),
+      costUsd: readNumber(record.spent_usd) ?? centsToUsd(readNumber(record.spent_cents)) ?? 0,
+      eventCount: readNumber(record.event_count),
+    })
+  }
+  return topBreakdownRows(rows, 12)
 }
 
 function stackInferenceWorkerPlanEligible(planTier: string | undefined): boolean {
