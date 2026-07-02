@@ -35,6 +35,7 @@ import {
   readNumber,
   readString,
   readStringArray,
+  type ParsedTomlSections,
 } from "./actor-config.js"
 import {
   appendThreadMetaEvent,
@@ -44,6 +45,8 @@ import {
 } from "./thread-events.js"
 
 export type MonitorStrictness = "off" | "passive" | "conservative" | "aggressive"
+
+export type MonitorActivityDensity = "quiet" | "rich"
 export type MonitorFocusName = "style" | "goal_progress" | "skills" | "tool_use" | "scope_control" | "acceptance"
 export type MonitorFocusStatus = "pass" | "warn" | "fail" | "disabled"
 export type MonitorSeverity = "none" | "low" | "medium" | "high"
@@ -77,6 +80,9 @@ export type StackMonitorConfig = {
   mode: string
   policy: string
   strictness: MonitorStrictness
+  // C5 — how much "what the worker is doing now" narration the operator feed gets.
+  // quiet = transitions/concerns only (default); rich = also phase-level current-activity updates.
+  activityDensity: MonitorActivityDensity
   focusSelection: "any" | "all"
   focus: Record<MonitorFocusName, boolean>
   model: {
@@ -212,6 +218,7 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
   mode: "observe_summarize_queue_steer",
   policy: "conservative",
   strictness: "conservative",
+  activityDensity: "quiet",
   focusSelection: "any",
   focus: {
     style: true,
@@ -257,7 +264,18 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
     pushWhenConfident: false,
   },
   tools: {
-    allow: ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer"],
+    allow: [
+      "guidance.search",
+      "skills.push_context",
+      "skills.suggest",
+      "monitor.queue",
+      "monitor.steer",
+      "stack_monitor_goal_status",
+      "stack_sidecar_pause_for_restart",
+      "stack_meta_thread_set_title",
+      "stack_ui_open_panel",
+      "stack_ui_close_panel",
+    ],
     deny: ["codex.interrupt"],
   },
   permissions: {
@@ -315,6 +333,7 @@ export function loadMonitorConfig(stackRoot: string): StackMonitorConfig {
   }
   const parsed = parseTomlLike(readFileSync(configPath, "utf8"))
   const config = mergeMonitorConfig(DEFAULT_MONITOR_CONFIG, parsed)
+  if (profile === "default") backfillGeneratedDefaultMonitorTools(config, parsed)
   const enabledOverride = process.env.STACK_MONITOR_ENABLED?.trim()
   if (enabledOverride === "0" || enabledOverride === "false") config.enabled = false
   if (enabledOverride === "1" || enabledOverride === "true") config.enabled = true
@@ -1135,36 +1154,15 @@ export async function runMonitorForNewEvents(input: {
   // Risky-pending → pause + escalate (locked decision #1). Deterministic: if the worker's recent
   // tool stream shows an imminent irreversible/destructive action, surface it ONCE as a high-severity
   // steer for human confirmation — code owns this hard-safety signal, not the LLM.
-  const riskyPending = detectRiskyPending(candidate.pendingEvents)
-  const riskySummary = riskyPendingSummary(riskyPending)
-  const riskySignature = `risky:${riskyPending[0]?.category ?? ""}`
-  const alreadyEscalated = priorEvents
-    .slice(-30)
-    .some((e) => e.type === "monitor.steer" && (e.payload as Record<string, unknown>).trigger_signature === riskySignature)
-  if (
-    riskySummary &&
-    monitorConfig.permissions.steer &&
-    actorToolAllowed(monitorConfig.tools, "monitor.steer") &&
-    !alreadyEscalated
-  ) {
-    appendThreadMetaEvent(runtimeRoot, {
-      event_id: stackEventId("monitor_steer"),
-      type: "monitor.steer",
-      thread_id: threadId,
-      observed_at: new Date().toISOString(),
-      actor_id: actorId,
-      actor_role: "monitor",
-      payload: {
-        wake_id: wakeId,
-        message: riskySummary,
-        severity: "high",
-        focus: "risky_pending",
-        source: "monitor_runtime",
-        trigger_signature: riskySignature,
-      },
-    })
-    steerDelta += 1
-  }
+  steerDelta += emitRiskyPendingSafetyEvents({
+    runtimeRoot,
+    threadId,
+    actorId,
+    wakeId,
+    monitorConfig,
+    priorEvents,
+    pendingEvents: candidate.pendingEvents,
+  })
   const turnForSteer = input.turn ?? syntheticTurnFromEvents(input.session, candidate.pendingEvents)
   const violations = detectSynthStyleViolations(turnForSteer)
   const violation = violations.find((entry) => !hasSteeredViolationRule(priorEvents, entry.id))
@@ -1361,6 +1359,85 @@ function steerTokens(message: string): Set<string> {
 // batch (tool + command), one entry per distinct failing command. Two wakes over the SAME
 // unresolved failure share an entry even when the monitor rewords its steer or the failing SET
 // changes — so this, not fragile prose matching, is the primary dedup key.
+// Deterministic risky-pending safety block (locked decision #1 + C4 pause_before_action).
+// Exported so the safety smoke drives the SAME code path the live monitor runs — a risky
+// verdict emits a high-severity monitor.steer, and (when the profile grants pause_worker)
+// a monitor.worker_pause_requested receipt the TUI answers with monitor.worker_paused.
+// Returns the number of steers emitted.
+export function emitRiskyPendingSafetyEvents(input: {
+  runtimeRoot: string
+  threadId: string
+  actorId: string
+  wakeId: string
+  monitorConfig: StackMonitorConfig
+  priorEvents: StackThreadMetaEvent[]
+  pendingEvents: StackThreadMetaEvent[]
+}): number {
+  const { runtimeRoot, threadId, actorId, wakeId, monitorConfig, priorEvents } = input
+  const riskyPending = detectRiskyPending(input.pendingEvents)
+  const riskySummary = riskyPendingSummary(riskyPending)
+  const riskySignature = `risky:${riskyPending[0]?.category ?? ""}`
+  let steerDelta = 0
+  const alreadyEscalated = priorEvents
+    .slice(-30)
+    .some((e) => e.type === "monitor.steer" && (e.payload as Record<string, unknown>).trigger_signature === riskySignature)
+  if (
+    riskySummary &&
+    monitorConfig.permissions.steer &&
+    actorToolAllowed(monitorConfig.tools, "monitor.steer") &&
+    !alreadyEscalated
+  ) {
+    appendThreadMetaEvent(runtimeRoot, {
+      event_id: stackEventId("monitor_steer"),
+      type: "monitor.steer",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: actorId,
+      actor_role: "monitor",
+      payload: {
+        wake_id: wakeId,
+        message: riskySummary,
+        severity: "high",
+        focus: "risky_pending",
+        source: "monitor_runtime",
+        trigger_signature: riskySignature,
+      },
+    })
+    steerDelta += 1
+  }
+  // C4 — pause_before_action: when the profile grants pause_worker, a risky-pending verdict also
+  // requests a worker pause. This is the receipt only; the TUI owns the actual interrupt and
+  // answers with monitor.worker_paused. Deduped per signature like the steer above.
+  const pauseAlreadyRequested = priorEvents
+    .slice(-30)
+    .some(
+      (e) =>
+        e.type === "monitor.worker_pause_requested" &&
+        (e.payload as Record<string, unknown>).trigger_signature === riskySignature,
+    )
+  if (riskySummary && monitorConfig.permissions.pauseWorker && !pauseAlreadyRequested) {
+    appendThreadMetaEvent(runtimeRoot, {
+      event_id: stackEventId("monitor_worker_pause_requested"),
+      type: "monitor.worker_pause_requested",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: actorId,
+      actor_role: "monitor",
+      payload: {
+        wake_id: wakeId,
+        message: riskySummary,
+        category: riskyPending[0]?.category ?? "unknown",
+        command: riskyPending[0]?.command ?? "",
+        severity: "high",
+        focus: "risky_pending",
+        source: "monitor_runtime",
+        trigger_signature: riskySignature,
+      },
+    })
+  }
+  return steerDelta
+}
+
 export function triggerSignature(events: StackThreadMetaEvent[]): string {
   const commands = events
     .filter((event) => event.type === "agent.tool.failed")
@@ -3306,6 +3383,7 @@ function mergeMonitorConfig(base: StackMonitorConfig, parsed: Record<string, Rec
     mode: readString(parsed.monitor?.mode) ?? base.mode,
     policy: readString(parsed.monitor?.policy) ?? base.policy,
     strictness: normalizeStrictness(readString(parsed.monitor?.strictness), base.strictness),
+    activityDensity: normalizeActivityDensity(readString(parsed.monitor?.activity_density), base.activityDensity),
     focusSelection: normalizeSelection(readString(parsed.focus?.selection), base.focusSelection),
     focus: {
       style: readBoolean(parsed.focus?.style) ?? base.focus.style,
@@ -3412,6 +3490,29 @@ function assertMonitorProviderSupported(config: StackMonitorConfig): void {
   )
 }
 
+// A seeded default profile (bundled copy or generated) from before the .2 panel-ownership
+// close-out lacks the stack_* MCP grants. If the allow set is exactly that legacy set, treat
+// it as generated data and upgrade to the current default grants; a customized set is kept.
+const LEGACY_GENERATED_DEFAULT_MONITOR_ALLOW_V1 = [
+  "guidance.search",
+  "skills.push_context",
+  "skills.suggest",
+  "monitor.queue",
+  "monitor.steer",
+]
+
+function backfillGeneratedDefaultMonitorTools(config: StackMonitorConfig, parsed: ParsedTomlSections): void {
+  const parsedAllow = readStringArray(parsed.tools?.allow)
+  if (!parsedAllow || !sameStringSet(parsedAllow, LEGACY_GENERATED_DEFAULT_MONITOR_ALLOW_V1)) return
+  config.tools.allow = [...DEFAULT_MONITOR_CONFIG.tools.allow]
+}
+
+function sameStringSet(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) return false
+  const rightSet = new Set(right)
+  return left.every((value) => rightSet.has(value))
+}
+
 function defaultMonitorToml(): string {
   return [
     "[monitor]",
@@ -3421,6 +3522,8 @@ function defaultMonitorToml(): string {
     'mode = "observe_summarize_queue_steer"',
     'policy = "conservative"',
     'strictness = "conservative"',
+    '# C5 activity density: quiet = transitions/concerns only; rich = also phase-level current-activity updates.',
+    'activity_density = "quiet"',
     "",
     "[focus]",
     'selection = "any"',
@@ -3467,7 +3570,7 @@ function defaultMonitorToml(): string {
     "push_when_confident = false",
     "",
     "[tools]",
-    'allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer"]',
+    'allow = ["guidance.search", "skills.push_context", "skills.suggest", "monitor.queue", "monitor.steer", "stack_monitor_goal_status", "stack_sidecar_pause_for_restart", "stack_meta_thread_set_title", "stack_ui_open_panel", "stack_ui_close_panel"]',
     'deny = ["codex.interrupt"]',
     "",
     "[handoff_preempt]",
@@ -3528,6 +3631,14 @@ function monitorActorId(config: StackMonitorConfig): string {
 
 function normalizeStrictness(value: string | undefined, defaultValue: MonitorStrictness): MonitorStrictness {
   if (value === "off" || value === "passive" || value === "conservative" || value === "aggressive") return value
+  return defaultValue
+}
+
+function normalizeActivityDensity(
+  value: string | undefined,
+  defaultValue: MonitorActivityDensity,
+): MonitorActivityDensity {
+  if (value === "quiet" || value === "rich") return value
   return defaultValue
 }
 

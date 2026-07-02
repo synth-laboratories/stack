@@ -67,7 +67,7 @@ export type StackGardenerConfig = {
   }
 }
 
-const DEFAULT_GARDENER_BUILTIN_PROMPT = [
+const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4 = [
   "You are the Stack Gardener, a portfolio conductor separate from worker threads and monitor sidecars. Reply to the operator in this chat.",
   "",
   "Your four jobs are:",
@@ -148,10 +148,18 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V2 = [
   "Suggesting a skill records it on the worker thread and steers the worker to read it.",
 ].join("\n")
 
-const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3 = DEFAULT_GARDENER_BUILTIN_PROMPT.replace(
+const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3 = LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4.replace(
   "hand off to the remote gardener with stack_remote_gardener_handoff or require explicit operator intent",
   "hand off to the remote gardener or require explicit operator intent",
 )
+
+// B4 — the gardener owns portfolio orientation on screen: it pulls the gardener
+// (and per-worker monitor) side panels forward at review moments via stack_ui_*.
+const DEFAULT_GARDENER_BUILTIN_PROMPT = [
+  LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4,
+  "",
+  "You control the operator's side panel through stack_ui_open_panel and stack_ui_close_panel. When portfolio orientation would help the operator SEE the answer — a routing decision, a handoff review, or a 'what is running / where should I look' question — call stack_ui_open_panel with actor_role=\"gardener\", panel=\"gardener\", view=\"portfolio\", and a one-sentence reason. To point the operator at one worker's live progress, open panel=\"monitor\" with that worker's thread_id instead. Open at most once per distinct moment — never for routine replies; the operator's Esc closes the panel and wins until your next open. When the moment has passed, close a panel you opened with stack_ui_close_panel (you may only close panels you opened).",
+].join("\n")
 
 export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
   id: "default",
@@ -190,6 +198,7 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
       "stack_inference_usage",
       "stack_remote_gardener_handoff",
       "stack_ui_open_panel",
+      "stack_ui_close_panel",
       "jsk.papercut",
       "handoff.force",
       "handoff.seal",
@@ -261,7 +270,11 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V2 = [
 ]
 
 const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
-  (tool) => tool !== "stack_remote_gardener_handoff",
+  (tool) => tool !== "stack_remote_gardener_handoff" && tool !== "stack_ui_close_panel",
+)
+
+const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
+  (tool) => tool !== "stack_ui_close_panel",
 )
 
 export function ensureDefaultGardenerConfig(stackRoot: string): string {
@@ -376,7 +389,8 @@ function isLegacyGeneratedDefaultGardenerAllow(toolIds: readonly string[]): bool
   return (
     sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V1) ||
     sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V2) ||
-    sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3)
+    sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3) ||
+    sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4)
   )
 }
 
@@ -391,7 +405,8 @@ function isLegacyGeneratedDefaultGardenerPrompt(prompt: string): boolean {
   return (
     normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V1) ||
     normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V2) ||
-    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3)
+    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3) ||
+    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4)
   )
 }
 
@@ -430,7 +445,7 @@ function defaultGardenerToml(): string {
     'worker = "auto"',
     "",
     "[tools]",
-    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_inference_catalog", "stack_inference_usage", "stack_remote_gardener_handoff", "stack_ui_open_panel", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
+    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_inference_catalog", "stack_inference_usage", "stack_remote_gardener_handoff", "stack_ui_open_panel", "stack_ui_close_panel", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
     'deny = ["codex.interrupt"]',
     "",
     "[handoff]",

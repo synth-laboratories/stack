@@ -3373,7 +3373,31 @@ function applyStackdSidePanelSnapshot(
     return applyStackdClosedSidePanel(state)
   }
 
-  return applyStackdOpenedSidePanel(options, state, sidePanel)
+  const appliedNow = applyStackdOpenedSidePanel(options, state, sidePanel)
+  if (appliedNow) {
+    // A3/B5 — the screen actually changed for an agent-opened panel; audit it so a
+    // live panel-walk is provable from the event log (ui.panel_focus refreshes the
+    // stackd projection's view without touching open/closed state).
+    try {
+      appendThreadMetaEvent(options.config.stackDataRoot, {
+        event_id: stackEventId("ui_panel_focus"),
+        type: "ui.panel_focus",
+        thread_id: options.session.id,
+        observed_at: new Date().toISOString(),
+        actor_id: "tui",
+        actor_role: "primary",
+        payload: {
+          panel: sidePanel.panel,
+          view: sidePanel.view ?? null,
+          opened_by: sidePanel.opened_by,
+          source: "stackd_side_panel",
+        },
+      })
+    } catch {
+      // audit append is best-effort; the panel is already on screen
+    }
+  }
+  return appliedNow
 }
 
 function stackdSidePanelKey(sidePanel: StackdMetaSidePanel | null): string {
@@ -3496,10 +3520,15 @@ function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
       state.monitorSnapshot = setMonitorEnabled(options.config.stackDataRoot, options.session.id, true)
       syncMonitorRightPanel(state)
     }
+    const wasOpen = state.rightPanelOpen
     state.rightPanelOpen = true
     state.rightPanelOpsVisible = false
     state.monitorWorkerTargetId = options.session.id
     state.goalMonitorAutoEnabledObjective = objective
+    // Panel opens are audited ui.* events even when the TUI opens them itself (A3).
+    if (!wasOpen) {
+      appendUiPanelOpened(options, state, "monitor", "events", "operator", "goal")
+    }
   }
   if (!state.goalShutterWorkerPeek && state.focusMode === "goal") {
     state.focusMode = "monitor"
@@ -3518,12 +3547,16 @@ function focusGoalSidecarChat(
   state.goalShutterWorkerPeek = false
   state.goalShutterSidecarView = "thread"
   state.goalShutterSidecarThreadScrollPinned = true
+  const wasOpen = state.rightPanelOpen
   state.rightPanelOpen = true
   state.rightPanelOpsVisible = false
   state.talkToMonitor = true
   state.monitorPanelMode = "chat"
   state.monitorWorkerTargetId = options.session.id
   state.focusMode = "monitor"
+  if (!wasOpen) {
+    appendUiPanelOpened(options, state, "monitor", "thread", "operator", "goal_sidecar_chat")
+  }
   refresh()
 }
 
@@ -11057,9 +11090,8 @@ async function submitPrompt(
           refreshMetaEvents,
           state.sidecarDispatchRef,
         )
-        const steerEvent = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
-          .filter((event) => event.type === "monitor.steer")
-          .at(-1)
+        const postRunEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+        const steerEvent = postRunEvents.filter((event) => event.type === "monitor.steer").at(-1)
         const steerMessage =
           steerEvent && typeof steerEvent.payload.message === "string" ? steerEvent.payload.message.trim() : ""
         if (steerMessage && codexSessionHandle.session) {
@@ -11070,6 +11102,45 @@ async function submitPrompt(
               refreshIfScrollStable()
             }
           })
+        }
+        // C4 — pause_before_action: honor an unanswered monitor.worker_pause_requested receipt by
+        // interrupting the in-flight worker turn, then answer with monitor.worker_paused.
+        const pauseRequest = postRunEvents.filter((event) => event.type === "monitor.worker_pause_requested").at(-1)
+        const pauseAnswered =
+          pauseRequest &&
+          postRunEvents.some(
+            (event) =>
+              event.type === "monitor.worker_paused" &&
+              (event.payload as Record<string, unknown>).request_event_id === pauseRequest.event_id,
+          )
+        if (pauseRequest && !pauseAnswered && codexSessionHandle.session) {
+          const pauseMessage =
+            typeof pauseRequest.payload.message === "string" ? pauseRequest.payload.message : "risky action pending"
+          void codexSessionHandle.session
+            .interrupt()
+            .catch(() => undefined)
+            .finally(() => {
+              try {
+                appendThreadMetaEvent(options.config.stackDataRoot, {
+                  event_id: stackEventId("monitor_worker_paused"),
+                  type: "monitor.worker_paused",
+                  thread_id: options.session.id,
+                  observed_at: new Date().toISOString(),
+                  actor_id: "operator",
+                  actor_role: "primary",
+                  payload: {
+                    request_event_id: pauseRequest.event_id,
+                    reason: pauseMessage,
+                    source: "tui",
+                  },
+                })
+                state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+              } catch {
+                // receipt append is best-effort; the interrupt already landed
+              }
+              appendStackBlock(state.blocks, `monitor paused worker before risky action: ${pauseMessage}`)
+              refreshIfScrollStable()
+            })
         }
         return snapshot
       })
