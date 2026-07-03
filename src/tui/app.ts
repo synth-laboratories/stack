@@ -119,6 +119,7 @@ import {
   writeStackProfile,
   type StackProfileName,
 } from "../operator-profile.js"
+import { appendPapercutEntry } from "../papercuts.js"
 import {
   executeGardenerSkillRegister,
   executeGardenerSkillSuggest,
@@ -1510,6 +1511,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     if (key.ctrl && key.name === "c") {
       appendStackBlock(state.blocks, "type /exit to quit")
       remount()
+      return
+    }
+    if (key.ctrl && key.name === "f") {
+      capturePapercutFromUi(options, state, remount)
       return
     }
     const voiceKind = key.eventType === "release" ? "release" : "press"
@@ -4619,6 +4624,9 @@ function buildSlashDispatchHooks(
       const current = readStackProfile(options.config.stackDataRoot).active
       applyStackProfile(nextStackProfile(current, direction), options, state, refresh)
     },
+    capturePapercut: (note) => {
+      capturePapercutFromUi(options, state, refresh, note || undefined)
+    },
     setProfile: (name) => {
       const profile = normalizeStackProfileName(name)
       if (!profile) return false
@@ -5970,6 +5978,41 @@ function applyStackProfile(
   syncMonitorRightPanel(state)
   appendStackBlock(state.blocks, `profile ${profile}`)
   refresh()
+}
+
+// One-keystroke papercut capture (ctrl+f or /papercut): stamps the entry with
+// the live run context, or an explicit "none" when no run is active.
+function capturePapercutFromUi(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  note?: string,
+): void {
+  const run = activePapercutRunContext(state)
+  try {
+    const receipt = appendPapercutEntry(options.config.stackDataRoot, {
+      sessionId: options.session.id,
+      environment: options.config.environmentName,
+      taskId: run?.taskId,
+      runId: run?.runId,
+      note,
+    })
+    appendStackBlock(
+      state.blocks,
+      `papercut captured · task ${run?.taskId ?? "none"} · run ${run?.runId ?? "none"} · ${receipt.path}`,
+    )
+  } catch (error) {
+    appendStackBlock(state.blocks, `papercut capture failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+function activePapercutRunContext(state: AppState): { runId: string; taskId?: string } | undefined {
+  const activeStatuses = new Set(["running", "started", "submitted", "queued", "pending"])
+  const active = state.optimizerSnapshot.runs.find((run) => activeStatuses.has(run.status.toLowerCase()))
+  if (!active) return undefined
+  const taskId = active.configPath ? basename(active.configPath).replace(/\.toml$/i, "") : undefined
+  return { runId: active.runId, taskId }
 }
 
 function isLeftPanelFocused(state: AppState): boolean {

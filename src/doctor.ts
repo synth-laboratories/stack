@@ -5,6 +5,7 @@ import { stackdListCrashReports, stackdTelemetryStatus } from "./client/stackd.j
 import { readRemoteInferenceCatalog, type RemoteInferenceCatalogSnapshot } from "./remote/inference.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
 import { readStackProfile } from "./operator-profile.js"
+import { runTaskPreflight, type TaskPreflightFailureClass } from "./doctor-task.js"
 import { stackChannel, stackReleaseVersion, stackVersion } from "./version.js"
 
 type DoctorLevel = "pass" | "warn" | "fail"
@@ -14,6 +15,7 @@ type DoctorCheck = {
   level: DoctorLevel
   summary: string
   detail?: string
+  failure_class?: TaskPreflightFailureClass
 }
 
 type DoctorReport = {
@@ -29,6 +31,7 @@ type DoctorReport = {
 export async function runDoctor(config: StackConfig, argv: string[]): Promise<number> {
   ensureStackDefaults(config.stackDataRoot, config.appRoot)
   const json = argv.includes("--json")
+  const taskArg = readTaskArg(argv)
   const auth = environmentAuthStatus(config.environment)
   const checks: DoctorCheck[] = [
     check("version", "pass", `Stack ${stackVersion(config.appRoot)} (${stackChannel(config.appRoot)})`),
@@ -49,6 +52,23 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
     fileCheck("distribution-doc", join(config.appRoot, "docs", "DISTRIBUTION.md"), "distribution/download doc exists"),
   ]
 
+  if (taskArg !== undefined) {
+    if (!taskArg) {
+      checks.push(check("task", "fail", "--task needs a StackEval task TOML path", "usage: stack doctor --task <toml>"))
+    } else {
+      const rows = await runTaskPreflight(config, taskArg)
+      checks.push(
+        ...rows.map((row) => ({
+          id: row.id,
+          level: row.level,
+          summary: row.summary,
+          detail: row.detail,
+          ...(row.failureClass ? { failure_class: row.failureClass } : {}),
+        })),
+      )
+    }
+  }
+
   const report: DoctorReport = {
     generated_at: new Date().toISOString(),
     stack_version: stackVersion(config.appRoot),
@@ -66,6 +86,13 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
   }
 
   return report.local_ready ? 0 : 1
+}
+
+function readTaskArg(argv: string[]): string | undefined {
+  const index = argv.indexOf("--task")
+  if (index === -1) return undefined
+  const value = argv[index + 1]
+  return value && !value.startsWith("--") ? value : ""
 }
 
 function profileCheck(config: StackConfig): DoctorCheck {

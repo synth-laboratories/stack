@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
-export const STACK_PROFILE_OPTIONS = ["research", "engineering", "product"] as const
+export const STACK_PROFILE_OPTIONS = ["default", "research", "engineering", "product"] as const
 export type StackProfileName = (typeof STACK_PROFILE_OPTIONS)[number]
 
 export const DEFAULT_STACK_PROFILE: StackProfileName = "engineering"
@@ -12,6 +12,10 @@ export type StackProfileDefaults = {
 }
 
 export const STACK_PROFILE_DEFAULTS: Record<StackProfileName, StackProfileDefaults> = {
+  default: {
+    codexModel: "gpt-5.4-mini",
+    codexReasoningEffort: "medium",
+  },
   research: {
     codexModel: "gpt-5.5",
     codexReasoningEffort: "high",

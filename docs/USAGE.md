@@ -598,6 +598,32 @@ point-of-need connect copy instead of blocking boot.
 Use `stack auth open signin` when you want cloud features. Keep keys in the
 environment or `authEnvFile`; do not paste them into prompts, tickets, or logs.
 
+### Per-task preflight (`stack doctor --task <toml>`)
+
+`stack doctor --task path/to/task.toml` appends per-task green/red rows to the
+doctor report: container/image state, service port availability, auth route,
+subscription/caps, tunnel lease, and backend target reachability. Every red row
+names one failure class — `auth`, `quota`, `config`, or `transient` — so the fix
+is legible without reading logs.
+
+The task TOML declares its preflight needs under `[preflight]`; ports fall back
+to `[harness] container_port_base` so existing StackEval task TOMLs work
+without edits:
+
+```toml
+[preflight]
+containers = ["banking77-task-app"]   # docker containers that must be running
+images = ["banking77:latest"]         # docker images that must be present locally
+ports = [28800]                       # ports the task app binds; must be free
+services = ["policy:8000"]            # host:port endpoints that must be listening
+requires_auth = true                  # default true: check auth route + subscription/caps
+requires_tunnel = false               # default false: check tunnel route + lease listing
+backend = "staging"                   # optional environment override for backend checks
+```
+
+Exit code stays doctor semantics: any red row fails the run. Task preflight
+reads declarations only — task/eval logic itself stays in the StackEval repo.
+
 ### Local to cloud sync
 
 stackd is the local to cloud boundary. Remote sensors observe hosted projects,
