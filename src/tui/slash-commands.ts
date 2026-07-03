@@ -55,7 +55,7 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
   },
   {
     command: "profile",
-    args: "[research|engineering|product]",
+    args: "[default|research|engineering|product]",
     description: "Cycle or set Stack profile",
     describe: (ctx) => `Stack profile (currently ${ctx.profileName})`,
   },
@@ -398,7 +398,7 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
     case "profile":
       if (args) {
         if (!hooks.setProfile(args)) {
-          hooks.feedback(`unknown profile ${args} · use research, engineering, or product`)
+          hooks.feedback(`unknown profile ${args} · use default, research, engineering, or product`)
         }
       } else {
         hooks.cycleProfile(1)
