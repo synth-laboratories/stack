@@ -55,7 +55,7 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
   },
   {
     command: "profile",
-    args: "[research|engineering|product]",
+    args: "[default|research|engineering|product]",
     description: "Cycle or set Stack profile",
     describe: (ctx) => `Stack profile (currently ${ctx.profileName})`,
   },
@@ -89,6 +89,7 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     description: "Toggle side rails",
     describe: (ctx) => `Toggle side rails (currently ${ctx.railsVisible ? "shown" : "hidden"})`,
   },
+  { command: "papercut", args: "[note]", description: "Capture a papercut with run context (ctrl+f)" },
   { command: "threads", aliases: ["p"], description: "Toggle threads panel" },
   { command: "ops", description: "Open ops panel" },
   { command: "settings", args: "telemetry", description: "Open settings" },
@@ -335,6 +336,7 @@ export type SlashDispatchHooks = {
   focusAgent: () => void
   toggleAgentView: () => void
   clearInput: () => void
+  capturePapercut: (note: string) => void
 }
 
 export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks): boolean {
@@ -395,10 +397,13 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
         hooks.cycleEnvironment(1)
       }
       return true
+    case "papercut":
+      hooks.capturePapercut(args)
+      return true
     case "profile":
       if (args) {
         if (!hooks.setProfile(args)) {
-          hooks.feedback(`unknown profile ${args} · use research, engineering, or product`)
+          hooks.feedback(`unknown profile ${args} · use default, research, engineering, or product`)
         }
       } else {
         hooks.cycleProfile(1)
