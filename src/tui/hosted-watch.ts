@@ -1,7 +1,8 @@
-import type {
-  HostedOptimizerRunDetail,
-  HostedOptimizerRunSummary,
-  HostedOptimizerSnapshot,
+import {
+  hostedOptimizerRunTerminal,
+  type HostedOptimizerRunDetail,
+  type HostedOptimizerRunSummary,
+  type HostedOptimizerSnapshot,
 } from "../remote/optimizers.js"
 import type { RemoteUsageSnapshot } from "../remote/usage.js"
 
@@ -12,8 +13,17 @@ export function hostedOptimizerWatchLines(
 ): string[] {
   const run = snapshot.runs[clampIndex(selectedIndex, snapshot.runs.length)]
   if (!run) return ["watch: no hosted optimizer run selected"]
-  const detail = snapshot.runDetails[run.runId]
-  const terminal = hostedRunTerminal(run)
+  return hostedRunWatchLines(run, snapshot.runDetails[run.runId], usage.spendTodayUsd)
+}
+
+// One render path for the watch surface: the TUI hosted panel and `stack watch`
+// both read these lines, so the panel never drifts from the CLI proof.
+export function hostedRunWatchLines(
+  run: HostedOptimizerRunSummary,
+  detail: HostedOptimizerRunDetail | undefined,
+  orgSpendTodayUsd?: number,
+): string[] {
+  const terminal = hostedOptimizerRunTerminal(run)
   const phase = terminal ? run.status : detail?.phase ?? run.finalizeState ?? run.status
   const artifactNames = detail?.artifactNames ?? []
   const latestEvent = detail?.eventTypes.at(-1)
@@ -21,7 +31,7 @@ export function hostedOptimizerWatchLines(
     `watch ${terminal ? "terminal" : "live"} · ${oneLine(run.runId, 34)}`,
     `phase ${oneLine(phase, 24)} · cursor ${run.cursorSeq ?? detail?.latestEventSeq ?? "-"} · events ${detail?.eventCount ?? "-"}`,
     `rollouts ${formatNumber(detail?.rolloutCount)} · best ${bestScoreText(detail)} · candidate ${oneLine(detail?.bestCandidateId ?? "-", 18)}`,
-    `cost ${formatCost(detail?.costUsd)} · tokens ${formatNumber(detail?.totalTokens)} · org today ${formatCost(usage.spendTodayUsd)}`,
+    `cost ${formatCost(detail?.costUsd)} · tokens ${formatNumber(detail?.totalTokens)} · org today ${formatCost(orgSpendTodayUsd)}`,
     artifactNames.length
       ? `artifacts ${artifactNames.length}: ${oneLine(artifactNames.join(", "), 46)}`
       : "artifacts 0",
@@ -37,12 +47,6 @@ function bestScoreText(detail: HostedOptimizerRunDetail | undefined): string {
   if (detail.heldoutReward !== undefined) return `heldout ${formatScore(detail.heldoutReward)}`
   if (detail.trainReward !== undefined) return `train ${formatScore(detail.trainReward)}`
   return "-"
-}
-
-function hostedRunTerminal(run: HostedOptimizerRunSummary): boolean {
-  if (run.terminalAt) return true
-  const status = run.status.toLowerCase()
-  return status === "succeeded" || status === "completed" || status === "failed" || status === "cancelled" || status === "canceled"
 }
 
 function clampIndex(selectedIndex: number, length: number): number {

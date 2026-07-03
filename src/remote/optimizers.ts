@@ -356,6 +356,103 @@ export async function downloadHostedOptimizerArtifact(
   }
 }
 
+export type HostedOptimizerRunWatchFrame = {
+  run: HostedOptimizerRunSummary
+  detail: HostedOptimizerRunDetail
+  terminal: boolean
+  checkedAt: string
+}
+
+const HOSTED_TERMINAL_STATUSES = new Set(["succeeded", "completed", "failed", "cancelled", "canceled"])
+
+export function hostedOptimizerRunTerminal(run: HostedOptimizerRunSummary): boolean {
+  if (run.terminalAt) return true
+  return HOSTED_TERMINAL_STATUSES.has(run.status.toLowerCase())
+}
+
+// One consolidated read per watch tick: run summary + detail (phase, rollouts,
+// scores, cost, artifacts) so callers never hand-probe snapshot routes.
+export async function readHostedOptimizerRunWatchFrame(
+  config: StackConfig,
+  runId: string,
+): Promise<HostedOptimizerRunWatchFrame> {
+  const auth = environmentAuthStatus(config.environment)
+  if (!auth.hasAuth) throw new Error(auth.message)
+  let run: HostedOptimizerRunSummary | undefined
+  try {
+    const listed = readRuns(await getJson(config, "/api/v1/optimizers/runs?limit=100"))
+    run = listed.find((item) => item.runId === runId)
+  } catch {
+    // fall through to the direct run route below
+  }
+  if (!run) {
+    const payload = asRecord(await getJson(config, `/api/v1/optimizers/runs/${encodeURIComponent(runId)}`))
+    if (!payload) throw new Error(`hosted optimizer run ${runId} not found on ${config.environment.apiBaseUrl}`)
+    run = {
+      runId,
+      algorithm: readString(payload.algorithm) ?? "unknown",
+      status: readString(payload.status) ?? "unknown",
+      finalizeState: readString(payload.finalize_state),
+      storageMode: readString(payload.storage_mode),
+      cursorSeq: readNumber(payload.cursor_seq),
+      terminalAt: readString(payload.terminal_at),
+      updatedAt: readString(payload.updated_at),
+      error: readString(payload.error),
+    }
+  }
+  const detail = await readRunDetail(config, run)
+  return {
+    run,
+    detail,
+    terminal: hostedOptimizerRunTerminal(run),
+    checkedAt: new Date().toISOString(),
+  }
+}
+
+export type HostedOptimizerRunEvent = {
+  seq?: number
+  eventType?: string
+  createdAt?: string
+  message?: string
+  fields?: Record<string, unknown>
+}
+
+// Full event rows (not just seq/type) so replay surfaces can fold the feed into
+// watch frames without re-probing routes.
+export async function readHostedOptimizerRunEvents(
+  config: StackConfig,
+  runId: string,
+  limit = 5000,
+): Promise<HostedOptimizerRunEvent[]> {
+  const boundedLimit = Math.max(1, Math.min(Math.floor(limit), 5000))
+  const text = await getText(
+    config,
+    `/api/v1/optimizers/runs/${encodeURIComponent(runId)}/events?stream=false&limit=${boundedLimit}`,
+  )
+  return text
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    .flatMap((line): HostedOptimizerRunEvent[] => {
+      try {
+        const payload = asRecord(JSON.parse(line) as unknown)
+        if (!payload) return []
+        const eventPayload = asRecord(payload.payload)
+        return [
+          {
+            seq: readNumber(payload.seq),
+            eventType: readString(payload.event_type) ?? readString(eventPayload?.type),
+            createdAt: readString(payload.created_at) ?? readString(eventPayload?.ts),
+            message: readString(eventPayload?.message),
+            fields: asRecord(eventPayload?.fields),
+          },
+        ]
+      } catch {
+        return []
+      }
+    })
+}
+
 async function readRunDetails(
   config: StackConfig,
   runs: HostedOptimizerRunSummary[],
@@ -467,22 +564,32 @@ function readArtifactNames(
   statePayload: Record<string, unknown> | undefined,
 ): string[] {
   const names = new Set<string>()
+  // artifact_handles arrives as a name->handle record on the run payload and as a
+  // plain name array on the /state route; accept both shapes.
   for (const source of [
-    asRecord(payload?.artifact_handles),
-    asRecord(asRecord(payload?.result)?.artifact_handles),
-    asRecord(statePayload?.artifact_handles),
-    asRecord(asRecord(statePayload?.result)?.artifact_handles),
+    payload?.artifact_handles,
+    asRecord(payload?.result)?.artifact_handles,
+    statePayload?.artifact_handles,
+    asRecord(statePayload?.result)?.artifact_handles,
   ]) {
-    for (const name of Object.keys(source ?? {})) names.add(name)
+    const record = asRecord(source)
+    for (const name of Object.keys(record ?? {})) names.add(name)
+    for (const name of asArray(source)) {
+      if (typeof name === "string" && name.length > 0) names.add(name)
+    }
   }
-  for (const source of [asArray(payload?.artifacts), asArray(statePayload?.artifacts)]) {
+  for (const source of [
+    asArray(payload?.artifacts),
+    asArray(statePayload?.artifacts),
+    asArray(asRecord(statePayload?.artifact_snapshots)?.artifacts),
+  ]) {
     for (const item of source) {
       const artifact = asRecord(item)
       const name = readString(artifact?.artifact_name) ?? readString(artifact?.name)
       if (name) names.add(name)
     }
   }
-  return [...names].slice(0, 5)
+  return [...names].slice(0, 12)
 }
 
 function readEvents(text: string): { seq?: number; eventType?: string }[] {
