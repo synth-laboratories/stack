@@ -25,6 +25,8 @@ export type HostedOptimizerRunSummary = {
 export type HostedOptimizerRunDetail = {
   runId: string
   status?: string
+  phase?: string
+  generation?: number
   backendUpdatedAt?: string
   resultKeys: string[]
   stateKeys: string[]
@@ -32,6 +34,14 @@ export type HostedOptimizerRunDetail = {
   eventCount: number
   latestEventSeq?: number
   eventTypes: string[]
+  rolloutCount?: number
+  proposerCalls?: number
+  totalTokens?: number
+  costUsd?: number
+  trainReward?: number
+  heldoutReward?: number
+  bestCandidateId?: string
+  terminalReason?: string
   message?: string
 }
 
@@ -368,6 +378,14 @@ async function readRunDetail(
   const events = eventsResult.status === "fulfilled" ? readEvents(eventsResult.value) : []
   const backendProjection = asRecord(payload?.backend_projection)
   const resultPayload = asRecord(payload?.result)
+  const stateResultPayload = asRecord(statePayload?.result)
+  const usagePayload =
+    asRecord(resultPayload?.usage) ??
+    asRecord(stateResultPayload?.usage) ??
+    asRecord(payload?.usage) ??
+    asRecord(statePayload?.usage)
+  const stoppedBy = asRecord(resultPayload?.stopped_by) ?? asRecord(stateResultPayload?.stopped_by)
+  const bestCandidate = asRecord(resultPayload?.best_candidate) ?? asRecord(stateResultPayload?.best_candidate)
   const messages = [
     runResult.status === "rejected" ? `run: ${errorMessage(runResult.reason)}` : "",
     stateResult.status === "rejected" ? `state: ${errorMessage(stateResult.reason)}` : "",
@@ -377,6 +395,8 @@ async function readRunDetail(
   return {
     runId: run.runId,
     status: readString(payload?.status) ?? run.status,
+    phase: readString(statePayload?.phase) ?? readString(payload?.phase) ?? readString(resultPayload?.phase),
+    generation: readNumber(statePayload?.generation) ?? readNumber(payload?.generation) ?? readNumber(resultPayload?.generation),
     backendUpdatedAt: readString(backendProjection?.updated_at) ?? run.updatedAt,
     resultKeys: resultPayload ? Object.keys(resultPayload).slice(0, 5) : [],
     stateKeys: statePayload ? Object.keys(statePayload).slice(0, 5) : [],
@@ -384,6 +404,35 @@ async function readRunDetail(
     eventCount: events.length,
     latestEventSeq: latestEventSeq(events),
     eventTypes: events.map((event) => event.eventType).filter((type): type is string => Boolean(type)).slice(-5),
+    rolloutCount:
+      readNumber(resultPayload?.rollout_count) ??
+      readNumber(stateResultPayload?.rollout_count) ??
+      readNumber(usagePayload?.rollout_calls),
+    proposerCalls:
+      readNumber(resultPayload?.proposer_calls) ??
+      readNumber(stateResultPayload?.proposer_calls) ??
+      readNumber(usagePayload?.proposer_calls),
+    totalTokens:
+      readNumber(resultPayload?.total_tokens) ??
+      readNumber(stateResultPayload?.total_tokens) ??
+      readNumber(usagePayload?.total_tokens),
+    costUsd:
+      readNumber(resultPayload?.cost_usd) ??
+      readNumber(stateResultPayload?.cost_usd) ??
+      readNumber(usagePayload?.cost_usd),
+    trainReward:
+      readNumber(resultPayload?.train_reward) ??
+      readNumber(stateResultPayload?.train_reward) ??
+      readNumber(bestCandidate?.train_reward),
+    heldoutReward:
+      readNumber(resultPayload?.heldout_reward) ??
+      readNumber(stateResultPayload?.heldout_reward) ??
+      readNumber(bestCandidate?.heldout_reward),
+    bestCandidateId:
+      readString(resultPayload?.best_candidate_id) ??
+      readString(stateResultPayload?.best_candidate_id) ??
+      readString(bestCandidate?.candidate_id),
+    terminalReason: readString(stoppedBy?.kind) ?? readString(resultPayload?.terminal_reason),
     message: messages.length ? messages.join("; ") : undefined,
   }
 }

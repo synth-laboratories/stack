@@ -233,6 +233,7 @@ import {
   type HostedOptimizerRunSummary,
   type HostedOptimizerSnapshot,
 } from "../remote/optimizers.js"
+import { hostedOptimizerWatchLines } from "./hosted-watch.js"
 import {
   readRemoteProjectsPanelSnapshot,
   readRemoteResearchSnapshot,
@@ -7681,6 +7682,9 @@ function hostedOptimizerText(state: AppState): string[] {
     "  state     at     optimizer",
     ...hostedOptimizerRows(state, 4),
     "",
+    "Watch",
+    ...hostedOptimizerWatchLines(snapshot, state.selectedHostedOptimizerRunIndex, state.remoteUsageSnapshot),
+    "",
     "Selected Hosted Job",
     ...(selectedRun ? selectedHostedOptimizerText(state, snapshot, selectedRun) : ["none"]),
   ].filter((line) => line.length > 0)
@@ -7733,7 +7737,15 @@ function selectedHostedOptimizerDetailText(
 ): string[] {
   return [
     detail.status ? `detail status ${detail.status}` : "",
+    detail.phase ? `phase ${detail.phase}` : "",
     detail.backendUpdatedAt ? `backend ${formatRemoteTimestamp(detail.backendUpdatedAt)}` : "",
+    detail.generation !== undefined ? `generation ${detail.generation}` : "",
+    detail.rolloutCount !== undefined ? `rollouts ${formatUsageNumber(detail.rolloutCount)}` : "",
+    detail.heldoutReward !== undefined ? `heldout ${detail.heldoutReward}` : "",
+    detail.trainReward !== undefined ? `train ${detail.trainReward}` : "",
+    detail.bestCandidateId ? `best ${inlineText(detail.bestCandidateId, 30)}` : "",
+    detail.costUsd !== undefined ? `cost $${detail.costUsd.toFixed(4)}` : "",
+    detail.totalTokens !== undefined ? `tokens ${formatUsageNumber(detail.totalTokens)}` : "",
     detail.resultKeys.length ? `result ${inlineText(detail.resultKeys.join(", "), 34)}` : "",
     detail.stateKeys.length ? `state ${inlineText(detail.stateKeys.join(", "), 34)}` : "",
     detail.artifactNames.length ? `artifacts ${inlineText(detail.artifactNames.join(", "), 30)}` : "",
