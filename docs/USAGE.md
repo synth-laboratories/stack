@@ -355,6 +355,14 @@ The server reads `stack.config.json` and supports both JSONL and
   Stack download without calling the backend
 - `stack_upload_run_file`: upload a local file to a live SMR run through the
   run-file owner route
+- `stack_pull_artifact`: pull a typed artifact (`champion_prompt`,
+  `adapter_weights`, `dataset`, `eval_table`) from a hosted optimizer run or a
+  saved download into the workspace and write a provenance receipt (run id,
+  sha256 digest, backend target, git SHA) under `.stack/evidence/roundtrip/`
+- `stack_apply_artifact`: patch a pulled champion_prompt into a harness config
+  (TOML string field or whole-file replace) and write an apply receipt
+- `stack_push_artifact`: upload a typed workspace artifact to an SMR run
+  through the run-file owner route and write a push receipt
 - `stack_query_logs`: query VictoriaLogs through stackd's native LogSQL client for
   Stack/GEPA/meta-harness telemetry. Defaults to `slot1`, `minutes=60`, and
   `limit=100`; supports `event_domain`, `service`, `run_id`, and `thread_id`
@@ -634,6 +642,23 @@ Stack-side levers record receipts such as:
 Those receipts are local audit records. They do not claim that the laptop owns
 cloud scheduling or backend persistence. Cloud mutations still go through typed
 owner routes and require explicit confirmation.
+
+### Watching a hosted optimizer run
+
+`stack watch` follows one hosted optimizer run until it reaches a terminal
+status without any manual snapshot probing: phase, rollout count, best score,
+cost ticker (run cost plus org spend today from the usage route), artifacts as
+they land, and a terminal notification (message plus terminal bell). Frames are
+recorded as evidence under `.stack/evidence/watch/`.
+
+```bash
+stack watch <run-id>                 # poll until terminal (default every 10s)
+stack watch <run-id> --once          # one frame, no loop
+stack watch <run-id> --replay        # fold the recorded event feed into the lifecycle first
+stack watch <run-id> --json          # machine-readable frames
+```
+
+The same watch lines render inside the TUI hosted panel for the selected run.
 
 ### Synth inference through Stack
 

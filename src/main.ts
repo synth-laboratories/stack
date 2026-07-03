@@ -61,6 +61,10 @@ try {
     const { runInferenceCli } = await import("./inference-cli.js")
     process.exit(await runInferenceCli(config, process.argv.slice(2)))
   }
+  if (process.argv[2] === "watch") {
+    const { runWatchCli } = await import("./watch-cli.js")
+    process.exit(await runWatchCli(config, process.argv.slice(2)))
+  }
   if (process.argv[2] === "crashes") {
     process.exit(await runCrashReports(config, process.argv.slice(3)))
   }
@@ -219,6 +223,7 @@ function printStackHelp(argv: string[]): void {
   console.log("  stack doctor [--json] [--task <toml>]  Check local readiness; --task adds per-task preflight rows")
   console.log("  stack auth <command>           Manage optional Synth auth")
   console.log("  stack inference <list|usage> [--json]")
+  console.log("  stack watch <run-id> [--once|--replay] [--json]")
   console.log("  stack telemetry digest [--env dev|staging|prod]")
   console.log("  stack crashes <command>")
   console.log("  stack resume [query]")

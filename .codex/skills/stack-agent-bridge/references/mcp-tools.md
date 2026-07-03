@@ -58,6 +58,16 @@ Remote mutation tools append best-effort `lever.*` runtime receipts after the
 owner-route action returns. Sensors still observe the remote state transition on
 the next runtime tick.
 
+## Round-Trip Artifacts
+
+Typed artifact kinds: `champion_prompt`, `adapter_weights`, `dataset`, `eval_table`.
+Every verb writes a provenance receipt (run id, sha256 digest, backend target,
+git SHA) under `.stack/evidence/roundtrip/`.
+
+- `stack_pull_artifact`: pull a typed hosted or saved artifact into the workspace.
+- `stack_apply_artifact`: patch a pulled champion_prompt into a harness config.
+- `stack_push_artifact`: upload a typed workspace artifact to an SMR run.
+
 ## Saved Downloads
 
 - `stack_list_saved_downloads`: list Stack's persisted download history.
