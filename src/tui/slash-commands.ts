@@ -89,6 +89,7 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     description: "Toggle side rails",
     describe: (ctx) => `Toggle side rails (currently ${ctx.railsVisible ? "shown" : "hidden"})`,
   },
+  { command: "papercut", args: "[note]", description: "Capture a papercut with run context (ctrl+f)" },
   { command: "threads", aliases: ["p"], description: "Toggle threads panel" },
   { command: "ops", description: "Open ops panel" },
   { command: "settings", args: "telemetry", description: "Open settings" },
@@ -335,6 +336,7 @@ export type SlashDispatchHooks = {
   focusAgent: () => void
   toggleAgentView: () => void
   clearInput: () => void
+  capturePapercut: (note: string) => void
 }
 
 export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks): boolean {
@@ -394,6 +396,9 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
       } else {
         hooks.cycleEnvironment(1)
       }
+      return true
+    case "papercut":
+      hooks.capturePapercut(args)
       return true
     case "profile":
       if (args) {
