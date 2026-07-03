@@ -119,6 +119,7 @@ import {
   writeStackProfile,
   type StackProfileName,
 } from "../operator-profile.js"
+import { captureStackPapercut, type StackPapercutContext } from "../papercut-capture.js"
 import {
   executeGardenerSkillRegister,
   executeGardenerSkillSuggest,
@@ -1517,6 +1518,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     }
     if (voiceKind === "press" && handleVoiceKey(key, "press", voiceKeyContext())) return
     if (handleTelemetryKey(key, options, state, remount)) return
+    if (key.name === "N" && !focusedInputEditing(state)) {
+      void capturePapercutFromUi(options, state, remount)
+      return
+    }
     if (isGoalMode(state) && !focusedInputEditing(state)) {
       if (key.name === "m") {
         focusGoalSidecarChat(options, state, remount)
@@ -9291,6 +9296,168 @@ function remoteDownloadRecordFromResult(
     bytes,
     downloadedAt,
   }
+}
+
+async function capturePapercutFromUi(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  try {
+    const result = await captureStackPapercut(
+      options.config.stackDataRoot,
+      papercutContextFromUi(options, state),
+    )
+    appendStackBlock(
+      state.blocks,
+      `papercut captured · ${result.contextLabel} · ${displayCwd(result.path)}`,
+    )
+  } catch (error) {
+    appendStackBlock(state.blocks, `papercut capture failed: ${errorMessage(error)}`)
+  } finally {
+    refresh()
+  }
+}
+
+function papercutContextFromUi(options: StackAppOptions, state: AppState): StackPapercutContext {
+  const context = selectedPapercutRunContext(state)
+  return {
+    source: "tui",
+    environmentName: options.config.environmentName,
+    profile: activeProfileForPapercut(options),
+    focusMode: state.focusMode,
+    threadId: options.session.id,
+    metaThreadId: options.session.metaThreadId ?? state.metaThreadManifest?.id,
+    ...context,
+  }
+}
+
+function selectedPapercutRunContext(state: AppState): Omit<StackPapercutContext, "source"> {
+  const byFocus = selectedPapercutRunContextForFocus(state, state.focusMode)
+  if (byFocus) return byFocus
+
+  const activeRemote = state.remoteResearchSnapshot.jobs.find((run) => !isTerminalLikeStatus(run.state))
+  if (activeRemote) return remoteRunPapercutContext(activeRemote, selectedRemoteOutput(state))
+
+  const activeHosted = state.hostedOptimizerSnapshot.runs.find((run) => !isTerminalLikeStatus(run.status))
+  if (activeHosted) return hostedOptimizerPapercutContext(state, activeHosted)
+
+  const activeLocal = state.optimizerSnapshot.runs.find((run) => !isTerminalLikeStatus(run.status))
+  if (activeLocal) return localOptimizerPapercutContext(activeLocal)
+
+  const selectedRemote = state.remoteResearchSnapshot.jobs[state.selectedRemoteJobIndex]
+  if (selectedRemote) return remoteRunPapercutContext(selectedRemote, selectedRemoteOutput(state))
+
+  const selectedHosted = state.hostedOptimizerSnapshot.runs[state.selectedHostedOptimizerRunIndex]
+  if (selectedHosted) return hostedOptimizerPapercutContext(state, selectedHosted)
+
+  const selectedLocal = state.optimizerSnapshot.runs[state.selectedOptimizerRunIndex]
+  if (selectedLocal) return localOptimizerPapercutContext(selectedLocal)
+
+  const selectedFactory = state.remoteResearchSnapshot.factories[state.selectedRemoteFactoryIndex]
+  if (selectedFactory) return factoryPapercutContext(selectedFactory)
+
+  return {}
+}
+
+function selectedPapercutRunContextForFocus(
+  state: AppState,
+  focusMode: FocusMode,
+): Omit<StackPapercutContext, "source"> | undefined {
+  if (focusMode === "remote") {
+    const run = state.remoteResearchSnapshot.jobs[state.selectedRemoteJobIndex]
+    const factory = state.remoteResearchSnapshot.factories[state.selectedRemoteFactoryIndex]
+    if (state.mediationTargetKind === "factory" && factory) return factoryPapercutContext(factory)
+    if (run) return remoteRunPapercutContext(run, selectedRemoteOutput(state))
+    if (factory) return factoryPapercutContext(factory)
+  }
+  if (focusMode === "hosted") {
+    const run = state.hostedOptimizerSnapshot.runs[state.selectedHostedOptimizerRunIndex]
+    if (run) return hostedOptimizerPapercutContext(state, run)
+  }
+  if (focusMode === "optimizers") {
+    const run = state.optimizerSnapshot.runs[state.selectedOptimizerRunIndex]
+    if (run) return localOptimizerPapercutContext(run)
+  }
+  return undefined
+}
+
+function remoteRunPapercutContext(
+  run: RemoteSmrRunSummary,
+  output?: RemoteOutputSelection,
+): Omit<StackPapercutContext, "source"> {
+  return {
+    taskId: run.runbook,
+    runId: run.runId,
+    projectId: run.projectId,
+    artifactId: output
+      ? output.kind === "work-product"
+        ? output.item.workProductId
+        : output.item.artifactId
+      : undefined,
+    summary: `Operator papercut captured from Stack TUI. Context: remote SMR run ${run.runId}.`,
+  }
+}
+
+function hostedOptimizerPapercutContext(
+  state: AppState,
+  run: HostedOptimizerRunSummary,
+): Omit<StackPapercutContext, "source"> {
+  return {
+    taskId: run.algorithm,
+    runId: run.runId,
+    optimizerRunId: run.runId,
+    projectId: run.projectId,
+    artifactId: selectedHostedOptimizerArtifactName(state),
+    summary: `Operator papercut captured from Stack TUI. Context: hosted optimizer run ${run.runId}.`,
+  }
+}
+
+function localOptimizerPapercutContext(run: OptimizerRunSummary): Omit<StackPapercutContext, "source"> {
+  return {
+    taskId: run.configPath ? basename(run.configPath) : run.requestId,
+    runId: run.runId,
+    optimizerRunId: run.runId,
+    summary: `Operator papercut captured from Stack TUI. Context: local optimizer run ${run.runId}.`,
+  }
+}
+
+function factoryPapercutContext(factory: RemoteFactorySummary): Omit<StackPapercutContext, "source"> {
+  return {
+    taskId: factory.name,
+    runId: factory.latestRunId,
+    projectId: factory.latestProjectId ?? factory.canonicalProjectId,
+    factoryId: factory.factoryId,
+    summary: `Operator papercut captured from Stack TUI. Context: factory ${factory.factoryId}.`,
+  }
+}
+
+function activeProfileForPapercut(options: StackAppOptions): string | undefined {
+  try {
+    return readStackProfile(options.config.stackDataRoot).active
+  } catch {
+    return undefined
+  }
+}
+
+function isTerminalLikeStatus(status: string | undefined): boolean {
+  const normalized = status?.trim().toLowerCase()
+  if (!normalized) return false
+  return new Set([
+    "cancelled",
+    "canceled",
+    "complete",
+    "completed",
+    "done",
+    "error",
+    "failed",
+    "finished",
+    "stopped",
+    "succeeded",
+    "success",
+    "terminal",
+    "timed_out",
+  ]).has(normalized)
 }
 
 function remoteOutputPreviewFromResult(result: RemoteActionResult): RemoteOutputPreview | undefined {
