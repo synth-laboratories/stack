@@ -216,7 +216,7 @@ function printStackHelp(argv: string[]): void {
   console.log("  stack login [--no-browser]    Open optional Synth sign-in")
   console.log("  stack signup [--no-browser]   Open optional Synth signup")
   console.log("  stack whoami [--json]          Check Synth account status")
-  console.log("  stack doctor [--json]          Check local readiness")
+  console.log("  stack doctor [--json] [--task <toml>]  Check local readiness; --task adds per-task preflight rows")
   console.log("  stack auth <command>           Manage optional Synth auth")
   console.log("  stack inference <list|usage> [--json]")
   console.log("  stack telemetry digest [--env dev|staging|prod]")
