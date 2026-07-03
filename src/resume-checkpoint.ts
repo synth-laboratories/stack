@@ -24,11 +24,21 @@ export type StackResumeCheckpoint = {
   harness?: StackSessionHarness
   codexTransport?: "exec" | "app-server" | "acp"
   goalShutterWorkerPeek?: boolean
-  goalShutterSidecarView?: "thread" | "events"
+  workerPanelView?: "chat" | "goal"
+  goalShutterSidecarView?: "thread" | "events" | "goal"
   focusMode?: string
   displayName?: string
+  workerStatus?: "idle" | "running" | "error"
+  resumeIntent?: StackResumeIntent
   harnessResume?: HarnessResumeState
   metaThreadState?: MetaThreadCheckpointState
+}
+
+export type StackResumeIntent = {
+  action: "continue_interrupted_turn"
+  reason: "worker_running_on_exit"
+  createdAt: string
+  objective?: string
 }
 
 export const CHECKPOINT_SCHEMA = "stack/checkpoint/v1"

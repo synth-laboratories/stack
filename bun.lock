@@ -12,6 +12,7 @@
         "@termless/ghostty": "^0.4.0",
         "@termless/xtermjs": "^0.4.0",
         "@types/bun": "^1.3.6",
+        "playwright": "^1.61.1",
         "typescript": "^6.0.3",
       },
     },

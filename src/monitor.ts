@@ -18,6 +18,7 @@ import { estimateUsageSpendUsd, formatEstimatedSpend } from "./codex/usage-cost.
 import { recordCoreAgentTurnCompleted } from "./core-agent-events.js"
 import { detectRiskyPending, riskyPendingSummary } from "./risky-action.js"
 import { enrichGoalTaskContext } from "./codex/goal-task-contract.js"
+import { parseChannelInput } from "./image-input.js"
 import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./monitor-sidecar-codex.js"
 import { runMonitorSynthAuxTurn, runMonitorSynthInferenceTurn } from "./monitor-synth-aux.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
@@ -430,17 +431,21 @@ export async function runMonitorAfterOperatorMessage(input: {
   config: StackConfig
   session: StackLocalSession
   message: string
+  imagePaths?: string[]
   agentContext: AgentContextSnapshot
   goalContext: CodexGoalSnapshot
 }): Promise<{ event: StackThreadMetaEvent; snapshot: StackMonitorSnapshot }> {
   const runtimeRoot = monitorRuntimeRoot(input.config)
   const goalContext = enrichGoalTaskContext(input.goalContext, input.config.workspaceRoot)
-  const operatorEvent = appendMonitorOperatorMessage(runtimeRoot, input.session.id, input.message)
+  const parsed = parseChannelInput(input.message)
+  const displayText = parsed.imagePaths.length > 0 || parsed.missingPaths.length > 0 ? parsed.displayText : input.message
+  const imagePaths = input.imagePaths ?? parsed.imagePaths
+  const operatorEvent = appendMonitorOperatorMessage(runtimeRoot, input.session.id, displayText)
   if (shouldUseSidecarGoalChat(goalContext)) {
     const requestEvent = appendMonitorChatRequest({
       stackRoot: runtimeRoot,
       session: input.session,
-      message: input.message,
+      message: displayText,
       goalContext,
       operatorEventId: operatorEvent.event_id,
     })
@@ -448,7 +453,8 @@ export async function runMonitorAfterOperatorMessage(input: {
       stackConfig: input.config,
       stackRoot: runtimeRoot,
       session: input.session,
-      message: input.message,
+      message: parsed.text || displayText,
+      imagePaths,
       goalContext,
       requestEvent,
     })
@@ -508,6 +514,7 @@ async function appendMonitorChatReply(input: {
   stackRoot: string
   session: StackLocalSession
   message: string
+  imagePaths?: string[]
   goalContext: CodexGoalSnapshot
   requestEvent: StackThreadMetaEvent
 }): Promise<StackThreadMetaEvent> {
@@ -522,6 +529,7 @@ async function appendMonitorChatReply(input: {
     config: monitorConfig,
     actorState,
     question: input.message,
+    imagePaths: input.imagePaths,
     requestEvent: input.requestEvent,
     goalContext: input.goalContext,
     context,
@@ -580,6 +588,7 @@ async function runMonitorSidecarChatReply(input: {
   config: StackMonitorConfig
   actorState?: StackMonitorActorRuntimeState
   question: string
+  imagePaths?: string[]
   requestEvent: StackThreadMetaEvent
   goalContext: CodexGoalSnapshot
   context: SidecarChatContext
@@ -591,6 +600,7 @@ async function runMonitorSidecarChatReply(input: {
     actorId: monitorActorId(input.config),
     codexThreadId: input.actorState?.monitor_codex_thread_id,
     question: input.question,
+    imagePaths: input.imagePaths,
     requestEventId: input.requestEvent.event_id,
     goalContext: input.goalContext,
     sidecarContext: serializableSidecarChatContext(input.context),

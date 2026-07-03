@@ -23,6 +23,11 @@ import {
   type CodexThreadGoal,
 } from "./thread-goal.js"
 import { autoApproveServerRequest, CodexAppServerEventBridge } from "./app-server-bridge.js"
+import {
+  buildCodexTurnInputParts,
+  formatHarnessImageContext,
+  parseChannelInput,
+} from "../image-input.js"
 
 export type CodexRunOptions = {
   config: StackConfig
@@ -30,6 +35,7 @@ export type CodexRunOptions = {
   selectedFiles: LocalContextFile[]
   priorTurns: StackCodexTurn[]
   goalContext?: CodexGoalSnapshot
+  imagePaths?: string[]
   timeoutMs?: number
   onOutput: (chunk: string) => void
 }
@@ -107,6 +113,9 @@ export async function buildStackHarnessPrompt(options: CodexRunOptions): Promise
     "",
     "## User prompt",
     options.userPrompt,
+    "",
+    "## Attached images",
+    formatHarnessImageContext(options.imagePaths ?? []),
     "",
     `## ${transcriptHeader}`,
     recentTranscript || "(none)",
@@ -267,11 +276,12 @@ export class CodexAppServerSession {
 
   async trySteer(prompt: string): Promise<boolean> {
     if (!this.client || !this.threadId || !this.activeTurnId || !this.turnInFlight) return false
+    const parsed = parseChannelInput(prompt)
     try {
       await this.client.steerTurn({
         threadId: this.threadId,
         expectedTurnId: this.activeTurnId,
-        input: textTurnInput(prompt),
+        input: buildCodexTurnInputParts(parsed.text, parsed.imagePaths),
       })
       return true
     } catch {
@@ -301,6 +311,7 @@ export class CodexAppServerSession {
     this.bridge.resetForTurn()
     this.turnInFlight = true
     const prompt = await buildStackHarnessPrompt({ ...runOptions, onOutput: () => undefined })
+    const turnInput = buildCodexTurnInputParts(prompt, runOptions.imagePaths ?? [])
 
     try {
       const turnId = await this.client.startTurn({
@@ -308,7 +319,7 @@ export class CodexAppServerSession {
         cwd: runOptions.config.workspaceRoot,
         model: runOptions.config.codexModel,
         effort: runOptions.config.codexReasoningEffort,
-        input: textTurnInput(prompt),
+        input: turnInput,
       })
       this.activeTurnId = turnId
       const finalNotification = await this.client.waitForTurnEnd(turnId, 3_600_000)
@@ -415,10 +426,6 @@ export class CodexAppServerSession {
   setOutputHandler(onOutput: (chunk: string) => void): void {
     this.options.onOutput = onOutput
   }
-}
-
-function textTurnInput(text: string): Array<{ type: "text"; text: string; text_elements: [] }> {
-  return [{ type: "text", text, text_elements: [] }]
 }
 
 function extractThreadIdFromResult(result: unknown): string | undefined {

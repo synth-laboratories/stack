@@ -1,5 +1,7 @@
 import type { StackdMetaThreadManifest } from "../client/stackd.js"
 import type { CodexGoalSnapshot } from "../codex/goal-context.js"
+import { listGoalHistory } from "../goal-session.js"
+import type { StackThreadMetaEvent } from "../thread-events.js"
 
 export type GoalModeState = {
   goalContext: CodexGoalSnapshot
@@ -54,4 +56,22 @@ export function isGoalMode(state: GoalModeState): boolean {
   if (!goal.objective) return false
   const status = goal.status?.trim().toLowerCase()
   return !status || status === "active" || status === "blocked" || status === "paused"
+}
+
+/** Goal still bound to the thread (including done/complete) — use for monitor goal tab, not shutter layout. */
+export function hasGoalContext(state: GoalModeState): boolean {
+  const goal = activeGoalModeSnapshot(state)
+  if (!goal.objective) return false
+  const status = goal.status?.trim().toLowerCase()
+  return status !== "cleared"
+}
+
+/** Worker goal/chat tabs when an active goal, terminal goal on thread, or prior goal history exists. */
+export function showWorkerGoalTabs(state: GoalModeState, events: readonly StackThreadMetaEvent[]): boolean {
+  if (isGoalMode(state) || hasGoalContext(state)) return true
+  const manifest = state.metaThreadManifest?.active_goal
+  return listGoalHistory(events, {
+    metaThreadId: state.metaThreadManifest?.id,
+    manifestGoal: manifest,
+  }).length > 0
 }

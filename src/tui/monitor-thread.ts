@@ -116,10 +116,18 @@ type GoalSidecarThreadLine = {
 function wrapPlain(text: string, width: number): string[] {
   const lines: string[] = []
   for (const rawLine of text.split("\n")) {
-    const line = rawLine.length === 0 ? " " : rawLine
-    for (let index = 0; index < line.length; index += width) {
-      lines.push(line.slice(index, index + width))
+    if (rawLine.length === 0) {
+      lines.push(" ")
+      continue
     }
+    let remaining = rawLine
+    while (remaining.length > width) {
+      let breakAt = remaining.lastIndexOf(" ", width)
+      if (breakAt <= 0) breakAt = width
+      lines.push(remaining.slice(0, breakAt).trimEnd())
+      remaining = remaining.slice(breakAt).trimStart()
+    }
+    if (remaining.length > 0) lines.push(remaining)
   }
   return lines.length > 0 ? lines : [" "]
 }
@@ -361,7 +369,7 @@ function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
-function formatGoalMetric(metric?: Record<string, unknown>): string {
+export function formatGoalMetric(metric?: Record<string, unknown>): string {
   if (!metric) return ""
   const value = readNumber(metric.value)
   const baseline = readNumber(metric.baseline)
@@ -486,6 +494,13 @@ export function cleanSidecarStdout(stdout: string): string {
     out.push(raw)
   }
   return out.join("\n")
+}
+
+export function buildMonitorSidecarChatBlocks(
+  turns?: readonly StackMonitorSidecarTurn[],
+  events?: readonly StackThreadMetaEvent[],
+): SidecarBuild {
+  return buildSidecarBlocks(turns, events)
 }
 
 function buildSidecarBlocks(
@@ -725,6 +740,28 @@ export function renderGoalShutterStreamStyled(
     scrollOffset,
     styledGoalShutterLine,
   )
+}
+
+export function recentGoalHumanUpdateLines(
+  events: StackThreadMetaEvent[],
+  snapshot: StackMonitorSnapshot,
+  columns: number,
+  maxRows: number,
+): string[] {
+  const rows = goalShutterStreamRows(events, snapshot, columns, false)
+  if (rows.length === 0 || rows[0]!.line.startsWith("(monitor")) return []
+  return rows.slice(-maxRows).map((row) => row.line)
+}
+
+export function renderRecentGoalHumanUpdatesStyled(
+  events: StackThreadMetaEvent[],
+  snapshot: StackMonitorSnapshot,
+  columns: number,
+  maxRows: number,
+): StyledText | undefined {
+  const lines = recentGoalHumanUpdateLines(events, snapshot, columns, maxRows)
+  if (lines.length === 0) return undefined
+  return renderMonitorLinesStyled(lines, lines.length, 0, styledGoalShutterLine)
 }
 
 export function monitorLiveStatusLine(

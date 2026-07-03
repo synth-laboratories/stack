@@ -44,10 +44,17 @@
   persisted in `.stack/downloads/<environment>/history.json` and shown in the
   Live Ops rail and selected-run detail across TUI restarts.
 - During a Codex app-server turn, `Enter` steers with the current input,
-  `Ctrl+Enter` queues the current input as the next turn, and `Esc` requests a
-  turn interrupt. Outside an active turn, `Esc` clears the current input and
-  never quits Stack.
+  `Ctrl+Enter` queues the current input as the next turn, and `Esc` pauses the
+  chat so you can scroll the transcript (`j`/`k`, Page Up/Down) and draft input.
+  While paused, `Esc` again requests a turn interrupt. Outside an active turn,
+  `Esc` clears the current input and never quits Stack.
 - `/exit`: quit Stack explicitly.
+- `/permissions`: review telemetry and privacy choices. Aliases: `/perm`,
+  `/settings telemetry`. Until advanced telemetry is chosen, a one-line reminder
+  appears above the worker input and in the footer.
+- `/mode eng` or `/mode research` (`/work_mode` also works): records the
+  intended work mode for future routing. It is intentionally a no-op today
+  beyond updating the TUI state and status feedback.
 
 Stack writes local session logs under `.stack/sessions/`. Current release includes
 read-only remote SMR visibility for jobs, run artifacts, WorkProducts, and

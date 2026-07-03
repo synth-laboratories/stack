@@ -1,15 +1,19 @@
 import { StyledText, fg, type TextChunk } from "@opentui/core"
+import { isFilePathLikeSlashInput } from "../image-input.js"
 import { stackTuiTheme as theme } from "./theme.js"
 
 export type SlashCommandContext = {
   monitorEnabled: boolean
   monitorPanelOpen: boolean
+  lightsOn: boolean
   subagentsEnabled: boolean
   showDetails: boolean
   railsVisible: boolean
   agentViewEnabled: boolean
   environmentName: string
+  providerName: string
   profileName: string
+  workMode: "eng" | "research"
   model?: string
   effort?: string
   goalObjective?: string
@@ -42,10 +46,16 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
   {
     command: "monitor",
     aliases: ["m"],
-    args: "[on|off|show|hide|message]",
+    args: "[on|off|show|hide|chat|stream|message]",
     description: "Monitor controls",
     describe: (ctx) =>
       `Monitor ${ctx.monitorEnabled ? "on" : "off"} · panel ${ctx.monitorPanelOpen ? "shown" : "hidden"}`,
+  },
+  {
+    command: "lights",
+    args: "[on|off]",
+    description: "Show or hide right status panel",
+    describe: (ctx) => `Right status panel (currently ${ctx.lightsOn ? "on" : "off"})`,
   },
   {
     command: "env",
@@ -54,17 +64,41 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     describe: (ctx) => `Environment (currently ${ctx.environmentName})`,
   },
   {
+    command: "provider",
+    aliases: ["harness"],
+    args: "[chatgpt|cursor]",
+    description: "Cycle or set worker provider",
+    describe: (ctx) => `Provider (currently ${ctx.providerName})`,
+  },
+  {
     command: "profile",
     args: "[research|engineering|product]",
     description: "Cycle or set Stack profile",
     describe: (ctx) => `Stack profile (currently ${ctx.profileName})`,
   },
   {
+    command: "work_mode",
+    aliases: ["mode"],
+    args: "[eng|research]",
+    description: "Set future work mode",
+    describe: (ctx) => `Work mode (currently ${ctx.workMode})`,
+  },
+  {
     command: "model",
     args: "[filter]",
-    description: "Select worker model",
+    description: "Open model and reasoning picker",
     describe: (ctx) =>
-      ctx.model ? `Select worker model (currently ${ctx.model}) · Tab to edit` : "Select worker model · Tab to edit",
+      ctx.model
+        ? `Choose model/reasoning (currently ${ctx.model}${ctx.effort ? ` · ${ctx.effort}` : ""})`
+        : "Choose model and reasoning",
+  },
+  {
+    command: "usage",
+    description: "Show account and session usage",
+  },
+  {
+    command: "experimental",
+    description: "Open experimental panel",
   },
   {
     command: "effort",
@@ -77,6 +111,7 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     description: "Toggle subagents",
     describe: (ctx) => `Toggle subagents (currently ${ctx.subagentsEnabled ? "on" : "off"})`,
   },
+  { command: "config", description: "Open editable Stack config" },
   {
     command: "details",
     aliases: ["d"],
@@ -89,9 +124,10 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     description: "Toggle side rails",
     describe: (ctx) => `Toggle side rails (currently ${ctx.railsVisible ? "shown" : "hidden"})`,
   },
-  { command: "threads", aliases: ["p"], description: "Toggle threads panel" },
+  { command: "threads", aliases: ["p"], args: "[new]", description: "Toggle threads panel or start a new thread" },
   { command: "ops", description: "Open ops panel" },
-  { command: "settings", args: "telemetry", description: "Open settings" },
+  { command: "permissions", aliases: ["perm"], description: "Review telemetry and privacy choices" },
+  { command: "settings", args: "telemetry", description: "Open permissions (alias)" },
   { command: "actors", description: "Toggle actors panel" },
   { command: "agent", description: "Focus worker chat" },
   {
@@ -135,6 +171,7 @@ function matchesQuery(spec: SlashCommandSpec, query: string): boolean {
 export function slashMenuQuery(buffer: string): string | null {
   const trimmed = buffer.trimStart()
   if (!trimmed.startsWith("/")) return null
+  if (isFilePathLikeSlashInput(trimmed)) return null
   const rest = trimmed.slice(1)
   const spaceIdx = rest.indexOf(" ")
   if (spaceIdx >= 0) return null
@@ -299,6 +336,7 @@ export function renderSlashCommandMenuStyled(
 export function parseSlashCommand(prompt: string): { name: string; args: string } | null {
   const trimmed = prompt.trim()
   if (!trimmed.startsWith("/")) return null
+  if (isFilePathLikeSlashInput(trimmed)) return null
   const space = trimmed.indexOf(" ")
   if (space === -1) return { name: trimmed.slice(1).toLowerCase(), args: "" }
   return { name: trimmed.slice(1, space).toLowerCase(), args: trimmed.slice(space + 1).trim() }
@@ -317,19 +355,29 @@ export type SlashDispatchHooks = {
   openMonitor: () => void
   hideMonitor: () => void
   setMonitorEnabled: (enabled: boolean) => void
+  setMonitorView: (view: "chat" | "stream" | "goal") => void
   messageMonitor: (message: string) => void
+  setLights: (enabled: boolean) => void
   cycleEnvironment: (direction: number) => void
   setEnvironment: (name: string) => boolean
+  cycleProvider: (direction: number) => void
+  setProvider: (name: string) => boolean
   cycleProfile: (direction: number) => void
   setProfile: (name: string) => boolean
+  setWorkMode: (mode: "eng" | "research") => void
   openModelSwitcher: () => void
   setModel: (name: string) => boolean
+  showUsage: () => void
+  openExperimental: () => void
   cycleEffort: () => void
   setSubagents: (enabled: boolean | undefined) => void
   toggleDetails: () => void
   toggleRails: () => void
   toggleThreads: () => void
+  startNewThread: () => void
   openOps: () => void
+  openConfig: () => void
+  openPermissions: () => void
   openTelemetrySettings: () => void
   toggleActors: () => void
   focusAgent: () => void
@@ -375,6 +423,18 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
         hooks.openMonitor()
         return true
       }
+      if (verb === "chat") {
+        hooks.setMonitorView("chat")
+        return true
+      }
+      if (verb === "stream" || verb === "events" || verb === "event-stream") {
+        hooks.setMonitorView("stream")
+        return true
+      }
+      if (verb === "goal") {
+        hooks.setMonitorView("goal")
+        return true
+      }
       if (verb === "hide") {
         hooks.hideMonitor()
         return true
@@ -383,6 +443,17 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
         hooks.messageMonitor(args)
       } else {
         hooks.openMonitor()
+      }
+      return true
+    }
+    case "lights": {
+      const verb = args.toLowerCase()
+      if (verb === "on") {
+        hooks.setLights(true)
+      } else if (verb === "off") {
+        hooks.setLights(false)
+      } else {
+        hooks.feedback("lights · use /lights on or /lights off")
       }
       return true
     }
@@ -395,6 +466,16 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
         hooks.cycleEnvironment(1)
       }
       return true
+    case "provider":
+    case "harness":
+      if (args) {
+        if (!hooks.setProvider(args)) {
+          hooks.feedback(`unknown provider ${args} · use chatgpt or cursor`)
+        }
+      } else {
+        hooks.cycleProvider(1)
+      }
+      return true
     case "profile":
       if (args) {
         if (!hooks.setProfile(args)) {
@@ -402,6 +483,14 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
         }
       } else {
         hooks.cycleProfile(1)
+      }
+      return true
+    case "work_mode":
+    case "mode":
+      if (args === "eng" || args === "research") {
+        hooks.setWorkMode(args)
+      } else {
+        hooks.feedback("work_mode · use /mode eng or /mode research")
       }
       return true
     case "model":
@@ -413,14 +502,22 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
         hooks.openModelSwitcher()
       }
       return true
+    case "usage":
+      hooks.showUsage()
+      return true
+    case "experimental":
+      hooks.openExperimental()
+      return true
     case "effort":
       hooks.cycleEffort()
-      hooks.feedback("cycled reasoning effort")
       return true
     case "subagents":
       if (args === "on") hooks.setSubagents(true)
       else if (args === "off") hooks.setSubagents(false)
       else hooks.setSubagents(undefined)
+      return true
+    case "config":
+      hooks.openConfig()
       return true
     case "details":
     case "d":
@@ -431,17 +528,31 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
       hooks.toggleRails()
       return true
     case "threads":
-    case "p":
+    case "p": {
+      const verb = args.toLowerCase()
+      if (verb === "new") {
+        hooks.startNewThread()
+        return true
+      }
+      if (args) {
+        hooks.feedback("threads · use /threads new or /threads to toggle panel")
+        return true
+      }
       hooks.toggleThreads()
       return true
+    }
     case "ops":
       hooks.openOps()
+      return true
+    case "permissions":
+    case "perm":
+      hooks.openPermissions()
       return true
     case "settings":
       if (args === "telemetry") {
         hooks.openTelemetrySettings()
       } else {
-        hooks.feedback("settings · use /settings telemetry")
+        hooks.feedback("settings · use /permissions or /settings telemetry")
       }
       return true
     case "actors":

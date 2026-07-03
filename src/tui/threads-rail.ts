@@ -24,7 +24,7 @@ export function renderThreadsRailStyled(input: ThreadsRailRenderInput): StyledTe
   const focusHint = input.focusMode === "history" ? "j/k select" : "tab threads"
   chunks.push(dim(fg(theme.fgMuted)(focusHint)))
   chunks.push(fg(theme.fgPrimary)("\n"))
-  chunks.push(dim(fg(theme.synth.amber)("n new · enter resume · f fork · stack resume <id> · p gardener")))
+  chunks.push(dim(fg(theme.synth.amber)("n new · /threads new · enter resume · f fork · stack resume <id> · p gardener")))
   chunks.push(fg(theme.fgPrimary)("\n"))
   chunks.push(
     fg(input.gardenerTalkMode ? "#3fb950" : theme.fgMuted)(
@@ -72,17 +72,18 @@ function threadRowSpecs(input: ThreadsRailRenderInput): ThreadRowSpec[] {
     const usageSummary = input.usageForSummary(summary)
     const usageParts = splitThreadUsage(usageSummary, input.columns - 4, summary.id === input.currentSessionId, input.liveTokensPerSecond)
     const isGardener = input.gardenerThreadIds.has(summary.id)
+    const prompt = resolveThreadDisplayLabel(summary, {
+      isGardener,
+      maxLength: 22,
+      metaThreadTitle: input.threadMetaThreadTitles?.get(summary.id),
+    })
     rows.push({
       kind: "thread",
       selected: index === input.selectedHistoryIndex,
       active: summary.id === input.currentSessionId,
       gardener: isGardener,
       time: formatRelativeTime(summary.updatedAt),
-      prompt: resolveThreadDisplayLabel(summary, {
-        isGardener,
-        maxLength: 22,
-        metaThreadTitle: input.threadMetaThreadTitles?.get(summary.id),
-      }),
+      prompt: prompt === "(empty)" ? emptyThreadFallback(summary, usageSummary, 22) : prompt,
       usage: usageParts?.combined,
       usageTokens: usageParts?.tokens,
       usageSpend: usageParts?.spend,
@@ -93,6 +94,16 @@ function threadRowSpecs(input: ThreadsRailRenderInput): ThreadRowSpec[] {
   const hiddenOlder = input.history.length - (start + input.visibleRows)
   if (hiddenOlder > 0) rows.push({ kind: "pager", text: `  ... ${hiddenOlder} older` })
   return rows
+}
+
+function emptyThreadFallback(
+  summary: StackSessionSummary,
+  usageSummary: StackSessionUsageSummary | undefined,
+  maxLength: number,
+): string {
+  const tokenTotal = usageSummary ? sessionTokenTotal(usageSummary.totals) : 0
+  const detail = tokenTotal > 0 ? `${formatTokenTotal(tokenTotal)} tok` : `${summary.turnCount} turns`
+  return oneLine(`${summary.id.slice(0, 8)} · ${detail}`, maxLength)
 }
 
 function styleThreadRow(row: ThreadRowSpec): TextChunk[] {

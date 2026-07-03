@@ -245,7 +245,7 @@ function normalizeGoalSessionStatus(
   if (lifecycleStatus === "paused") return "paused"
   const normalized = goalStatus?.trim().toLowerCase()
   if (normalized === "blocked") return "active"
-  if (normalized === "done") return "done"
+  if (normalized === "done" || normalized === "complete" || normalized === "completed") return "done"
   if (normalized === "paused") return "paused"
   if (normalized === "cleared") return "cleared"
   return lifecycleStatus === "unknown" ? "active" : lifecycleStatus
@@ -287,4 +287,185 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
 
 export function readGoalSessionEvents(stackRoot: string, threadId: string): StackThreadMetaEvent[] {
   return readThreadMetaEvents(stackRoot, threadId).filter((event) => GOAL_LIFECYCLE_TYPES.has(event.type))
+}
+
+export type GoalHistoryEntry = {
+  objective: string
+  status: GoalSessionStatus
+  started_at?: string
+  ended_at?: string
+  meta_thread_id?: string
+  started_event_id?: string
+}
+
+export type ListGoalHistoryOptions = {
+  manifestGoal?: { objective?: string; status?: string }
+  metaThreadId?: string
+}
+
+export function goalHistoryEntryKey(entry: GoalHistoryEntry): string {
+  return `${entry.started_event_id ?? entry.started_at ?? "manifest"}:${entry.objective}`
+}
+
+export function eventsForGoalHistoryEntry(
+  events: readonly StackThreadMetaEvent[],
+  entry: GoalHistoryEntry,
+): StackThreadMetaEvent[] {
+  const startMs = entry.started_at ? Date.parse(entry.started_at) : Number.NaN
+  const endMs = entry.ended_at ? Date.parse(entry.ended_at) : Number.POSITIVE_INFINITY
+  return events.filter((event) => {
+    if (entry.meta_thread_id && event.meta_thread_id && event.meta_thread_id !== entry.meta_thread_id) {
+      return false
+    }
+    const observedMs = Date.parse(event.observed_at)
+    if (Number.isFinite(startMs) && Number.isFinite(observedMs) && observedMs < startMs - 1000) {
+      return false
+    }
+    if (
+      entry.ended_at &&
+      Number.isFinite(endMs) &&
+      Number.isFinite(observedMs) &&
+      observedMs > endMs + 60_000
+    ) {
+      return false
+    }
+    if (event.type === "goal.started") {
+      const objective = readString(event.payload.objective)
+      if (objective && objective !== entry.objective) return false
+      if (entry.started_event_id && event.event_id !== entry.started_event_id) return false
+    }
+    return true
+  })
+}
+
+function normalizeListGoalHistoryOptions(
+  options?: ListGoalHistoryOptions | { objective?: string; status?: string },
+): ListGoalHistoryOptions {
+  if (!options) return {}
+  if ("metaThreadId" in options || "manifestGoal" in options) return options as ListGoalHistoryOptions
+  return { manifestGoal: options as { objective?: string; status?: string } }
+}
+
+/** Chronological goal sessions from lifecycle events, newest first. */
+export function listGoalHistory(
+  events: readonly StackThreadMetaEvent[],
+  options?: ListGoalHistoryOptions | { objective?: string; status?: string },
+): GoalHistoryEntry[] {
+  const { manifestGoal, metaThreadId } = normalizeListGoalHistoryOptions(options)
+  const sorted = [...events].sort(
+    (left, right) =>
+      Date.parse(left.observed_at) - Date.parse(right.observed_at) || left.event_id.localeCompare(right.event_id),
+  )
+  const sessions: GoalHistoryEntry[] = []
+  let active: GoalHistoryEntry | undefined
+
+  const closeActive = (ended_at: string, status: GoalSessionStatus) => {
+    if (!active) return
+    active.status = status
+    active.ended_at = ended_at
+    active = undefined
+  }
+
+  for (const event of sorted) {
+    const objective = readString(event.payload.objective)
+
+    if (event.type === "goal.started" && objective) {
+      if (metaThreadId && event.meta_thread_id && event.meta_thread_id !== metaThreadId) continue
+      if (active) closeActive(event.observed_at, "done")
+      const entry: GoalHistoryEntry = {
+        objective,
+        status: "active",
+        started_at: event.observed_at,
+        meta_thread_id: event.meta_thread_id ?? metaThreadId,
+        started_event_id: event.event_id,
+      }
+      sessions.push(entry)
+      active = entry
+      continue
+    }
+
+    if (event.type === "meta_thread.goal_updated" && objective) {
+      if (metaThreadId && event.meta_thread_id && event.meta_thread_id !== metaThreadId) continue
+      if (!sessions.some((entry) => entry.objective === objective)) {
+        const entry: GoalHistoryEntry = {
+          objective,
+          status: normalizeGoalSessionStatus(readString(event.payload.status), "active"),
+          started_at: event.observed_at,
+          meta_thread_id: event.meta_thread_id ?? metaThreadId,
+        }
+        sessions.push(entry)
+        if (entry.status === "active" || entry.status === "blocked" || entry.status === "paused") {
+          active = entry
+        }
+      }
+      continue
+    }
+
+    const target =
+      objective && active?.objective === objective
+        ? active
+        : objective
+          ? [...sessions].reverse().find((entry) => entry.objective === objective && !entry.ended_at)
+          : active
+
+    if (!target) continue
+
+    switch (event.type) {
+      case "goal.cleared":
+        if (target.objective === objective || !objective) {
+          closeActive(event.observed_at, "cleared")
+        }
+        break
+      case "goal.paused":
+        if (target.objective === objective || !objective) target.status = "paused"
+        break
+      case "goal.resumed":
+        if (target.objective === objective || !objective) target.status = "active"
+        break
+      case "monitor.goal_status": {
+        const monitorStatus = readString(event.payload.status)
+        if (monitorStatus === "goal_met") {
+          target.status = "done"
+          target.ended_at = event.observed_at
+          if (active === target) active = undefined
+        } else if (monitorStatus === "goal_failed" && target.status !== "done") {
+          target.status = "blocked"
+        }
+        break
+      }
+      case "meta_thread.goal_updated": {
+        if (objective && target.objective !== objective) break
+        const updated = normalizeGoalSessionStatus(readString(event.payload.status), target.status)
+        target.status = updated
+        if (updated === "done" || updated === "cleared") {
+          target.ended_at = event.observed_at
+          if (active === target) active = undefined
+        }
+        break
+      }
+    }
+  }
+
+  const manifestObjective = manifestGoal?.objective?.trim()
+  if (manifestObjective) {
+    const existing = [...sessions].reverse().find((entry) => entry.objective === manifestObjective)
+    const manifestStatus = normalizeGoalSessionStatus(manifestGoal?.status, existing?.status ?? "done")
+    if (existing) {
+      if (manifestStatus === "done" || manifestStatus === "cleared") {
+        existing.status = manifestStatus
+      }
+    } else {
+      sessions.push({
+        objective: manifestObjective,
+        status: manifestStatus,
+        meta_thread_id: metaThreadId,
+      })
+    }
+  }
+
+  let result = sessions.filter((entry) => entry.status !== "cleared").reverse()
+  if (metaThreadId) {
+    result = result.filter((entry) => entry.meta_thread_id === metaThreadId)
+  }
+  return result
 }

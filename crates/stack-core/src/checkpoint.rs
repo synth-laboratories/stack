@@ -51,13 +51,29 @@ pub struct StackResumeCheckpoint {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub goal_shutter_worker_peek: Option<bool>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub goal_shutter_sidecar_view: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub focus_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub display_name: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub worker_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resume_intent: Option<StackResumeIntent>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub harness_resume: Option<crate::meta_thread_state::HarnessResumeState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub meta_thread_state: Option<crate::meta_thread_state::MetaThreadCheckpointState>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct StackResumeIntent {
+    pub action: String,
+    pub reason: String,
+    pub created_at: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub objective: Option<String>,
 }
 
 fn checkpoint_version() -> u32 {
@@ -232,6 +248,10 @@ pub async fn resolve_checkpoint(
         }
     }
 
+    if let Some(checkpoint) = read_matching_scoped_checkpoint(stack_dir, query).await? {
+        return Ok(checkpoint);
+    }
+
     let summaries = list_summaries(session_log_dir).await?;
     for summary in summaries {
         if summary.id.to_lowercase().starts_with(&lowered)
@@ -252,6 +272,33 @@ pub async fn resolve_checkpoint(
     }
 
     Err(CheckpointError::NotFound)
+}
+
+async fn read_matching_scoped_checkpoint(
+    stack_dir: &Path,
+    query: &str,
+) -> Result<Option<StackResumeCheckpoint>, CheckpointError> {
+    for root in [
+        checkpoints_dir(stack_dir).join("meta-threads"),
+        checkpoints_dir(stack_dir).join("threads"),
+    ] {
+        let mut entries = match fs::read_dir(&root).await {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => return Err(CheckpointError::Io(error)),
+        };
+        while let Some(entry) = entries.next_entry().await? {
+            let path = entry.path().join("latest.json");
+            match read_checkpoint_file(&path).await {
+                Ok(checkpoint) if checkpoint_matches_query(&checkpoint, query) => {
+                    return Ok(Some(checkpoint));
+                }
+                Ok(_) | Err(CheckpointError::NotFound) => {}
+                Err(_) => {}
+            }
+        }
+    }
+    Ok(None)
 }
 
 pub async fn read_thread_checkpoint(
@@ -356,8 +403,11 @@ pub fn checkpoint_from_session(session: &StackLocalSession) -> StackResumeCheckp
         harness: session.harness.clone(),
         codex_transport: None,
         goal_shutter_worker_peek: None,
+        goal_shutter_sidecar_view: None,
         focus_mode: None,
         display_name: session.display_name.clone(),
+        worker_status: None,
+        resume_intent: None,
         harness_resume: None,
         meta_thread_state: None,
     };
@@ -376,8 +426,11 @@ fn checkpoint_from_summary(summary: &StackSessionSummary) -> StackResumeCheckpoi
         harness: summary.harness.clone(),
         codex_transport: None,
         goal_shutter_worker_peek: None,
+        goal_shutter_sidecar_view: None,
         focus_mode: None,
         display_name: summary.display_name.clone(),
+        worker_status: None,
+        resume_intent: None,
         harness_resume: None,
         meta_thread_state: None,
     };
@@ -515,8 +568,11 @@ mod tests {
             harness: None,
             codex_transport: None,
             goal_shutter_worker_peek: None,
+            goal_shutter_sidecar_view: None,
             focus_mode: None,
             display_name: None,
+            worker_status: None,
+            resume_intent: None,
             harness_resume: None,
             meta_thread_state: None,
         };
@@ -536,8 +592,11 @@ mod tests {
             harness: None,
             codex_transport: None,
             goal_shutter_worker_peek: None,
+            goal_shutter_sidecar_view: None,
             focus_mode: None,
             display_name: None,
+            worker_status: None,
+            resume_intent: None,
             harness_resume: None,
             meta_thread_state: None,
         };

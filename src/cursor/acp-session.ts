@@ -12,6 +12,7 @@ import {
 } from "../harness/goal-notify.js"
 import { CursorAcpClient, cursorAcpArgs, type CursorAcpClientOptions } from "./acp-client.js"
 import { autoApproveCursorAcpRequest, CursorAcpEventBridge } from "./acp-bridge.js"
+import { buildAcpPromptParts, parseChannelInput } from "../image-input.js"
 import type { JsonRpcNotification, JsonRpcServerRequest } from "../jsonrpc/ndjson-client.js"
 
 /** ACP extension notifications for mid-turn input (Codex-acp / Claude-acp forks). */
@@ -131,9 +132,10 @@ export class CursorAcpSession {
     if (!this.client || !this.sessionId || !this.promptInFlight) return false
     const trimmed = prompt.trim()
     if (!trimmed) return false
+    const parsed = parseChannelInput(trimmed)
     const params = {
       sessionId: this.sessionId,
-      prompt: [{ type: "text", text: trimmed }],
+      prompt: buildAcpPromptParts(parsed.text, parsed.imagePaths),
     }
     for (const method of CURSOR_STEER_METHODS) {
       try {
@@ -170,13 +172,14 @@ export class CursorAcpSession {
     this.promptInFlight = true
     const basePrompt = await buildStackHarnessPrompt({ ...runOptions, onOutput: () => undefined })
     const prompt = this.goalContextBlock ? `${this.goalContextBlock}\n\n${basePrompt}` : basePrompt
+    const promptBlocks = buildAcpPromptParts(prompt, runOptions.imagePaths ?? [])
 
     try {
       const result = await this.client.request(
         "session/prompt",
         {
           sessionId: this.sessionId,
-          prompt: [{ type: "text", text: prompt }],
+          prompt: promptBlocks,
         },
         3_600_000,
       )

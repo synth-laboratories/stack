@@ -1,5 +1,6 @@
 import {
   Box,
+  clearEnvCache,
   createCliRenderer,
   decodePasteBytes,
   StyledText,
@@ -10,6 +11,21 @@ import {
   type PasteEvent,
   type TextChunk,
 } from "@opentui/core"
+import { applyUpdate, checkUpdate, type UpdateCheckReport } from "../update.js"
+import {
+  buildPermissionsPanelRows,
+  permissionsDraftFromTiers,
+  permissionsNeedsReminder,
+  permissionsToStackdConfig,
+  setPermissionsGrantAll,
+  PERMISSIONS_REMINDER,
+  type PermissionsDraft,
+} from "./permissions-panel.js"
+import {
+  telemetryKeyFromRawModalChunk,
+  telemetryKeyFromRawSequence,
+  telemetryModalCapturesRawInput,
+} from "./telemetry-input.js"
 import { renderAgentContextStyled } from "./context-rail.js"
 import {
   agentRoleLabel,
@@ -34,6 +50,7 @@ import {
   CODEX_MODEL_OPTIONS,
   CURSOR_MODEL_OPTIONS,
   CODEX_REASONING_EFFORT_OPTIONS,
+  CURSOR_REASONING_EFFORT_OPTIONS,
   STACK_ENVIRONMENT_OPTIONS,
   STACK_HARNESS_OPTIONS,
   environmentAuthStatus,
@@ -49,6 +66,7 @@ import {
   harnessModel,
   harnessSessionCommand,
   setStackHarness,
+  writeStackConfigPatch,
   stackDataRootFromSessionPath,
   sessionHistoryScanDirs,
   type StackConfig,
@@ -68,15 +86,14 @@ import {
 } from "../codex/agent-context.js"
 import {
   emptyGoalContext,
-  goalContextStripLines,
   mergeGoalContext,
   parseGoalFromCodexJsonLine,
   readGoalFromSession,
   type CodexGoalSnapshot,
 } from "../codex/goal-context.js"
+import { agentGoalPreviewLineCount, agentPanelChromeRows, renderAgentGoalPreviewStyled } from "./goal-preview.js"
 import {
   mergeMetaThreadGoalContext,
-  metaThreadGoalStripLines,
   readMetaThreadManifest,
   reconcileMetaThreadGoalFromCodex,
 } from "../meta-thread-goal.js"
@@ -158,6 +175,7 @@ import {
   type StackMonitorSnapshot,
 } from "../monitor.js"
 import { readMonitorSidecarTranscript } from "../monitor-sidecar-codex.js"
+import { parseChannelInput } from "../image-input.js"
 import { recordCoreAgentEventsFromCodexLine } from "../core-agent-events.js"
 import { startVoiceRecording, type VoiceRecordingHandle } from "../voice/recording.js"
 import { isLikelyJunkVoiceTranscript, MIN_VOICE_HOLD_MS, voiceHoldElapsedMs } from "../voice/hold.js"
@@ -179,6 +197,7 @@ import {
 } from "../cursor/account.js"
 import {
   createStackAppShutdown,
+  prepareTerminalForTui,
   type StackAppShutdown,
   registerFatalProcessHandlers,
   registerRendererShutdown,
@@ -308,10 +327,14 @@ import {
   type TranscriptRenderOptions,
   type TranscriptViewport,
 } from "./transcript.js"
+import {
+  estimateShortTranscriptLines,
+  transcriptPaneFlexGrowForContent,
+  transcriptViewportForEstimatedContent,
+} from "./transcript-layout.js"
 import { readRequiredRolloutTranscript, readRolloutTranscript } from "./rollout-transcript.js"
-import { anchorTranscriptBox } from "./transcript-slot.js"
 import type { SubagentLog } from "./subagents.js"
-import { upsertSubagentLog } from "./subagents.js"
+import { subagentDisplayName, subagentStatusLabel, upsertSubagentLog } from "./subagents.js"
 import {
   compactUsageWithThroughput,
   displayTokensPerSecond,
@@ -334,15 +357,27 @@ import {
   type OpsPanelMetaEvent,
   type RightPanelMode,
 } from "./ops-panel.js"
+import { renderThreadsRailStyled } from "./threads-rail.js"
 import {
+  buildMonitorSidecarChatBlocks,
   sidecarThreadRenderedLineCount,
   monitorEventStreamLineCount,
+  renderMonitorEventStreamStyled,
 } from "./monitor-thread.js"
-import { activeGoalModeSnapshot, isGoalMode } from "./goal-mode.js"
-import { goalShutterLineCount, renderGoalPanelTabBar, renderGoalShutter, renderGoalWorkerPeekPanel, goalShutterCardLineCount, goalShutterProgressChromeRows, goalShutterStreamVisibleRows, goalWorkerPeekTranscriptRows } from "./goal-shutter.js"
+import {
+  existingMonitorInterventionEventIds,
+  formatMonitorQueuedFeedText,
+  formatMonitorSteerFeedText,
+  undeliveredMonitorInterventions,
+} from "./monitor-worker-feed.js"
+import { activeGoalModeSnapshot, hasGoalContext, isGoalMode, showWorkerGoalTabs } from "./goal-mode.js"
+import { goalHistoryEntryKey, listGoalHistory } from "../goal-session.js"
+import { goalShutterLineCount, renderSidecarChatInputStyled, renderMonitorGoalViewPanel, renderPreviousGoalsListPanel, renderPanelTabBar, monitorGoalViewMaxScroll, previousGoalsListMaxScroll, type MonitorGoalViewInput } from "./goal-shutter.js"
 import { setCrashRuntimeContext } from "../telemetry/crash-report.js"
 import { emitFeatureUsed } from "../telemetry/funnel.js"
-import { sidecarAgentActive, sidecarInputStatusLine } from "./sidecar-queue.js"
+import { agentInputRenderedLineCount, renderWorkerAgentInputStyled } from "./agent-input.js"
+import { agentChatPauseEligible } from "./agent-chat-pause.js"
+import { sidecarAgentActive } from "./sidecar-queue.js"
 import {
   consumeBracketedPasteSequences,
   ENABLE_BRACKETED_PASTE,
@@ -403,6 +438,7 @@ type FocusMode =
   | "subagent-model"
   | "subagent-effort"
   | "subagents"
+  | "config"
   | "monitor"
   | "gardener"
   | "harness"
@@ -410,15 +446,19 @@ type FocusMode =
   | "account"
   | "telemetry"
   | "ops"
+  | "experimental"
   | "optimizers"
   | "hosted"
   | "remote"
   | "projects"
   | "history"
+type WorkMode = "eng" | "research"
 type HarnessSession = CodexAppServerSession | CursorAcpSession
 type LiveOpsMode = "local" | "remote"
 type MonitorPanelMode = "chat" | "events"
+type WorkerPanelView = "chat" | "goal"
 type GardenerPanelMode = "chat" | "events"
+type RightPanelContent = "default" | "gardener" | "threads" | "experimental" | "lights"
 type HostedOptimizerActionKind = "cancel-run" | "preview-artifact" | "download-artifact"
 type MediationTargetKind = "remote-run" | "factory" | "hosted-optimizer"
 type LiveActionKind = RemoteActionKind
@@ -433,12 +473,14 @@ export type StackAppOptions = {
 
 type AppState = {
   focusMode: FocusMode
+  workMode: WorkMode
   liveOpsMode: LiveOpsMode
   /** Agent Bridge + session detail panels (right). Threads rail stays visible. */
   railsVisible: boolean
   leftPanelOpen: boolean
   leftPanelRailsVisible: boolean
   rightPanelOpen: boolean
+  rightPanelContent: RightPanelContent
   showDetails: boolean
   expandedBlockIds: Set<string>
   selectedToolIndex: number
@@ -447,6 +489,8 @@ type AppState = {
   agentScrollOffset: number
   lastAgentScrollAt?: number
   status: "idle" | "running" | "error"
+  /** Esc once during a worker turn: scroll/draft without stopping the turn. Esc again stops it. */
+  agentChatPaused: boolean
   spinnerFrame: number
   lastUsage?: StackCodexUsage
   averageTokensPerSecond?: number
@@ -458,18 +502,22 @@ type AppState = {
   blocks: TranscriptBlock[]
   inputBuffer: string
   monitorInputBuffer: string
+  configSelectedIndex: number
+  configNotice?: string
+  rawCommandTail: string
   sidecarQueuedMessages: string[]
   sidecarChatInFlight: boolean
   sidecarDispatchRef: { current: Promise<void> }
   gardenerInputBuffer: string
   slashMenuIndex: number
   goalPanelSelectedIndex: number
-  goalShutterWorkerPeek: boolean
   goalShutterSidecarView: "thread" | "events"
   goalShutterSidecarThreadScrollOffset: number
   goalShutterSidecarThreadScrollPinned: boolean
   goalShutterScrollOffset: number
   goalShutterScrollPinned: boolean
+  previousGoalExpandedKeys: Set<string>
+  previousGoalSelectedIndex: number
   goalMonitorAutoEnabledObjective?: string
   pasteAccumulator?: string
   toolLogs: ToolLog[]
@@ -492,6 +540,7 @@ type AppState = {
   rightPanelMode: RightPanelMode
   rightPanelOpsVisible: boolean
   monitorPanelMode: MonitorPanelMode
+  workerPanelView: WorkerPanelView
   gardenerPanelMode: GardenerPanelMode
   leftPanelMode: LeftPanelMode
   leftPanelScrollOffset: number
@@ -530,9 +579,14 @@ type AppState = {
   codexRateLimits?: CodexRateLimitsSnapshot
   codexAccountEmail?: string
   cursorAccount?: CursorAccountSnapshot
+  updateCheck?: UpdateCheckReport
+  updateChecking?: boolean
+  updateApplying?: boolean
+  updateNotice?: string
   telemetryStatus?: StackdTelemetryStatus
   telemetryNotice?: string
-  telemetryApprovalVisible: boolean
+  permissionsDraft: PermissionsDraft
+  permissionsSelectedIndex: number
   goalContext: CodexGoalSnapshot
   metaThreadManifest?: StackdMetaThreadManifest
   agentViewEnabled: boolean
@@ -563,6 +617,7 @@ type AppState = {
   gardenerLiveThinking?: string
   workerHarnessSnapshot?: WorkerHarnessSnapshot
   lastSteerHint?: string
+  monitorFeedDeliveredEventIds: Set<string>
   monitorCadenceInFlight?: boolean
   lastMonitorCadenceCheckAt?: number
   monitorSnapshot: StackMonitorSnapshot
@@ -574,6 +629,8 @@ type AppState = {
 type MountedView = {
   root: ReturnType<typeof Box>
 }
+
+let stackRootInstance = 0
 
 type StackKeyEvent = {
   name?: string
@@ -645,21 +702,49 @@ function applySidePanelFocus(state: AppState, focusMode: FocusMode): void {
     return
   }
   if (focusMode === "gardener") {
-    state.leftPanelOpen = true
+    state.leftPanelOpen = false
+    state.rightPanelOpen = true
+    state.rightPanelContent = "gardener"
     return
   }
   if (focusMode === "ops" || focusMode === "optimizers" || focusMode === "hosted" || focusMode === "remote") {
     state.rightPanelOpen = true
+    state.rightPanelContent = "default"
     return
   }
   if (focusMode === "monitor") {
     state.rightPanelOpen = true
+    state.rightPanelContent = "default"
     return
   }
 }
 
+function closeSelectorPanel(state: AppState): boolean {
+  if (!isSelectorPanelFocusMode(state.focusMode)) return false
+  state.focusMode = "agent"
+  state.configNotice = undefined
+  state.slashMenuIndex = 0
+  return true
+}
+
+function isSelectorPanelFocusMode(focusMode: FocusMode): boolean {
+  return (
+    focusMode === "model" ||
+    focusMode === "effort" ||
+    focusMode === "subagent-model" ||
+    focusMode === "subagent-effort" ||
+    focusMode === "subagents" ||
+    focusMode === "environment" ||
+    focusMode === "account" ||
+    focusMode === "config" ||
+    focusMode === "experimental"
+  )
+}
+
 function syncGardenerLeftPanel(state: AppState): void {
-  state.leftPanelOpen = true
+  state.leftPanelOpen = false
+  state.rightPanelOpen = true
+  state.rightPanelContent = "gardener"
 }
 
 function toggleLeftPanelRails(state: AppState): void {
@@ -677,6 +762,7 @@ function toggleRightPanelOps(state: AppState): void {
   if (isMonitorOn(state.monitorSnapshot)) {
     state.rightPanelOpsVisible = !state.rightPanelOpsVisible
     state.rightPanelOpen = true
+    state.rightPanelContent = "default"
     state.focusMode = state.rightPanelOpsVisible ? "ops" : "monitor"
     state.opsScrollOffset = 0
     return
@@ -695,6 +781,7 @@ const COMMON_FOCUS_ORDER: FocusMode[] = [
   "subagent-model",
   "subagent-effort",
   "subagents",
+  "config",
   "monitor",
   "environment",
   "account",
@@ -765,15 +852,18 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   }
   history = pinGardenerThreadToTop(history, gardenerEnsured.threadId)
   const defaultWorker = history.find((summary) => summary.id !== gardenerEnsured.threadId)
+  const initialMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
   const state: AppState = {
     // First-launch approval must own key focus: with the agent input focused, printable
     // keys never reach the global telemetry key handler, so the modal's a/d/l keys go dead.
-    focusMode: shouldShowTelemetryApproval(telemetrySnapshot) ? "telemetry" : "agent",
+    focusMode: "agent",
+    workMode: "eng",
     liveOpsMode: "local",
     railsVisible: false,
     leftPanelOpen: false,
     leftPanelRailsVisible: false,
     rightPanelOpen: false,
+    rightPanelContent: "default",
     showDetails: false,
     expandedBlockIds: new Set<string>(),
     selectedToolIndex: 0,
@@ -781,23 +871,27 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     selectedProjectIndex: 0,
     agentScrollOffset: 0,
     status: "idle",
+    agentChatPaused: false,
     spinnerFrame: 0,
     emaTokensPerSecond: seedEmaFromTurns(options.session.turns),
     blocks: [],
     inputBuffer: readInitialPrompt(options.config),
     monitorInputBuffer: "",
+    configSelectedIndex: 0,
+    rawCommandTail: "",
     sidecarQueuedMessages: [],
     sidecarChatInFlight: false,
     sidecarDispatchRef: { current: Promise.resolve() },
     gardenerInputBuffer: "",
     slashMenuIndex: 0,
     goalPanelSelectedIndex: 0,
-    goalShutterWorkerPeek: false,
     goalShutterSidecarView: "events",
     goalShutterSidecarThreadScrollOffset: 0,
     goalShutterSidecarThreadScrollPinned: true,
     goalShutterScrollOffset: 0,
     goalShutterScrollPinned: true,
+    previousGoalExpandedKeys: new Set<string>(),
+    previousGoalSelectedIndex: 0,
     toolLogs: [],
     subagentLogs: [],
     history,
@@ -819,6 +913,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     rightPanelMode: "actors",
     rightPanelOpsVisible: true,
     monitorPanelMode: "chat",
+    workerPanelView: "chat",
     gardenerPanelMode: "chat",
     leftPanelMode: "threads",
     leftPanelScrollOffset: 0,
@@ -843,7 +938,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     mediationTargetKind: "remote-run",
     agentContext: emptyAgentContext(options.config.workspaceRoot),
     telemetryStatus: telemetrySnapshot,
-    telemetryApprovalVisible: shouldShowTelemetryApproval(telemetrySnapshot),
+    permissionsDraft: permissionsDraftFromTiers(telemetrySnapshot?.tiers),
+    permissionsSelectedIndex: 0,
     goalContext: emptyGoalContext(),
     metaThreadManifest: undefined,
     agentViewEnabled: false,
@@ -857,6 +953,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     cursorAccount: isCursorHarness(options.config)
       ? await readCursorAccountSnapshot(options.config.cursorCommand)
       : undefined,
+    updateChecking: false,
+    updateApplying: false,
     queuedMessages: [],
     talkToGardener: false,
     talkToMonitor: false,
@@ -873,7 +971,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     gardenerLiveTools: [],
     gardenerLiveSubagents: [],
     monitorSnapshot: refreshMonitorSnapshot(options.config.stackDataRoot, options.session.id),
-    metaEvents: readThreadMetaEvents(options.config.stackDataRoot, options.session.id),
+    metaEvents: initialMetaEvents,
+    monitorFeedDeliveredEventIds: existingMonitorInterventionEventIds(initialMetaEvents),
   }
   if (options.resumeManifest) {
     state.metaThreadManifest = options.resumeManifest
@@ -1299,9 +1398,17 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     return true
   }
 
+  const shutdown = createStackAppShutdown()
+  const exitStack = () => shutdown.run(0)
+
   let renderer: CliRenderer
+  prepareTerminalForTui()
+  process.env.OTUI_USE_ALTERNATE_SCREEN = "true"
+  clearEnvCache()
   renderer = await createCliRenderer({
     exitOnCtrlC: false,
+    screenMode: "alternate-screen",
+    externalOutputMode: "passthrough",
     useKittyKeyboard: {
       events: true,
       disambiguate: true,
@@ -1330,6 +1437,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
           refreshHostedOptimizers,
           refreshRemoteOpsPanel,
           cycleStackEnvironmentFromUi,
+          exitStack,
         )
       },
     ],
@@ -1347,10 +1455,6 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   } else {
     renderer.keyInput.on("paste", onPaste)
   }
-
-  const shutdown = createStackAppShutdown()
-  const exitStack = () => shutdown.run(0)
-
   remountCoordinator.bind({
     mount: () => {
       view = mountView(renderer, options, state, view)
@@ -1364,6 +1468,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   scheduleRender = () => remountCoordinator.scheduleRender()
 
   view = mountView(renderer, options, state, undefined)
+  void refreshStackUpdateStatus(options, state, scheduleRemount)
 
   if (options.config.autoSubmitInitialPrompt && state.inputBuffer.trim().length > 0) {
     setTimeout(() => {
@@ -1387,6 +1492,23 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
           refreshHistory,
           refreshMetaEvents,
         )
+        if (shouldContinueInterruptedTurnAfterResume(options.resumeCheckpoint, state)) {
+          appendStackBlock(state.blocks, "resuming interrupted worker turn from checkpoint")
+          trackActiveTurn(
+            state,
+            submitPrompt(
+              interruptedTurnResumePrompt(options.resumeCheckpoint, state),
+              options,
+              state,
+              codexSessionHandle,
+              renderer,
+              remount,
+              refreshHistory,
+              refreshMetaEvents,
+              { transcriptPrompt: "(resume interrupted worker turn)" },
+            ),
+          )
+        }
       } else {
         await refreshAgentContextFromSession(options, state, remount, (limits) => {
           void observeCodexAuthState(options.config, options.session.id, limits, state)
@@ -1518,46 +1640,62 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
     if (voiceKind === "press" && handleVoiceKey(key, "press", voiceKeyContext())) return
-    if (handleTelemetryKey(key, options, state, remount)) return
+    if (handlePermissionsKey(key, options, state, remount)) return
+    if (
+      state.workerPanelView === "goal" &&
+      !isGoalMode(state) &&
+      state.focusMode === "agent" &&
+      handlePreviousGoalsListKeys(key, state, state.metaEvents, options.session.metaThreadId, remount)
+    ) {
+      return
+    }
     if (key.name === "N" && !focusedInputEditing(state)) {
       void capturePapercutFromUi(options, state, remount)
       return
     }
-    if (isGoalMode(state) && !focusedInputEditing(state)) {
-      if (key.name === "m") {
-        focusGoalSidecarChat(options, state, remount)
-        return
-      }
-      if (key.name === "t") {
-        state.goalShutterSidecarView = "thread"
-        remount()
-        return
-      }
-      if (key.name === "e") {
-        state.goalShutterSidecarView = "events"
-        remount()
-        return
+    if (showWorkerGoalTabs(state, state.metaEvents) && goalNavigationShortcutsEnabled(state)) {
+      if (isGoalMode(state)) {
+        if (key.name === "m") {
+          focusGoalSidecarChat(options, state, remount)
+          return
+        }
+        if (key.name === "t") {
+          state.monitorPanelMode = "chat"
+          state.focusMode = "monitor"
+          remount()
+          return
+        }
+        if (key.name === "e") {
+          state.monitorPanelMode = "events"
+          state.focusMode = "monitor"
+          remount()
+          return
+        }
+        if (key.name === "a") {
+          state.agentViewEnabled = !state.agentViewEnabled
+          remount()
+          return
+        }
+        if (key.name === "1") {
+          selectWorkerPanelView(state, "chat", remount)
+          return
+        }
+        if (key.name === "2") {
+          selectWorkerPanelView(state, "goal", remount)
+          return
+        }
       }
       if (key.name === "g") {
-        state.goalShutterWorkerPeek = false
-        state.focusMode = "goal"
-        openGoalPanel(state)
-        remount()
+        selectWorkerPanelView(state, "goal", remount)
         return
       }
-      if (key.name === "a") {
-        state.agentViewEnabled = !state.agentViewEnabled
-        remount()
-        return
-      }
-      if (key.name === "1") {
-        focusGoalWorkerPeek(state, remount)
-        return
-      }
-      if (key.name === "2") {
-        returnToGoalShutter(state, remount)
-        return
-      }
+    }
+
+    if (isEnterKey(key) && activeInputIsExitCommand(state)) {
+      key.preventDefault?.()
+      key.stopPropagation?.()
+      exitStack()
+      return
     }
 
     if (key.name === "tab") {
@@ -1594,10 +1732,17 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
+    if (state.focusMode === "config" && handleConfigKey(key, options, state, remount, refreshAfterEnvironmentChange, codexSessionHandle)) {
+      return
+    }
+
     if (key.name === "escape") {
       if (state.focusMode === "goal") {
-        state.goalShutterWorkerPeek = false
-        state.focusMode = isGoalMode(state) ? "monitor" : "agent"
+        state.focusMode = "agent"
+        remount()
+        return
+      }
+      if (closeSelectorPanel(state)) {
         remount()
         return
       }
@@ -1620,14 +1765,23 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         remount()
         return
       }
-      if (isGoalMode(state)) {
-        if (returnToGoalShutter(state, remount)) return
-        focusGoalWorkerPeek(state, remount)
+      if (showWorkerGoalTabs(state, state.metaEvents)) {
+        if (returnToGoalView(state, remount)) return
+        selectWorkerPanelView(state, "chat", remount)
         return
       }
-      if (state.status === "running" && codexSessionHandle.session) {
-        appendStackBlock(state.blocks, "interrupt requested")
-        void codexSessionHandle.session.interrupt().finally(remount)
+      if (agentChatPauseEligible(state)) {
+        if (state.agentChatPaused) {
+          state.agentChatPaused = false
+          if (codexSessionHandle.session) {
+            appendStackBlock(state.blocks, "interrupt requested")
+            void codexSessionHandle.session.interrupt().finally(remount)
+          }
+          return
+        }
+        state.agentChatPaused = true
+        state.lastAgentScrollAt = Date.now()
+        remount()
         return
       }
       return
@@ -1699,7 +1853,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
-    if (handleAgentScrollKey(key, state, renderer)) {
+    if (handleAgentScrollKey(key, state, renderer, options)) {
       remount()
       return
     }
@@ -1757,7 +1911,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     }
 
     if (state.focusMode === "ops") {
-      handleOpsKey(key, state, renderer, options, buildOpsPanelInput(options, state), opsVisibleRows(renderer, state), remount, refreshRemoteOpsPanel, refreshOptimizers)
+      if (state.rightPanelContent === "lights") {
+        handleLightsKey(key, options, state, buildOpsPanelInput(options, state), rightPanelThreadRows(renderer), remount)
+      } else {
+        handleOpsKey(key, state, renderer, options, buildOpsPanelInput(options, state), opsVisibleRows(renderer, state), remount, refreshRemoteOpsPanel, refreshOptimizers)
+      }
       return
     }
 
@@ -1777,7 +1935,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     }
 
     if (state.focusMode === "model") {
-      handleModelKey(key, options.config)
+      handleModelKey(key, options, state, remount)
       remount()
       return
     }
@@ -1844,10 +2002,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     state: AppState,
     existing: MountedView | undefined,
   ): MountedView {
-    if (existing) {
-      // Destroy through the renderable itself so OpenTUI detaches it from the parent and then
-      // frees all native OptimizedBuffers in one lifecycle path. Removing first leaves the old
-      // subtree parentless during the same frame, which can still pressure native buffer allocs.
+    for (const child of renderer.root.getChildren()) {
+      renderer.root.remove(child.id)
+      child.destroyRecursively()
+    }
+    if (existing && existing.root.parent !== null) {
       existing.root.destroyRecursively()
     }
 
@@ -1881,42 +2040,33 @@ function createView(
 ): MountedView {
   syncGoalModeDefaults(options, state)
   const switcher = switcherPanel(options, state, refresh, applyStackEnvironmentFromUi)
-  const telemetrySettings = telemetryPanel(options, state, refresh)
+  const configSettings = configPanel(options, state, refresh, applyStackEnvironmentFromUi, codexSessionHandle)
+  const experimentalSettings = experimentalPanel(state)
+  const permissionsSettings = permissionsPanel(options, state, refresh)
   const goalModeActive = isGoalMode(state)
-  const showGoalShutter = goalModeActive && !state.goalShutterWorkerPeek
+  const showRightGardenerPanel = state.rightPanelOpen && state.rightPanelContent === "gardener"
+  const showRightThreadsPanel = state.rightPanelOpen && state.rightPanelContent === "threads"
+  const showRightLightsPanel = state.rightPanelOpen && state.rightPanelContent === "lights"
+  const showDefaultRightPanel = state.rightPanelOpen && state.rightPanelContent === "default"
   const showCenterPanels =
-    state.focusMode === "projects" || state.focusMode === "history" || state.focusMode === "harness"
+    !showRightThreadsPanel &&
+    (state.focusMode === "projects" || state.focusMode === "history" || state.focusMode === "harness")
   const metaThreadTitle =
     state.metaThreadManifest?.title?.trim() ||
     state.metaThreadManifest?.active_goal?.objective?.trim() ||
     state.goalContext.objective?.trim()
   setCrashRuntimeContext({
-    surface: showGoalShutter ? "goal_shutter" : "tui",
+    surface: "tui",
     goalMode: goalModeActive,
     monitorEnabled: state.monitorSnapshot.enabled,
-    sidecarView: state.goalShutterSidecarView,
+    sidecarView: state.monitorPanelMode,
     focusMode: state.focusMode,
     environment: options.config.environmentName,
     terminalRows: renderer.terminalHeight,
     terminalCols: renderer.terminalWidth,
   })
-  const baseTranscriptViewport = transcriptViewportMetrics(renderer, state)
-  const goalStripLines =
-    state.metaThreadManifest?.active_goal?.objective?.trim() ||
-    state.goalContext.objective?.trim()
-      ? 1
-      : 0
-  const transcriptViewport =
-    goalModeActive && !showGoalShutter
-      ? {
-          ...baseTranscriptViewport,
-          lines: goalWorkerPeekTranscriptRows(baseTranscriptViewport.lines, goalStripLines),
-          pageLines: Math.max(
-            3,
-            Math.floor(goalWorkerPeekTranscriptRows(baseTranscriptViewport.lines, goalStripLines) * 0.8),
-          ),
-        }
-      : baseTranscriptViewport
+  const baseTranscriptViewport = buildAgentTranscriptViewport(renderer, options, state)
+  const transcriptViewport = baseTranscriptViewport
   state.planningColumns = transcriptViewport.columns
   updateThreadsRailColumns(renderer, state)
   const threadRows = centerActiveThreadRows(renderer)
@@ -1934,6 +2084,7 @@ function createView(
   })
   const gardenerEvents = readThreadMetaEvents(options.config.stackDataRoot, state.gardenerThreadId)
   const workerMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+  const workerGoalTabs = showWorkerGoalTabs(state, workerMetaEvents)
   const gardenerChatBlocks = buildGardenerChatBlocks(state, gardenerEvents)
   const gardenerTranscriptOptions = gardenerTranscriptRenderOptions(
     transcriptRenderOptions(state),
@@ -1967,61 +2118,59 @@ function createView(
   const monitorWatchLive = monitorTargetId === options.session.id
   const monitorRows = monitorThreadVisibleRows(renderer, state)
   const rightColumns = monitorPanelColumns(renderer, state)
+  const rightThreadsRows = rightPanelThreadRows(renderer)
+  const lightsRows = rightPanelThreadRows(renderer)
   const workerActive =
     monitorWatchLive && monitorWorkerActive(state) && !monitorWatchSuppressedByGoalChat(state)
-  const monitorChatBlocks = blocksFromMonitorChatEvents(monitorTargetMetaEvents)
+  const showMonitorRightPanel = showDefaultRightPanel && isMonitorOn(state.monitorSnapshot)
+  const sidecarTranscript = showMonitorRightPanel
+      ? readMonitorSidecarTranscript(
+          options.config.stackDataRoot,
+          options.session.id,
+          state.monitorSnapshot.actorId,
+        )
+      : undefined
+  const monitorSidecarChat =
+    (sidecarTranscript?.turns?.length ?? 0) > 0
+      ? buildMonitorSidecarChatBlocks(sidecarTranscript?.turns, monitorTargetMetaEvents)
+      : undefined
+  const monitorChatBlocks = monitorSidecarChat?.blocks ?? blocksFromMonitorChatEvents(monitorTargetMetaEvents)
+  const monitorChatTools = monitorSidecarChat?.tools ?? []
+  const monitorChatSubagents = monitorSidecarChat?.subagents ?? []
   const monitorTranscriptOptions = monitorTranscriptRenderOptions(
     transcriptRenderOptions(state),
     monitorPanelSnapshot,
   )
   const monitorChatSplit = monitorChatRowSplit(monitorRows, workerActive)
-  const showOpsPanel = !isMonitorOn(state.monitorSnapshot) || state.rightPanelOpsVisible
-  if (isMonitorOn(state.monitorSnapshot)) {
+  const monitorChatRows = monitorChatSplit.watchRows > 0 ? monitorChatSplit.narrativeRows : monitorRows
+  const monitorTranscriptEstimatedLines = estimateShortTranscriptLines(
+    monitorChatBlocks,
+    monitorChatTools,
+    monitorChatSubagents,
+    rightColumns,
+  )
+  const {
+    viewport: monitorTranscriptViewport,
+  } = transcriptViewportForEstimatedContent({
+    columns: rightColumns,
+    lines: monitorChatRows,
+    pageLines: 6,
+  }, monitorTranscriptEstimatedLines)
+  const showOpsPanel = showDefaultRightPanel && (!isMonitorOn(state.monitorSnapshot) || state.rightPanelOpsVisible)
+  if (showMonitorRightPanel) {
     tailMonitorThreadScroll(
       state,
       monitorChatBlocks,
+      monitorChatTools,
+      monitorChatSubagents,
       rightColumns,
-      monitorChatSplit.watchRows > 0 ? monitorChatSplit.narrativeRows : monitorRows,
+      monitorTranscriptViewport.lines,
       monitorTranscriptOptions,
     )
     tailMonitorWatchScroll(state, rightColumns, monitorChatSplit.watchRows)
   }
-  const goalShutterColumns = showGoalShutter ? rightColumns : transcriptViewport.columns
-  const goalShutterRows = showGoalShutter ? Math.max(8, monitorRows) : transcriptViewport.lines
-  const sidecarMenuElements = showGoalShutter
-    ? slashMenuElements(
-        state.monitorInputBuffer,
-        state.slashMenuIndex,
-        buildSlashCommandContext(options, state),
-        goalShutterColumns,
-        state.focusMode === "monitor",
-      )
-    : []
-  const sidecarTranscript = showGoalShutter
-    ? readMonitorSidecarTranscript(options.config.stackDataRoot, options.session.id, state.monitorSnapshot.actorId)
-    : undefined
-  const goalStreamRows = showGoalShutter
-    ? goalShutterStreamVisibleRows(
-        goalShutterRows,
-        goalShutterCardLineCount({
-          state,
-          events: workerMetaEvents,
-          columns: goalShutterColumns,
-          metaThreadId: options.session.metaThreadId,
-        }),
-        (sidecarMenuElements.length > 0 ? 1 : 0) +
-          goalShutterProgressChromeRows(workerMetaEvents, goalShutterColumns),
-      )
-    : 0
-  if (showGoalShutter) {
-    tailGoalShutterScroll(state, workerMetaEvents, goalShutterColumns, goalStreamRows)
-    tailGoalSidecarThreadScroll(
-      state,
-      sidecarTranscript?.turns,
-      workerMetaEvents,
-      Math.max(20, goalShutterColumns - 4),
-      Math.max(3, goalStreamRows),
-    )
+  if (workerGoalTabs && state.workerPanelView === "goal" && isGoalMode(state)) {
+    tailGoalShutterScroll(state, workerMetaEvents, transcriptViewport.columns, transcriptViewport.lines)
   }
   const opsPanelInput = buildOpsPanelInput(options, state)
   const focusCenterProjects = panelFocusHandlers(state, "projects", refresh)
@@ -2031,38 +2180,66 @@ function createView(
   const focusAgent = agentPanelFocusHandlers(state, refresh)
   const focusOps = panelFocusHandlers(state, "ops", refresh)
   const focusMonitor = panelFocusHandlers(state, "monitor", refresh)
-  const goalPanelTabHandlers = goalModeActive
-    ? {
-        onSelectChatTab: () => focusGoalWorkerPeek(state, refresh),
-        onSelectProgressTab: () => returnToGoalShutter(state, refresh),
-      }
-    : undefined
+  const agentTranscriptEstimatedLines = estimateShortTranscriptLines(
+    state.blocks,
+    state.toolLogs,
+    state.subagentLogs,
+    transcriptViewport.columns,
+  )
+  const { viewport: agentTranscriptRenderViewport } = transcriptViewportForEstimatedContent(
+    transcriptViewport,
+    agentTranscriptEstimatedLines,
+  )
+  const workerPanelContentRows = agentTranscriptRenderViewport.lines
+  const agentMainPane =
+    workerGoalTabs && state.workerPanelView === "goal"
+      ? Box(
+          {
+            flexDirection: "column",
+            flexGrow: 1,
+            flexShrink: 1,
+            minHeight: 0,
+            width: "100%",
+            overflow: "hidden",
+          },
+          isGoalMode(state)
+            ? renderMonitorGoalViewPanel({
+                ...monitorGoalViewInput(options, state, workerMetaEvents, transcriptViewport.columns, metaThreadTitle),
+                visibleRows: workerPanelContentRows,
+                scrollOffset: state.goalShutterScrollOffset,
+              })
+            : renderPreviousGoalsListPanel({
+                state,
+                events: workerMetaEvents,
+                metaThreadId: options.session.metaThreadId,
+                columns: transcriptViewport.columns,
+                visibleRows: workerPanelContentRows,
+                scrollOffset: state.goalShutterScrollOffset,
+                expandedKeys: state.previousGoalExpandedKeys,
+                selectedIndex: state.previousGoalSelectedIndex,
+                onToggleEntry: (entryKey) => {
+                  togglePreviousGoalExpanded(state, entryKey)
+                  refresh()
+                },
+              }),
+        )
+      : transcriptPane(renderTranscriptPanel(state, agentTranscriptRenderViewport), transcriptPaneFlexGrowForContent())
   const agentChildren = [
     agentPanelIdsCopyIcon(renderer, options, state, refresh),
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
-    ...(goalPanelTabHandlers
-      ? [
-          renderGoalWorkerPeekPanel({
-            active: "chat",
-            onSelectChat: goalPanelTabHandlers.onSelectChatTab,
-            onSelectProgress: goalPanelTabHandlers.onSelectProgressTab,
-            transcript: renderTranscriptPanel(state, transcriptViewport),
-            objective:
-              state.metaThreadManifest?.active_goal?.objective?.trim() ||
-              state.goalContext.objective?.trim(),
-            metaThreadTitle,
-          }),
-        ]
-      : [transcriptPane(renderTranscriptPanel(state, transcriptViewport))]),
+    ...(workerGoalTabs ? [workerPanelModeBar(state, refresh)] : []),
+    agentMainPane,
     ...(state.focusMode === "goal" ? [renderGoalPanel(state)] : []),
     ...(switcher ? [switcher] : []),
-    ...(telemetrySettings ? [telemetrySettings] : []),
-    ...(showGoalShutter ? [] : [agentControlRow(options, state, transcriptViewport.columns, refresh)]),
+    ...(configSettings ? [configSettings] : []),
+    ...(experimentalSettings ? [experimentalSettings] : []),
+    ...(permissionsSettings ? [permissionsSettings] : []),
+    agentControlRow(options, state, transcriptViewport.columns, refresh),
   ]
 
   const root = Box(
     {
-      id: "stack-root",
+      id: `stack-root-${++stackRootInstance}`,
       flexDirection: "column",
       width: "100%",
       height: "100%",
@@ -2278,7 +2455,6 @@ function createView(
           borderColor:
             state.focusMode === "agent" ||
             state.focusMode === "goal" ||
-            (showGoalShutter && state.focusMode === "monitor") ||
             state.focusMode === "model" ||
             state.focusMode === "effort" ||
             state.focusMode === "environment" ||
@@ -2297,10 +2473,30 @@ function createView(
             event.stopPropagation()
             state.lastAgentScrollAt = Date.now()
             const direction = event.scroll?.direction
+            if (workerGoalTabs && state.workerPanelView === "goal") {
+              if (direction === "up" || direction === "down") {
+                const maxOffset = isGoalMode(state)
+                  ? monitorGoalViewMaxScroll(
+                      monitorGoalViewInput(options, state, workerMetaEvents, transcriptViewport.columns, metaThreadTitle),
+                      workerPanelContentRows,
+                    )
+                  : previousGoalsListMaxScroll({
+                      state,
+                      events: workerMetaEvents,
+                      metaThreadId: options.session.metaThreadId,
+                      columns: transcriptViewport.columns,
+                      expandedKeys: state.previousGoalExpandedKeys,
+                      selectedIndex: state.previousGoalSelectedIndex,
+                      visibleRows: workerPanelContentRows,
+                    })
+                handleWorkerGoalViewScroll(direction, state, maxOffset, refresh)
+              }
+              return
+            }
             if (direction === "up") {
-              scrollAgentTranscript(state, 3, transcriptViewport, "up")
+              scrollAgentTranscript(state, 3, agentTranscriptRenderViewport, "up")
             } else if (direction === "down") {
-              scrollAgentTranscript(state, 3, transcriptViewport, "down")
+              scrollAgentTranscript(state, 3, agentTranscriptRenderViewport, "down")
             }
             refresh()
           },
@@ -2316,7 +2512,104 @@ function createView(
                 gap: stackTuiLayout.panelGap,
                 flexShrink: 0,
               },
-              ...(isMonitorOn(state.monitorSnapshot)
+              ...(showRightGardenerPanel
+                ? [
+                    Box(
+                      {
+                        border: true,
+                        borderStyle: "single",
+                        borderColor:
+                          state.focusMode === "gardener" ? theme.borderActive : theme.borderInactive,
+                        title: gardenerPanelTitle(options, state),
+                        backgroundColor: theme.bgCanvas,
+                        flexGrow: 1,
+                        flexDirection: "column",
+                        padding: stackTuiLayout.panelPadding,
+                        gap: stackTuiLayout.panelGap,
+                        ...focusGardener,
+                        onMouseScroll(event) {
+                          handleGardenerChatScroll(
+                            event,
+                            state,
+                            gardenerChatBlocks,
+                            state.gardenerLiveTools,
+                            state.gardenerLiveSubagents,
+                            rightColumns,
+                            gardenerChatAreaRows,
+                            gardenerTranscriptOptions,
+                            refresh,
+                          )
+                        },
+                      },
+                      transcriptPane(
+                        renderRoleChatTranscriptStyled(
+                          gardenerChatBlocks,
+                          state.gardenerLiveTools,
+                          state.gardenerLiveSubagents,
+                          {
+                            columns: rightColumns,
+                            lines: gardenerChatAreaRows,
+                            pageLines: 6,
+                          },
+                          gardenerTranscriptOptions,
+                          state.gardenerScrollOffset,
+                        ),
+                      ),
+                      gardenerControlRow(options, state, refresh, rightColumns),
+                    ),
+                  ]
+                : []),
+              ...(showRightThreadsPanel
+                ? [
+                    Box(
+                      {
+                        border: true,
+                        borderStyle: "single",
+                        borderColor:
+                          state.focusMode === "history" ? theme.borderActive : theme.borderInactive,
+                        title: "Threads",
+                        backgroundColor: theme.bgPanel,
+                        flexGrow: 1,
+                        padding: stackTuiLayout.panelPadding,
+                        ...focusCenterThreads,
+                        onMouseScroll(event) {
+                          handleThreadsMouseScroll(event, state, refresh)
+                        },
+                      },
+                      Text({
+                        content: renderThreadsRailStyled({
+                          ...buildThreadsRailInput(options, state, rightThreadsRows),
+                          columns: rightColumns,
+                        }),
+                        fg: theme.fgPrimary,
+                      }),
+                    ),
+                  ]
+                : []),
+              ...(showRightLightsPanel
+                ? [
+                    Box(
+                      {
+                        border: true,
+                        borderStyle: "single",
+                        borderColor: state.focusMode === "ops" ? theme.borderActive : theme.borderInactive,
+                        title: `Lights · ${options.config.environmentName}`,
+                        backgroundColor: theme.bgPanel,
+                        flexGrow: 1,
+                        padding: stackTuiLayout.panelPadding,
+                        ...focusOps,
+                        onMouseScroll(event) {
+                          handleLightsMouseScroll(event, options, state, opsPanelInput, lightsRows, refresh)
+                        },
+                      },
+                      Text({
+                        content: lightsPanelText(options, state, opsPanelInput, rightColumns, lightsRows),
+                        fg: theme.fgPrimary,
+                      }),
+                    ),
+                  ]
+                : []),
+              ...(showMonitorRightPanel
                 ? [
                     Box(
                       {
@@ -2329,31 +2622,18 @@ function createView(
                         flexGrow: 1,
                         flexDirection: "column",
                         padding: stackTuiLayout.panelPadding,
-                        gap: stackTuiLayout.panelGap,
+                        gap: 1,
                         ...focusMonitor,
                         onMouseScroll(event) {
                           const direction = event.scroll?.direction
-                          if (showGoalShutter && (direction === "up" || direction === "down")) {
-                            if (state.goalShutterSidecarView === "events") {
-                              handleGoalShutterMouseScroll(
-                                direction,
-                                state,
-                                workerMetaEvents,
-                                goalShutterColumns,
-                                goalStreamRows,
-                                refresh,
-                              )
-                            } else {
-                              handleGoalSidecarThreadMouseScroll(
-                                direction,
-                                state,
-                                sidecarTranscript?.turns,
-                                workerMetaEvents,
-                                Math.max(20, goalShutterColumns - 4),
-                                Math.max(3, goalStreamRows),
-                                refresh,
-                              )
-                            }
+                          if (state.monitorPanelMode === "events") {
+                            handleMonitorEventScroll(
+                              event,
+                              state,
+                              rightColumns,
+                              monitorRows,
+                              refresh,
+                            )
                             return
                           }
                           if (monitorChatSplit.watchRows > 0) {
@@ -2369,6 +2649,8 @@ function createView(
                               event,
                               state,
                               monitorChatBlocks,
+                              monitorChatTools,
+                              monitorChatSubagents,
                               rightColumns,
                               monitorRows,
                               monitorTranscriptOptions,
@@ -2377,74 +2659,47 @@ function createView(
                           }
                         },
                       },
-                      ...(showGoalShutter
+                      monitorPanelModeBar(state, refresh),
+                      state.monitorPanelMode === "events"
+                        ? transcriptPane(
+                            renderMonitorEventStreamStyled(
+                              monitorTargetMetaEvents,
+                              rightColumns,
+                              monitorRows,
+                              state.monitorEventScrollOffset,
+                            ),
+                            1,
+                          )
+                        : transcriptPane(
+                            renderRoleChatTranscriptStyled(
+                              monitorChatBlocks,
+                              monitorChatTools,
+                              monitorChatSubagents,
+                              monitorTranscriptViewport,
+                              monitorTranscriptOptions,
+                              state.monitorScrollOffset,
+                            ),
+                            monitorChatSplit.watchRows > 0 ? 0 : transcriptPaneFlexGrowForContent(),
+                          ),
+                      ...(state.monitorPanelMode === "chat" && monitorWatchLive && monitorChatSplit.watchRows > 0
                         ? [
-                            renderGoalShutter({
-                              state,
-                              events: workerMetaEvents,
-                              sidecarTurns: sidecarTranscript?.turns,
-                              sidecarRenderOptions: sidecarTranscriptRenderOptions(state),
-                              sidecarView: state.goalShutterSidecarView,
-                              columns: goalShutterColumns,
-                              visibleRows: goalShutterRows,
-                              streamRows: goalStreamRows,
-                              scrollOffset: state.goalShutterScrollOffset,
-                              sidecarThreadScrollOffset: state.goalShutterSidecarThreadScrollOffset,
-                              metaThreadId: options.session.metaThreadId,
-                              metaThreadTitle,
-                              sidecarMenuElements,
-                              onFocusSidecar: () => focusGoalSidecarChat(options, state, refresh),
-                              onPrefillSidecar: (prompt) => {
-                                state.monitorInputBuffer = prompt
-                                focusGoalSidecarChat(options, state, refresh)
-                              },
-                              onSelectSidecarThread: () => {
-                                state.goalShutterSidecarView = "thread"
-                                refresh()
-                              },
-                              onSelectSidecarEvents: () => {
-                                state.goalShutterSidecarView = "events"
-                                refresh()
-                              },
-                              ...goalPanelTabHandlers,
-                            }),
-                          ]
-                        : [
                             transcriptPane(
-                              renderRoleChatTranscriptStyled(
-                                monitorChatBlocks,
-                                [],
-                                [],
+                              renderTranscriptStyledView(
+                                state.blocks,
+                                state.toolLogs,
+                                state.subagentLogs,
                                 {
                                   columns: rightColumns,
-                                  lines: monitorChatSplit.watchRows > 0 ? monitorChatSplit.narrativeRows : monitorRows,
+                                  lines: monitorChatSplit.watchRows,
                                   pageLines: 6,
                                 },
-                                monitorTranscriptOptions,
-                                state.monitorScrollOffset,
+                                transcriptRenderOptions(state),
+                                state.monitorWatchScrollOffset,
                               ),
-                              monitorChatSplit.watchRows > 0 ? 0 : 1,
                             ),
-                            ...(monitorWatchLive && monitorChatSplit.watchRows > 0
-                              ? [
-                                  transcriptPane(
-                                    renderTranscriptStyledView(
-                                      state.blocks,
-                                      state.toolLogs,
-                                      state.subagentLogs,
-                                      {
-                                        columns: rightColumns,
-                                        lines: monitorChatSplit.watchRows,
-                                        pageLines: 6,
-                                      },
-                                      transcriptRenderOptions(state),
-                                      state.monitorWatchScrollOffset,
-                                    ),
-                                  ),
-                                ]
-                              : []),
-                            monitorControlRow(options, state, refresh, rightColumns),
-                          ]),
+                          ]
+                        : []),
+                      monitorControlRow(options, state, refresh, rightColumns),
                     ),
                   ]
                 : []),
@@ -2600,6 +2855,10 @@ function switcherPanel(
     )
   }
 
+  if (focusMode === "model") {
+    return modelPickerPanel(options, state, refresh)
+  }
+
   const current = switcherCurrentValue(config, state, focusMode)
   const switchOptions = switcherOptions(config, focusMode)
   const switcherLines = [
@@ -2630,127 +2889,483 @@ function switcherPanel(
   )
 }
 
-function shouldShowTelemetryApproval(status: StackdTelemetryStatus | undefined): boolean {
-  if (process.env.STACK_TELEMETRY_APPROVAL_PROMPT === "0") return false
-  if (!status) return false
-  if (status.tiers.advanced_product !== "unset") return false
-  const currentVersion = stackVersion()
-  return status.tiers.asked_version !== currentVersion
+type ModelPickerAction =
+  | { kind: "model"; value: string }
+  | { kind: "effort"; value: string }
+  | { kind: "fixed-effort"; value: string }
+
+type ModelPickerRow = {
+  text: string
+  active?: boolean
+  action?: ModelPickerAction
 }
 
-function telemetryPanel(
+function modelPickerPanel(
   options: StackAppOptions,
   state: AppState,
   refresh: () => void,
-): ReturnType<typeof Box> | undefined {
-  if (state.focusMode !== "telemetry" && !state.telemetryApprovalVisible) return undefined
-  const status = state.telemetryStatus
-  const tiers = status?.tiers
-  const basic = tiers?.basic_dau ?? "unknown"
-  const advanced = tiers?.advanced_product ?? "unknown"
-  const title = state.telemetryApprovalVisible ? "Telemetry Approval" : "Telemetry Settings"
-  const lines: Array<{ text: string; active?: boolean; onSelect?: () => void }> = [
-    {
-      text: `basic DAU: ${basic}`,
-      active: basic === "on",
-      onSelect: () => void setTelemetryBasicDau(state, refresh, basic === "on" ? "off" : "on"),
-    },
-    {
-      text: `advanced product: ${advanced}`,
-      active: advanced === "accepted",
-    },
-    {
-      text: "accept advanced feature/session telemetry",
-      active: advanced === "accepted",
-      onSelect: () => void setTelemetryAdvanced(options, state, refresh, "accepted"),
-    },
-    {
-      text: "decline advanced telemetry",
-      active: advanced === "declined",
-      onSelect: () => void setTelemetryAdvanced(options, state, refresh, "declined"),
-    },
-    {
-      text: "ask later this version",
-      active: advanced === "unset" && tiers?.asked_version === stackVersion(options.config.appRoot),
-      onSelect: () => void setTelemetryAdvanced(options, state, refresh, "unset"),
-    },
-    {
-      text: "r refresh · b basic · a accept · d decline · l later · Esc close",
-    },
-  ]
-  if (state.telemetryNotice) {
-    lines.unshift({ text: state.telemetryNotice })
-  } else if (!status) {
-    lines.unshift({ text: "stackd telemetry status unavailable" })
-  } else {
-    lines.unshift({ text: status.local_product_telemetry.reason })
-  }
-
+): ReturnType<typeof Box> {
+  const rows = modelPickerRows(options.config)
   return Box(
     {
       border: true,
       borderStyle: "single",
-      borderColor: state.focusMode === "telemetry" ? theme.borderActive : theme.borderInactive,
-      title,
+      borderColor: theme.borderActive,
+      title: "Model",
       padding: stackTuiLayout.panelPadding,
       flexDirection: "column",
       width: "100%",
       flexShrink: 0,
       gap: 0,
     },
-    ...lines.map((line) => switcherLine(line.text, Boolean(line.active), line.onSelect)),
+    ...rows.map((row) => {
+      const action = row.action
+      return switcherLine(
+        row.text,
+        Boolean(row.active),
+        action ? () => applyModelPickerAction(action, options, state, refresh) : undefined,
+      )
+    }),
   )
+}
+
+function modelPickerRows(config: StackConfig): ModelPickerRow[] {
+  const modelOptions = switcherOptions(config, "model")
+  const rows: ModelPickerRow[] = [
+    { text: `provider: ${harnessAuthPlan(config)} · /provider changes provider` },
+    { text: "number or click option · j/k model · e reasoning · Esc close" },
+    { text: "Models" },
+  ]
+  const currentModel = harnessModel(config)
+  for (const [index, model] of modelOptions.entries()) {
+    rows.push({
+      text: `${index + 1}. ${modelPickerModelLabel(config, model)}${model === currentModel ? " (current)" : ""}  ${modelPickerModelDescription(config, model)}`,
+      active: model === currentModel,
+      action: { kind: "model", value: model },
+    })
+  }
+
+  rows.push({ text: "Reasoning" })
+  if (isCursorHarness(config)) {
+    const effort = CURSOR_REASONING_EFFORT_OPTIONS[0]
+    rows.push({
+      text: `${modelOptions.length + 1}. ${modelPickerEffortLabel(effort)} (current)  ${modelPickerEffortDescription(effort)}`,
+      active: true,
+      action: { kind: "fixed-effort", value: effort },
+    })
+    return rows
+  }
+  const start = modelOptions.length
+  for (const [index, effort] of CODEX_REASONING_EFFORT_OPTIONS.entries()) {
+    rows.push({
+      text: `${start + index + 1}. ${modelPickerEffortLabel(effort)}${effort === config.codexReasoningEffort ? " (current)" : effort === "medium" ? " (default)" : ""}  ${modelPickerEffortDescription(effort)}`,
+      active: effort === config.codexReasoningEffort,
+      action: { kind: "effort", value: effort },
+    })
+  }
+  return rows
+}
+
+function modelPickerModelLabel(config: StackConfig, model: string): string {
+  if (isCursorHarness(config)) {
+    if (model === "composer-2.5") return "Composer 2.5"
+    if (model === "auto") return "Auto"
+  }
+  return model
+}
+
+function modelPickerModelDescription(config: StackConfig, model: string): string {
+  if (isCursorHarness(config)) {
+    if (model === "composer-2.5") return "Cursor Composer model"
+    if (model === "auto") return "Cursor-managed routing"
+  }
+  if (model === "gpt-5.4-mini") return "fast daily worker"
+  if (model === "gpt-5.5") return "deeper frontier reasoning"
+  return ""
+}
+
+function modelPickerEffortLabel(effort: string): string {
+  if (effort === "low") return "Low"
+  if (effort === "medium") return "Medium"
+  if (effort === "normal") return "Normal"
+  if (effort === "high") return "High"
+  if (effort === "xhigh") return "Extra high"
+  return effort
+}
+
+function modelPickerEffortDescription(effort: string): string {
+  if (effort === "low") return "fast responses with lighter reasoning"
+  if (effort === "medium") return "balanced speed and depth"
+  if (effort === "normal") return "Cursor agent fixed effort"
+  if (effort === "high") return "greater reasoning depth"
+  if (effort === "xhigh") return "maximum reasoning depth"
+  return ""
+}
+
+function applyModelPickerAction(
+  action: ModelPickerAction,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  if (action.kind === "model") {
+    applySwitcherOption("model", action.value, options, state, refresh)
+    appendStackBlock(state.blocks, `model ${harnessModel(options.config)}`)
+  } else if (action.kind === "fixed-effort") {
+    appendStackBlock(state.blocks, `reasoning effort ${action.value}`)
+    refresh()
+    return
+  } else if (!isCursorHarness(options.config)) {
+    setCodexReasoningEffort(options.config, action.value)
+    appendStackBlock(state.blocks, `reasoning effort ${options.config.codexReasoningEffort}`)
+  }
+  persistStackConfig(options, state, refresh)
+}
+
+function modelPickerActionForKey(keyName: string | undefined, config: StackConfig): ModelPickerAction | undefined {
+  const modelOptions = switcherOptions(config, "model")
+  if (keyName === "e" && !isCursorHarness(config)) {
+    const current = Math.max(0, CODEX_REASONING_EFFORT_OPTIONS.findIndex((option) => option === config.codexReasoningEffort))
+    return {
+      kind: "effort",
+      value: CODEX_REASONING_EFFORT_OPTIONS[(current + 1) % CODEX_REASONING_EFFORT_OPTIONS.length] ?? config.codexReasoningEffort,
+    }
+  }
+
+  const numeric = Number.parseInt(keyName ?? "", 10)
+  if (!Number.isInteger(numeric) || numeric <= 0) return undefined
+  const model = modelOptions[numeric - 1]
+  if (model) return { kind: "model", value: model }
+
+  if (isCursorHarness(config) && numeric === modelOptions.length + 1) {
+    return { kind: "fixed-effort", value: CURSOR_REASONING_EFFORT_OPTIONS[0] }
+  }
+
+  if (!isCursorHarness(config)) {
+    const effort = CODEX_REASONING_EFFORT_OPTIONS[numeric - modelOptions.length - 1]
+    if (effort) return { kind: "effort", value: effort }
+  }
+  return undefined
+}
+
+type ConfigRowId =
+  | "provider"
+  | "environment"
+  | "model"
+  | "effort"
+  | "subagents"
+  | "subagent-model"
+  | "subagent-effort"
+  | "voice"
+  | "telemetry"
+
+type ConfigRow = {
+  id: ConfigRowId
+  text: string
+  active?: boolean
+  onSelect: () => void
+}
+
+function configPanel(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  applyStackEnvironmentFromUi: (environmentName: StackEnvironmentName) => Promise<void>,
+  codexSessionHandle: { session?: HarnessSession },
+): ReturnType<typeof Box> | undefined {
+  if (state.focusMode !== "config") return undefined
+  const rows = configRows(options, state, refresh, applyStackEnvironmentFromUi, codexSessionHandle)
+  state.configSelectedIndex = clampIndex(state.configSelectedIndex, rows.length)
+  const help = state.configNotice ?? "j/k select · Enter edit · persisted to stack.config.json · Esc close"
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.borderActive,
+      title: "Stack Config",
+      padding: stackTuiLayout.panelPadding,
+      flexDirection: "column",
+      width: "100%",
+      flexShrink: 0,
+      gap: 0,
+    },
+    switcherLine(help, false),
+    ...rows.map((row, index) =>
+      switcherLine(
+        `${index === state.configSelectedIndex ? ">" : " "} ${row.text}`,
+        index === state.configSelectedIndex || Boolean(row.active),
+        () => {
+          state.configSelectedIndex = index
+          row.onSelect()
+        },
+      ),
+    ),
+  )
+}
+
+function experimentalPanel(state: AppState): ReturnType<typeof Box> | undefined {
+  if (state.focusMode !== "experimental") return undefined
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.borderActive,
+      title: "Experimental",
+      padding: stackTuiLayout.panelPadding,
+      flexDirection: "column",
+      width: "100%",
+      flexShrink: 0,
+      gap: 0,
+    },
+    Text({ content: "Toggle experimental features.", fg: theme.fgMuted }),
+  )
+}
+
+function configRows(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  applyStackEnvironmentFromUi: (environmentName: StackEnvironmentName) => Promise<void>,
+  codexSessionHandle: { session?: HarnessSession },
+): ConfigRow[] {
+  const config = options.config
+  return [
+    {
+      id: "provider",
+      text: `provider: ${harnessAuthPlan(config)}`,
+      onSelect: () => {
+        const next = cycleHarnessProvider(config, 1)
+        void applyHarnessSwitch(options, state, codexSessionHandle, next, refresh).then(() => {
+          persistStackConfig(options, state, refresh)
+        })
+      },
+    },
+    {
+      id: "environment",
+      text: `environment: ${config.environmentName}`,
+      onSelect: () => {
+        const current = STACK_ENVIRONMENT_OPTIONS.indexOf(config.environmentName)
+        const next = STACK_ENVIRONMENT_OPTIONS[(current + 1) % STACK_ENVIRONMENT_OPTIONS.length] ?? config.environmentName
+        void applyStackEnvironmentFromUi(next).then(() => persistStackConfig(options, state, refresh))
+      },
+    },
+    {
+      id: "model",
+      text: `worker model: ${harnessModel(config)}`,
+      onSelect: () => {
+        cycleModel(config, 1)
+        persistStackConfig(options, state, refresh)
+      },
+    },
+    {
+      id: "effort",
+      text: isCursorHarness(config) ? `reasoning effort: ${CURSOR_REASONING_EFFORT_OPTIONS[0]}` : `reasoning effort: ${config.codexReasoningEffort}`,
+      onSelect: () => {
+        if (isCursorHarness(config)) {
+          state.configNotice = `reasoning effort ${CURSOR_REASONING_EFFORT_OPTIONS[0]}`
+          refresh()
+          return
+        }
+        cycleEffort(config, 1)
+        persistStackConfig(options, state, refresh)
+      },
+    },
+    {
+      id: "subagents",
+      text: `subagents: ${config.codexSubagentsEnabled ? "on" : "off"}`,
+      active: config.codexSubagentsEnabled,
+      onSelect: () => {
+        if (!isCursorHarness(config)) {
+          setCodexSubagentsEnabled(config, !config.codexSubagentsEnabled)
+        }
+        persistStackConfig(options, state, refresh)
+      },
+    },
+    {
+      id: "subagent-model",
+      text: isCursorHarness(config) ? "subagent model: cursor managed" : `subagent model: ${config.codexSubagentModel}`,
+      onSelect: () => {
+        if (!isCursorHarness(config)) {
+          cycleSubagentModel(config, 1)
+          syncStackSubagentAgentFiles(config)
+        }
+        persistStackConfig(options, state, refresh)
+      },
+    },
+    {
+      id: "subagent-effort",
+      text: isCursorHarness(config)
+        ? "subagent effort: cursor managed"
+        : `subagent effort: ${config.codexSubagentReasoningEffort}`,
+      onSelect: () => {
+        if (!isCursorHarness(config)) {
+          cycleSubagentEffort(config, 1)
+          syncStackSubagentAgentFiles(config)
+        }
+        persistStackConfig(options, state, refresh)
+      },
+    },
+    {
+      id: "voice",
+      text: `voice: ${config.voice.enabled ? "on" : "off"}`,
+      active: config.voice.enabled,
+      onSelect: () => {
+        config.voice.enabled = !config.voice.enabled
+        state.voiceStatus = readVoiceStatus(config)
+        persistStackConfig(options, state, refresh)
+      },
+    },
+    {
+      id: "telemetry",
+      text: "permissions (/permissions)",
+      onSelect: () => {
+        openPermissionsPanel(state, refresh)
+      },
+    },
+  ]
+}
+
+function persistStackConfig(options: StackAppOptions, state: AppState, refresh: () => void): void {
+  const config = options.config
+  try {
+    const path = writeStackConfigPatch(config.appRoot, {
+      defaultEnvironment: config.environmentName,
+      defaultHarness: config.harness,
+      codexModel: config.codexModel,
+      codexReasoningEffort: config.codexReasoningEffort,
+      cursorModel: config.cursorModel,
+      codexSubagentsEnabled: config.codexSubagentsEnabled,
+      codexSubagentModel: config.codexSubagentModel,
+      codexSubagentReasoningEffort: config.codexSubagentReasoningEffort,
+      voice: { enabled: config.voice.enabled },
+    })
+    state.configNotice = `saved ${relative(config.appRoot, path)}`
+  } catch (error) {
+    state.configNotice = `config save failed: ${errorMessage(error)}`
+  }
+  refresh()
+}
+
+function handleConfigKey(
+  key: { name?: string },
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  applyStackEnvironmentFromUi: (environmentName: StackEnvironmentName) => Promise<void>,
+  codexSessionHandle: { session?: HarnessSession },
+): boolean {
+  const rows = configRows(options, state, refresh, applyStackEnvironmentFromUi, codexSessionHandle)
+  if (key.name === "escape") {
+    state.focusMode = "agent"
+    refresh()
+    return true
+  }
+  if (key.name === "j" || key.name === "down") {
+    state.configSelectedIndex = (state.configSelectedIndex + 1) % rows.length
+    refresh()
+    return true
+  }
+  if (key.name === "k" || key.name === "up") {
+    state.configSelectedIndex = (state.configSelectedIndex - 1 + rows.length) % rows.length
+    refresh()
+    return true
+  }
+  if (isEnterKey(key) || key.name === "space") {
+    rows[clampIndex(state.configSelectedIndex, rows.length)]?.onSelect()
+    return true
+  }
+  return false
+}
+
+function openPermissionsPanel(state: AppState, refresh: () => void): void {
+  state.focusMode = "telemetry"
+  state.permissionsDraft = permissionsDraftFromTiers(state.telemetryStatus?.tiers)
+  state.permissionsSelectedIndex = 0
+  state.telemetryNotice = undefined
+  void refreshTelemetryStatus(state, refresh)
+}
+
+function permissionsPanel(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): ReturnType<typeof Box> | undefined {
+  if (state.focusMode !== "telemetry") return undefined
+  const rows = buildPermissionsPanelRows(state.permissionsDraft, (next) => {
+    state.permissionsDraft = next
+    void persistPermissionsDraft(options, state, refresh)
+  })
+  state.permissionsSelectedIndex = clampIndex(state.permissionsSelectedIndex, rows.length)
+  const status = state.telemetryStatus
+  const help =
+    state.telemetryNotice ??
+    "j/k select · Enter toggle · g grant all · n decline all · r refresh · Esc close"
+  const headerLines = [
+    PERMISSIONS_REMINDER,
+    status
+      ? `basic ${status.tiers.basic_dau} · advanced ${status.tiers.advanced_product}`
+      : "stackd telemetry status unavailable",
+  ]
+
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.borderActive,
+      title: "Permissions",
+      padding: stackTuiLayout.panelPadding,
+      flexDirection: "column",
+      width: "100%",
+      flexShrink: 0,
+      gap: 0,
+    },
+    ...headerLines.map((line) =>
+      Text({
+        content: line,
+        fg: theme.fgMuted,
+        width: "100%",
+        flexShrink: 0,
+      }),
+    ),
+    switcherLine(help, false),
+    ...rows.map((row, index) =>
+      switcherLine(
+        `${index === state.permissionsSelectedIndex ? ">" : " "} ${row.text}`,
+        index === state.permissionsSelectedIndex || row.active,
+        () => {
+          state.permissionsSelectedIndex = index
+          row.onSelect()
+        },
+      ),
+    ),
+  )
+}
+
+async function persistPermissionsDraft(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  try {
+    const response = await stackdUpdateTelemetryConfig(
+      permissionsToStackdConfig(state.permissionsDraft, options.config.appRoot),
+    )
+    state.telemetryStatus = mergeTelemetryTiers(state.telemetryStatus, response.tiers)
+    state.permissionsDraft = permissionsDraftFromTiers(response.tiers)
+    state.telemetryNotice = "permissions saved"
+  } catch (error) {
+    state.telemetryNotice = `permissions update failed: ${error instanceof Error ? error.message : String(error)}`
+  }
+  refresh()
 }
 
 async function refreshTelemetryStatus(state: AppState, refresh: () => void): Promise<void> {
   try {
     state.telemetryStatus = await stackdTelemetryStatus()
+    state.permissionsDraft = permissionsDraftFromTiers(state.telemetryStatus.tiers)
     state.telemetryNotice = undefined
-    state.telemetryApprovalVisible = shouldShowTelemetryApproval(state.telemetryStatus)
-    if (state.telemetryApprovalVisible && state.focusMode === "agent") state.focusMode = "telemetry"
   } catch (error) {
     state.telemetryNotice = `telemetry status unavailable: ${error instanceof Error ? error.message : String(error)}`
-  }
-  refresh()
-}
-
-async function setTelemetryBasicDau(
-  state: AppState,
-  refresh: () => void,
-  basicDau: "on" | "off",
-): Promise<void> {
-  try {
-    const response = await stackdUpdateTelemetryConfig({ basic_dau: basicDau })
-    state.telemetryStatus = mergeTelemetryTiers(state.telemetryStatus, response.tiers)
-    state.telemetryNotice = `basic DAU ${basicDau}`
-  } catch (error) {
-    state.telemetryNotice = `telemetry update failed: ${error instanceof Error ? error.message : String(error)}`
-  }
-  refresh()
-}
-
-async function setTelemetryAdvanced(
-  options: StackAppOptions,
-  state: AppState,
-  refresh: () => void,
-  advancedProduct: "unset" | "accepted" | "declined",
-): Promise<void> {
-  try {
-    const response = await stackdUpdateTelemetryConfig({
-      advanced_product: advancedProduct,
-      asked_version: stackVersion(options.config.appRoot),
-    })
-    state.telemetryStatus = mergeTelemetryTiers(state.telemetryStatus, response.tiers)
-    if (state.telemetryApprovalVisible && state.focusMode === "telemetry") state.focusMode = "agent"
-    state.telemetryApprovalVisible = false
-    state.telemetryNotice =
-      advancedProduct === "accepted"
-        ? "advanced telemetry accepted"
-        : advancedProduct === "declined"
-          ? "advanced telemetry declined"
-          : "advanced telemetry ask-later recorded"
-  } catch (error) {
-    state.telemetryNotice = `telemetry update failed: ${error instanceof Error ? error.message : String(error)}`
   }
   refresh()
 }
@@ -2771,53 +3386,52 @@ function mergeTelemetryTiers(
   }
 }
 
-function handleTelemetryKey(
+function handlePermissionsKey(
   key: StackKeyEvent,
   options: StackAppOptions,
   state: AppState,
   refresh: () => void,
 ): boolean {
-  if (key.name === "escape" && (state.focusMode === "telemetry" || state.telemetryApprovalVisible)) {
-    state.telemetryApprovalVisible = false
+  if (state.focusMode !== "telemetry") return false
+  if (key.name === "escape") {
     state.focusMode = "agent"
+    state.telemetryNotice = undefined
     refresh()
     return true
   }
-  if (state.focusMode !== "telemetry" && !state.telemetryApprovalVisible) return false
   if (key.name === "r") {
     void refreshTelemetryStatus(state, refresh)
     return true
   }
-  if (key.name === "b") {
-    const current = state.telemetryStatus?.tiers.basic_dau === "on" ? "off" : "on"
-    void setTelemetryBasicDau(state, refresh, current)
+  if (key.name === "g") {
+    state.permissionsDraft = setPermissionsGrantAll(state.permissionsDraft, true)
+    void persistPermissionsDraft(options, state, refresh)
     return true
   }
-  if (key.name === "a") {
-    void setTelemetryAdvanced(options, state, refresh, "accepted")
+  if (key.name === "n") {
+    state.permissionsDraft = setPermissionsGrantAll(state.permissionsDraft, false)
+    void persistPermissionsDraft(options, state, refresh)
     return true
   }
-  if (key.name === "d") {
-    void setTelemetryAdvanced(options, state, refresh, "declined")
+  const rows = buildPermissionsPanelRows(state.permissionsDraft, (next) => {
+    state.permissionsDraft = next
+    void persistPermissionsDraft(options, state, refresh)
+  })
+  if (key.name === "j" || key.name === "down") {
+    state.permissionsSelectedIndex = clampIndex(state.permissionsSelectedIndex + 1, rows.length)
+    refresh()
     return true
   }
-  if (key.name === "l") {
-    void setTelemetryAdvanced(options, state, refresh, "unset")
+  if (key.name === "k" || key.name === "up") {
+    state.permissionsSelectedIndex = clampIndex(state.permissionsSelectedIndex - 1, rows.length)
+    refresh()
     return true
   }
-  if (state.focusMode === "telemetry" && isEnterKey(key)) {
-    const next = state.telemetryStatus?.tiers.advanced_product === "accepted" ? "declined" : "accepted"
-    void setTelemetryAdvanced(options, state, refresh, next)
+  if (isEnterKey(key) || key.name === "space") {
+    rows[clampIndex(state.permissionsSelectedIndex, rows.length)]?.onSelect()
     return true
   }
   return false
-}
-
-function telemetryKeyFromRawSequence(sequence: string): StackKeyEvent | undefined {
-  if (sequence === "\x1b") return { name: "escape", sequence }
-  if (sequence.length !== 1) return undefined
-  if (!["a", "b", "d", "l", "r"].includes(sequence)) return undefined
-  return { name: sequence, sequence }
 }
 
 function switcherFocusLabel(focusMode: FocusMode): string {
@@ -2961,15 +3575,18 @@ function buildSlashCommandContext(options: StackAppOptions, state: AppState): Sl
     state.metaThreadManifest?.active_goal?.objective?.trim() ?? state.goalContext.objective?.trim()
   return {
     monitorEnabled: isMonitorOn(state.monitorSnapshot),
-    monitorPanelOpen: state.rightPanelOpen,
+    monitorPanelOpen: state.rightPanelOpen && state.rightPanelContent === "default",
+    lightsOn: state.rightPanelOpen && state.rightPanelContent === "lights",
     subagentsEnabled: options.config.codexSubagentsEnabled,
     showDetails: state.showDetails,
     railsVisible: state.railsVisible,
     agentViewEnabled: state.agentViewEnabled,
     environmentName: options.config.environmentName,
+    providerName: harnessAuthPlan(options.config),
     profileName: readStackProfile(options.config.stackDataRoot).active,
+    workMode: state.workMode,
     model: workerHarness.codexModel,
-    effort: workerHarness.codexReasoningEffort,
+    effort: isCursorHarness(options.config) ? CURSOR_REASONING_EFFORT_OPTIONS[0] : workerHarness.codexReasoningEffort,
     goalObjective: objective,
     goalStatus: state.metaThreadManifest?.active_goal?.status ?? state.goalContext.status,
   }
@@ -2990,12 +3607,17 @@ function setActiveInputBuffer(state: AppState, value: string): void {
 }
 
 function goalWorkerChatFocused(state: AppState): boolean {
-  return isGoalMode(state) && state.goalShutterWorkerPeek && state.focusMode === "agent"
+  return isGoalMode(state) && state.focusMode === "agent"
 }
 
 function focusedInputEditing(state: AppState): boolean {
-  if (goalWorkerChatFocused(state)) return true
   return activeInputBuffer(state).length > 0
+}
+
+/** Goal navigation hotkeys (g, 1, 2, m, …) must not steal keys from panel text inputs. */
+function goalNavigationShortcutsEnabled(state: AppState): boolean {
+  if (state.focusMode === "monitor" || state.focusMode === "gardener") return false
+  return !focusedInputEditing(state)
 }
 
 function noteInputBufferEdit(state: AppState, previous: string, next: string): void {
@@ -3032,23 +3654,19 @@ function agentControlRow(
 ): ReturnType<typeof Box> {
   const config = options.config
   const cursorHarness = isCursorHarness(config)
-  const metaGoalLines = metaThreadGoalStripLines(state.metaThreadManifest, columns)
-  const codexGoalLines = goalContextStripLines(state.goalContext, columns).filter((line) => {
-    if (metaGoalLines.length === 0) return true
-    const objective = state.metaThreadManifest?.active_goal?.objective?.trim()
-    if (!objective) return true
-    return !line.includes(objective.slice(0, Math.min(24, objective.length)))
-  })
-  const goalLines = [...metaGoalLines, ...codexGoalLines]
+  const goalPreview = renderAgentGoalPreviewStyled(state.metaThreadManifest, state.goalContext, columns)
   const onGardenerSession = isGardenerSession(options, state)
   const workerHarness = workerHarnessForDisplay(config, state)
   const slashCtx = buildSlashCommandContext(options, state)
+  const goalMode = isGoalMode(state)
   return Box(
     {
       flexDirection: "column",
       gap: stackTuiLayout.panelGap,
+      flexShrink: 0,
+      width: "100%",
     },
-    ...(goalLines.length > 0
+    ...(goalPreview.length > 0
       ? [
           Box(
             {
@@ -3057,22 +3675,25 @@ function agentControlRow(
               alignItems: "flex-end",
               gap: 0,
             },
-            ...goalLines.map((line, index) =>
+            ...goalPreview.map((line) =>
               Text({
                 content: line,
-                fg: index === 0 ? theme.synth.amber : theme.fgPrimary,
+                width: "100%",
+                flexShrink: 0,
               }),
             ),
           ),
         ]
       : []),
     Text({
-      content: renderAgentInputStyled(options, state),
+      content: renderAgentInputStyled(options, state, columns),
       bg: agentInputBackground(state),
       width: "100%",
     }),
     ...slashMenuElements(state.inputBuffer, state.slashMenuIndex, slashCtx, columns, state.focusMode === "agent"),
-    ...(onGardenerSession
+    ...(goalMode && !onGardenerSession
+      ? [compactGoalWorkerControlRow(options, state, workerHarness, cursorHarness, refresh)]
+      : onGardenerSession
       ? [
           Box(
             {
@@ -3177,6 +3798,58 @@ function agentControlRow(
   )
 }
 
+function compactGoalWorkerControlRow(
+  options: StackAppOptions,
+  state: AppState,
+  workerHarness: ReturnType<typeof workerHarnessForDisplay>,
+  cursorHarness: boolean,
+  refresh: () => void,
+): ReturnType<typeof Box> {
+  const config = options.config
+  return Box(
+    {
+      flexDirection: "row",
+      gap: stackTuiLayout.panelGap,
+      alignItems: "center",
+      width: "100%",
+      overflow: "hidden",
+      flexShrink: 0,
+    },
+    controlLabel("worker"),
+    focusControlChip(compactModelLabel(workerHarness.codexModel), "model", state, refresh),
+    ...(cursorHarness
+      ? []
+      : [controlDivider(), focusControlChip(compactEffortLabel(workerHarness.codexReasoningEffort), "effort", state, refresh)]),
+    controlDivider(),
+    focusControlChip(`env ${config.environmentName}`, "environment", state, refresh),
+    ...(cursorHarness
+      ? []
+      : [
+          controlDivider(),
+          focusControlChip(`sub ${options.config.codexSubagentsEnabled ? "on" : "off"}`, "subagents", state, refresh),
+        ]),
+    controlDivider(),
+    monitorControlChip(`mon ${monitorOnOffLabel(state.monitorSnapshot)}`, state.monitorSnapshot, false, () =>
+      toggleMonitorEnabled(options, state, refresh),
+    ),
+    controlDivider(),
+    controlChip(state.rightPanelOpen ? "hide" : "show", state.rightPanelOpen, () =>
+      toggleMonitorPanelVisibility(options, state, refresh),
+    ),
+  )
+}
+
+function compactModelLabel(model: string): string {
+  return inlineText(model.replace(/^gpt-/, ""), 14)
+}
+
+function compactEffortLabel(effort: string): string {
+  if (effort === "medium") return "med"
+  if (effort === "high") return "high"
+  if (effort === "low") return "low"
+  return inlineText(effort, 8)
+}
+
 function sessionLogPathLine(options: StackAppOptions, state: AppState, columns: number): string {
   const path =
     state.lastSessionLogPath ?? join(options.config.sessionLogDir, `${options.session.id}.json`)
@@ -3193,9 +3866,23 @@ function controlLabel(content: string): ReturnType<typeof Text> {
   })
 }
 
-/** Bottom-anchor transcript text so short turns sit above the input, not below a flex gap. */
+/** Bottom-flow transcript text; the input/control footer owns the bottom of the pane. */
 function transcriptPane(content: StyledText, flexGrow = 1): ReturnType<typeof Box> {
-  return anchorTranscriptBox(content, flexGrow)
+  return Box(
+    {
+      flexDirection: "column",
+      flexGrow,
+      flexShrink: 1,
+      minHeight: 0,
+      justifyContent: "flex-end",
+      overflow: "hidden",
+    },
+    Text({
+      content,
+      minWidth: 1,
+      flexShrink: 0,
+    }),
+  )
 }
 
 function controlChip(content: string, active: boolean, onSelect?: () => void): ReturnType<typeof Text> {
@@ -3440,12 +4127,13 @@ function stackdSidePanelLayoutKey(state: AppState): string {
     state.focusMode,
     state.leftPanelOpen,
     state.rightPanelOpen,
+    state.rightPanelContent,
     state.rightPanelOpsVisible,
     state.rightPanelMode,
     state.liveOpsMode,
     state.monitorPanelMode,
     state.gardenerPanelMode,
-    state.goalShutterWorkerPeek,
+    state.workerPanelView,
     state.goalShutterSidecarView,
   ])
 }
@@ -3454,7 +4142,7 @@ function applyStackdClosedSidePanel(state: AppState): boolean {
   const before = stackdSidePanelLayoutKey(state)
   state.leftPanelOpen = false
   state.rightPanelOpen = false
-  state.goalShutterWorkerPeek = false
+  state.rightPanelContent = "default"
   if (
     state.focusMode === "monitor" ||
     state.focusMode === "gardener" ||
@@ -3482,22 +4170,35 @@ function applyStackdOpenedSidePanel(
   if (sidePanel.panel === "monitor") {
     state.leftPanelOpen = false
     state.rightPanelOpen = true
+    state.rightPanelContent = "default"
     state.rightPanelOpsVisible = false
     state.monitorWorkerTargetId = options.session.id
-    state.monitorPanelMode = sidePanel.view === "events" || sidePanel.view === "tape" ? "events" : "chat"
-    if (isGoalMode(state)) {
-      state.goalShutterWorkerPeek = false
-      state.goalShutterSidecarView = sidePanel.view === "thread" ? "thread" : "events"
+    state.monitorPanelMode =
+      sidePanel.view === "events" || sidePanel.view === "tape"
+        ? "events"
+        : "chat"
+    if (hasGoalContext(state)) {
+      if (sidePanel.view === "goal") {
+        state.workerPanelView = "goal"
+        state.focusMode = "agent"
+      } else {
+        state.goalShutterSidecarView = sidePanel.view === "thread" ? "thread" : "events"
+        state.focusMode = "monitor"
+      }
+    } else {
+      state.focusMode = "monitor"
     }
-    state.focusMode = "monitor"
   } else if (sidePanel.panel === "gardener") {
-    state.rightPanelOpen = false
-    state.leftPanelOpen = true
+    state.leftPanelOpen = false
+    state.rightPanelOpen = true
+    state.rightPanelContent = "gardener"
+    state.rightPanelOpsVisible = false
     state.gardenerPanelMode = sidePanel.view === "portfolio" ? "events" : "chat"
     state.focusMode = "gardener"
   } else if (sidePanel.panel === "ops") {
     state.leftPanelOpen = false
     state.rightPanelOpen = true
+    state.rightPanelContent = "default"
     state.rightPanelOpsVisible = true
     state.opsScrollOffset = 0
     if (sidePanel.view === "remote") {
@@ -3510,7 +4211,9 @@ function applyStackdOpenedSidePanel(
     }
   } else if (sidePanel.panel === "threads") {
     state.leftPanelOpen = false
-    state.rightPanelOpen = false
+    state.rightPanelOpen = true
+    state.rightPanelContent = "threads"
+    state.rightPanelOpsVisible = false
     state.leftPanelScrollOffset = 0
     state.focusMode = "history"
   }
@@ -3519,8 +4222,8 @@ function applyStackdOpenedSidePanel(
 
 function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
   reconcileGoalOwnership(options, state)
-  if (!isGoalMode(state)) {
-    state.goalShutterWorkerPeek = false
+  if (!showWorkerGoalTabs(state, state.metaEvents)) {
+    state.workerPanelView = "chat"
     state.goalShutterSidecarView = "events"
     state.goalShutterSidecarThreadScrollOffset = 0
     state.goalShutterSidecarThreadScrollPinned = true
@@ -3530,23 +4233,25 @@ function syncGoalModeDefaults(options: StackAppOptions, state: AppState): void {
     return
   }
   const objective = activeGoalModeSnapshot(state).objective ?? ""
-  if (state.goalMonitorAutoEnabledObjective !== objective) {
+  if (isGoalMode(state) && state.goalMonitorAutoEnabledObjective !== objective) {
     if (!isMonitorOn(state.monitorSnapshot)) {
       state.monitorSnapshot = setMonitorEnabled(options.config.stackDataRoot, options.session.id, true)
       syncMonitorRightPanel(state)
     }
     const wasOpen = state.rightPanelOpen
     state.rightPanelOpen = true
+    state.rightPanelContent = "default"
     state.rightPanelOpsVisible = false
     state.monitorWorkerTargetId = options.session.id
+    state.workerPanelView = "chat"
+    state.focusMode = "agent"
     state.goalMonitorAutoEnabledObjective = objective
-    // Panel opens are audited ui.* events even when the TUI opens them itself (A3).
     if (!wasOpen) {
       appendUiPanelOpened(options, state, "monitor", "events", "operator", "goal")
     }
   }
-  if (!state.goalShutterWorkerPeek && state.focusMode === "goal") {
-    state.focusMode = "monitor"
+  if (!isGoalMode(state) && state.focusMode === "goal") {
+    state.focusMode = "agent"
   }
 }
 
@@ -3559,11 +4264,11 @@ function focusGoalSidecarChat(
     state.monitorSnapshot = setMonitorEnabled(options.config.stackDataRoot, options.session.id, true)
     syncMonitorRightPanel(state)
   }
-  state.goalShutterWorkerPeek = false
   state.goalShutterSidecarView = "thread"
   state.goalShutterSidecarThreadScrollPinned = true
   const wasOpen = state.rightPanelOpen
   state.rightPanelOpen = true
+  state.rightPanelContent = "default"
   state.rightPanelOpsVisible = false
   state.talkToMonitor = true
   state.monitorPanelMode = "chat"
@@ -3575,24 +4280,15 @@ function focusGoalSidecarChat(
   refresh()
 }
 
-function focusGoalWorkerPeek(state: AppState, refresh: () => void): boolean {
-  if (!isGoalMode(state)) return false
-  state.goalShutterWorkerPeek = true
-  state.talkToMonitor = false
-  state.focusMode = "agent"
-  refresh()
+function focusGoalWorkerChat(state: AppState, refresh: () => void): boolean {
+  if (!showWorkerGoalTabs(state, state.metaEvents)) return false
+  selectWorkerPanelView(state, "chat", refresh)
   return true
 }
 
-function returnToGoalShutter(state: AppState, refresh: () => void): boolean {
-  if (!isGoalMode(state) || !state.goalShutterWorkerPeek) return false
-  state.goalShutterWorkerPeek = false
-  state.goalShutterSidecarView = "events"
-  state.goalShutterSidecarThreadScrollPinned = true
-  state.rightPanelOpen = true
-  state.rightPanelOpsVisible = false
-  state.focusMode = "monitor"
-  refresh()
+function returnToGoalView(state: AppState, refresh: () => void): boolean {
+  if (!showWorkerGoalTabs(state, state.metaEvents) || state.workerPanelView === "goal") return false
+  selectWorkerPanelView(state, "goal", refresh)
   return true
 }
 
@@ -3679,8 +4375,12 @@ function closeOperatorSidePanels(
     closedPanels.push("gardener")
   }
   if (state.rightPanelOpen) {
-    closedPanels.push(state.rightPanelOpsVisible || !isMonitorOn(state.monitorSnapshot) ? "ops" : "monitor")
+    if (state.rightPanelContent === "gardener") closedPanels.push("gardener")
+    else if (state.rightPanelContent === "threads") closedPanels.push("threads")
+    else if (state.rightPanelContent === "lights") closedPanels.push("ops")
+    else closedPanels.push(state.rightPanelOpsVisible || !isMonitorOn(state.monitorSnapshot) ? "ops" : "monitor")
     state.rightPanelOpen = false
+    state.rightPanelContent = "default"
   }
   if (state.focusMode === "history" || state.focusMode === "projects" || state.focusMode === "harness") {
     closedPanels.push("threads")
@@ -3688,7 +4388,6 @@ function closeOperatorSidePanels(
   if (closedPanels.length === 0) return false
   state.lastOperatorSidePanelClosedAtMs = Date.now()
   state.focusMode = "agent"
-  state.goalShutterWorkerPeek = false
 
   for (const panel of new Set(closedPanels)) {
     try {
@@ -3741,18 +4440,28 @@ function openMonitorPanel(
   options: StackAppOptions,
   state: AppState,
   refresh: () => void,
+  mode: MonitorPanelMode = "chat",
   reason = "slash",
 ): void {
   if (!isMonitorOn(state.monitorSnapshot)) {
     state.monitorSnapshot = setMonitorEnabled(options.config.stackDataRoot, options.session.id, true)
   }
+  state.leftPanelOpen = false
   state.rightPanelOpen = true
+  state.rightPanelContent = "default"
   state.rightPanelOpsVisible = false
   state.talkToMonitor = true
-  state.monitorPanelMode = "chat"
+  state.monitorPanelMode = mode
   state.monitorWorkerTargetId = options.session.id
   state.focusMode = "monitor"
-  appendUiPanelOpened(options, state, "monitor", "thread", "operator", reason)
+  appendUiPanelOpened(
+    options,
+    state,
+    "monitor",
+    mode === "events" ? "events" : "thread",
+    "operator",
+    reason,
+  )
   void emitFeatureUsed("monitor_sidecar")
   refresh()
 }
@@ -3764,6 +4473,7 @@ function toggleMonitorPanelVisibility(
 ): void {
   if (state.rightPanelOpen) {
     state.rightPanelOpen = false
+    state.rightPanelContent = "default"
     if (state.focusMode === "monitor") state.focusMode = "agent"
     appendUiPanelClosed(options, state, "monitor", "slash")
     refresh()
@@ -3843,22 +4553,84 @@ function toggleMonitorEnabled(
   refresh()
 }
 
+function togglePreviousGoalExpanded(state: AppState, entryKey: string): void {
+  if (state.previousGoalExpandedKeys.has(entryKey)) {
+    state.previousGoalExpandedKeys.delete(entryKey)
+  } else {
+    state.previousGoalExpandedKeys.add(entryKey)
+  }
+  state.goalShutterScrollPinned = false
+}
+
+function previousGoalHistoryEntries(
+  state: AppState,
+  events: readonly StackThreadMetaEvent[],
+  metaThreadId?: string,
+) {
+  return listGoalHistory(events, {
+    metaThreadId,
+    manifestGoal: state.metaThreadManifest?.active_goal,
+  })
+}
+
+function handlePreviousGoalsListKeys(
+  key: { name?: string },
+  state: AppState,
+  events: readonly StackThreadMetaEvent[],
+  metaThreadId: string | undefined,
+  refresh: () => void,
+): boolean {
+  if (state.workerPanelView !== "goal" || isGoalMode(state)) return false
+  const entries = previousGoalHistoryEntries(state, events, metaThreadId)
+  if (entries.length === 0) return false
+  if (key.name === "j" || key.name === "down") {
+    state.previousGoalSelectedIndex = clampIndex(state.previousGoalSelectedIndex + 1, entries.length)
+    refresh()
+    return true
+  }
+  if (key.name === "k" || key.name === "up") {
+    state.previousGoalSelectedIndex = clampIndex(state.previousGoalSelectedIndex - 1, entries.length)
+    refresh()
+    return true
+  }
+  if (key.name === "enter" || key.name === "space") {
+    const entry = entries[clampIndex(state.previousGoalSelectedIndex, entries.length)]
+    if (entry) togglePreviousGoalExpanded(state, goalHistoryEntryKey(entry))
+    refresh()
+    return true
+  }
+  return false
+}
+
+function selectWorkerPanelView(state: AppState, view: WorkerPanelView, refresh: () => void): void {
+  if (!showWorkerGoalTabs(state, state.metaEvents)) return
+  state.workerPanelView = view
+  state.focusMode = "agent"
+  if (view === "goal") {
+    state.goalShutterScrollOffset = 0
+    state.goalShutterScrollPinned = true
+  }
+  refresh()
+}
+
+function workerPanelModeBar(state: AppState, refresh: () => void): ReturnType<typeof Box> {
+  const selectView = (view: WorkerPanelView) => selectWorkerPanelView(state, view, refresh)
+  return renderPanelTabBar([
+    { label: "chat", active: state.workerPanelView === "chat", onSelect: () => selectView("chat") },
+    { label: "goal", active: state.workerPanelView === "goal", onSelect: () => selectView("goal") },
+  ])
+}
+
 function monitorPanelModeBar(state: AppState, refresh: () => void): ReturnType<typeof Box> {
   const selectMode = (mode: MonitorPanelMode) => {
     state.monitorPanelMode = mode
     state.focusMode = "monitor"
     refresh()
   }
-  return Box(
-    {
-      flexDirection: "row",
-                          gap: stackTuiLayout.panelGap,
-      alignItems: "center",
-      width: "100%",
-    },
-    controlChip("chat", state.monitorPanelMode === "chat", () => selectMode("chat")),
-    controlChip("events", state.monitorPanelMode === "events", () => selectMode("events")),
-  )
+  return renderPanelTabBar([
+    { label: "chat", active: state.monitorPanelMode === "chat", onSelect: () => selectMode("chat") },
+    { label: "events", active: state.monitorPanelMode === "events", onSelect: () => selectMode("events") },
+  ])
 }
 
 function monitorControlRow(
@@ -3895,11 +4667,30 @@ function openGardenerPanel(
   refresh: () => void,
   reason = "slash",
 ): void {
-  state.leftPanelOpen = true
+  state.leftPanelOpen = false
+  state.rightPanelOpen = true
+  state.rightPanelContent = "gardener"
+  state.rightPanelOpsVisible = false
   state.gardenerPanelMode = "chat"
   state.focusMode = "gardener"
   appendUiPanelOpened(options, state, "gardener", "chat", "operator", reason)
   void emitFeatureUsed("gardener_chat")
+  refresh()
+}
+
+function openThreadsPanel(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  reason = "slash",
+): void {
+  state.leftPanelOpen = false
+  state.rightPanelOpen = true
+  state.rightPanelContent = "threads"
+  state.rightPanelOpsVisible = false
+  state.leftPanelScrollOffset = 0
+  state.focusMode = "history"
+  appendUiPanelOpened(options, state, "threads", "list", "operator", reason)
   refresh()
 }
 
@@ -3916,8 +4707,13 @@ async function submitGardenerInputValue(
 ): Promise<void> {
   state.gardenerInputBuffer = ""
   state.gardenerNotice = undefined
-  const message = isExplicitGardenerPrefix(prompt) ? stripGardenerMessagePrefix(prompt) : prompt
-  if (!message.trim()) {
+  const stripped = isExplicitGardenerPrefix(prompt) ? stripGardenerMessagePrefix(prompt) : prompt
+  const parsed = parseChannelInput(stripped)
+  if (parsed.missingPaths.length > 0) {
+    state.gardenerNotice = `image not found: ${parsed.missingPaths.map((path) => path.split("/").pop() ?? path).join(", ")}`
+  }
+  const message = parsed.text || parsed.displayText
+  if (!message.trim() && parsed.imagePaths.length === 0) {
     refresh()
     return
   }
@@ -4029,7 +4825,7 @@ async function submitGardenerInputValue(
     options.config.stackDataRoot,
     gardenerThreadId(state),
     "user",
-    intent.body,
+    parsed.displayText,
     opts?.source ? { source: opts.source } : undefined,
   )
   refreshMetaEvents()
@@ -4044,7 +4840,8 @@ async function submitGardenerInputValue(
     const response = await runGardenerChatTurn({
       config: options.config,
       gardenerThreadId: gardenerThreadId(state),
-      userMessage: intent.body,
+      userMessage: intent.body || parsed.displayText,
+      imagePaths: parsed.imagePaths,
       workerSession: options.session,
       workerSummaries: state.history,
       workerTargetId: resolveGardenerWorkerTargetId(options, state),
@@ -4085,17 +4882,10 @@ function gardenerPanelModeBar(state: AppState, refresh: () => void): ReturnType<
     state.focusMode = "gardener"
     refresh()
   }
-  return Box(
-    {
-      flexDirection: "row",
-                          gap: stackTuiLayout.panelGap,
-      alignItems: "center",
-      width: "100%",
-      flexShrink: 0,
-    },
-    controlChip("chat", state.gardenerPanelMode === "chat", () => selectMode("chat")),
-    controlChip("events", state.gardenerPanelMode === "events", () => selectMode("events")),
-  )
+  return renderPanelTabBar([
+    { label: "chat", active: state.gardenerPanelMode === "chat", onSelect: () => selectMode("chat") },
+    { label: "events", active: state.gardenerPanelMode === "events", onSelect: () => selectMode("events") },
+  ])
 }
 
 function buildGardenerChatBlocks(state: AppState, events: StackThreadMetaEvent[]): TranscriptBlock[] {
@@ -4287,16 +5077,26 @@ function submitMonitorOperatorMessage(
   refresh: () => void,
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
+  opts?: { echoInWorker?: boolean },
 ): Promise<void> {
-  appendStackBlock(state.blocks, `monitor ← ${oneLine(message, 72)}`)
-  refresh()
+  const parsed = parseChannelInput(message)
+  if (parsed.missingPaths.length > 0 && opts?.echoInWorker !== false) {
+    appendStackBlock(
+      state.blocks,
+      `monitor image not found: ${parsed.missingPaths.map((path) => path.split("/").pop() ?? path).join(", ")}`,
+    )
+  }
+  if (opts?.echoInWorker !== false) {
+    appendStackBlock(state.blocks, `monitor ← ${oneLine(parsed.displayText, 72)}`)
+    refresh()
+  }
   const threadId = resolveMonitorWorkerTargetId(options, state)
   void (async () => {
     const directName = await tryApplyThreadNameFromOperatorMessage({
       stackRoot: options.config.stackDataRoot,
       sessionLogDir: options.config.sessionLogDir,
       threadId,
-      message,
+      message: parsed.displayText,
       codexModel: options.config.codexModel,
       pricingRows: options.config.codexPricing,
     })
@@ -4362,7 +5162,15 @@ async function executeSidecarOperatorMessage(
   state.sidecarChatInFlight = true
   refresh()
   try {
-    await submitMonitorOperatorMessage(message, options, state, refresh, refreshHistory, refreshMetaEvents)
+    await submitMonitorOperatorMessage(
+      message,
+      options,
+      state,
+      refresh,
+      refreshHistory,
+      refreshMetaEvents,
+      { echoInWorker: false },
+    )
   } finally {
     state.sidecarChatInFlight = false
     refresh()
@@ -4609,8 +5417,44 @@ function buildSlashDispatchHooks(
       appendStackBlock(state.blocks, `monitor ${monitorOnOffLabel(state.monitorSnapshot)}`)
       refresh()
     },
+    setMonitorView: (view) => {
+      if (view === "goal") {
+        if (hasGoalContext(state)) {
+          selectWorkerPanelView(state, "goal", refresh)
+        }
+        return
+      }
+      const mode: MonitorPanelMode = view === "stream" ? "events" : "chat"
+      openMonitorPanel(
+        options,
+        state,
+        refresh,
+        mode,
+        `slash:${view}`,
+      )
+    },
     messageMonitor: (message) => {
       void submitMonitorOperatorMessage(message, options, state, refresh, refreshHistory, refreshMetaEvents)
+    },
+    setLights: (enabled) => {
+      if (enabled) {
+        state.rightPanelOpen = true
+        state.rightPanelContent = "lights"
+        state.rightPanelOpsVisible = false
+        state.focusMode = "ops"
+        state.opsScrollOffset = 0
+        appendStackBlock(state.blocks, "lights on")
+      } else {
+        if (state.rightPanelOpen && state.rightPanelContent === "lights") {
+          appendUiPanelClosed(options, state, "ops", "slash:lights")
+          state.rightPanelOpen = false
+          state.rightPanelContent = "default"
+          state.rightPanelOpsVisible = false
+          if (state.focusMode === "ops") state.focusMode = "agent"
+        }
+        appendStackBlock(state.blocks, "lights off")
+      }
+      refresh()
     },
     cycleEnvironment: (direction) => {
       void cycleStackEnvironmentFromUi(direction)
@@ -4618,6 +5462,15 @@ function buildSlashDispatchHooks(
     setEnvironment: (name) => {
       if (!STACK_ENVIRONMENT_OPTIONS.includes(name as StackEnvironmentName)) return false
       void refreshAfterEnvironmentChange(name as StackEnvironmentName)
+      return true
+    },
+    cycleProvider: (direction) => {
+      void switchProviderFromSlash(options, state, codexSessionHandle, cycleHarnessProvider(options.config, direction), refresh)
+    },
+    setProvider: (name) => {
+      const harness = providerSlashArgToHarness(name)
+      if (!harness) return false
+      void switchProviderFromSlash(options, state, codexSessionHandle, harness, refresh)
       return true
     },
     cycleProfile: (direction) => {
@@ -4629,6 +5482,11 @@ function buildSlashDispatchHooks(
       if (!profile) return false
       applyStackProfile(profile, options, state, refresh)
       return true
+    },
+    setWorkMode: (mode) => {
+      state.workMode = mode
+      appendStackBlock(state.blocks, `work_mode ${mode} (not wired yet)`)
+      refresh()
     },
     openModelSwitcher: () => {
       state.focusMode = "model"
@@ -4643,11 +5501,25 @@ function buildSlashDispatchHooks(
       if (!match) return false
       applySwitcherOption("model", match, options, state, refresh)
       appendStackBlock(state.blocks, `model ${match}`)
+      persistStackConfig(options, state, refresh)
       return true
     },
-    cycleEffort: () => {
-      cycleEffort(options.config, 1)
+    showUsage: () => {
+      appendUsageSummary(options, state, refresh)
+    },
+    openExperimental: () => {
+      state.focusMode = "experimental"
       refresh()
+    },
+    cycleEffort: () => {
+      if (isCursorHarness(options.config)) {
+        appendStackBlock(state.blocks, `reasoning effort ${CURSOR_REASONING_EFFORT_OPTIONS[0]}`)
+        refresh()
+        return
+      }
+      cycleEffort(options.config, 1)
+      appendStackBlock(state.blocks, `reasoning effort ${options.config.codexReasoningEffort}`)
+      persistStackConfig(options, state, refresh)
     },
     setSubagents: (enabled) => {
       if (enabled === undefined) {
@@ -4667,22 +5539,31 @@ function buildSlashDispatchHooks(
       refresh()
     },
     toggleThreads: () => {
-      state.focusMode = "history"
-      state.leftPanelScrollOffset = 0
-      appendUiPanelOpened(options, state, "threads", "list", "operator", "slash")
-      refresh()
+      openThreadsPanel(options, state, refresh, "slash")
+    },
+    startNewThread: () => {
+      void startNewThread(options, state, codexSessionHandle, refresh, refreshHistory, refreshMetaEvents)
     },
     openOps: () => {
       state.rightPanelOpen = true
+      state.rightPanelContent = "default"
       state.rightPanelOpsVisible = true
       state.focusMode = "ops"
       state.opsScrollOffset = 0
       appendUiPanelOpened(options, state, "ops", state.liveOpsMode === "remote" ? "remote" : "local", "operator", "slash")
       refresh()
     },
+    openConfig: () => {
+      state.focusMode = "config"
+      state.configSelectedIndex = 0
+      state.configNotice = undefined
+      refresh()
+    },
+    openPermissions: () => {
+      openPermissionsPanel(state, refresh)
+    },
     openTelemetrySettings: () => {
-      state.focusMode = "telemetry"
-      void refreshTelemetryStatus(state, refresh)
+      openPermissionsPanel(state, refresh)
     },
     toggleActors: () => {
       if (isMonitorOn(state.monitorSnapshot)) {
@@ -4691,7 +5572,7 @@ function buildSlashDispatchHooks(
       }
     },
     focusAgent: () => {
-      if (focusGoalWorkerPeek(state, refresh)) return
+      if (focusGoalWorkerChat(state, refresh)) return
       state.focusMode = "agent"
       refresh()
     },
@@ -4709,6 +5590,75 @@ function buildSlashDispatchHooks(
   }
 }
 
+function appendUsageSummary(options: StackAppOptions, state: AppState, refresh: () => void): void {
+  appendStackBlock(state.blocks, stackUsageSummaryText(options, state))
+  refresh()
+}
+
+function stackUsageSummaryText(options: StackAppOptions, state: AppState): string {
+  const config = options.config
+  const provider = harnessAuthPlan(config)
+  const sessionUsage = buildSessionUsageSummary(options.session.turns, harnessModel(config), config.codexPricing)
+  const providerBudget = isCursorHarness(config)
+    ? formatCursorBudgetSuffix(config.cursorAuthPlan, state.cursorAccount, config.cursorModel)
+    : formatCodexBudgetSuffix(config.codexAuthPlan, state.codexRateLimits)
+  const remoteUsage = formatRemoteUsageForSlash(state.remoteUsageSnapshot)
+  return [
+    "Usage",
+    `provider: ${provider}`,
+    `model: ${harnessModel(config)}`,
+    isCursorHarness(config) ? `reasoning: ${CURSOR_REASONING_EFFORT_OPTIONS[0]}` : `reasoning: ${config.codexReasoningEffort}`,
+    providerBudget ? `account: ${providerBudget}` : `account: ${provider} usage unavailable`,
+    `session: ${formatSessionUsageSummary(sessionUsage)}`,
+    `last turn: ${compactUsageWithThroughput(state.lastUsage, displayTokensPerSecond(state))}`,
+    remoteUsage,
+  ]
+    .filter((line) => line.length > 0)
+    .join("\n")
+}
+
+function formatRemoteUsageForSlash(usage: RemoteUsageSnapshot): string {
+  if (usage.status !== "ready") {
+    return usage.message ? `Synth ${usage.environmentName}: ${usage.status} · ${usage.message}` : `Synth ${usage.environmentName}: ${usage.status}`
+  }
+  const parts = [`Synth ${usage.environmentName}`]
+  if (usage.planTier) parts.push(usage.planTier)
+  if (usage.spendTodayUsd !== undefined) parts.push(`today ${formatUsd(usage.spendTodayUsd)}`)
+  if (usage.usage7dUsd !== undefined) parts.push(`7d ${formatUsd(usage.usage7dUsd)}`)
+  if (usage.walletUsd !== undefined) parts.push(`wallet ${formatUsd(usage.walletUsd)}`)
+  return parts.join(" · ")
+}
+
+function formatUsd(value: number): string {
+  return `$${value.toFixed(value >= 10 ? 2 : 3).replace(/0+$/, "").replace(/\.$/, "")}`
+}
+
+async function switchProviderFromSlash(
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: HarnessSession },
+  harness: StackHarnessKind,
+  refresh: () => void,
+): Promise<void> {
+  const before = options.config.harness
+  if (before === harness) {
+    appendStackBlock(state.blocks, `provider ${harnessAuthPlan(options.config)}`)
+    refresh()
+    return
+  }
+  await applyHarnessSwitch(options, state, codexSessionHandle, harness, refresh)
+  if (options.config.harness !== before) {
+    persistStackConfig(options, state, refresh)
+  }
+}
+
+function providerSlashArgToHarness(value: string): StackHarnessKind | undefined {
+  const normalized = value.trim().toLowerCase()
+  if (["chatgpt", "codex", "openai"].includes(normalized)) return "codex"
+  if (["cursor", "composer"].includes(normalized)) return "cursor"
+  return undefined
+}
+
 function submitInputValue(
   prompt: string,
   options: StackAppOptions,
@@ -4721,6 +5671,7 @@ function submitInputValue(
   forceQueue = false,
 ): void {
   if (!prompt) return
+  state.agentChatPaused = false
   state.inputBuffer = ""
   const codexSession = codexSessionHandle.session
 
@@ -4737,16 +5688,9 @@ function submitInputValue(
       return
     }
     state.talkToMonitor = true
-    void submitMonitorOperatorMessage(message, options, state, refresh, refreshHistory, refreshMetaEvents)
-    return
-  }
-
-  if (state.talkToMonitor && !isGardenerSession(options, state) && !isExplicitGardenerPrefix(prompt)) {
-    if (!prompt.trim()) {
-      refresh()
-      return
-    }
-    void submitMonitorOperatorMessage(prompt, options, state, refresh, refreshHistory, refreshMetaEvents)
+    void submitMonitorOperatorMessage(message, options, state, refresh, refreshHistory, refreshMetaEvents, {
+      echoInWorker: true,
+    })
     return
   }
 
@@ -4769,23 +5713,33 @@ function submitInputValue(
     return
   }
 
+  const parsed = parseChannelInput(prompt)
+  if (parsed.missingPaths.length > 0) {
+    appendStackBlock(
+      state.blocks,
+      `image not found: ${parsed.missingPaths.map((path) => path.split("/").pop() ?? path).join(", ")}`,
+    )
+  }
+  const channelPrompt = parsed.displayText
+  if (!channelPrompt.trim() && parsed.imagePaths.length === 0) return
+
   if (state.status === "running" && codexSession) {
     if (forceQueue) {
       codexSession.enqueue(prompt)
-      state.queuedMessages = [...state.queuedMessages, prompt]
+      state.queuedMessages = [...state.queuedMessages, channelPrompt]
       state.lastSteerHint = `queued (${state.queuedMessages.length})`
       refresh()
       return
     }
     void codexSession.trySteer(prompt).then((steered) => {
       if (steered) {
-        appendUserBlock(state.blocks, prompt)
+        appendUserBlock(state.blocks, channelPrompt)
         state.lastSteerHint = "steered"
         refresh()
         return
       }
       codexSession.enqueue(prompt)
-      state.queuedMessages = [...state.queuedMessages, prompt]
+      state.queuedMessages = [...state.queuedMessages, channelPrompt]
       state.lastSteerHint = `queued (${state.queuedMessages.length})`
       refresh()
     })
@@ -4795,7 +5749,9 @@ function submitInputValue(
   if (state.status === "running") return
   trackActiveTurn(
     state,
-    submitPrompt(prompt, options, state, codexSessionHandle, renderer, refresh, refreshHistory, refreshMetaEvents),
+    submitPrompt(channelPrompt, options, state, codexSessionHandle, renderer, refresh, refreshHistory, refreshMetaEvents, {
+      imagePaths: parsed.imagePaths,
+    }),
   )
 }
 
@@ -5025,6 +5981,37 @@ function isEnterKey(key: StackKeyEvent): boolean {
   )
 }
 
+function activeInputIsExitCommand(state: AppState): boolean {
+  return isExitCommandText(activeInputBuffer(state))
+}
+
+function isExitCommandText(value: string): boolean {
+  return /^\/(?:exit|quit)\s*$/i.test(value.trim())
+}
+
+function consumeRawExitCommand(sequence: string, state: AppState): boolean {
+  const text = sequence.replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+  if (!text) return false
+
+  if (text === "\u007f" || text === "\b") {
+    state.rawCommandTail = state.rawCommandTail.slice(0, -1)
+    return false
+  }
+
+  const combined = `${state.rawCommandTail}${text}`
+  if (!/[\r\n]/.test(combined)) {
+    if (/^[\x20-\x7e]+$/.test(text)) {
+      state.rawCommandTail = combined.slice(-64)
+    }
+    return false
+  }
+
+  const parts = combined.split(/\r\n|\r|\n/)
+  const submitted = parts.slice(0, -1).some(isExitCommandText)
+  state.rawCommandTail = (parts.at(-1) ?? "").slice(-64)
+  return submitted
+}
+
 function handleRawAgentInput(
   sequence: string,
   state: AppState,
@@ -5044,7 +6031,7 @@ function handleRawAgentInput(
     refresh,
     deferSequence: (chunk) => chunk === "V" && activeSessionId === state.gardenerThreadId,
     blockWhileRunning: true,
-    isRunning: state.status === "running",
+    isRunning: state.status === "running" && !state.agentChatPaused,
   })
 }
 
@@ -5125,6 +6112,7 @@ function handleRawInput(
   refreshHostedOptimizers: () => Promise<void>,
   refreshRemoteOpsPanel: () => Promise<void>,
   cycleStackEnvironmentFromUi: (direction: number) => Promise<void>,
+  exitStack: () => void,
 ): boolean {
   const pasteResult = consumeBracketedPasteSequences(
     state.pasteAccumulator,
@@ -5152,6 +6140,7 @@ function handleRawInput(
         refreshHostedOptimizers,
         refreshRemoteOpsPanel,
         cycleStackEnvironmentFromUi,
+        exitStack,
       ),
   )
   state.pasteAccumulator = pasteResult.accumulator
@@ -5179,11 +6168,26 @@ function handleRawInputInner(
   refreshHostedOptimizers: () => Promise<void>,
   refreshRemoteOpsPanel: () => Promise<void>,
   cycleStackEnvironmentFromUi: (direction: number) => Promise<void>,
+  exitStack: () => void,
 ): boolean {
+  if (consumeRawExitCommand(sequence, state)) {
+    exitStack()
+    return true
+  }
+
   const telemetryKey = telemetryKeyFromRawSequence(sequence)
-  if (telemetryKey && handleTelemetryKey(telemetryKey, options, state, refresh)) return true
+  if (telemetryKey && handlePermissionsKey(telemetryKey, options, state, refresh)) return true
+  if (telemetryModalCapturesRawInput(state)) {
+    const chunkKey = telemetryKeyFromRawModalChunk(sequence)
+    if (chunkKey) handlePermissionsKey(chunkKey, options, state, refresh)
+    return true
+  }
 
   if (sequence === "\x1b") {
+    if (closeSelectorPanel(state)) {
+      refresh()
+      return true
+    }
     if (state.focusMode === "monitor" && state.monitorInputBuffer.length > 0) {
       state.monitorInputBuffer = ""
       state.slashMenuIndex = 0
@@ -5202,12 +6206,23 @@ function handleRawInputInner(
       refresh()
       return true
     }
-    if (isGoalMode(state)) {
-      if (returnToGoalShutter(state, refresh)) return true
-      focusGoalWorkerPeek(state, refresh)
+    if (showWorkerGoalTabs(state, state.metaEvents)) {
+      if (returnToGoalView(state, refresh)) return true
+      selectWorkerPanelView(state, "chat", refresh)
       return true
     }
-    if (state.status === "running") {
+    if (agentChatPauseEligible(state)) {
+      if (state.agentChatPaused) {
+        state.agentChatPaused = false
+        if (codexSessionHandle.session) {
+          appendStackBlock(state.blocks, "interrupt requested")
+          void codexSessionHandle.session.interrupt().finally(refresh)
+        }
+      } else {
+        state.agentChatPaused = true
+        state.lastAgentScrollAt = Date.now()
+        refresh()
+      }
       return true
     }
     return true
@@ -5284,31 +6299,64 @@ function handleRawInputInner(
     return true
   }
 
-  if (isGoalMode(state) && !focusedInputEditing(state)) {
-    if (sequence === "m") {
-      focusGoalSidecarChat(options, state, refresh)
+  if (
+    state.workerPanelView === "goal" &&
+    !isGoalMode(state) &&
+    state.focusMode === "agent" &&
+    goalNavigationShortcutsEnabled(state)
+  ) {
+    const navKey =
+      sequence === "j"
+        ? "j"
+        : sequence === "k"
+          ? "k"
+          : sequence === " "
+            ? "space"
+            : isRawEnterSequence(sequence)
+              ? "enter"
+              : undefined
+    if (
+      navKey &&
+      handlePreviousGoalsListKeys({ name: navKey }, state, state.metaEvents, options.session.metaThreadId, refresh)
+    ) {
       return true
     }
-    if (sequence === "t") {
-      state.goalShutterSidecarView = "thread"
-      refresh()
-      return true
-    }
-    if (sequence === "e") {
-      state.goalShutterSidecarView = "events"
-      refresh()
-      return true
+  }
+
+  if (showWorkerGoalTabs(state, state.metaEvents) && goalNavigationShortcutsEnabled(state)) {
+    if (isGoalMode(state)) {
+      if (sequence === "m") {
+        focusGoalSidecarChat(options, state, refresh)
+        return true
+      }
+      if (sequence === "t") {
+        state.monitorPanelMode = "chat"
+        state.focusMode = "monitor"
+        refresh()
+        return true
+      }
+      if (sequence === "e") {
+        state.monitorPanelMode = "events"
+        state.focusMode = "monitor"
+        refresh()
+        return true
+      }
+      if (sequence === "a") {
+        state.agentViewEnabled = !state.agentViewEnabled
+        refresh()
+        return true
+      }
+      if (sequence === "1") {
+        selectWorkerPanelView(state, "chat", refresh)
+        return true
+      }
+      if (sequence === "2") {
+        selectWorkerPanelView(state, "goal", refresh)
+        return true
+      }
     }
     if (sequence === "g") {
-      state.goalShutterWorkerPeek = false
-      state.focusMode = "goal"
-      openGoalPanel(state)
-      refresh()
-      return true
-    }
-    if (sequence === "a") {
-      state.agentViewEnabled = !state.agentViewEnabled
-      refresh()
+      selectWorkerPanelView(state, "goal", refresh)
       return true
     }
   }
@@ -5318,7 +6366,7 @@ function handleRawInputInner(
     return true
   }
 
-  if (handleAgentScrollKey({ name: keyName }, state, renderer)) {
+  if (handleAgentScrollKey({ name: keyName }, state, renderer, options)) {
     refresh()
     return true
   }
@@ -5427,7 +6475,7 @@ function handleRawInputInner(
   }
 
   if (state.focusMode === "model") {
-    handleModelKey({ name: keyName }, options.config)
+    handleModelKey({ name: keyName }, options, state, refresh)
     refresh()
     return true
   }
@@ -5479,6 +6527,7 @@ function rawSequenceKeyName(sequence: string): string | undefined {
   if (sequence === "\x15") return "pageup"
   if (sequence === "\x04") return "pagedown"
   if (sequence === " ") return "space"
+  if (/^[1-9]$/.test(sequence)) return sequence
   if (sequence === "a") return "a"
   if (sequence === "j") return "j"
   if (sequence === "k") return "k"
@@ -5845,11 +6894,7 @@ function globalConnectionBar(
         alignItems: "flex-end",
       },
       exitButtonChip(exitStack),
-      Text({
-        content: oneLine(`stack ${stackVersion(config.appRoot)}`, Math.max(18, Math.min(40, columns - 24))),
-        fg: theme.fgMuted,
-        flexShrink: 0,
-      }),
+      stackVersionAndUpdateRow(options, state, refresh, columns),
       Box(
         {
           flexDirection: "row",
@@ -5865,6 +6910,127 @@ function globalConnectionBar(
       ),
     ),
   )
+}
+
+function stackVersionAndUpdateRow(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  columns: number,
+): ReturnType<typeof Box> {
+  const versionLabel = oneLine(`stack ${stackVersion(options.config.appRoot)}`, Math.max(18, Math.min(40, columns - 24)))
+  const updateChip = stackUpdateChip(options, state, refresh)
+  return Box(
+    {
+      flexDirection: "row",
+      gap: stackTuiLayout.panelGap,
+      flexShrink: 0,
+      alignItems: "center",
+    },
+    Text({
+      content: versionLabel,
+      fg: theme.fgMuted,
+      flexShrink: 0,
+    }),
+    ...(updateChip ? [updateChip] : []),
+  )
+}
+
+function stackUpdateChip(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): ReturnType<typeof Text> | undefined {
+  if (state.updateApplying) {
+    return Text({
+      content: " updating ",
+      fg: theme.fgOnAccent,
+      bg: theme.synth.orange,
+      flexShrink: 0,
+    })
+  }
+  if (state.updateNotice) {
+    return Text({
+      content: " restart ",
+      fg: theme.fgOnAccent,
+      bg: theme.synth.gold,
+      flexShrink: 0,
+      onMouseDown(event: PanelMouseEvent) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        appendStackBlock(state.blocks, state.updateNotice ?? "Stack updated; restart to use the new version")
+        refresh()
+      },
+    })
+  }
+  if (state.updateCheck?.status !== "available") return undefined
+  const latest = state.updateCheck.latest_version ?? "latest"
+  return Text({
+    content: oneLine(` update ${shortUpdateVersion(latest)} `, 24),
+    fg: theme.fgOnAccent,
+    bg: theme.synth.orange,
+    flexShrink: 0,
+    onMouseDown(event: PanelMouseEvent) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      void applyStackUpdateFromUi(options, state, refresh)
+    },
+  })
+}
+
+function shortUpdateVersion(version: string): string {
+  const match = version.match(/dev\.(\d{8}\.\d+)$/)
+  return match ? match[1] : version
+}
+
+async function refreshStackUpdateStatus(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  if (state.updateChecking || state.updateApplying) return
+  state.updateChecking = true
+  try {
+    state.updateCheck = await checkUpdate(options.config)
+  } catch (error) {
+    state.updateCheck = {
+      generated_at: new Date().toISOString(),
+      current_version: stackVersion(options.config.appRoot),
+      current_channel: "unknown",
+      requested_channel: "nightly",
+      manifest_source: "https://stack.usesynth.ai/releases/nightly.json",
+      status: "unavailable",
+      message: errorMessage(error),
+      mutates: false,
+    }
+  } finally {
+    state.updateChecking = false
+    refresh()
+  }
+}
+
+async function applyStackUpdateFromUi(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  if (state.updateApplying) return
+  state.updateApplying = true
+  state.updateNotice = undefined
+  appendStackBlock(state.blocks, "Stack update started")
+  refresh()
+  try {
+    const report = await applyUpdate(options.config)
+    state.updateNotice = report.message
+    state.updateCheck = await checkUpdate(options.config)
+    appendStackBlock(state.blocks, report.message)
+  } catch (error) {
+    state.updateNotice = undefined
+    appendStackBlock(state.blocks, `Stack update failed: ${errorMessage(error)}`)
+  } finally {
+    state.updateApplying = false
+    refresh()
+  }
 }
 
 function exitButtonChip(exitStack: () => void): ReturnType<typeof Text> {
@@ -6055,7 +7221,7 @@ function tailGoalSidecarThreadScroll(
     options: sidecarTranscriptRenderOptions(state),
   })
   const maxOffset = Math.max(0, lineCount - visibleRows)
-  if (state.goalShutterSidecarThreadScrollPinned) state.goalShutterSidecarThreadScrollOffset = maxOffset
+  if (state.goalShutterSidecarThreadScrollPinned) state.goalShutterSidecarThreadScrollOffset = 0
   else if (state.goalShutterSidecarThreadScrollOffset > maxOffset) state.goalShutterSidecarThreadScrollOffset = maxOffset
 }
 
@@ -6075,12 +7241,60 @@ function handleGoalSidecarThreadMouseScroll(
     options: sidecarTranscriptRenderOptions(state),
   })
   const maxOffset = Math.max(0, lineCount - visibleRows)
+  const next = scrollTranscriptViewport(direction, state.goalShutterSidecarThreadScrollOffset, maxOffset)
+  state.goalShutterSidecarThreadScrollOffset = next.offset
+  state.goalShutterSidecarThreadScrollPinned = next.pinned
+  refresh()
+}
+
+function monitorGoalViewInput(
+  options: StackAppOptions,
+  state: AppState,
+  events: StackThreadMetaEvent[],
+  columns: number,
+  metaThreadTitle?: string,
+): MonitorGoalViewInput {
+  return {
+    state,
+    events,
+    columns,
+    metaThreadId: options.session.metaThreadId,
+    metaThreadTitle,
+    workerStatus: state.status,
+    workerTurnStartedAt: state.currentTurnStartedAt,
+  }
+}
+
+function handleWorkerGoalViewScroll(
+  direction: "up" | "down",
+  state: AppState,
+  maxOffset: number,
+  refresh: () => void,
+): void {
   if (direction === "up") {
-    state.goalShutterSidecarThreadScrollPinned = false
-    state.goalShutterSidecarThreadScrollOffset = Math.max(0, state.goalShutterSidecarThreadScrollOffset - 3)
+    state.goalShutterScrollOffset = Math.max(0, state.goalShutterScrollOffset - 3)
+    state.goalShutterScrollPinned = state.goalShutterScrollOffset === 0
   } else {
-    state.goalShutterSidecarThreadScrollOffset = Math.min(maxOffset, state.goalShutterSidecarThreadScrollOffset + 3)
-    state.goalShutterSidecarThreadScrollPinned = state.goalShutterSidecarThreadScrollOffset >= maxOffset
+    state.goalShutterScrollPinned = false
+    state.goalShutterScrollOffset = Math.min(maxOffset, state.goalShutterScrollOffset + 3)
+  }
+  refresh()
+}
+
+function handleMonitorGoalViewScroll(
+  direction: "up" | "down",
+  state: AppState,
+  input: MonitorGoalViewInput,
+  visibleRows: number,
+  refresh: () => void,
+): void {
+  const maxOffset = monitorGoalViewMaxScroll(input, visibleRows)
+  if (direction === "up") {
+    state.goalShutterScrollOffset = Math.max(0, state.goalShutterScrollOffset - 3)
+    state.goalShutterScrollPinned = state.goalShutterScrollOffset === 0
+  } else {
+    state.goalShutterScrollPinned = false
+    state.goalShutterScrollOffset = Math.min(maxOffset, state.goalShutterScrollOffset + 3)
   }
   refresh()
 }
@@ -6248,10 +7462,31 @@ function handleGardenerChatScroll(
   refresh()
 }
 
+/** Transcript scroll: offset 0 = live tail (newest lines above input). */
+function scrollTranscriptViewport(
+  direction: "up" | "down",
+  offset: number,
+  maxOffset: number,
+  step = 3,
+): { offset: number; pinned: boolean } {
+  if (direction === "up") {
+    return { offset: Math.min(maxOffset, offset + step), pinned: false }
+  }
+  const next = Math.max(0, offset - step)
+  return { offset: next, pinned: next === 0 }
+}
+
+function tailTranscriptScrollOffset(pinned: boolean, offset: number, maxOffset: number): number {
+  if (pinned) return 0
+  return Math.min(offset, maxOffset)
+}
+
 function handleMonitorChatScroll(
   event: { preventDefault?: () => void; stopPropagation?: () => void; scroll?: { direction?: string } },
   state: AppState,
   blocks: readonly TranscriptBlock[],
+  tools: readonly ToolLog[],
+  subagents: readonly SubagentLog[],
   columns: number,
   visibleRows: number,
   options: TranscriptRenderOptions,
@@ -6262,14 +7497,10 @@ function handleMonitorChatScroll(
   state.focusMode = "monitor"
   const direction = event.scroll?.direction
   if (direction !== "up" && direction !== "down") return
-  const maxOffset = maxTranscriptScrollOffset(blocks, [], [], columns, options, visibleRows)
-  if (direction === "up") {
-    state.monitorScrollPinned = false
-    state.monitorScrollOffset = Math.max(0, state.monitorScrollOffset - 3)
-  } else {
-    state.monitorScrollOffset = Math.min(maxOffset, state.monitorScrollOffset + 3)
-    if (state.monitorScrollOffset >= maxOffset) state.monitorScrollPinned = true
-  }
+  const maxOffset = maxTranscriptScrollOffset(blocks, tools, subagents, columns, options, visibleRows)
+  const next = scrollTranscriptViewport(direction, state.monitorScrollOffset, maxOffset)
+  state.monitorScrollOffset = next.offset
+  state.monitorScrollPinned = next.pinned
   refresh()
 }
 
@@ -6480,6 +7711,10 @@ function monitorThreadVisibleRows(renderer: CliRenderer, state: AppState): numbe
   return Math.max(10, total - opsBlock - chromeLines)
 }
 
+function rightPanelThreadRows(renderer: CliRenderer): number {
+  return Math.max(8, renderer.terminalHeight - 12)
+}
+
 function rightContextFooterLineCount(renderer: CliRenderer, state: AppState): number {
   if (isMonitorOn(state.monitorSnapshot) && !state.rightPanelOpsVisible) return 0
   const columns = rightContextColumns(renderer, state)
@@ -6503,7 +7738,7 @@ function monitorWorkerActive(state: AppState): boolean {
 // main panel; showing the monitor panel's own live-watch mirror at the same
 // time duplicates the exact same content on screen twice.
 function monitorWatchSuppressedByGoalChat(state: AppState): boolean {
-  return isGoalMode(state) && state.goalShutterWorkerPeek
+  return hasGoalContext(state) && state.workerPanelView === "chat"
 }
 
 function monitorChatRowSplit(
@@ -6527,20 +7762,25 @@ function tailMonitorWatchScroll(state: AppState, columns: number, visibleRows: n
     transcriptRenderOptions(state),
     visibleRows,
   )
-  if (state.monitorWatchScrollPinned) state.monitorWatchScrollOffset = maxOffset
+  if (state.monitorWatchScrollPinned) state.monitorWatchScrollOffset = 0
   else if (state.monitorWatchScrollOffset > maxOffset) state.monitorWatchScrollOffset = maxOffset
 }
 
 function tailMonitorThreadScroll(
   state: AppState,
   blocks: readonly TranscriptBlock[],
+  tools: readonly ToolLog[],
+  subagents: readonly SubagentLog[],
   columns: number,
   visibleRows: number,
   options: TranscriptRenderOptions,
 ): void {
-  const maxOffset = maxTranscriptScrollOffset(blocks, [], [], columns, options, visibleRows)
-  if (state.monitorScrollPinned) state.monitorScrollOffset = maxOffset
-  else if (state.monitorScrollOffset > maxOffset) state.monitorScrollOffset = maxOffset
+  const maxOffset = maxTranscriptScrollOffset(blocks, tools, subagents, columns, options, visibleRows)
+  state.monitorScrollOffset = tailTranscriptScrollOffset(
+    state.monitorScrollPinned,
+    state.monitorScrollOffset,
+    maxOffset,
+  )
 }
 
 function handleMonitorWatchScroll(
@@ -6563,13 +7803,9 @@ function handleMonitorWatchScroll(
     transcriptRenderOptions(state),
     visibleRows,
   )
-  if (direction === "up") {
-    state.monitorWatchScrollPinned = false
-    state.monitorWatchScrollOffset = Math.max(0, state.monitorWatchScrollOffset - 3)
-  } else {
-    state.monitorWatchScrollOffset = Math.min(maxOffset, state.monitorWatchScrollOffset + 3)
-    if (state.monitorWatchScrollOffset >= maxOffset) state.monitorWatchScrollPinned = true
-  }
+  const next = scrollTranscriptViewport(direction, state.monitorWatchScrollOffset, maxOffset)
+  state.monitorWatchScrollOffset = next.offset
+  state.monitorWatchScrollPinned = next.pinned
   refresh()
 }
 
@@ -6619,13 +7855,9 @@ function scrollMonitorPane(
     const blocks = blocksFromMonitorChatEvents(state.metaEvents)
     const options = monitorTranscriptRenderOptions(transcriptRenderOptions(state), state.monitorSnapshot)
     const maxOffset = maxTranscriptScrollOffset(blocks, [], [], columns, options, visibleRows)
-    if (direction === "up") {
-      state.monitorScrollPinned = false
-      state.monitorScrollOffset = Math.max(0, state.monitorScrollOffset - 3)
-    } else {
-      state.monitorScrollOffset = Math.min(maxOffset, state.monitorScrollOffset + 3)
-      if (state.monitorScrollOffset >= maxOffset) state.monitorScrollPinned = true
-    }
+    const next = scrollTranscriptViewport(direction, state.monitorScrollOffset, maxOffset)
+    state.monitorScrollOffset = next.offset
+    state.monitorScrollPinned = next.pinned
   } else {
     const lineCount = monitorEventStreamLineCount(state.metaEvents, columns)
     const maxOffset = Math.max(0, lineCount - visibleRows)
@@ -6685,7 +7917,208 @@ function scrollOpsPanel(
   }
 }
 
+function handleLightsMouseScroll(
+  event: { preventDefault?: () => void; stopPropagation?: () => void; scroll?: { direction?: string } },
+  options: StackAppOptions,
+  state: AppState,
+  input: ReturnType<typeof buildOpsPanelInput>,
+  visibleRows: number,
+  refresh: () => void,
+): void {
+  event.preventDefault?.()
+  event.stopPropagation?.()
+  const direction = event.scroll?.direction
+  if (direction !== "up" && direction !== "down") return
+  scrollLightsPanel(options, state, input, visibleRows, direction)
+  refresh()
+}
+
+function handleLightsKey(
+  key: StackKeyEvent,
+  options: StackAppOptions,
+  state: AppState,
+  input: ReturnType<typeof buildOpsPanelInput>,
+  visibleRows: number,
+  refresh: () => void,
+): void {
+  if (key.name === "j" || key.name === "down") {
+    scrollLightsPanel(options, state, input, visibleRows, "down")
+    refresh()
+    return
+  }
+  if (key.name === "k" || key.name === "up") {
+    scrollLightsPanel(options, state, input, visibleRows, "up")
+    refresh()
+    return
+  }
+  if (key.name === "r") {
+    appendStackBlock(state.blocks, "lights refresh uses current Stack snapshots")
+    refresh()
+  }
+}
+
+function scrollLightsPanel(
+  options: StackAppOptions,
+  state: AppState,
+  input: ReturnType<typeof buildOpsPanelInput>,
+  visibleRows: number,
+  direction: "up" | "down",
+): void {
+  const lineCount = lightsPanelLines(options, state, input, Number.MAX_SAFE_INTEGER).length
+  const maxOffset = Math.max(0, lineCount - visibleRows)
+  if (direction === "up") {
+    state.opsScrollOffset = Math.max(0, state.opsScrollOffset - 3)
+  } else {
+    state.opsScrollOffset = Math.min(maxOffset, state.opsScrollOffset + 3)
+  }
+}
+
+function lightsPanelText(
+  options: StackAppOptions,
+  state: AppState,
+  input: ReturnType<typeof buildOpsPanelInput>,
+  columns: number,
+  visibleRows: number,
+): string {
+  const lines = lightsPanelLines(options, state, input, columns)
+  const maxOffset = Math.max(0, lines.length - visibleRows)
+  const offset = Math.min(state.opsScrollOffset, maxOffset)
+  const window = lines.slice(offset, offset + visibleRows)
+  const header = maxOffset > 0 ? [`scroll ${offset + 1}-${offset + window.length}/${lines.length}`] : []
+  return [...header, ...window].join("\n")
+}
+
+function lightsPanelLines(
+  options: StackAppOptions,
+  state: AppState,
+  input: ReturnType<typeof buildOpsPanelInput>,
+  columns: number,
+): string[] {
+  const width = Math.max(24, columns)
+  return [
+    ...lightsThreadsLines(options, state, width),
+    "",
+    ...lightsGardenersLines(options, state, width),
+    "",
+    ...lightsActorsLines(input, width),
+    "",
+    ...lightsCloudLines(state, input, width),
+    "",
+    ...lightsLocalLines(input, width),
+    "",
+    ...lightsUsageLines(input, width),
+  ]
+}
+
+function lightsThreadsLines(options: StackAppOptions, state: AppState, columns: number): string[] {
+  const liveIds = resolveVisibleThreadIds(options.session.id, state.gardenerWorkerTargetId, {
+    lifecycle: "live",
+    history: state.history,
+    threadLifecycleStatus: state.threadLifecycleStatus,
+  })
+  const activeIds = resolveActiveThreadIds(options.session.id, state.gardenerWorkerTargetId)
+  const lines = [`Threads · ${liveIds.size} live · ${activeIds.size} active`]
+  const rows = state.history
+    .filter((summary) => liveIds.has(summary.id) || summary.id === options.session.id)
+    .slice(0, 5)
+  if (rows.length === 0) return [...lines, "  (none)"]
+  for (const summary of rows) {
+    const current = summary.id === options.session.id ? "*" : " "
+    const active = activeIds.has(summary.id) ? "active" : (state.threadLifecycleStatus.get(summary.id) ?? "idle")
+    const title = resolveThreadDisplayLabel(summary, { maxLength: Math.max(12, columns - 26), fallbackId: summary.id })
+    lines.push(`${current} ${summary.id.slice(0, 8)} · ${oneLine(active, 10)} · ${title}`)
+  }
+  return lines
+}
+
+function lightsGardenersLines(options: StackAppOptions, state: AppState, columns: number): string[] {
+  const inboxCount = readGardenerInbox(options.config.stackDataRoot, state.gardenerThreadId).length
+  const status = state.gardenerChatRunning ? "running" : inboxCount > 0 ? "queued" : "idle"
+  const lines = [`Gardeners · ${status} · inbox ${inboxCount}`]
+  lines.push(`  default ${state.gardenerThreadId.slice(0, 8)} · target ${resolveGardenerWorkerTargetId(options, state).slice(0, 8)}`)
+  if (state.gardenerWorkspacePath) lines.push(`  workspace ${oneLine(state.gardenerWorkspacePath, Math.max(20, columns - 12))}`)
+  if (state.gardenerNotice) lines.push(`  notice ${oneLine(state.gardenerNotice, Math.max(20, columns - 10))}`)
+  return lines
+}
+
+function lightsActorsLines(input: ReturnType<typeof buildOpsPanelInput>, columns: number): string[] {
+  const actors = input.actors
+  const running = actors.subagents.filter((agent) => agent.status === "running" || agent.status === "spawning").length
+  const failed = actors.subagents.filter((agent) => agent.status === "errored" || agent.status === "interrupted").length
+  const lines = [
+    `Actors · primary ${actors.primaryStatus} · workers ${actors.subagents.length} (${running} active, ${failed} failed)`,
+    `  model ${oneLine(actors.primaryModel, Math.max(10, columns - 10))}`,
+  ]
+  for (const agent of actors.subagents.slice(0, 4)) {
+    lines.push(`  ${oneLine(subagentDisplayName(agent), 16)} · ${subagentStatusLabel(agent.status)}`)
+  }
+  if (actors.subagents.length > 4) lines.push(`  ... +${actors.subagents.length - 4} workers`)
+  return lines
+}
+
+function lightsCloudLines(
+  state: AppState,
+  input: ReturnType<typeof buildOpsPanelInput>,
+  columns: number,
+): string[] {
+  const projects = input.projects.projects
+  const factories = projects.flatMap((project) => project.factories)
+  const runs = projects.flatMap((project) => project.runs)
+  const activeRuns = runs.filter((run) => !isTerminalLikeStatus(run.state)).length
+  const activeFactories = factories.filter((factory) => factory.isRunning || (factory.activeEfforts ?? 0) > 0).length
+  const deployments = input.projects.deployments
+  const degradedDeployments = deployments.filter((deployment) => deployment.degradedReason || deployment.ready === false).length
+  const hostedActive = input.hosted.runs.filter((run) => !isTerminalLikeStatus(run.status)).length
+  const lines = [
+    `Cloud · ${input.projects.status} · projects ${projects.length} · factories ${factories.length}/${activeFactories} active`,
+    `  runs ${runs.length}/${activeRuns} active · deployments ${deployments.length}${degradedDeployments ? ` (${degradedDeployments} degraded)` : ""}`,
+    `  hosted optimizers ${input.hosted.runs.length}/${hostedActive} active · ${input.hosted.status}`,
+  ]
+  for (const project of projects.slice(0, 3)) {
+    const run = project.runs[0]
+    const factory = project.factories[0]
+    const suffix = [
+      factory ? `f ${oneLine(factory.status ?? "unknown", 10)}` : "",
+      run ? `r ${oneLine(run.state, 10)}` : "",
+    ].filter(Boolean).join(" · ")
+    lines.push(`  ${oneLine(project.name, Math.max(12, columns - 18))}${suffix ? ` · ${suffix}` : ""}`)
+  }
+  if (input.projects.message) lines.push(`  ${oneLine(input.projects.message, Math.max(20, columns - 4))}`)
+  if (state.remoteActionMessage) lines.push(`  action ${oneLine(state.remoteActionMessage, Math.max(20, columns - 10))}`)
+  return lines
+}
+
+function lightsLocalLines(input: ReturnType<typeof buildOpsPanelInput>, columns: number): string[] {
+  const containers = input.containers.containers
+  const optimizerRuns = input.localOptimizers.runs
+  const activeOptimizers = optimizerRuns.filter((run) => !isTerminalLikeStatus(run.status)).length
+  const lines = [
+    `Local · containers ${containers.length} · optimizers ${optimizerRuns.length}/${activeOptimizers} active`,
+    `  optimizer service ${input.localOptimizers.status} · ${oneLine(input.localOptimizers.serviceUrl, Math.max(12, columns - 24))}`,
+  ]
+  for (const container of containers.slice(0, 3)) {
+    lines.push(`  ${oneLine(container.name, 18)} · ${oneLine(container.status, 10)}`)
+  }
+  if (input.containers.message) lines.push(`  ${oneLine(input.containers.message, Math.max(20, columns - 4))}`)
+  return lines
+}
+
+function lightsUsageLines(input: ReturnType<typeof buildOpsPanelInput>, columns: number): string[] {
+  const usage = input.usage
+  const parts = [`Usage · Synth ${usage.environmentName} ${usage.status}`]
+  if (usage.planTier) parts.push(usage.planTier)
+  if (usage.spendTodayUsd !== undefined) parts.push(`today ${formatUsd(usage.spendTodayUsd)}`)
+  if (usage.usage7dUsd !== undefined) parts.push(`7d ${formatUsd(usage.usage7dUsd)}`)
+  if (usage.walletUsd !== undefined) parts.push(`wallet ${formatUsd(usage.walletUsd)}`)
+  const lines = [oneLine(parts.join(" · "), columns)]
+  lines.push(`  agent ${oneLine(input.agentUsage.codexAuthPlan, 18)}${input.agentUsage.codexBudget ? ` · ${oneLine(input.agentUsage.codexBudget, 24)}` : ""}`)
+  if (input.agentUsage.sessionSummary) lines.push(`  session ${oneLine(input.agentUsage.sessionSummary, Math.max(20, columns - 10))}`)
+  if (usage.message) lines.push(`  ${oneLine(usage.message, Math.max(20, columns - 4))}`)
+  return lines
+}
+
 function toggleRightPanelMode(state: AppState): void {
+  state.rightPanelContent = "default"
   state.rightPanelMode =
     state.rightPanelMode === "actors" ? "local" : state.rightPanelMode === "local" ? "hosted" : "actors"
   state.opsScrollOffset = 0
@@ -6857,8 +8290,16 @@ function agentStatsSuffix(options: StackAppOptions, state: AppState): string | u
   return text === "after first turn" ? undefined : text
 }
 
-function footerHint(_config: StackConfig, _state: AppState, _sessionId: string): string {
-  return "/exit quit"
+function footerHint(_config: StackConfig, state: AppState, _sessionId: string): string {
+  const parts: string[] = []
+  if (permissionsNeedsReminder(state.telemetryStatus?.tiers)) {
+    parts.push("/permissions review telemetry")
+  }
+  if (agentChatPauseEligible(state)) {
+    parts.push(state.agentChatPaused ? "Esc stop turn · Enter steer · ctrl+enter queue" : "Esc pause")
+  }
+  parts.push("/exit quit")
+  return parts.join(" · ")
 }
 
 async function startLocalOptimizerFromUi(
@@ -7054,6 +8495,7 @@ function handleSessionsMouseScroll(
 }
 
 function agentInputBackground(state: AppState): string {
+  if (state.agentChatPaused && agentChatPauseEligible(state)) return theme.bgSubtle
   if (state.focusMode === "agent" || state.inputBuffer.length > 0) return theme.bgInputFocused
   return theme.bgPanel
 }
@@ -7064,42 +8506,26 @@ function monitorInputBackground(state: AppState): string {
 }
 
 function renderMonitorInputStyled(state: AppState): StyledText {
-  const preview = state.monitorInputBuffer.replace(/\n/g, " ↵ ")
   const sidecarUi = {
     monitorSnapshot: state.monitorSnapshot,
     sidecarChatInFlight: state.sidecarChatInFlight,
     sidecarQueuedMessages: state.sidecarQueuedMessages,
     spinnerFrame: state.spinnerFrame,
     status: state.status,
+    monitorInputBuffer: state.monitorInputBuffer,
+    focusMode: state.focusMode,
   }
-  if (isGoalMode(state)) {
-    const statusLine = sidecarInputStatusLine(sidecarUi)
-    if (preview) {
-      return new StyledText([
-        fg(theme.synth.amber)("› "),
-        sidecarAgentActive(sidecarUi) ? fg(theme.synth.amber)(statusLine) : dim(fg(theme.fgMuted)(statusLine)),
-        fg(theme.fgMuted)(" · "),
-        fg(theme.fgInput)(preview),
-        fg(theme.synth.gold)("_"),
-      ])
-    }
-    return new StyledText([
-      fg(theme.synth.amber)("› "),
-      sidecarAgentActive(sidecarUi) ? fg(theme.synth.amber)(statusLine) : dim(fg(theme.fgMuted)(statusLine)),
-    ])
+  const preview = state.monitorInputBuffer.replace(/\n/g, " ↵ ")
+  const sidecarBusy =
+    isGoalMode(state) ||
+    sidecarAgentActive(sidecarUi) ||
+    state.status === "running" ||
+    (state.sidecarQueuedMessages?.length ?? 0) > 0
+
+  if (sidecarBusy) {
+    return renderSidecarChatInputStyled(sidecarUi)
   }
-  if (state.monitorSnapshot.status === "running") {
-    const runningLine = `› ${runningSpinner(state)}`
-    if (preview) {
-      return new StyledText([
-        fg(theme.synth.amber)(runningLine),
-        fg(theme.fgMuted)(" · "),
-        fg(theme.fgInput)(preview),
-        fg(theme.synth.gold)("_"),
-      ])
-    }
-    return new StyledText([fg(theme.synth.amber)(runningLine)])
-  }
+
   if (!preview) {
     return new StyledText([fg(theme.synth.amber)("› "), dim(fg(theme.fgMuted)("Message monitor · /help"))])
   }
@@ -7110,57 +8536,26 @@ function renderMonitorInputStyled(state: AppState): StyledText {
   ])
 }
 
-function renderAgentInputStyled(options: StackAppOptions, state: AppState): StyledText {
-  const preview = state.inputBuffer.replace(/\n/g, " ↵ ")
-  const idleHint = isGardenerSession(options, state) ? "Message gardener · /help" : "Build anything · /help"
-  if (state.status === "running") {
-    const throughput = formatAverageTokensPerSecond(displayTokensPerSecond(state))
-    const queueSuffix =
-      state.queuedMessages.length > 0 ? ` · ${state.queuedMessages.length} queued` : ""
-    const steerSuffix = state.lastSteerHint ? ` · ${state.lastSteerHint}` : ""
-    // This row is just a busy indicator; transcript blocks/tool calls carry detail.
-    const runningLine = throughput
-      ? `› ${runningSpinner(state)} · ${throughput}${queueSuffix}${steerSuffix}`
-      : `› ${runningSpinner(state)}${queueSuffix}${steerSuffix}`
-    if (preview) {
-      return new StyledText([
-        fg(theme.synth.amber)(runningLine),
-        fg(theme.fgMuted)(" · "),
-        fg(theme.fgInput)(preview),
-        fg(theme.synth.gold)("_"),
-      ])
-    }
-    const queuedPreview = queuedWorkerPromptPreview(state.queuedMessages)
-    if (queuedPreview) {
-      return new StyledText([
-        fg(theme.synth.amber)(runningLine),
-        fg(theme.fgMuted)(" · queued: "),
-        fg(theme.fgInput)(queuedPreview),
-      ])
-    }
-    return new StyledText([fg(theme.synth.amber)(runningLine)])
-  }
-
-  if (!preview) {
-    return new StyledText([
-      fg(isGardenerSession(options, state) ? "#3fb950" : theme.synth.amber)("› "),
-      dim(fg(theme.fgMuted)(idleHint)),
-    ])
-  }
-
-  return new StyledText([
-    fg(isGardenerSession(options, state) ? "#3fb950" : theme.synth.amber)("› "),
-    fg(theme.fgInput)(preview),
-    dim(fg(theme.fgMuted)(` · ${idleHint}`)),
-    fg(theme.synth.gold)("_"),
-  ])
-}
-
-function queuedWorkerPromptPreview(messages: readonly string[]): string | undefined {
-  const latest = messages.at(-1)?.replace(/\s+/g, " ").trim()
-  if (!latest) return undefined
-  const label = latest.startsWith("<stack_internal_context") ? "goal kickoff" : latest
-  return label.length > 120 ? `${label.slice(0, 117)}...` : label
+function renderAgentInputStyled(options: StackAppOptions, state: AppState, columns?: number): StyledText {
+  const onGardenerSession = isGardenerSession(options, state)
+  return renderWorkerAgentInputStyled(
+    {
+      status: state.status,
+      focusMode: state.focusMode,
+      agentChatPaused: state.agentChatPaused,
+      inputBuffer: state.inputBuffer,
+      queuedMessages: state.queuedMessages,
+      spinnerFrame: state.spinnerFrame,
+      toolLogs: state.toolLogs,
+      currentTurnStartedAt: state.currentTurnStartedAt,
+      columns,
+      showRecentToolActivity: !isGoalMode(state),
+    },
+    {
+      idleHint: onGardenerSession ? "Message gardener · /help" : "Build anything · /help",
+      promptColor: onGardenerSession ? "#3fb950" : theme.synth.amber,
+    },
+  )
 }
 
 function runningSpinner(state: AppState): string {
@@ -8147,6 +9542,43 @@ function historyWindowStart(state: AppState, visibleRows = SESSION_HISTORY_VISIB
   return Math.max(0, Math.min(state.history.length - visibleRows, state.selectedHistoryIndex - middleOffset))
 }
 
+function buildAgentTranscriptViewport(renderer: CliRenderer, options: StackAppOptions, state: AppState): TranscriptViewport {
+  const widthShare = state.railsVisible ? 0.5 : 0.72
+  const columns = Math.max(40, Math.floor(renderer.terminalWidth * widthShare) - 8)
+  const goalPreviewLineCount = agentGoalPreviewLineCount(
+    state.metaThreadManifest,
+    state.goalContext,
+    columns,
+  )
+  const workerGoalTabRows = showWorkerGoalTabs(state, state.metaEvents) ? 1 : 0
+  const chromeRows =
+    agentPanelChromeRows({
+      goalPreviewLineCount,
+      inputLineCount: agentInputRenderedLineCount({
+        status: state.status,
+        focusMode: state.focusMode,
+        agentChatPaused: state.agentChatPaused,
+        inputBuffer: state.inputBuffer,
+        queuedMessages: state.queuedMessages,
+        spinnerFrame: state.spinnerFrame,
+        toolLogs: state.toolLogs,
+        currentTurnStartedAt: state.currentTurnStartedAt,
+        columns,
+        showRecentToolActivity: !isGoalMode(state),
+      }),
+      slashMenuOpen: slashMenuVisible(state.inputBuffer),
+      goalMode: isGoalMode(state),
+      gardenerSession: isGardenerSession(options, state),
+      railsVisible: state.railsVisible,
+    }) + workerGoalTabRows
+  const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 12 : 10) - chromeRows)
+  return {
+    lines,
+    columns,
+    pageLines: Math.max(3, Math.floor(lines * 0.8)),
+  }
+}
+
 function transcriptViewportMetrics(renderer: CliRenderer, state: AppState, extraReservedRows = 0): TranscriptViewport {
   const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 12 : 10) - extraReservedRows)
   const widthShare = state.railsVisible ? 0.5 : 0.72
@@ -8158,20 +9590,8 @@ function transcriptViewportMetrics(renderer: CliRenderer, state: AppState, extra
   }
 }
 
-function agentTranscriptViewport(renderer: CliRenderer, state: AppState): TranscriptViewport {
-  const base = transcriptViewportMetrics(renderer, state)
-  if (!isGoalMode(state) || !state.goalShutterWorkerPeek) return base
-  const goalStripLines =
-    state.metaThreadManifest?.active_goal?.objective?.trim() ||
-    state.goalContext.objective?.trim()
-      ? 1
-      : 0
-  const lines = goalWorkerPeekTranscriptRows(base.lines, goalStripLines)
-  return {
-    ...base,
-    lines,
-    pageLines: Math.max(3, Math.floor(lines * 0.8)),
-  }
+function agentTranscriptViewport(renderer: CliRenderer, state: AppState, options: StackAppOptions): TranscriptViewport {
+  return buildAgentTranscriptViewport(renderer, options, state)
 }
 
 function scrollAgentTranscript(
@@ -8193,8 +9613,43 @@ function scrollAgentTranscript(
   state.agentScrollOffset = Math.max(0, Math.min(maxOffset, state.agentScrollOffset + signedDelta))
 }
 
-function handleAgentScrollKey(key: { name?: string; ctrl?: boolean }, state: AppState, renderer?: CliRenderer): boolean {
-  const viewport = renderer ? agentTranscriptViewport(renderer, state) : undefined
+function handleAgentScrollKey(
+  key: { name?: string; ctrl?: boolean },
+  state: AppState,
+  renderer?: CliRenderer,
+  options?: StackAppOptions,
+): boolean {
+  const viewport =
+    renderer && options ? agentTranscriptViewport(renderer, state, options) : undefined
+  const direction = key.name === "pageup" || (key.ctrl && key.name === "u")
+    ? "up"
+    : key.name === "pagedown" || (key.ctrl && key.name === "d")
+      ? "down"
+      : undefined
+  if (direction && showWorkerGoalTabs(state, state.metaEvents) && state.workerPanelView === "goal" && options) {
+    const metaThreadTitle =
+      state.metaThreadManifest?.title?.trim() ||
+      state.metaThreadManifest?.active_goal?.objective?.trim() ||
+      state.goalContext.objective?.trim()
+    const events = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+    const maxOffset = isGoalMode(state)
+      ? monitorGoalViewMaxScroll(
+          monitorGoalViewInput(options, state, events, viewport?.columns ?? 80, metaThreadTitle),
+          viewport?.lines ?? 12,
+        )
+      : previousGoalsListMaxScroll({
+          state,
+          events,
+          metaThreadId: options.session.metaThreadId,
+          columns: viewport?.columns ?? 80,
+          expandedKeys: state.previousGoalExpandedKeys,
+          selectedIndex: state.previousGoalSelectedIndex,
+          visibleRows: viewport?.lines ?? 12,
+        })
+    handleWorkerGoalViewScroll(direction, state, maxOffset, () => undefined)
+    state.lastAgentScrollAt = Date.now()
+    return true
+  }
   if (key.name === "pageup" || (key.ctrl && key.name === "u")) {
     state.lastAgentScrollAt = Date.now()
     scrollAgentTranscript(state, viewport?.pageLines ?? 10, viewport, "up")
@@ -9918,9 +11373,21 @@ async function handleOptimizerKey(
   }
 }
 
-function handleModelKey(key: { name?: string }, config: StackConfig): void {
+function handleModelKey(
+  key: { name?: string },
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  const action = modelPickerActionForKey(key.name, options.config)
+  if (action) {
+    applyModelPickerAction(action, options, state, refresh)
+    return
+  }
   if (!isCycleKey(key)) return
-  cycleModel(config, key.name === "k" || key.name === "left" ? -1 : 1)
+  cycleModel(options.config, key.name === "k" || key.name === "left" ? -1 : 1)
+  appendStackBlock(state.blocks, `model ${harnessModel(options.config)}`)
+  persistStackConfig(options, state, refresh)
 }
 
 function handleEffortKey(key: { name?: string }, config: StackConfig): void {
@@ -9958,19 +11425,20 @@ function handleMonitorKey(
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
 ): boolean {
+  if (state.monitorInputBuffer.length > 0) return false
+
   if (key.name === "p") {
     toggleRightPanelOps(state)
     refresh()
     return true
   }
-  if (key.name === "w") {
+  if (key.name === "W") {
     cycleMonitorWorkerTarget(state)
     refresh()
     return true
   }
   if (
     (key.name === "return" || key.name === "enter") &&
-    state.monitorInputBuffer.length === 0 &&
     resolveMonitorWorkerTargetId(options, state) !== options.session.id
   ) {
     void resumeMonitorWorkerTarget(
@@ -9983,7 +11451,6 @@ function handleMonitorKey(
     )
     return true
   }
-  if (state.monitorInputBuffer.length > 0) return false
   const columns = monitorPanelColumns(renderer, state)
   const rows = monitorThreadVisibleRows(renderer, state)
   const workerActive = monitorWorkerActive(state) && !monitorWatchSuppressedByGoalChat(state)
@@ -10028,13 +11495,9 @@ function scrollMonitorWatchPane(
     transcriptRenderOptions(state),
     visibleRows,
   )
-  if (direction === "up") {
-    state.monitorWatchScrollPinned = false
-    state.monitorWatchScrollOffset = Math.max(0, state.monitorWatchScrollOffset - 3)
-  } else {
-    state.monitorWatchScrollOffset = Math.min(maxOffset, state.monitorWatchScrollOffset + 3)
-    if (state.monitorWatchScrollOffset >= maxOffset) state.monitorWatchScrollPinned = true
-  }
+  const next = scrollTranscriptViewport(direction, state.monitorWatchScrollOffset, maxOffset)
+  state.monitorWatchScrollOffset = next.offset
+  state.monitorWatchScrollPinned = next.pinned
   refresh()
 }
 
@@ -10397,6 +11860,7 @@ async function startNewThread(
   state.goalContext = emptyGoalContext()
   state.metaThreadManifest = undefined
   state.metaEvents = readThreadMetaEvents(options.config.stackDataRoot, session.id)
+  state.monitorFeedDeliveredEventIds = existingMonitorInterventionEventIds(state.metaEvents)
   state.queuedMessages = []
   state.gardenerWorkerQueue = []
   state.inputBuffer = readInitialPrompt(options.config)
@@ -10955,31 +12419,40 @@ function restoreHarnessFromSession(options: StackAppOptions, state: AppState): v
   state.harnessCommand = harnessSessionCommand(options.config)
 }
 
+function workerPanelViewFromCheckpoint(checkpoint?: StackResumeCheckpoint): WorkerPanelView {
+  const saved = checkpoint?.workerPanelView
+  if (saved === "goal" || saved === "chat") return saved
+  if (saved === "status") return "chat"
+  if (checkpoint?.goalShutterWorkerPeek) return "chat"
+  return "chat"
+}
+
 function applyGoalUiAfterSessionResume(
   state: AppState,
   checkpoint?: StackResumeCheckpoint,
   _session?: StackLocalSession,
 ): void {
-  if (!isGoalMode(state)) {
-    state.goalShutterWorkerPeek = false
+  if (!showWorkerGoalTabs(state, state.metaEvents)) {
+    state.workerPanelView = "chat"
     state.goalShutterSidecarView = "events"
     state.goalShutterSidecarThreadScrollOffset = 0
     state.goalShutterSidecarThreadScrollPinned = true
     return
   }
-  state.goalShutterWorkerPeek = checkpoint?.goalShutterWorkerPeek ?? false
-  state.goalShutterSidecarView = checkpoint?.goalShutterSidecarView ?? "events"
+  state.workerPanelView = workerPanelViewFromCheckpoint(checkpoint)
+  state.goalShutterSidecarView =
+    checkpoint?.goalShutterSidecarView === "thread" ? "thread" : "events"
   state.goalShutterSidecarThreadScrollOffset = 0
   state.goalShutterSidecarThreadScrollPinned = true
   state.goalShutterScrollOffset = 0
   state.goalShutterScrollPinned = true
-  state.talkToMonitor = true
   state.monitorPanelMode = "chat"
   if (checkpoint?.focusMode === "agent" || checkpoint?.focusMode === "monitor" || checkpoint?.focusMode === "goal") {
     state.focusMode = checkpoint.focusMode
   } else {
-    state.focusMode = state.goalShutterWorkerPeek ? "agent" : "monitor"
+    state.focusMode = "agent"
   }
+  state.talkToMonitor = state.focusMode === "monitor"
 }
 
 async function restoreWorkerSessionAfterResume(
@@ -11065,6 +12538,46 @@ function syncSessionDisplayNameFromGoal(options: StackAppOptions, state: AppStat
   options.session.displayName = displayName
 }
 
+function shouldContinueInterruptedTurnAfterResume(
+  checkpoint: StackResumeCheckpoint | undefined,
+  state: AppState,
+): boolean {
+  if (!checkpoint) return false
+  if (state.status !== "idle") return false
+  const explicitInterruptedTurn =
+    checkpoint.resumeIntent?.action === "continue_interrupted_turn" &&
+    checkpoint.workerStatus === "running"
+  const legacyActiveGoalCheckpoint =
+    checkpoint.workerStatus === undefined &&
+    checkpoint.metaThreadState?.phase === "goal_active"
+  if (!explicitInterruptedTurn && !legacyActiveGoalCheckpoint) return false
+  if (!isGoalMode(state)) return explicitInterruptedTurn
+  const goal = activeGoalModeSnapshot(state)
+  const status = (goal.status ?? "active").trim().toLowerCase()
+  return status !== "paused" && status !== "done" && status !== "completed" && status !== "cleared"
+}
+
+function interruptedTurnResumePrompt(
+  checkpoint: StackResumeCheckpoint | undefined,
+  state: AppState,
+): string {
+  const goal = activeGoalModeSnapshot(state)
+  const objective =
+    checkpoint?.resumeIntent?.objective?.trim() ||
+    checkpoint?.metaThreadState?.goalObjective?.trim() ||
+    goal.objective?.trim()
+  const lines = [
+    "Continue the interrupted Stack worker turn after a Stack resume.",
+    "Inspect the current worktree and runtime state before relying on prior transcript text.",
+    "Continue the same thread; do not restart from scratch unless the current state proves that is necessary.",
+  ]
+  if (objective) {
+    lines.push(`Active objective: ${objective}`)
+    lines.push("Make concrete progress toward this objective and keep it active unless current evidence proves it is complete.")
+  }
+  return lines.join("\n")
+}
+
 function persistStackResumeCheckpoint(
   options: StackAppOptions,
   state: AppState,
@@ -11085,10 +12598,21 @@ function persistStackResumeCheckpoint(
       codexThreadId: backendSessionId,
       harness: options.session.harness ?? (isCursorHarness(options.config) ? "cursor" : "codex"),
       codexTransport: state.codexTransport,
-      goalShutterWorkerPeek: state.goalShutterWorkerPeek,
-      goalShutterSidecarView: state.goalShutterSidecarView,
+      workerPanelView: state.workerPanelView,
       focusMode: state.focusMode,
       displayName: options.session.displayName,
+      workerStatus: state.status,
+      resumeIntent: state.status === "running"
+        ? {
+            action: "continue_interrupted_turn",
+            reason: "worker_running_on_exit",
+            createdAt: new Date().toISOString(),
+            objective:
+              state.metaThreadManifest?.active_goal?.objective?.trim() ||
+              state.goalContext.objective?.trim() ||
+              undefined,
+          }
+        : undefined,
     },
     session: options.session,
     manifest: state.metaThreadManifest,
@@ -11158,6 +12682,7 @@ function applySession(
   refreshSessionThroughput(state, session.turns)
   state.lastSessionLogPath = path
   state.status = "idle"
+  state.agentChatPaused = false
   state.liveThinkingText = undefined
   state.liveThinkingId = undefined
   state.turnStartedAt = undefined
@@ -11166,7 +12691,9 @@ function applySession(
   state.goalContext = emptyGoalContext()
   state.metaThreadManifest = undefined
   state.focusMode = "agent"
-  state.goalShutterWorkerPeek = false
+  state.workerPanelView = "chat"
+  state.previousGoalExpandedKeys = new Set<string>()
+  state.previousGoalSelectedIndex = 0
   state.goalShutterSidecarView = "events"
   state.goalShutterSidecarThreadScrollOffset = 0
   state.goalShutterSidecarThreadScrollPinned = true
@@ -11258,9 +12785,10 @@ async function submitPrompt(
   refresh: () => void,
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
-  submitOpts?: { transcriptPrompt?: string },
+  submitOpts?: { transcriptPrompt?: string; imagePaths?: string[] },
 ): Promise<void> {
   state.status = "running"
+  state.agentChatPaused = false
   state.spinnerFrame = 0
   state.lastUsage = undefined
   state.lastSteerHint = undefined
@@ -11309,16 +12837,42 @@ async function submitPrompt(
           state.sidecarDispatchRef,
         )
         const postRunEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
-        const steerEvent = postRunEvents.filter((event) => event.type === "monitor.steer").at(-1)
-        const steerMessage =
-          steerEvent && typeof steerEvent.payload.message === "string" ? steerEvent.payload.message.trim() : ""
-        if (steerMessage && codexSessionHandle.session) {
-          void codexSessionHandle.session.trySteer(steerMessage).then((steered) => {
+        const { steers: newSteers, queued: newQueued } = undeliveredMonitorInterventions(
+          postRunEvents,
+          state.monitorFeedDeliveredEventIds,
+        )
+        for (const event of newQueued) {
+          state.monitorFeedDeliveredEventIds.add(event.event_id)
+          appendStackBlock(state.blocks, formatMonitorQueuedFeedText(event.payload as Record<string, unknown>))
+          refreshIfScrollStable()
+        }
+        for (const event of newSteers) {
+          state.monitorFeedDeliveredEventIds.add(event.event_id)
+          const payload = event.payload as Record<string, unknown>
+          const feedText = formatMonitorSteerFeedText(payload)
+          const steerMessage = typeof payload.message === "string" ? payload.message.trim() : ""
+          if (!steerMessage) {
+            appendStackBlock(state.blocks, feedText)
+            refreshIfScrollStable()
+            continue
+          }
+          const session = codexSessionHandle.session
+          if (!session) {
+            appendStackBlock(state.blocks, `${feedText}\n(queued — worker offline)`)
+            refreshIfScrollStable()
+            continue
+          }
+          void session.trySteer(steerMessage).then((steered) => {
             if (steered) {
               state.lastSteerHint = "monitor-steer"
-              appendStackBlock(state.blocks, "monitor steered primary (style/guidance)")
-              refreshIfScrollStable()
+              appendStackBlock(state.blocks, feedText)
+            } else {
+              session.enqueue(steerMessage)
+              state.queuedMessages = [...state.queuedMessages, steerMessage]
+              state.lastSteerHint = `queued (${state.queuedMessages.length})`
+              appendStackBlock(state.blocks, `${feedText}\n(queued for next turn)`)
             }
+            refreshIfScrollStable()
           })
         }
         // C4 — pause_before_action: honor an unanswered monitor.worker_pause_requested receipt by
@@ -11426,17 +12980,21 @@ async function submitPrompt(
     },
   )
 
-  const runOneTurn = async (turnPrompt: string): Promise<StackCodexTurn> => {
+  const runOneTurn = async (turnPrompt: string, imagePaths: string[] = submitOpts?.imagePaths ?? []): Promise<StackCodexTurn> => {
     const goalContext = mergeMetaThreadGoalContext(state.goalContext, state.metaThreadManifest)
     const harnessSession = codexSessionHandle.session
+    const parsedTurn = parseChannelInput(turnPrompt)
+    const effectiveImagePaths = imagePaths.length > 0 ? imagePaths : parsedTurn.imagePaths
+    const effectivePrompt = parsedTurn.text || parsedTurn.displayText
     if (harnessSession && state.codexTransport === "acp") {
       harnessSession.setOutputHandler(outputSink.write)
       return harnessSession.runTurn({
         config: options.config,
-        userPrompt: turnPrompt,
+        userPrompt: effectivePrompt,
         selectedFiles,
         priorTurns: options.session.turns,
         goalContext,
+        imagePaths: effectiveImagePaths,
       })
     }
     if (harnessSession && state.codexTransport === "app-server") {
@@ -11445,10 +13003,11 @@ async function submitPrompt(
         return await runCodexAppServerTurn(
           {
             config: options.config,
-            userPrompt: turnPrompt,
+            userPrompt: effectivePrompt,
             selectedFiles,
             priorTurns: options.session.turns,
             goalContext,
+            imagePaths: effectiveImagePaths,
             onOutput: outputSink.write,
           },
           harnessSession as CodexAppServerSession,
@@ -11464,7 +13023,7 @@ async function submitPrompt(
     if (isCursorHarness(options.config)) {
       return {
         id: randomUUID(),
-        prompt: turnPrompt,
+        prompt: effectivePrompt,
         selectedPaths: selectedFiles.map((file) => file.path),
         startedAt: new Date().toISOString(),
         finishedAt: new Date().toISOString(),
@@ -11475,10 +13034,11 @@ async function submitPrompt(
     }
     return runCodexTurn({
       config: options.config,
-      userPrompt: turnPrompt,
+      userPrompt: effectivePrompt,
       selectedFiles,
       priorTurns: options.session.turns,
       goalContext,
+      imagePaths: effectiveImagePaths,
       onOutput: outputSink.write,
     })
   }
@@ -11596,6 +13156,7 @@ async function submitPrompt(
     }
 
     state.status = turnExitIdle(turn.exitCode) ? "idle" : "error"
+    state.agentChatPaused = false
     state.liveThinkingText = undefined
     state.liveThinkingId = undefined
     state.turnStartedAt = undefined
@@ -11613,6 +13174,7 @@ async function submitPrompt(
   } catch (error) {
     outputSink.flush()
     state.status = "error"
+    state.agentChatPaused = false
     state.liveThinkingText = undefined
     state.liveThinkingId = undefined
     state.turnStartedAt = undefined

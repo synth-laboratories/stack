@@ -25,6 +25,7 @@ export type GardenerChatTurnInput = {
   config: StackConfig
   gardenerThreadId: string
   userMessage: string
+  imagePaths?: string[]
   workerSession: StackLocalSession
   workerSummaries?: readonly StackSessionSummary[]
   workerTargetId?: string
@@ -59,6 +60,7 @@ export async function runGardenerChatTurn(input: GardenerChatTurnInput): Promise
       userPrompt: await buildGardenerChatPrompt(input.userMessage, input, gardenerConfig),
       selectedFiles: [],
       priorTurns: gardenerSession.turns,
+      imagePaths: input.imagePaths,
       onOutput: input.onOutput ?? (() => undefined),
     })
     gardenerSession.turns.push(turn)

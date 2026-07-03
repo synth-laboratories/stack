@@ -31,7 +31,7 @@ pub struct AppState {
 pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
     let paths = StackPaths::from_env()?;
     let public_base_url = format!("http://{}:{}", addr.ip(), addr.port());
-    let mcp_sidecar = spawn_mcp_sidecar(&paths.app_root, addr.ip(), addr.port()).await;
+    let mcp_sidecar = spawn_mcp_sidecar(&paths.install_root, addr.ip(), addr.port()).await;
     let mcp_url = mcp_sidecar
         .as_ref()
         .map(|_| format!("{public_base_url}/mcp"));
@@ -45,8 +45,8 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
     }
 
     let state = Arc::new(AppState {
-        stack_version: read_version_field(&paths.app_root, "version").await,
-        stack_channel: read_version_field(&paths.app_root, "channel").await,
+        stack_version: read_version_field(&paths.install_root, "version").await,
+        stack_channel: read_version_field(&paths.install_root, "channel").await,
         paths,
         public_base_url,
         mcp_url,
@@ -127,7 +127,10 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/events/stream", get(threads::stream_events))
         .route("/logs/query", get(logs::query_logs_handler))
         .route("/telemetry/status", get(telemetry::telemetry_status))
-        .route("/telemetry/config", post(telemetry::update_telemetry_config))
+        .route(
+            "/telemetry/config",
+            post(telemetry::update_telemetry_config),
+        )
         .route("/telemetry/events", post(telemetry::record_telemetry_event))
         .route("/telemetry/flush", post(telemetry::flush_telemetry_events))
         .route(
@@ -153,9 +156,18 @@ fn router(state: Arc<AppState>) -> Router {
             axum::routing::put(checkpoints::save_thread_checkpoint),
         )
         .route("/threads/:id/export", get(export::export_thread))
-        .route("/checkpoints/latest", get(checkpoints::get_latest_checkpoint))
-        .route("/checkpoints/resolve", get(checkpoints::resolve_checkpoint_handler))
-        .route("/checkpoints", axum::routing::post(checkpoints::save_checkpoint))
+        .route(
+            "/checkpoints/latest",
+            get(checkpoints::get_latest_checkpoint),
+        )
+        .route(
+            "/checkpoints/resolve",
+            get(checkpoints::resolve_checkpoint_handler),
+        )
+        .route(
+            "/checkpoints",
+            axum::routing::post(checkpoints::save_checkpoint),
+        )
         .route(
             "/meta-threads",
             get(meta_threads::list_meta_threads).post(meta_threads::create_meta_thread),
@@ -170,7 +182,10 @@ fn router(state: Arc<AppState>) -> Router {
             "/meta-threads/:id/lifecycle",
             patch(meta_threads::update_lifecycle),
         )
-        .route("/meta-threads/:id/resume", get(checkpoints::get_meta_thread_resume))
+        .route(
+            "/meta-threads/:id/resume",
+            get(checkpoints::get_meta_thread_resume),
+        )
         .route(
             "/meta-threads/:id/checkpoint",
             axum::routing::put(checkpoints::save_meta_thread_checkpoint),

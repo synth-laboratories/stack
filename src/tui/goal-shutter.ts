@@ -1,6 +1,19 @@
-import { Box, StyledText, Text, dim, fg } from "@opentui/core"
+import { Box, StyledText, Text, dim, fg, type TextChunk } from "@opentui/core"
+import {
+  goalCompletionSummaryLines,
+  goalCompletionSummaryLinesForHistoryEntry,
+  goalCompletionSummaryLineCount,
+} from "./goal-completion-summary.js"
+import { formatGoalCompute } from "../codex/goal-context.js"
 import { formatEstimatedSpend } from "../codex/usage-cost.js"
-import { reduceGoalSessionSnapshot } from "../goal-session.js"
+import {
+  eventsForGoalHistoryEntry,
+  goalHistoryEntryKey,
+  listGoalHistory,
+  reduceGoalSessionSnapshot,
+  type GoalHistoryEntry,
+  type ListGoalHistoryOptions,
+} from "../goal-session.js"
 import { parseCriterionEntry } from "../meta-thread-goal-criteria.js"
 import type { StackMonitorSnapshot } from "../monitor.js"
 import type { StackMonitorSidecarTurn } from "../monitor-sidecar-codex.js"
@@ -12,12 +25,14 @@ import {
   renderGoalProgressStripStyled,
   renderGoalProgressTimelineStyled,
   renderGoalShutterStreamStyled,
+  renderRecentGoalHumanUpdatesStyled,
+  recentGoalHumanUpdateLines,
   renderGoalSidecarThreadRich,
 } from "./monitor-thread.js"
 import type { TranscriptRenderOptions } from "./transcript.js"
 import { anchorTranscriptBox } from "./transcript-slot.js"
 import { sidecarAgentActive, sidecarInputStatusLine, type SidecarQueueUiState } from "./sidecar-queue.js"
-import { stackTuiTheme as theme } from "./theme.js"
+import { stackTuiTheme as theme, goalLifecycleStatusColor } from "./theme.js"
 
 export type GoalShutterRenderInput = {
   state: GoalModeState & {
@@ -31,6 +46,8 @@ export type GoalShutterRenderInput = {
     spinnerFrame?: number
   }
   events: StackThreadMetaEvent[]
+  workerStatus?: "idle" | "running" | "error" | string
+  workerTurnStartedAt?: string
   sidecarTurns?: readonly StackMonitorSidecarTurn[]
   sidecarRenderOptions: TranscriptRenderOptions
   sidecarView: "thread" | "events"
@@ -74,6 +91,44 @@ function goalTabChip(label: string, hint: string, active: boolean, onSelect: () 
       fg: theme.fgMuted,
       flexShrink: 0,
     }),
+  )
+}
+
+/** Clickable mode tab for monitor/gardener panels — padded chips with gap (panelGap is 0 globally). */
+export function panelTabChip(label: string, active: boolean, onSelect: () => void): ReturnType<typeof Box> {
+  return Box(
+    {
+      flexDirection: "row",
+      flexShrink: 0,
+      paddingLeft: 1,
+      paddingRight: 1,
+      onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        onSelect()
+      },
+    },
+    Text({
+      content: label,
+      fg: active ? theme.fgOnAccent : theme.synth.amber,
+      bg: active ? theme.bgChipActive : theme.bgSubtle,
+      flexShrink: 0,
+    }),
+  )
+}
+
+export function renderPanelTabBar(
+  tabs: ReadonlyArray<{ label: string; active: boolean; onSelect: () => void }>,
+): ReturnType<typeof Box> {
+  return Box(
+    {
+      flexDirection: "row",
+      gap: 1,
+      alignItems: "center",
+      width: "100%",
+      flexShrink: 0,
+    },
+    ...tabs.map((tab) => panelTabChip(tab.label, tab.active, tab.onSelect)),
   )
 }
 
@@ -192,8 +247,797 @@ export function renderSidecarQueuedMessages(
   )
 }
 
-export function goalShutterProgressChromeRows(events: StackThreadMetaEvent[], columns: number): number {
-  return renderGoalProgressStripStyled(events, Math.max(24, columns - 4)) ? 4 : 0
+export function goalShutterProgressChromeRows(_events: StackThreadMetaEvent[], _columns: number): number {
+  return goalProgressChromeRowCount(6)
+}
+
+export type MonitorGoalViewInput = Pick<
+  GoalShutterRenderInput,
+  "state" | "events" | "columns" | "metaThreadId" | "metaThreadTitle" | "workerStatus" | "workerTurnStartedAt"
+>
+
+const MONITOR_GOAL_TIMELINE_ROWS = 4
+const MONITOR_GOAL_TIMELINE_ROWS_COMPLETE = 3
+const MONITOR_GOAL_COMPLETION_MAX_LINES = 10
+const MONITOR_GOAL_HUMAN_UPDATE_ROWS = 5
+
+function monitorGoalHumanUpdateChromeRows(input: MonitorGoalViewInput): number {
+  const lineCount = recentGoalHumanUpdateLines(
+    input.events,
+    input.state.monitorSnapshot,
+    input.columns,
+    MONITOR_GOAL_HUMAN_UPDATE_ROWS,
+  ).length
+  if (lineCount === 0) return 0
+  return lineCount + 2
+}
+
+function goalProgressChromeRowCount(timelineRows: number): number {
+  return 1 + timelineRows + 2
+}
+
+function goalProgressChromeElements(
+  events: StackThreadMetaEvent[],
+  columns: number,
+  timelineRows: number,
+  title: string,
+): Array<ReturnType<typeof Text> | ReturnType<typeof Box>> {
+  const progressWidth = Math.max(24, columns - 4)
+  const progressStrip = renderGoalProgressStripStyled(events, progressWidth)
+  return [
+    progressStrip
+      ? Text({ content: progressStrip, width: "100%", flexShrink: 0 })
+      : Text({
+          content: oneLine("◦ waiting for monitor progress updates", progressWidth),
+          fg: theme.fgMuted,
+          width: "100%",
+          flexShrink: 0,
+        }),
+    Box(
+      {
+        border: true,
+        borderStyle: "single",
+        borderColor: theme.borderInactive,
+        titleColor: theme.synth.orange,
+        title,
+        flexDirection: "column",
+        padding: 1,
+        flexShrink: 0,
+        width: "100%",
+        overflow: "hidden",
+      },
+      Text({
+        content: renderGoalProgressTimelineStyled(events, progressWidth, timelineRows),
+        width: "100%",
+        flexShrink: 0,
+      }),
+    ),
+  ]
+}
+
+function monitorGoalFixedChromeRows(input: MonitorGoalViewInput): number {
+  const completionCount = goalCompletionSummaryLineCount(input)
+  const timelineRows = completionCount > 0 ? MONITOR_GOAL_TIMELINE_ROWS_COMPLETE : MONITOR_GOAL_TIMELINE_ROWS
+  const progressRows = goalProgressChromeRowCount(timelineRows)
+  if (completionCount > 0) {
+    return Math.min(completionCount, MONITOR_GOAL_COMPLETION_MAX_LINES) + 2 + progressRows + monitorGoalHumanUpdateChromeRows(input)
+  }
+  return 3 + progressRows + monitorGoalHumanUpdateChromeRows(input)
+}
+
+export function monitorGoalViewLineCount(input: MonitorGoalViewInput): number {
+  const cardLines = goalCardLines(input)
+  return monitorGoalFixedChromeRows(input) + monitorGoalScrollLines(cardLines).length
+}
+
+export function monitorGoalViewMaxScroll(input: MonitorGoalViewInput, visibleRows: number): number {
+  const cardLines = goalCardLines(input)
+  const fixedRows = monitorGoalFixedChromeRows(input)
+  const scrollRows = Math.max(2, visibleRows - fixedRows)
+  return Math.max(0, monitorGoalScrollLines(cardLines).length - scrollRows)
+}
+
+function renderGoalHumanUpdatesBox(input: MonitorGoalViewInput): ReturnType<typeof Box> | undefined {
+  const styled = renderRecentGoalHumanUpdatesStyled(
+    input.events,
+    input.state.monitorSnapshot,
+    input.columns,
+    MONITOR_GOAL_HUMAN_UPDATE_ROWS,
+  )
+  if (!styled) return undefined
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.borderInactive,
+      titleColor: theme.synth.orange,
+      title: "Monitor updates",
+      flexDirection: "column",
+      padding: 1,
+      flexShrink: 0,
+      width: "100%",
+      overflow: "hidden",
+    },
+    Text({
+      content: styled,
+      width: "100%",
+      flexShrink: 0,
+    }),
+  )
+}
+
+function renderGoalCompletionSummaryBox(
+  lines: string[],
+  columns: number,
+): ReturnType<typeof Box> {
+  const width = Math.max(20, columns - 4)
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.synth.gold,
+      titleColor: theme.synth.gold,
+      title: "Complete",
+      flexDirection: "column",
+      padding: 1,
+      flexShrink: 0,
+      width: "100%",
+      gap: 0,
+      overflow: "hidden",
+    },
+    ...lines.slice(0, MONITOR_GOAL_COMPLETION_MAX_LINES).map((line, index) =>
+      Text({
+        content: oneLine(line, width),
+        fg:
+          index === 0
+            ? theme.synth.gold
+            : line.endsWith(":") || (!line.startsWith("  ") && index > 0)
+              ? theme.synth.amber
+              : theme.fgPrimary,
+        width: "100%",
+        flexShrink: 0,
+      }),
+    ),
+  )
+}
+
+function monitorGoalDetailLines(cardLines: string[]): string[] {
+  return cardLines.filter(
+    (line) =>
+      line.startsWith("[x]") ||
+      line.startsWith("[ ]") ||
+      line.startsWith("blocker") ||
+      line.startsWith("eta ") ||
+      line.startsWith("..."),
+  )
+}
+
+function monitorGoalScrollLines(cardLines: string[]): string[] {
+  const details = monitorGoalDetailLines(cardLines)
+  if (details.length > 0) return details
+  return cardLines.slice(1)
+}
+
+function goalHistoryListOptions(
+  state: GoalModeState,
+  metaThreadId?: string,
+): ListGoalHistoryOptions {
+  return {
+    metaThreadId,
+    manifestGoal: state.metaThreadManifest?.active_goal,
+  }
+}
+
+function formatHistoryTimestamp(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const ms = Date.parse(value)
+  if (!Number.isFinite(ms)) return undefined
+  return new Date(ms).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  })
+}
+
+function goalHistorySpendLine(
+  entry: GoalHistoryEntry,
+  events: readonly StackThreadMetaEvent[],
+  metaThreadId?: string,
+): string | undefined {
+  const scoped = eventsForGoalHistoryEntry(events, entry)
+  const session = reduceGoalSessionSnapshot({
+    events: scoped,
+    goal: { objective: entry.objective, status: entry.status, acceptanceCriteria: [] },
+    metaThreadId,
+  })
+  if (!session) return undefined
+  const tokens = (session.spend.worker_tokens ?? 0) + (session.spend.monitor_tokens ?? 0)
+  const elapsed =
+    entry.started_at && entry.ended_at
+      ? Math.max(0, Math.round((Date.parse(entry.ended_at) - Date.parse(entry.started_at)) / 1000))
+      : session.spend.elapsed_s
+  return formatGoalCompute({
+    source: "none",
+    tokensUsed: tokens > 0 ? tokens : undefined,
+    timeUsedSeconds: elapsed > 0 ? elapsed : undefined,
+  })
+}
+
+function goalHistoryCardLines(input: {
+  entry: GoalHistoryEntry
+  events: readonly StackThreadMetaEvent[]
+  state: GoalModeState & { monitorSnapshot: StackMonitorSnapshot }
+  metaThreadId?: string
+  columns: number
+}): string[] {
+  const scoped = eventsForGoalHistoryEntry(input.events, input.entry)
+  const acceptanceCriteria = acceptanceCriteriaForHistoryEntry(scoped, input.entry.objective)
+  const session = reduceGoalSessionSnapshot({
+    events: scoped,
+    goal: {
+      objective: input.entry.objective,
+      status: input.entry.status,
+      acceptanceCriteria,
+    },
+    metaThreadId: input.metaThreadId,
+    monitorThreadSpendUsd: input.state.monitorSnapshot.threadSpendUsd,
+  })
+  const criteria = session?.criteria_progress ?? criteriaProgress(acceptanceCriteria)
+  const operatorUpdate = session?.last_operator_update ?? latestOperatorUpdate(scoped)
+  const done = criteria.done
+  const total = criteria.total
+  const pct =
+    "pct" in criteria && typeof criteria.pct === "number"
+      ? criteria.pct
+      : total > 0
+        ? Math.round((done / total) * 100)
+        : 0
+  const eta = formatEta(asRecord(session?.last_eta ?? operatorUpdate?.eta))
+  const status = normalizeDisplayGoalStatus(session?.status ?? input.entry.status ?? "done")
+  const lines = [`status ${status} · criteria ${done}/${total}${total > 0 ? ` (${pct}%)` : ""}`]
+
+  const spend = session?.spend
+  if (spend) {
+    lines.push(
+      [
+        spend.elapsed_s ? `elapsed ${formatDuration(spend.elapsed_s)}` : undefined,
+        spend.worker_tokens ? `worker ${formatCompactNumber(spend.worker_tokens)} tok` : undefined,
+        spend.monitor_tokens ? `monitor ${formatCompactNumber(spend.monitor_tokens)} tok` : undefined,
+        formatEstimatedSpend(spend.worker_usd) ? `worker ${formatEstimatedSpend(spend.worker_usd)}` : undefined,
+        formatEstimatedSpend(spend.monitor_usd) ? `monitor ${formatEstimatedSpend(spend.monitor_usd)}` : undefined,
+      ]
+        .filter(Boolean)
+        .join(" · "),
+    )
+  }
+
+  const started = formatHistoryTimestamp(input.entry.started_at)
+  const ended = formatHistoryTimestamp(input.entry.ended_at)
+  if (started || ended) {
+    lines.push(
+      [started ? `started ${started}` : undefined, ended ? `ended ${ended}` : undefined].filter(Boolean).join(" · "),
+    )
+  }
+
+  if (eta) lines.push(`eta ${eta}`)
+  const criteriaStates = session?.criteria_states ?? []
+  if (criteriaStates.length > 0) {
+    for (const criterion of criteriaStates.slice(0, 4)) {
+      const doneMark =
+        criterion.state === "audit_clean" || criterion.state === "worker_marked" ? "[x]" : "[ ]"
+      lines.push(`${doneMark} ${oneLine(criterion.criterion, Math.max(20, input.columns - 8))}`)
+    }
+    if (criteriaStates.length > 4) lines.push(`... +${criteriaStates.length - 4} criteria`)
+  } else {
+    for (const criterion of acceptanceCriteria.slice(0, 4)) {
+      const parsed = parseCriterionEntry(criterion)
+      lines.push(`${parsed.done ? "[x]" : "[ ]"} ${oneLine(parsed.label, Math.max(20, input.columns - 8))}`)
+    }
+    if (acceptanceCriteria.length > 4) lines.push(`... +${acceptanceCriteria.length - 4} criteria`)
+  }
+  return lines
+}
+
+function acceptanceCriteriaForHistoryEntry(
+  scoped: readonly StackThreadMetaEvent[],
+  objective: string,
+): string[] {
+  for (const event of [...scoped].reverse()) {
+    if (event.type !== "meta_thread.goal_updated") continue
+    if (readString(event.payload.objective) !== objective) continue
+    const raw = event.payload.acceptance_criteria
+    if (!Array.isArray(raw)) continue
+    return raw.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+  }
+  return []
+}
+
+function previousGoalExpandedVisualRowCount(input: {
+  entry: GoalHistoryEntry
+  events: readonly StackThreadMetaEvent[]
+  state: GoalModeState & { monitorSnapshot: StackMonitorSnapshot }
+  metaThreadId?: string
+  columns: number
+}): number {
+  const scoped = eventsForGoalHistoryEntry(input.events, input.entry)
+  const completionLines = goalCompletionSummaryLinesForHistoryEntry({
+    objective: input.entry.objective,
+    status: input.entry.status,
+    events: scoped,
+    state: input.state,
+    metaThreadId: input.metaThreadId,
+    columns: input.columns,
+  })
+  const terminal = completionLines !== undefined
+  const timelineRows = terminal ? MONITOR_GOAL_TIMELINE_ROWS_COMPLETE : MONITOR_GOAL_TIMELINE_ROWS
+  let rows = goalProgressChromeRowCount(timelineRows)
+  if (terminal && completionLines) {
+    rows += Math.min(completionLines.length, MONITOR_GOAL_COMPLETION_MAX_LINES) + 2
+  } else {
+    rows += 1
+  }
+  const humanLineCount = recentGoalHumanUpdateLines(
+    scoped,
+    input.state.monitorSnapshot,
+    input.columns,
+    MONITOR_GOAL_HUMAN_UPDATE_ROWS,
+  ).length
+  if (humanLineCount > 0) rows += humanLineCount + 2
+  rows += monitorGoalScrollLines(
+    goalHistoryCardLines({
+      entry: input.entry,
+      events: input.events,
+      state: input.state,
+      metaThreadId: input.metaThreadId,
+      columns: input.columns,
+    }),
+  ).length
+  return rows + 1
+}
+
+function renderHistoryGoalHumanUpdatesBox(
+  events: readonly StackThreadMetaEvent[],
+  monitorSnapshot: StackMonitorSnapshot,
+  columns: number,
+): ReturnType<typeof Box> | undefined {
+  const styled = renderRecentGoalHumanUpdatesStyled(
+    [...events],
+    monitorSnapshot,
+    columns,
+    MONITOR_GOAL_HUMAN_UPDATE_ROWS,
+  )
+  if (!styled) return undefined
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.borderInactive,
+      titleColor: theme.synth.orange,
+      title: "Monitor updates",
+      flexDirection: "column",
+      padding: 1,
+      flexShrink: 0,
+      width: "100%",
+      overflow: "hidden",
+    },
+    Text({
+      content: styled,
+      width: "100%",
+      flexShrink: 0,
+    }),
+  )
+}
+
+function renderPreviousGoalExpandedPanel(input: {
+  entry: GoalHistoryEntry
+  events: readonly StackThreadMetaEvent[]
+  state: GoalModeState & { monitorSnapshot: StackMonitorSnapshot }
+  metaThreadId?: string
+  columns: number
+}): ReturnType<typeof Box> {
+  const scoped = eventsForGoalHistoryEntry(input.events, input.entry)
+  const cardLines = goalHistoryCardLines({
+    entry: input.entry,
+    events: input.events,
+    state: input.state,
+    metaThreadId: input.metaThreadId,
+    columns: input.columns,
+  })
+  const completionLines = goalCompletionSummaryLinesForHistoryEntry({
+    objective: input.entry.objective,
+    status: input.entry.status,
+    events: scoped,
+    state: input.state,
+    metaThreadId: input.metaThreadId,
+    columns: input.columns,
+  })
+  const terminal = completionLines !== undefined
+  const timelineRows = terminal ? MONITOR_GOAL_TIMELINE_ROWS_COMPLETE : MONITOR_GOAL_TIMELINE_ROWS
+  const progressWidth = Math.max(24, input.columns - 4)
+  const humanUpdatesBox = renderHistoryGoalHumanUpdatesBox(
+    scoped,
+    input.state.monitorSnapshot,
+    input.columns,
+  )
+  const detailLines = monitorGoalScrollLines(cardLines)
+
+  return Box(
+    {
+      flexDirection: "column",
+      flexGrow: 0,
+      flexShrink: 0,
+      minHeight: 0,
+      width: "100%",
+      gap: 1,
+      paddingLeft: 2,
+      overflow: "hidden",
+    },
+    ...(terminal && completionLines
+      ? [renderGoalCompletionSummaryBox(completionLines, input.columns)]
+      : [
+          Text({
+            content: goalStatusStrip(cardLines, progressWidth),
+            fg: theme.fgMuted,
+            width: "100%",
+            flexShrink: 0,
+          }),
+        ]),
+    ...goalProgressChromeElements([...scoped], input.columns, timelineRows, "Audit trail"),
+    ...(humanUpdatesBox ? [humanUpdatesBox] : []),
+    ...detailLines.map((line) =>
+      Text({
+        content: line,
+        fg: line.startsWith("blocker")
+          ? theme.synth.orange
+          : line.startsWith("[x]")
+            ? theme.goalLifecycle.done
+            : line.startsWith("[ ]")
+              ? theme.fgSecondary
+              : theme.fgPrimary,
+        width: "100%",
+        flexShrink: 0,
+      }),
+    ),
+  )
+}
+
+export type PreviousGoalListItem =
+  | {
+      kind: "text"
+      text: string
+      fg: string
+      entryKey?: string
+      rowCount: number
+    }
+  | {
+      kind: "expanded"
+      entry: GoalHistoryEntry
+      entryKey: string
+      rowCount: number
+    }
+
+export function buildPreviousGoalsListItems(input: {
+  state: GoalModeState & { monitorSnapshot: StackMonitorSnapshot }
+  events: readonly StackThreadMetaEvent[]
+  metaThreadId?: string
+  columns: number
+  expandedKeys: ReadonlySet<string>
+  selectedIndex?: number
+}): PreviousGoalListItem[] {
+  const options = goalHistoryListOptions(input.state, input.metaThreadId)
+  const entries = listGoalHistory(input.events, options)
+  const width = Math.max(24, input.columns - 4)
+  const items: PreviousGoalListItem[] = [
+    { kind: "text", text: "Previous goals", fg: theme.synth.amber, rowCount: 1 },
+    {
+      kind: "text",
+      text: "click or enter to expand · this metathread only",
+      fg: theme.fgMuted,
+      rowCount: 1,
+    },
+    { kind: "text", text: "", fg: theme.fgPrimary, rowCount: 1 },
+  ]
+  if (entries.length === 0) {
+    items.push({
+      kind: "text",
+      text: "No previous goals on this metathread.",
+      fg: theme.fgMuted,
+      rowCount: 1,
+    })
+    return items
+  }
+  entries.forEach((entry, index) => {
+    const key = goalHistoryEntryKey(entry)
+    const expanded = input.expandedKeys.has(key)
+    const selected = input.selectedIndex === index
+    const marker = expanded ? "▾" : "▸"
+    const prefix = selected ? "› " : "  "
+    items.push({
+      kind: "text",
+      text: oneLine(`${prefix}${marker} ${entry.status} · ${entry.objective}`, width),
+      fg: goalLifecycleStatusColor(entry.status),
+      entryKey: key,
+      rowCount: 1,
+    })
+    const stats = goalHistorySpendLine(entry, input.events, input.metaThreadId)
+    if (stats) {
+      items.push({
+        kind: "text",
+        text: oneLine(`    ${stats}`, width),
+        fg: theme.fgMuted,
+        entryKey: key,
+        rowCount: 1,
+      })
+    }
+    if (expanded) {
+      items.push({
+        kind: "expanded",
+        entry,
+        entryKey: key,
+        rowCount: previousGoalExpandedVisualRowCount({
+          entry,
+          events: input.events,
+          state: input.state,
+          metaThreadId: input.metaThreadId,
+          columns: input.columns,
+        }),
+      })
+    }
+  })
+  return items
+}
+
+export type PreviousGoalListRow = {
+  text: string
+  fg: string
+  entryIndex?: number
+  entryKey?: string
+  toggle?: () => void
+}
+
+export function buildPreviousGoalsListRows(input: {
+  state: GoalModeState & { monitorSnapshot: StackMonitorSnapshot }
+  events: readonly StackThreadMetaEvent[]
+  metaThreadId?: string
+  columns: number
+  expandedKeys: ReadonlySet<string>
+  selectedIndex?: number
+}): PreviousGoalListRow[] {
+  return buildPreviousGoalsListItems(input).flatMap((item) => {
+    if (item.kind === "expanded") {
+      return Array.from({ length: item.rowCount }, () => ({
+        text: "",
+        fg: theme.fgPrimary,
+        entryKey: item.entryKey,
+      }))
+    }
+    return [{ text: item.text, fg: item.fg, entryKey: item.entryKey }]
+  })
+}
+
+export function previousGoalsListLineCount(input: {
+  state: GoalModeState & { monitorSnapshot: StackMonitorSnapshot }
+  events: readonly StackThreadMetaEvent[]
+  metaThreadId?: string
+  columns: number
+  expandedKeys: ReadonlySet<string>
+  selectedIndex?: number
+}): number {
+  return buildPreviousGoalsListItems(input).reduce((total, item) => total + item.rowCount, 0)
+}
+
+export function previousGoalsListMaxScroll(input: {
+  state: GoalModeState & { monitorSnapshot: StackMonitorSnapshot }
+  events: readonly StackThreadMetaEvent[]
+  metaThreadId?: string
+  columns: number
+  expandedKeys: ReadonlySet<string>
+  selectedIndex?: number
+  visibleRows: number
+}): number {
+  return Math.max(0, previousGoalsListLineCount(input) - input.visibleRows)
+}
+
+export function renderPreviousGoalsListPanel(input: {
+  state: GoalModeState & { monitorSnapshot: StackMonitorSnapshot }
+  events: readonly StackThreadMetaEvent[]
+  metaThreadId?: string
+  columns: number
+  visibleRows: number
+  scrollOffset: number
+  expandedKeys: ReadonlySet<string>
+  selectedIndex: number
+  onToggleEntry?: (entryKey: string) => void
+}): ReturnType<typeof Box> {
+  const items = buildPreviousGoalsListItems({
+    state: input.state,
+    events: input.events,
+    metaThreadId: input.metaThreadId,
+    columns: input.columns,
+    expandedKeys: input.expandedKeys,
+    selectedIndex: input.selectedIndex,
+  })
+  const maxScroll = Math.max(
+    0,
+    items.reduce((total, item) => total + item.rowCount, 0) - input.visibleRows,
+  )
+  const offset = Math.max(0, Math.min(input.scrollOffset, maxScroll))
+
+  let skip = offset
+  const children: Array<ReturnType<typeof Text> | ReturnType<typeof Box>> = []
+  let used = 0
+
+  for (const item of items) {
+    if (skip >= item.rowCount) {
+      skip -= item.rowCount
+      continue
+    }
+    if (used >= input.visibleRows) break
+
+    if (item.kind === "text") {
+      children.push(
+        Text({
+          content: item.text || " ",
+          fg: item.fg,
+          width: "100%",
+          flexShrink: 0,
+          ...(item.entryKey && input.onToggleEntry
+            ? {
+                onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
+                  event.preventDefault?.()
+                  event.stopPropagation?.()
+                  input.onToggleEntry?.(item.entryKey!)
+                },
+              }
+            : {}),
+        }),
+      )
+      used += 1
+      continue
+    }
+
+    children.push(
+      renderPreviousGoalExpandedPanel({
+        entry: item.entry,
+        events: input.events,
+        state: input.state,
+        metaThreadId: input.metaThreadId,
+        columns: input.columns,
+      }),
+    )
+    used += item.rowCount
+  }
+
+  return Box(
+    {
+      flexDirection: "column",
+      flexGrow: 1,
+      minHeight: 0,
+      width: "100%",
+      gap: 1,
+      overflow: "hidden",
+    },
+    ...children,
+  )
+}
+
+export function renderMonitorGoalViewPanel(
+  input: MonitorGoalViewInput & { visibleRows: number; scrollOffset: number },
+): ReturnType<typeof Box> {
+  const progressWidth = Math.max(24, input.columns - 4)
+  const cardLines = goalCardLines(input)
+  const goal = activeGoalModeSnapshot(input.state)
+  const titleText = input.metaThreadTitle?.trim() || goal.objective
+  const completionLines = goalCompletionSummaryLines(input)
+  const terminal = completionLines !== undefined
+  const timelineRows = terminal ? MONITOR_GOAL_TIMELINE_ROWS_COMPLETE : MONITOR_GOAL_TIMELINE_ROWS
+  const scrollLines = monitorGoalScrollLines(cardLines)
+  const fixedRows = monitorGoalFixedChromeRows(input)
+  const scrollRows = Math.max(2, input.visibleRows - fixedRows)
+  const maxScroll = Math.max(0, scrollLines.length - scrollRows)
+  const offset = Math.max(0, Math.min(input.scrollOffset, maxScroll))
+  const visibleDetail = scrollLines.slice(offset, offset + scrollRows)
+  const humanUpdatesBox = renderGoalHumanUpdatesBox(input)
+
+  return Box(
+    {
+      flexDirection: "column",
+      flexGrow: 1,
+      minHeight: 0,
+      width: "100%",
+      gap: 1,
+      overflow: "hidden",
+    },
+    ...(!terminal && titleText
+      ? [
+          Text({
+            content: `Goal · ${oneLine(titleText, progressWidth)}`,
+            fg: theme.synth.amber,
+            width: "100%",
+            flexShrink: 0,
+          }),
+        ]
+      : []),
+    ...(terminal && completionLines
+      ? [renderGoalCompletionSummaryBox(completionLines, input.columns)]
+      : [
+          Text({
+            content: goalStatusStrip(cardLines, progressWidth),
+            fg: theme.fgMuted,
+            width: "100%",
+            flexShrink: 0,
+          }),
+          Text({
+            content: workerLivenessStrip(input, progressWidth),
+            fg: workerLivenessColor(input),
+            width: "100%",
+            flexShrink: 0,
+          }),
+        ]),
+    ...goalProgressChromeElements(
+      input.events,
+      input.columns,
+      timelineRows,
+      terminal ? "Audit trail" : "Goal progress",
+    ),
+    ...(humanUpdatesBox ? [humanUpdatesBox] : []),
+    Box(
+      {
+        flexDirection: "column",
+        flexGrow: 1,
+        minHeight: 0,
+        width: "100%",
+        gap: 0,
+        overflow: "hidden",
+      },
+      ...visibleDetail.map((line) =>
+        Text({
+          content: line,
+          fg: line.startsWith("blocker")
+            ? theme.synth.orange
+            : line.startsWith("[x]")
+              ? theme.goalLifecycle.done
+              : line.startsWith("[ ]")
+                ? theme.fgSecondary
+                : theme.fgPrimary,
+          width: "100%",
+          flexShrink: 0,
+        }),
+      ),
+    ),
+  )
+}
+
+export function renderMonitorGoalViewStyled(
+  input: MonitorGoalViewInput & { scrollOffset?: number; visibleRows: number },
+): StyledText {
+  const progressWidth = Math.max(24, input.columns - 4)
+  const cardLines = goalCardLines(input)
+  const goal = activeGoalModeSnapshot(input.state)
+  const titleText = input.metaThreadTitle?.trim() || goal.objective
+  const offset = input.scrollOffset ?? 0
+  const chunks: TextChunk[] = []
+  const lines: Array<{ text: string; fg: string }> = []
+  if (titleText) lines.push({ text: `Goal · ${oneLine(titleText, progressWidth)}`, fg: theme.synth.amber })
+  lines.push({ text: goalStatusStrip(cardLines, progressWidth), fg: theme.fgMuted })
+  lines.push({ text: workerLivenessStrip(input, progressWidth), fg: workerLivenessColor(input) })
+  lines.push({ text: "", fg: theme.fgPrimary })
+  for (const line of cardLines) {
+    lines.push({
+      text: line,
+      fg: line.startsWith("blocker")
+        ? theme.synth.orange
+        : line.startsWith("[x]")
+          ? theme.goalLifecycle.done
+          : theme.fgSecondary,
+    })
+  }
+  for (const [index, line] of lines.slice(offset, offset + input.visibleRows).entries()) {
+    if (index > 0) chunks.push(fg(theme.fgPrimary)("\n"))
+    chunks.push(fg(line.fg)(line.text || " "))
+  }
+  return new StyledText(chunks)
 }
 
 export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typeof Box> {
@@ -201,8 +1045,7 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
   const cardLines = goalCardLines(input)
   const sidecarMenuRows = input.sidecarMenuElements?.length ? 1 : 0
   const progressWidth = Math.max(24, input.columns - 4)
-  const progressStrip = renderGoalProgressStripStyled(input.events, progressWidth)
-  const progressChromeRows = progressStrip ? 4 : 0
+  const progressChromeRows = goalProgressChromeRowCount(6)
   const streamRows =
     input.streamRows ??
     goalShutterStreamVisibleRows(input.visibleRows, 1, sidecarMenuRows + progressChromeRows)
@@ -219,34 +1062,14 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
   const monitorModelLine = monitorModel
     ? `monitor · ${monitorModel}${monitorEffort ? ` · ${monitorEffort}` : ""}`
     : undefined
-  const sidecarTitle = input.sidecarView === "events"
-    ? input.state.agentViewEnabled ? "Agent tape" : "Sidecar events"
-    : "Sidecar thread"
+  const sidecarTitle =
+    input.sidecarView === "events"
+      ? input.state.agentViewEnabled
+        ? "Agent tape"
+        : "Sidecar events"
+      : "Sidecar thread"
 
-  const goalProgressElements = progressStrip
-    ? [
-        Text({ content: progressStrip, width: "100%", flexShrink: 0 }),
-        Box(
-          {
-            border: true,
-            borderStyle: "single" as const,
-            borderColor: theme.borderInactive,
-            titleColor: theme.synth.orange,
-            title: "Goal progress",
-            flexDirection: "column" as const,
-            padding: 1,
-            flexShrink: 0,
-            width: "100%",
-            overflow: "hidden" as const,
-          },
-          Text({
-            content: renderGoalProgressTimelineStyled(input.events, progressWidth, 6),
-            width: "100%",
-            flexShrink: 0,
-          }),
-        ),
-      ]
-    : []
+  const goalProgressElements = goalProgressChromeElements(input.events, input.columns, 6, "Goal progress")
 
   return Box(
     {
@@ -278,6 +1101,12 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
       width: "100%",
       flexShrink: 0,
     }),
+    Text({
+      content: workerLivenessStrip(input, Math.max(24, input.columns - 4)),
+      fg: workerLivenessColor(input),
+      width: "100%",
+      flexShrink: 0,
+    }),
     ...goalProgressElements,
     Box(
       {
@@ -299,7 +1128,7 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
           flexDirection: "row",
           flexShrink: 0,
           width: "100%",
-          gap: 0,
+          gap: 1,
         },
         goalTabChip(
           "thread",
@@ -390,14 +1219,33 @@ export function renderGoalShutter(input: GoalShutterRenderInput): ReturnType<typ
               }
             : {}),
         }),
-        ...(input.sidecarMenuElements ?? []),
           ]),
+      ...(input.sidecarView === "events"
+        ? [
+            Text({
+              content: renderSidecarChatInputStyled(input.state),
+              bg: sidecarInputBackground(input.state),
+              width: "100%",
+              flexShrink: 0,
+              ...(input.onFocusSidecar
+                ? {
+                    onMouseDown(event: { preventDefault?: () => void; stopPropagation?: () => void }) {
+                      event.preventDefault?.()
+                      event.stopPropagation?.()
+                      input.onFocusSidecar?.()
+                    },
+                  }
+                : {}),
+            }),
+          ]
+        : []),
+      ...(input.sidecarMenuElements ?? []),
     ),
     ...(input.state.sidecarQueuedMessages?.length
       ? [renderSidecarQueuedMessages(input.state.sidecarQueuedMessages, input.columns)!]
       : []),
     Text({
-      content: "1 worker · 2 sidecar · t thread · e events · m message sidecar · esc worker peek · g goal · a agent tape",
+      content: "worker chat stays open · t thread · e events · m message sidecar · g goal · a agent tape",
       fg: theme.fgMuted,
       width: "100%",
       flexShrink: 0,
@@ -420,19 +1268,33 @@ export function renderSidecarChatInputStyled(state: SidecarQueueUiState & {
 }): StyledText {
   const preview = state.monitorInputBuffer.replace(/\n/g, " ↵ ")
   const statusLine = sidecarInputStatusLine(state)
-  if (preview) {
+  const defaultIdle = statusLine === "Message sidecar · enter to send"
+
+  if (defaultIdle) {
+    if (preview) {
+      return new StyledText([
+        fg(theme.synth.amber)("› "),
+        fg(theme.fgInput)(preview),
+        fg(theme.synth.gold)("_"),
+      ])
+    }
     return new StyledText([
       fg(theme.synth.amber)("› "),
-      sidecarAgentActive(state) ? fg(theme.synth.amber)(statusLine) : dim(fg(theme.fgMuted)(statusLine)),
-      fg(theme.fgMuted)(" · "),
-      fg(theme.fgInput)(preview),
-      fg(theme.synth.gold)("_"),
+      dim(fg(theme.fgMuted)(statusLine)),
     ])
   }
-  return new StyledText([
-    fg(theme.synth.amber)("› "),
+
+  const chunks = [
     sidecarAgentActive(state) ? fg(theme.synth.amber)(statusLine) : dim(fg(theme.fgMuted)(statusLine)),
-  ])
+    fg(theme.fgPrimary)("\n"),
+    fg(theme.synth.amber)("› "),
+  ]
+  if (preview) {
+    chunks.push(fg(theme.fgInput)(preview), fg(theme.synth.gold)("_"))
+  } else {
+    chunks.push(dim(fg(theme.fgMuted)("type a message · /help")))
+  }
+  return new StyledText(chunks)
 }
 
 export function sidecarInputBackground(state: { focusMode: string; monitorInputBuffer: string }): string {
@@ -445,6 +1307,65 @@ export function sidecarInputBackground(state: { focusMode: string; monitorInputB
 function goalStatusStrip(cardLines: string[], width: number): string {
   const compact = cardLines.filter((line) => !line.startsWith("·")).slice(0, 2).join("  ·  ")
   return oneLine(compact || "no active goal", width)
+}
+
+function workerLivenessStrip(
+  input: Pick<
+    GoalShutterRenderInput,
+    "events" | "state" | "workerStatus" | "workerTurnStartedAt"
+  >,
+  width: number,
+): string {
+  const status = input.workerStatus ?? input.state.status ?? "idle"
+  const latest = latestWorkerEvent(input.events)
+  const latestAge = latest ? ageLabel(latest.observed_at) : "no events"
+  const turnAge = input.workerTurnStartedAt ? ` · turn ${ageLabel(input.workerTurnStartedAt)}` : ""
+  const monitorStatus = input.state.monitorSnapshot.status
+  const sidecarStatus = input.state.sidecarChatInFlight
+    ? " · sidecar sending"
+    : input.state.sidecarQueuedMessages?.length
+      ? ` · sidecar queued ${input.state.sidecarQueuedMessages.length}`
+      : ""
+  const eventLabel = latest ? latest.type.replace(/^agent\./, "") : "none"
+  return oneLine(
+    `worker ${status} · last ${eventLabel} ${latestAge}${turnAge} · monitor ${monitorStatus}${sidecarStatus}`,
+    width,
+  )
+}
+
+function workerLivenessColor(
+  input: Pick<GoalShutterRenderInput, "events" | "state" | "workerStatus">,
+): string {
+  const status = input.workerStatus ?? input.state.status ?? "idle"
+  if (status === "error") return theme.synth.red
+  if (status === "running") return theme.synth.gold
+  const latest = latestWorkerEvent(input.events)
+  const ageMs = latest ? Date.now() - Date.parse(latest.observed_at) : Number.POSITIVE_INFINITY
+  if (Number.isFinite(ageMs) && ageMs < 60_000) return theme.synth.amber
+  return theme.fgMuted
+}
+
+function latestWorkerEvent(events: readonly StackThreadMetaEvent[]): StackThreadMetaEvent | undefined {
+  for (const event of [...events].reverse()) {
+    if (event.actor_role === "monitor") continue
+    if (event.type.startsWith("monitor.")) continue
+    if (event.type.startsWith("agent.") || event.type === "goal.started" || event.type.startsWith("goal.")) {
+      return event
+    }
+  }
+  return events.at(-1)
+}
+
+function ageLabel(iso: string): string {
+  const timestamp = Date.parse(iso)
+  if (!Number.isFinite(timestamp)) return "unknown age"
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000))
+  if (seconds < 10) return "now"
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ago`
 }
 
 function goalCardLines(input: Pick<GoalShutterRenderInput, "state" | "events" | "columns" | "metaThreadId">): string[] {
@@ -463,8 +1384,9 @@ function goalCardLines(input: Pick<GoalShutterRenderInput, "state" | "events" | 
     ? criteria.pct
     : total > 0 ? Math.round((done / total) * 100) : 0
   const eta = formatEta(asRecord(session?.last_eta ?? operatorUpdate?.eta))
+  const status = normalizeDisplayGoalStatus(session?.status ?? goal.status ?? "active")
   const lines = [
-    `status ${session?.status ?? goal.status ?? "active"} · criteria ${done}/${total}${total > 0 ? ` (${pct}%)` : ""}`,
+    `status ${status} · criteria ${done}/${total}${total > 0 ? ` (${pct}%)` : ""}`,
     ...(goal.objective ? [] : ["no active goal"]),
   ]
 
@@ -493,6 +1415,10 @@ function goalCardLines(input: Pick<GoalShutterRenderInput, "state" | "events" | 
     lines.push(`blocker · ${oneLine(blocker, Math.max(20, input.columns - 12))}`)
   }
   return lines
+}
+
+function normalizeDisplayGoalStatus(status: string): string {
+  return status.trim().toLowerCase() === "blocked" ? "active" : status
 }
 
 function criteriaProgress(criteria: readonly string[]): { done: number; total: number } {

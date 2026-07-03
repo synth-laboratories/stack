@@ -20,6 +20,7 @@ import { emitSessionEnded, emitSessionFunnel } from "./telemetry/funnel.js"
 import { resolveEnvironmentFromArgv, runTelemetryDigest } from "./telemetry-digest.js"
 import { runStackApp } from "./tui/app.js"
 import { resetTerminalAfterTui } from "./tui/terminal-cleanup.js"
+import { ensureStackdAutostart } from "./stackd-autostart.js"
 import { runUpdate } from "./update.js"
 import { runVoiceCheck, voiceStatusLine, writeVoiceStatus, resolveVoiceStatus } from "./voice/status.js"
 import { printStackVersion, stackAppRoot, stackVersion, wantsVersionFlag } from "./version.js"
@@ -90,6 +91,10 @@ try {
   }
   if (process.argv[2] === "resume") {
     const query = process.argv[3]
+    ensureStackDefaults(config.stackDataRoot, config.appRoot)
+    ensureStackCodexSkills(config.appRoot)
+    await hydrateCodexPricing(config)
+    await ensureStackdForTui(config)
     const bundle = await resolveResumeBundle(config.stackDataRoot, config.sessionLogDir, query)
     if (!bundle) {
       const latest = await readLatestResumeCheckpoint(config.stackDataRoot)
@@ -105,9 +110,6 @@ try {
       }
       process.exit(1)
     }
-    ensureStackDefaults(config.stackDataRoot, config.appRoot)
-    ensureStackCodexSkills(config.appRoot)
-    await hydrateCodexPricing(config)
     const workspace = await detectWorkspace(config.workingDir)
     void emitSessionFunnel()
     let resumeManifest = bundle.manifest
@@ -127,6 +129,7 @@ try {
   ensureStackDefaults(config.stackDataRoot, config.appRoot)
   ensureStackCodexSkills(config.appRoot)
   await hydrateCodexPricing(config)
+  await ensureStackdForTui(config)
   const workspace = await detectWorkspace(config.workingDir)
   const session = createSession(config.workspaceRoot, harnessSessionCommand(config))
 
@@ -141,6 +144,17 @@ try {
     console.error(`stack startup failed: ${String(error)}`)
   }
   process.exit(1)
+}
+
+async function ensureStackdForTui(config: Awaited<ReturnType<typeof loadConfig>>): Promise<void> {
+  const result = await ensureStackdAutostart(config)
+  if (result.healthy) return
+  const suffix = result.logPath ? `; log: ${result.logPath}` : ""
+  if (result.skippedReason) {
+    console.error(`warning: stackd unavailable at ${result.baseUrl} (${result.skippedReason})${suffix}`)
+    return
+  }
+  console.error(`warning: stackd did not become healthy at ${result.baseUrl}; continuing TUI without local API sidecar${suffix}`)
 }
 
 function wantsHelpFlag(argv: string[]): boolean {
@@ -224,7 +238,8 @@ function printStackHelp(argv: string[]): void {
   console.log("  stack crashes <command>")
   console.log("  stack resume [query]")
   console.log("  stack demo <command>")
-  console.log("  stack update")
+  console.log("  stack update --check [--json]")
+  console.log("  stack update --apply [--json]")
   console.log("  stack --version")
   console.log("")
   console.log("Local worker paths do not require SYNTH_API_KEY; sign-in unlocks hosted/cloud surfaces.")

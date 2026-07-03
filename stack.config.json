@@ -30,5 +30,12 @@
       "apiBaseUrl": "https://api.usesynth.ai",
       "authEnv": "SYNTH_API_KEY"
     }
-  }
+  },
+  "defaultHarness": "codex",
+  "codexModel": "gpt-5.5",
+  "codexReasoningEffort": "medium",
+  "cursorModel": "composer-2.5",
+  "codexSubagentsEnabled": true,
+  "codexSubagentModel": "gpt-5.4-mini",
+  "codexSubagentReasoningEffort": "medium"
 }

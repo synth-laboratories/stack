@@ -174,7 +174,7 @@ Can we also collect feature usage and session length to improve Stack?
 Accept · Decline · Ask later
 ```
 
-Operators can change choices from `/settings telemetry`. Hosted-only features
+Operators can change choices from `/permissions` (alias `/settings telemetry`). Hosted-only features
 ask for login at point of need.
 
 ## Client crash reporting

@@ -11,6 +11,7 @@ import {
   type JsonRpcServerRequest,
 } from "./codex/app-server-client.js"
 import { autoApproveServerRequest, CodexAppServerEventBridge } from "./codex/app-server-bridge.js"
+import { buildCodexTurnInputParts } from "./image-input.js"
 import { resolveMonitorSystemPrompt, type StackMonitorConfig } from "./monitor.js"
 import type { StackCodexUsage } from "./session.js"
 import { stackVersion } from "./version.js"
@@ -130,6 +131,7 @@ export async function runMonitorCodexSidecarChatTurn(input: {
   actorId: string
   codexThreadId?: string
   question: string
+  imagePaths?: string[]
   requestEventId: string
   goalContext: CodexGoalSnapshot
   sidecarContext: Record<string, unknown>
@@ -141,6 +143,7 @@ export async function runMonitorCodexSidecarChatTurn(input: {
     actorId: input.actorId,
     codexThreadId: input.codexThreadId,
     prompt: monitorCodexChatPrompt(input),
+    imagePaths: input.imagePaths,
   })
 }
 
@@ -151,6 +154,7 @@ async function runMonitorCodexSidecarPrompt(input: {
   actorId: string
   codexThreadId?: string
   prompt: string
+  imagePaths?: string[]
 }): Promise<MonitorCodexSidecarRunResult> {
   const startedAt = new Date().toISOString()
   const bridge = new CodexAppServerEventBridge()
@@ -200,7 +204,7 @@ async function runMonitorCodexSidecarPrompt(input: {
       cwd: input.stackConfig.workspaceRoot,
       model: input.monitorConfig.model.model || input.stackConfig.codexModel,
       effort: input.monitorConfig.model.reasoningEffort,
-      input: textTurnInput(input.prompt),
+      input: buildCodexTurnInputParts(input.prompt, input.imagePaths ?? []),
     })
     const final = await client.waitForTurnEnd(turnId, sidecarTurnTimeoutMs())
     const exitCode = final.method === "turn/completed" ? 0 : 1
@@ -454,10 +458,6 @@ function serializableEvent(event: StackThreadMetaEvent): Record<string, unknown>
     actor_role: event.actor_role,
     payload: event.payload,
   }
-}
-
-function textTurnInput(text: string): Array<{ type: "text"; text: string; text_elements: [] }> {
-  return [{ type: "text", text, text_elements: [] }]
 }
 
 function extractThreadIdFromResult(result: unknown): string | undefined {

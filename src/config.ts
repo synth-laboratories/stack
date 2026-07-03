@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, join, resolve } from "node:path"
 import { defaultCodexPricing, type CodexModelPricing } from "./codex/usage-cost.js"
 import { loadOpenAiPricing } from "./codex/openai-pricing.js"
@@ -25,6 +25,7 @@ const DEFAULT_VOICE_LANGUAGE = "en"
 export const CODEX_MODEL_OPTIONS = ["gpt-5.4-mini", "gpt-5.5"] as const
 export const CURSOR_MODEL_OPTIONS = ["composer-2.5", "auto"] as const
 export const CODEX_REASONING_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh"] as const
+export const CURSOR_REASONING_EFFORT_OPTIONS = ["normal"] as const
 export const STACK_ENVIRONMENT_OPTIONS = ["dev", "staging", "prod"] as const
 export const STACK_HARNESS_OPTIONS = ["codex", "cursor"] as const
 
@@ -110,6 +111,13 @@ type StackConfigFile = {
   workingDir?: string
   synthDevRoot?: string
   defaultEnvironment?: string
+  defaultHarness?: string
+  codexModel?: string
+  codexReasoningEffort?: string
+  cursorModel?: string
+  codexSubagentsEnabled?: boolean
+  codexSubagentModel?: string
+  codexSubagentReasoningEffort?: string
   environments?: Partial<Record<StackEnvironmentName, Partial<Omit<StackEnvironmentConfig, "name">>>>
   devSlotInstance?: string
   codexPricing?: Array<{
@@ -127,6 +135,20 @@ type StackConfigFile = {
     language?: string
     env_file?: string
   }
+}
+
+export type StackConfigPatch = Partial<Pick<
+  StackConfigFile,
+  | "defaultEnvironment"
+  | "defaultHarness"
+  | "codexModel"
+  | "codexReasoningEffort"
+  | "cursorModel"
+  | "codexSubagentsEnabled"
+  | "codexSubagentModel"
+  | "codexSubagentReasoningEffort"
+>> & {
+  voice?: Partial<NonNullable<StackConfigFile["voice"]>>
 }
 
 const loadedAuthEnvFiles = new Map<string, string>()
@@ -157,9 +179,13 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
   )
   const stackMcpCommand = resolveStackMcpCommand(appRoot)
   const stackMcpEnabled = process.env.STACK_CODEX_STACK_MCP !== "0"
-  const codexSubagentsEnabled = readBooleanEnv(process.env.STACK_CODEX_SUBAGENTS, true, "STACK_CODEX_SUBAGENTS")
-  const codexSubagentModel = process.env.STACK_CODEX_SUBAGENT_MODEL ?? "gpt-5.4-mini"
-  const codexSubagentReasoningEffort = process.env.STACK_CODEX_SUBAGENT_REASONING_EFFORT ?? "medium"
+  const codexSubagentsEnabled =
+    process.env.STACK_CODEX_SUBAGENTS !== undefined
+      ? readBooleanEnv(process.env.STACK_CODEX_SUBAGENTS, true, "STACK_CODEX_SUBAGENTS")
+      : fileConfig.codexSubagentsEnabled ?? true
+  const codexSubagentModel = process.env.STACK_CODEX_SUBAGENT_MODEL ?? fileConfig.codexSubagentModel ?? "gpt-5.4-mini"
+  const codexSubagentReasoningEffort =
+    process.env.STACK_CODEX_SUBAGENT_REASONING_EFFORT ?? fileConfig.codexSubagentReasoningEffort ?? "medium"
   const synthWorkerInferenceEnabled = readBooleanEnv(
     process.env.STACK_SYNTH_WORKER_INFERENCE,
     false,
@@ -168,13 +194,13 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
   const synthWorkerInferenceModel =
     process.env.STACK_SYNTH_WORKER_INFERENCE_MODEL ?? DEFAULT_SYNTH_WORKER_INFERENCE_MODEL
   const harness = normalizeOption(
-    process.env.STACK_HARNESS,
+    process.env.STACK_HARNESS ?? fileConfig.defaultHarness,
     STACK_HARNESS_OPTIONS,
     DEFAULT_HARNESS,
     "STACK_HARNESS",
   )
   const cursorModel = normalizeOption(
-    process.env.STACK_CURSOR_MODEL,
+    process.env.STACK_CURSOR_MODEL ?? fileConfig.cursorModel,
     CURSOR_MODEL_OPTIONS,
     DEFAULT_CURSOR_MODEL,
     "STACK_CURSOR_MODEL",
@@ -208,7 +234,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     DEFAULT_CODEX_REASONING_EFFORT,
     `profile ${activeProfile} codexReasoningEffort`,
   )
-  const codexModelProfile = parseCodexModelProfile(process.env.STACK_CODEX_MODEL)
+  const codexModelProfile = parseCodexModelProfile(process.env.STACK_CODEX_MODEL ?? fileConfig.codexModel)
   const codexModel = normalizeOption(
     codexModelProfile.model,
     CODEX_MODEL_OPTIONS,
@@ -216,7 +242,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     "STACK_CODEX_MODEL",
   )
   const codexReasoningEffort = normalizeOption(
-    process.env.STACK_CODEX_REASONING_EFFORT ?? codexModelProfile.reasoningEffort,
+    process.env.STACK_CODEX_REASONING_EFFORT ?? codexModelProfile.reasoningEffort ?? fileConfig.codexReasoningEffort,
     CODEX_REASONING_EFFORT_OPTIONS,
     profileDefaultReasoningEffort,
     "STACK_CODEX_REASONING_EFFORT",
@@ -298,7 +324,7 @@ function readVoiceConfig(appRoot: string, fileConfig: StackConfigFile): StackVoi
       ? true
       : enabledOverride === "0" || enabledOverride === "false"
         ? false
-        : configured.enabled === true
+        : configured.enabled !== false
   const envFile = process.env.STACK_VOICE_ENV_FILE ?? configured.env_file
   return {
     enabled,
@@ -328,6 +354,22 @@ function readConfigFile(appRoot: string): StackConfigFile {
   const path = join(appRoot, "stack.config.json")
   if (!existsSync(path)) return {}
   return JSON.parse(readFileSync(path, "utf8")) as StackConfigFile
+}
+
+export function writeStackConfigPatch(appRoot: string, patch: StackConfigPatch): string {
+  const path = join(appRoot, "stack.config.json")
+  const current = readConfigFile(appRoot)
+  const next: StackConfigFile = {
+    ...current,
+    ...withoutUndefined(patch),
+    voice: patch.voice ? { ...(current.voice ?? {}), ...withoutUndefined(patch.voice) } : current.voice,
+  }
+  writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8")
+  return path
+}
+
+function withoutUndefined<T extends Record<string, unknown>>(value: T): T {
+  return Object.fromEntries(Object.entries(value).filter(([, entry]) => entry !== undefined)) as T
 }
 
 function resolveConfigPath(appRoot: string, path: string): string {

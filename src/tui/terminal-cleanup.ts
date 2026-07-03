@@ -1,4 +1,5 @@
 import type { CliRenderer } from "@opentui/core"
+import { writeSync } from "node:fs"
 
 const TERMINAL_RESET_SEQUENCES = [
   "\u001b[?2004l",
@@ -6,16 +7,44 @@ const TERMINAL_RESET_SEQUENCES = [
   "\u001b[?1002l",
   "\u001b[?1003l",
   "\u001b[?1006l",
+  "\u001b[?47l",
+  "\u001b[?1047l",
+  "\u001b[?1048l",
   "\u001b[?1049l",
+  "\u001b[2J",
+  "\u001b[3J",
+  "\u001b[H",
   "\u001b[?25h",
   "\u001b[0m",
 ]
 
+const TERMINAL_PREPARE_SEQUENCES = ["\u001b[?1049l", "\u001b[2J", "\u001b[3J", "\u001b[H"]
+let terminalExitResetInstalled = false
+
+export function prepareTerminalForTui(): void {
+  installTerminalExitReset()
+  const payload = TERMINAL_PREPARE_SEQUENCES.join("")
+  writeTerminalPayload(payload)
+}
+
 export function resetTerminalAfterTui(): void {
   const payload = TERMINAL_RESET_SEQUENCES.join("")
-  for (const stream of [process.stdout, process.stderr]) {
+  writeTerminalPayload(payload)
+}
+
+function installTerminalExitReset(): void {
+  if (terminalExitResetInstalled) return
+  terminalExitResetInstalled = true
+  process.once("exit", () => {
+    resetTerminalAfterTui()
+  })
+}
+
+function writeTerminalPayload(payload: string): void {
+  for (const fd of [process.stdout.fd, process.stderr.fd]) {
+    if (fd === undefined) continue
     try {
-      stream.write(payload)
+      writeSync(fd, payload)
     } catch {
       // Best-effort cleanup when the TTY is already gone.
     }

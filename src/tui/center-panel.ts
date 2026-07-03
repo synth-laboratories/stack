@@ -389,10 +389,10 @@ export type ThreadGoalStatus = "active" | "paused" | "blocked" | "done"
 export type ThreadLifecycleStatus = "live" | "archived"
 
 const THREAD_GOAL_STATUS_COLOR: Record<ThreadGoalStatus, string> = {
-  active: "#58a6ff",
-  done: "#3fb950",
-  paused: "#f7a41d",
-  blocked: "#fd6600",
+  active: theme.goalLifecycle.active,
+  done: theme.goalLifecycle.done,
+  paused: theme.goalLifecycle.paused,
+  blocked: theme.goalLifecycle.blocked,
 }
 
 export type ActiveThreadRow =
@@ -439,6 +439,7 @@ function activeThreadRowSpecs(
         isGardener: input.gardenerThreadIds.has(summary.id),
         maxLength: Math.max(12, input.columns - 14),
         metaThreadTitle: input.threadMetaThreadTitles?.get(summary.id),
+        fallbackId: summary.id,
       }),
       resumeToken: threadResumeToken(summary),
     })

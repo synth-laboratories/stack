@@ -696,10 +696,18 @@ function sectionLines(label: string, body: string, columns: number, inline = fal
 function wrapLine(text: string, columns: number): string[] {
   const lines: string[] = []
   for (const rawLine of text.split("\n")) {
-    const line = rawLine.length === 0 ? " " : rawLine
-    for (let index = 0; index < line.length; index += columns) {
-      lines.push(line.slice(index, index + columns))
+    if (rawLine.length === 0) {
+      lines.push(" ")
+      continue
     }
+    let remaining = rawLine
+    while (remaining.length > columns) {
+      let breakAt = remaining.lastIndexOf(" ", columns)
+      if (breakAt <= 0) breakAt = columns
+      lines.push(remaining.slice(0, breakAt).trimEnd())
+      remaining = remaining.slice(breakAt).trimStart()
+    }
+    if (remaining.length > 0) lines.push(remaining)
   }
   return lines.length > 0 ? lines : [" "]
 }

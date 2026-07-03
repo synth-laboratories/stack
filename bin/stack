@@ -16,7 +16,7 @@ for auth_env in "$SCRIPT_DIR/.env"; do
 done
 
 stack_reset_tty() {
-  printf '\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1049l\033[?25h\033[0m' >&2 || true
+  printf '\033[?2004l\033[?1000l\033[?1002l\033[?1003l\033[?1006l\033[?1049l\033[2J\033[3J\033[H\033[?25h\033[0m' >&2 || true
 }
 
 stackd_health_ok() {
@@ -31,7 +31,7 @@ stackd_autostart() {
 
   mkdir -p "$SCRIPT_DIR/.stack/runtime"
   nohup "$SCRIPT_DIR/bin/stackd" serve </dev/null >"$SCRIPT_DIR/.stack/runtime/stackd.log" 2>&1 &
-  for _ in 1 2 3 4 5 6 7 8 9 10; do
+  for _ in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20; do
     if stackd_health_ok; then
       return 0
     fi
@@ -49,6 +49,9 @@ if [[ "${1:-}" == "goal" && ( "${2:-}" == "--help" || "${2:-}" == "-h" ) ]]; the
   exec bun run "$SCRIPT_DIR/src/main.ts" "$@"
 fi
 if [[ "${1:-}" == "auth" || "${1:-}" == "login" || "${1:-}" == "signup" || "${1:-}" == "whoami" ]]; then
+  exec bun run "$SCRIPT_DIR/src/main.ts" "$@"
+fi
+if [[ "${1:-}" == "update" ]]; then
   exec bun run "$SCRIPT_DIR/src/main.ts" "$@"
 fi
 

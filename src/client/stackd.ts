@@ -988,8 +988,16 @@ export type StackdResumeCheckpoint = {
   harness?: string
   codexTransport?: string
   goalShutterWorkerPeek?: boolean
+  goalShutterSidecarView?: "thread" | "events" | "goal"
   focusMode?: string
   displayName?: string
+  workerStatus?: "idle" | "running" | "error"
+  resumeIntent?: {
+    action: "continue_interrupted_turn"
+    reason: "worker_running_on_exit"
+    createdAt: string
+    objective?: string
+  }
   harnessResume?: {
     provider: string
     backendSessionId?: string

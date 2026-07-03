@@ -89,6 +89,10 @@ writeLauncher("stack", [
   "}",
   "",
   "trap stack_reset_tty EXIT INT TERM HUP",
+  'if [[ "${1:-}" == "update" ]]; then',
+  '  exec bun run "$STACK_APP_ROOT/src/main.ts" "$@"',
+  "fi",
+  "",
   "stackd_autostart",
   'exec bun run "$STACK_APP_ROOT/src/main.ts" "$@"',
 ])

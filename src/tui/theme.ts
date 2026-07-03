@@ -30,6 +30,14 @@ export const stackTuiTheme = {
     warmMuted: "#9a7344",
     warmDim: "#6b5340",
   },
+  /** Meta-goal lifecycle: active green, paused yellow, blocked orange, done blue. */
+  goalLifecycle: {
+    active: "#3fb950",
+    paused: "#f7a41d",
+    blocked: "#fd6600",
+    done: "#58a6ff",
+    cleared: "#6e7681",
+  },
   /** Per-role transcript colors: planning reads warm; tools stay quiet. */
   transcript: {
     userLabel: "#f1f1f1",
@@ -49,3 +57,13 @@ export const stackTuiTheme = {
     meta: "#5c6370",
   },
 } as const
+
+export function goalLifecycleStatusColor(status: string | undefined): string {
+  const normalized = (status ?? "active").trim().toLowerCase()
+  const colors = stackTuiTheme.goalLifecycle
+  if (normalized === "blocked") return colors.blocked
+  if (normalized === "done" || normalized === "complete" || normalized === "completed") return colors.done
+  if (normalized === "paused") return colors.paused
+  if (normalized === "cleared") return colors.cleared
+  return colors.active
+}

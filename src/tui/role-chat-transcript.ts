@@ -19,12 +19,11 @@ const GARDENER_CHAT_EVENT_TYPES = new Set(["gardener.message", "gardener.frictio
 
 const MONITOR_CHAT_EVENT_TYPES = new Set([
   "monitor.operator_message",
+  "monitor.chat.request",
   "monitor.chat.reply",
-  "monitor.summary",
+  "monitor.goal_status",
   "monitor.steer",
-  "monitor.skill_context_push",
   "monitor.error",
-  "monitor.wake",
 ])
 
 export function blocksFromGardenerChatEvents(events: StackThreadMetaEvent[]): TranscriptBlock[] {
@@ -134,48 +133,36 @@ function appendMonitorChatEvent(blocks: TranscriptBlock[], event: StackThreadMet
   const payload = event.payload
   switch (event.type) {
     case "monitor.operator_message":
+    case "monitor.chat.request":
       appendUserBlock(blocks, readString(payload.message) ?? "(empty)")
       return
-    case "monitor.summary": {
-      const summary = readString(payload.summary) ?? "(empty summary)"
-      const severity = readString(payload.severity)
-      const operatorUpdate = asRecord(payload.operator_update)
-      const lines = [severity && severity !== "none" ? `${severity} · ${summary}` : summary]
-      const workingOn = readString(operatorUpdate?.working_on)
-      const progress = readString(operatorUpdate?.progress_note)
-      const struggling = readString(operatorUpdate?.struggling_with)
-      if (workingOn && !summary.includes(workingOn)) lines.push(`goal · ${workingOn}`)
-      if (progress && !summary.includes(progress)) lines.push(`progress · ${progress}`)
-      if (struggling) lines.push(`stuck · ${struggling}`)
-      blocks.push({ id: randomUUID(), kind: "agent", text: lines.join("\n") })
+    case "monitor.goal_status": {
+      if (payload.for_human !== true && payload.for_human !== "true") return
+      const headline = readString(payload.headline)
+      const note = readString(payload.note)
+      const status = readString(payload.status) ?? "update"
+      const text =
+        [headline, note && note !== headline ? note : undefined].filter(Boolean).join("\n") ||
+        status.replace(/_/g, " ")
+      blocks.push({ id: randomUUID(), kind: "agent", text })
       return
     }
     case "monitor.chat.reply":
       blocks.push({ id: randomUUID(), kind: "agent", text: readString(payload.answer) ?? "(empty reply)" })
       return
-    case "monitor.steer":
-      appendStackBlock(
-        blocks,
-        readString(payload.rule_id) || readString(payload.guidance_id)
-          ? `steer · ${readString(payload.rule_id) ?? "rule"} · ${readString(payload.guidance_id) ?? "guide"}${readString(payload.message) ? `\n${readString(payload.message)}` : ""}`
-          : `steer · ${readString(payload.focus) ?? "worker"}${readString(payload.message) ? `\n${readString(payload.message)}` : ""}`,
-      )
-      return
-    case "monitor.skill_context_push":
-      appendStackBlock(
-        blocks,
-        `push · ${readString(payload.skill_id) ?? "skill"} · ${readString(payload.reason) ?? "context"}`,
-      )
-      return
-    case "monitor.error":
-      appendStackBlock(blocks, `error · ${readString(payload.message) ?? "monitor failed"}`)
-      return
-    case "monitor.wake": {
-      const reason = readString(payload.wake_reason) ?? "trigger"
-      if (reason === "operator_message") return
-      appendStackBlock(blocks, `runtime · ${reason.replace(/_/g, " ")}`)
+    case "monitor.steer": {
+      const message = readString(payload.message)
+      const focus = readString(payload.focus) ?? "worker"
+      blocks.push({
+        id: randomUUID(),
+        kind: "agent",
+        text: message ? `Steer · ${focus}\n${message}` : `Steer · ${focus}`,
+      })
       return
     }
+    case "monitor.error":
+      blocks.push({ id: randomUUID(), kind: "agent", text: readString(payload.message) ?? "monitor failed" })
+      return
     default:
       return
   }
