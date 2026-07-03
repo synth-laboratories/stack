@@ -89,6 +89,15 @@ import {
   type HostedGepaTunnelProvider,
 } from "../remote/optimizers.js"
 import { readHostedOptimizerSnapshot } from "../remote/optimizers.js"
+import {
+  ROUND_TRIP_ARTIFACT_KINDS,
+  applyRoundTripArtifact,
+  isRoundTripArtifactKind,
+  pullRoundTripArtifact,
+  pushRoundTripArtifact,
+  type RoundTripApplyMode,
+  type RoundTripSourceKind,
+} from "../roundtrip.js"
 import { executeContainerPoolRollout, readContainerPoolHealth, readContainerPools } from "../remote/containers.js"
 import { readRemoteInferenceCatalog } from "../remote/inference.js"
 import { readRemoteInferenceUsage } from "../remote/inference-usage.js"
@@ -2208,6 +2217,56 @@ export class StackMcpServer {
     }
   }
 
+  async pullArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const artifactKind = requiredRoundTripArtifactKind(args, "artifact_kind")
+    const result = await pullRoundTripArtifact(config, {
+      artifactKind,
+      sourceKind: optionalRoundTripSourceKind(args, "source"),
+      runId: optionalString(args, "run_id"),
+      projectId: optionalString(args, "project_id"),
+      artifactName: optionalString(args, "artifact_name"),
+      sourcePath: optionalString(args, "source_path"),
+      savedDownloadPath: optionalString(args, "saved_download_path"),
+      outputId: optionalString(args, "output_id"),
+      index: optionalInteger(args, "index"),
+      destinationPath: optionalString(args, "destination_path"),
+      receiptPath: optionalString(args, "receipt_path"),
+    })
+    return toJsonValue(result) ?? null
+  }
+
+  async applyArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const artifactKind = requiredRoundTripArtifactKind(args, "artifact_kind")
+    const result = await applyRoundTripArtifact(config, {
+      artifactKind,
+      artifactPath: optionalString(args, "artifact_path"),
+      receiptPath: optionalString(args, "receipt_path"),
+      targetPath: requiredString(args, "target_path"),
+      mode: optionalRoundTripApplyMode(args, "mode"),
+      tomlField: optionalString(args, "toml_field"),
+      promptJsonPath: optionalString(args, "prompt_json_path"),
+      createMissing: optionalBoolean(args, "create_missing"),
+    })
+    return toJsonValue(result) ?? null
+  }
+
+  async pushArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const artifactKind = requiredRoundTripArtifactKind(args, "artifact_kind")
+    const result = await pushRoundTripArtifact(config, {
+      artifactKind,
+      artifactPath: optionalString(args, "artifact_path"),
+      receiptPath: optionalString(args, "receipt_path"),
+      runId: requiredString(args, "run_id"),
+      remotePath: optionalString(args, "remote_path"),
+      visibility: optionalFileVisibility(args, "visibility"),
+      contentType: optionalString(args, "content_type"),
+    })
+    return toJsonValue(result) ?? null
+  }
+
   async queryLogs(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const limit = optionalInteger(args, "limit") ?? 100
@@ -4131,6 +4190,65 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.uploadRunFile(args),
     },
     {
+      name: "stack_pull_artifact",
+      description: "Pull a typed hosted or saved artifact into the workspace and write a provenance receipt.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          artifact_kind: enumProperty([...ROUND_TRIP_ARTIFACT_KINDS], "Artifact kind to pull."),
+          source: enumProperty(["hosted_optimizer", "saved_download", "local_file"], "Optional source. Defaults to hosted_optimizer."),
+          run_id: stringProperty("Hosted optimizer or SMR run id."),
+          project_id: stringProperty("Optional project id for provenance."),
+          artifact_name: stringProperty("Hosted optimizer artifact name. If omitted, Stack chooses the best artifact name for artifact_kind from the hosted snapshot."),
+          source_path: stringProperty("Local source file path for source=local_file. Relative paths resolve from Stack's workingDir."),
+          saved_download_path: stringProperty("Saved download path from stack_list_saved_downloads for source=saved_download."),
+          output_id: stringProperty("Optional saved WorkProduct or artifact id filter for source=saved_download."),
+          index: numberProperty("Zero-based saved-download index. Defaults to 0."),
+          destination_path: stringProperty("Optional workspace destination path. Defaults to .stack/roundtrip/<env>/<run>/<kind>-<artifact>."),
+          receipt_path: stringProperty("Optional workspace receipt path. Defaults to .stack/evidence/roundtrip/."),
+        },
+        ["artifact_kind"],
+      ),
+      handler: (args) => server.pullArtifact(args),
+    },
+    {
+      name: "stack_apply_artifact",
+      description: "Apply a pulled champion_prompt artifact into a harness config and write an apply receipt.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          artifact_kind: enumProperty([...ROUND_TRIP_ARTIFACT_KINDS], "Artifact kind to apply. Currently champion_prompt only."),
+          artifact_path: stringProperty("Pulled artifact path. Relative paths resolve from Stack's workingDir."),
+          receipt_path: stringProperty("Pull receipt path. When supplied, Stack reads the pulled artifact path from the receipt."),
+          target_path: stringProperty("Harness/config path to patch. Relative paths resolve from Stack's workingDir."),
+          mode: enumProperty(["toml-string-field", "replace-file"], "Apply mode. Defaults to toml-string-field."),
+          toml_field: stringProperty("TOML field path for mode=toml-string-field. Defaults to seed_candidate.stage2_system."),
+          prompt_json_path: stringProperty("Optional dot path for prompt text inside a JSON artifact."),
+          create_missing: booleanProperty("Create the TOML section or field if it is missing. Defaults to false."),
+        },
+        ["artifact_kind", "target_path"],
+      ),
+      handler: (args) => server.applyArtifact(args),
+    },
+    {
+      name: "stack_push_artifact",
+      description: "Push a typed workspace artifact to an SMR run-file owner route and write a provenance receipt.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          artifact_kind: enumProperty([...ROUND_TRIP_ARTIFACT_KINDS], "Artifact kind to push."),
+          artifact_path: stringProperty("Workspace artifact path to upload. Relative paths resolve from Stack's workingDir."),
+          receipt_path: stringProperty("Optional pull receipt path. When supplied, Stack reads the artifact path from the receipt."),
+          run_id: stringProperty("SMR run id to receive the file."),
+          remote_path: stringProperty("Optional remote run-file path. Defaults to roundtrip/<artifact_kind>/<filename>."),
+          visibility: enumProperty(["model", "verifier"], "Optional file visibility. Defaults to model."),
+          content_type: stringProperty("Optional content type. Stack infers common text types when omitted."),
+        },
+        ["artifact_kind", "run_id"],
+      ),
+      handler: (args) => server.pushArtifact(args),
+    },
+    {
       name: "stack_skills_list",
       description: "List first-class Stack skills from .stack/skills plus bridged Codex/plugin skill roots.",
       inputSchema: objectSchema({
@@ -4408,6 +4526,10 @@ function enumProperty(values: string[], description: string): JsonObject {
 
 function numberProperty(description: string): JsonObject {
   return { type: "number", description }
+}
+
+function booleanProperty(description: string): JsonObject {
+  return { type: "boolean", description }
 }
 
 function arrayProperty(description: string): JsonObject {
@@ -4773,6 +4895,26 @@ function optionalFileVisibility(args: JsonObject, key: string): "model" | "verif
   if (!value) return undefined
   if (value === "model" || value === "verifier") return value
   throw new RpcError(-32602, `${key} must be model or verifier`)
+}
+
+function requiredRoundTripArtifactKind(args: JsonObject, key: string) {
+  const value = requiredString(args, key)
+  if (isRoundTripArtifactKind(value)) return value
+  throw new RpcError(-32602, `${key} must be ${ROUND_TRIP_ARTIFACT_KINDS.join(", ")}`)
+}
+
+function optionalRoundTripSourceKind(args: JsonObject, key: string): RoundTripSourceKind | undefined {
+  const value = optionalString(args, key)
+  if (!value) return undefined
+  if (value === "hosted_optimizer" || value === "saved_download" || value === "local_file") return value
+  throw new RpcError(-32602, `${key} must be hosted_optimizer, saved_download, or local_file`)
+}
+
+function optionalRoundTripApplyMode(args: JsonObject, key: string): RoundTripApplyMode | undefined {
+  const value = optionalString(args, key)
+  if (!value) return undefined
+  if (value === "toml-string-field" || value === "replace-file") return value
+  throw new RpcError(-32602, `${key} must be toml-string-field or replace-file`)
 }
 
 function selectRemoteOutput(
