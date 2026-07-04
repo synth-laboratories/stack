@@ -174,28 +174,38 @@ export async function getRemoteLaunch(
   runId: string,
 ): Promise<RemoteActionResult> {
   const encodedRunId = encodeURIComponent(runId)
-  const launch = await getRemote(config, `/smr/v1/launches/${encodedRunId}`)
-  if (launch.ok || launch.status !== 404) {
-    return launch
-  }
   const run = await getRemote(config, `/smr/runs/${encodedRunId}`)
-  if (!run.ok) {
+  if (run.ok) {
     return {
-      ...run,
-      message: `launch not found and project run lookup failed: ${run.message}`,
-      ...(run.data ? { data: { launch, projectRun: run.data } } : { data: { launch } }),
+      ok: true,
+      status: run.status,
+      message: "project run found via canonical SMR run surface",
+      data: {
+        source: "project_run",
+        run_id: runId,
+        state: readString(run.data?.public_state) ?? readString(run.data?.state) ?? "unknown",
+        project_run: run.data ?? {},
+      },
+    }
+  }
+  if (run.status !== 404) {
+    return run
+  }
+  const launch = await getRemote(config, `/smr/v1/launches/${encodedRunId}`)
+  if (!launch.ok) {
+    return {
+      ...launch,
+      message: `project run not found and legacy launch lookup failed: ${launch.message}`,
+      ...(launch.data ? { data: { projectRun: run, launch: launch.data } } : { data: { projectRun: run } }),
     }
   }
   return {
-    ok: true,
-    status: run.status,
-    message: "project run found via canonical SMR run surface",
+    ...launch,
+    message: "legacy launch found after canonical SMR run lookup returned 404",
     data: {
-      source: "project_run",
-      run_id: runId,
-      state: readString(run.data?.public_state) ?? readString(run.data?.state) ?? "unknown",
-      project_run: run.data ?? {},
-      launch,
+      ...(launch.data ?? {}),
+      source: "legacy_launch",
+      project_run_lookup: run,
     },
   }
 }
@@ -206,28 +216,38 @@ export async function terminateRemoteLaunch(
   request: RemoteLaunchTerminateRequest = {},
 ): Promise<RemoteActionResult> {
   const encodedRunId = encodeURIComponent(runId)
-  const launch = await postRemote(config, `/smr/v1/launches/${encodedRunId}/terminate`, request)
-  if (launch.ok || launch.status !== 404) {
-    return launch
-  }
   const stopped = await postRemote(config, `/smr/runs/${encodedRunId}/stop`, {
     ...(request.reason ? { reason: request.reason } : {}),
   })
-  if (!stopped.ok) {
+  if (stopped.ok) {
     return {
       ...stopped,
-      message: `launch terminate failed and project run stop failed: ${stopped.message}`,
-      ...(stopped.data ? { data: { launch, projectRunStop: stopped.data } } : { data: { launch } }),
+      message: "project run stopped via canonical SMR run surface",
+      data: {
+        source: "project_run",
+        run_id: runId,
+        project_run_stop: stopped.data ?? {},
+      },
+    }
+  }
+  if (stopped.status !== 404) {
+    return stopped
+  }
+  const launch = await postRemote(config, `/smr/v1/launches/${encodedRunId}/terminate`, request)
+  if (!launch.ok) {
+    return {
+      ...launch,
+      message: `project run stop failed and legacy launch terminate failed: ${launch.message}`,
+      ...(launch.data ? { data: { projectRunStop: stopped, launch: launch.data } } : { data: { projectRunStop: stopped } }),
     }
   }
   return {
-    ...stopped,
-    message: "project run stopped via canonical SMR run surface",
+    ...launch,
+    message: "legacy launch terminated after canonical SMR run stop returned 404",
     data: {
-      source: "project_run",
-      run_id: runId,
-      project_run_stop: stopped.data ?? {},
-      launch,
+      ...(launch.data ?? {}),
+      source: "legacy_launch",
+      project_run_stop: stopped,
     },
   }
 }

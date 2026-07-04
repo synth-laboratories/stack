@@ -140,7 +140,9 @@ import { readCrashReportsView } from "../crash-reports.js"
 import { launchLocalGepaRun, readOptimizerSnapshot } from "../local/optimizers.js"
 import { loadGardenerConfig } from "../gardener-config.js"
 import {
+  createRemoteFactory,
   createRemoteLaunch,
+  createRemoteRunnableProject,
   decideRemoteRunApproval,
   downloadRemoteOutput,
   executeRemoteFactoryAction,
@@ -160,7 +162,9 @@ import {
   wakeRemoteFactoryDue,
   type RemoteActionResult,
   type RemoteDownloadRecord,
+  type RemoteFactoryCreateRequest,
   type RemoteOutputSelection,
+  type RemoteProjectCreateRequest,
 } from "../remote/actions.js"
 import {
   cancelHostedOptimizerRun,
@@ -2283,6 +2287,102 @@ export class StackMcpServer {
           next_wake_at: factory.nextWakeAt,
         })),
       })),
+    }) ?? null
+  }
+
+  async createRunnableProject(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    void emitFeatureUsed("hosted_ops")
+    void emitFeatureUsed("remote_sync")
+    const request = optionalJsonObject(args, "request")
+    if (!request) {
+      throw new RpcError(-32602, "request is required and must match SmrRunnableProjectCreateRequest")
+    }
+    const result = await createRemoteRunnableProject(config, request as RemoteProjectCreateRequest)
+    const projectId = remoteActionEntityId(result, ["project_id", "projectId", "id"])
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.remote_project.created",
+      source: "lever.stack_mcp",
+      subject: { kind: "remote_project", id: projectId ?? String(request.name ?? "unknown") },
+      correlation: { project_id: projectId ?? undefined },
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+        project_id: projectId ?? null,
+      },
+    })
+    return toJsonValue({
+      ok: result.ok,
+      status: result.status,
+      message: result.message,
+      environment: config.environmentName,
+      api_base_url: config.environment.apiBaseUrl,
+      project_id: projectId ?? null,
+      runtime_event: runtimeEvent,
+      ...(result.data ? { response: result.data } : {}),
+      receipt: result.ok ? "lever.remote_project.created" : null,
+    }) ?? null
+  }
+
+  async createFactory(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    void emitFeatureUsed("hosted_ops")
+    void emitFeatureUsed("remote_sync")
+    const request: RemoteFactoryCreateRequest = {
+      ...(optionalJsonObject(args, "request") ?? {}),
+    } as RemoteFactoryCreateRequest
+    const name = optionalString(args, "name")
+    if (name) request.name = name
+    const description = optionalString(args, "description")
+    if (description) request.description = description
+    const kind = optionalString(args, "kind")
+    if (kind) request.kind = kind
+    const status = optionalString(args, "status")
+    if (status) request.status = status
+    const budgetPolicy = optionalJsonObject(args, "budget_policy")
+    if (budgetPolicy) request.budget_policy = budgetPolicy
+    const capPolicy = optionalJsonObject(args, "cap_policy")
+    if (capPolicy) request.cap_policy = capPolicy
+    const homeostasisPolicy = optionalJsonObject(args, "homeostasis_policy")
+    if (homeostasisPolicy) request.homeostasis_policy = homeostasisPolicy
+    const publicationPolicy = optionalJsonObject(args, "publication_policy")
+    if (publicationPolicy) request.publication_policy = publicationPolicy
+    const authorizationPolicy = optionalJsonObject(args, "authorization_policy")
+    if (authorizationPolicy) request.authorization_policy = authorizationPolicy
+    const metadata = optionalJsonObject(args, "metadata")
+    if (metadata) request.metadata = metadata
+    if (!request.name || !String(request.name).trim()) {
+      throw new RpcError(-32602, "name is required for /smr/factories")
+    }
+    const result = await createRemoteFactory(config, request)
+    const factoryId = remoteActionEntityId(result, ["factory_id", "factoryId", "id"])
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.remote_factory.created",
+      source: "lever.stack_mcp",
+      subject: { kind: "remote_factory", id: factoryId ?? request.name },
+      correlation: { factory_id: factoryId ?? undefined },
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+        factory_id: factoryId ?? null,
+      },
+    })
+    return toJsonValue({
+      ok: result.ok,
+      status: result.status,
+      message: result.message,
+      environment: config.environmentName,
+      api_base_url: config.environment.apiBaseUrl,
+      factory_id: factoryId ?? null,
+      runtime_event: runtimeEvent,
+      ...(result.data ? { response: result.data } : {}),
+      receipt: result.ok ? "lever.remote_factory.created" : null,
     }) ?? null
   }
 
@@ -4609,6 +4709,16 @@ function remoteLaunchRunId(result: RemoteActionResult): string | undefined {
   return undefined
 }
 
+function remoteActionEntityId(result: RemoteActionResult, keys: string[]): string | undefined {
+  const data = result.data
+  if (!data) return undefined
+  for (const key of keys) {
+    const value = data[key]
+    if (typeof value === "string" && value.trim()) return value
+  }
+  return undefined
+}
+
 function errorToRuntimeUnavailable(error: unknown): {
   status: string
   events_appended?: number | null
@@ -5111,6 +5221,40 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.listRemoteProjects(args),
     },
     {
+      name: "stack_create_runnable_project",
+      description: "Create a runnable Managed Research project through POST /smr/projects:runnable. Thin owner-route wrapper; request must match the backend SmrRunnableProjectCreateRequest, including pool/runtime/environment/profile ids.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          request: jsonObjectProperty("SmrRunnableProjectCreateRequest payload for /smr/projects:runnable."),
+        },
+        ["request"],
+      ),
+      handler: (args) => server.createRunnableProject(args),
+    },
+    {
+      name: "stack_create_factory",
+      description: "Create a Managed Research Factory through POST /smr/factories. Thin owner-route wrapper; name is required unless supplied in request.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          name: stringProperty("Factory name. Required unless supplied in request."),
+          description: stringProperty("Optional Factory description."),
+          kind: stringProperty("Optional Factory kind. Defaults to backend default."),
+          status: stringProperty("Optional Factory status. Defaults to backend default."),
+          budget_policy: jsonObjectProperty("Optional Factory budget policy."),
+          cap_policy: jsonObjectProperty("Optional Factory cap policy."),
+          homeostasis_policy: jsonObjectProperty("Optional Factory homeostasis policy."),
+          publication_policy: jsonObjectProperty("Optional Factory publication policy."),
+          authorization_policy: jsonObjectProperty("Optional Factory authorization policy."),
+          metadata: jsonObjectProperty("Optional Factory metadata."),
+          request: jsonObjectProperty("Optional raw SmrFactoryCreateRequest payload. Explicit top-level fields override this object."),
+        },
+        [],
+      ),
+      handler: (args) => server.createFactory(args),
+    },
+    {
       name: "stack_prepare_cloud_promotion_packet",
       description: "Prepare a local-to-cloud promotion packet from the stackd runtime snapshot. Does not create cloud work.",
       inputSchema: objectSchema({
@@ -5241,7 +5385,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_get_cloud_launch",
-      description: "Read one Managed Research cloud launch through the launch owner route.",
+      description: "Read one Managed Research run through the canonical SMR run route, with legacy launch fallback.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
@@ -5253,7 +5397,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_terminate_cloud_launch",
-      description: "Terminate one Managed Research cloud launch through the launch owner route.",
+      description: "Stop one Managed Research run through the canonical SMR run route, with legacy launch fallback.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
