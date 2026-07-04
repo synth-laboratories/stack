@@ -747,7 +747,7 @@ function recordArtifactEvidenceIfBound(
       splitsCited: artifact.splits_cited ?? [],
       sourcePath: join(artifactsRoot(config), artifact.page_path),
       filename: artifact.hosted_artifact_id && artifact.artifact_version
-        ? `${artifact.slug}-artifact-page-v${artifact.artifact_version}.tsx`
+        ? `${artifact.slug}-${config.environmentName}-artifact-page-v${artifact.artifact_version}.tsx`
         : undefined,
       body: [
         `Artifact Site page published from local slug ${artifact.slug}.`,
