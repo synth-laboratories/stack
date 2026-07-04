@@ -154,7 +154,7 @@ export async function readHostedOptimizerSnapshot(config: StackConfig): Promise<
       ...base,
       status: "offline",
       checkedAt: new Date().toISOString(),
-      message: errorMessage(error),
+      message: hostedOptimizerErrorMessage(error),
     }
   }
 }
@@ -443,8 +443,8 @@ export async function readHostedOptimizerRunEvents(
             seq: readNumber(payload.seq),
             eventType: readString(payload.event_type) ?? readString(eventPayload?.type),
             createdAt: readString(payload.created_at) ?? readString(eventPayload?.ts),
-            message: readString(eventPayload?.message),
-            fields: asRecord(eventPayload?.fields),
+            message: readSanitizedString(eventPayload?.message),
+            fields: asRecord(sanitizeHostedOptimizerValue(eventPayload?.fields)),
           },
         ]
       } catch {
@@ -618,7 +618,7 @@ function latestEventSeq(events: { seq?: number }[]): number | undefined {
 }
 
 async function getJson(config: StackConfig, path: string): Promise<unknown> {
-  return JSON.parse(await getText(config, path)) as unknown
+  return sanitizeHostedOptimizerValue(JSON.parse(await getText(config, path)) as unknown)
 }
 
 async function getText(config: StackConfig, path: string): Promise<string> {
@@ -655,7 +655,7 @@ async function getBytes(
       return {
         ok: false,
         status: response.status,
-        message: bytes.toString("utf8").slice(0, 160) || response.statusText,
+        message: redactHostedOptimizerText(bytes.toString("utf8")).slice(0, 160) || response.statusText,
       }
     }
     return {
@@ -666,7 +666,7 @@ async function getBytes(
       contentType: response.headers.get("content-type") ?? undefined,
     }
   } catch (error) {
-    return { ok: false, status: 0, message: errorMessage(error) }
+    return { ok: false, status: 0, message: hostedOptimizerErrorMessage(error) }
   }
 }
 
@@ -687,10 +687,10 @@ async function postJson(config: StackConfig, path: string): Promise<HostedOptimi
     return {
       ok: response.ok,
       status: response.status,
-      message: response.ok ? "ok" : text || response.statusText,
+      message: response.ok ? "ok" : redactHostedOptimizerText(text) || response.statusText,
     }
   } catch (error) {
-    return { ok: false, status: 0, message: errorMessage(error) }
+    return { ok: false, status: 0, message: hostedOptimizerErrorMessage(error) }
   }
 }
 
@@ -707,6 +707,10 @@ function readString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined
 }
 
+function readSanitizedString(value: unknown): string | undefined {
+  return typeof value === "string" ? redactHostedOptimizerText(value) : undefined
+}
+
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined
 }
@@ -717,6 +721,10 @@ function readBoolean(value: unknown): boolean | undefined {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+function hostedOptimizerErrorMessage(error: unknown): string {
+  return redactHostedOptimizerText(errorMessage(error))
 }
 
 function clampInteger(value: number | undefined, fallback: number, min: number, max: number): number {
@@ -744,6 +752,14 @@ function redactHostedOptimizerText(value: string): string {
   redacted = redacted.replace(/("active_actor_claim_refs"\s*:\s*)\[[^\]]*\]/g, `$1[]`)
   redacted = redacted.replace(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi, "<email-redacted>")
   return redacted
+}
+
+function sanitizeHostedOptimizerValue(value: unknown): unknown {
+  if (typeof value === "string") return redactHostedOptimizerText(value)
+  if (Array.isArray(value)) return value.map(sanitizeHostedOptimizerValue)
+  const record = asRecord(value)
+  if (!record) return value
+  return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, sanitizeHostedOptimizerValue(item)]))
 }
 
 function runCommandTail(

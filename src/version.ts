@@ -103,7 +103,8 @@ export function harnessSpeakerLabel(appRoot?: string, codexCommand?: string): st
 }
 
 export function wantsVersionFlag(argv: string[]): boolean {
-  return argv.includes("--version") || argv.includes("-V")
+  const command = argv[2]
+  return command === "--version" || command === "-V"
 }
 
 export function printStackVersion(command = "stack", appRoot?: string): void {
