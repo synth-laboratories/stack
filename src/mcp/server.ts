@@ -75,6 +75,7 @@ import { isUiPanelId, panelOpenAllowed, panelViewAllowed, UI_PANEL_IDS, UI_PANEL
 import {
   stackdExport,
   stackdBindMetaThreadRemoteSmrRun,
+  stackdAssertMetaThreadEffortRefRoute,
   stackdCreateMetaThread,
   stackdMissingEffortRefRouteMessage,
   stackdMetaThread,
@@ -750,6 +751,15 @@ export class StackMcpServer {
     })
   }
 
+  private async preflightEffortBoundMetaThreadCreate(effortId: string): Promise<void> {
+    try {
+      await stackdAssertMetaThreadEffortRefRoute()
+    } catch (error) {
+      const message = errorMessage(error)
+      throw new RpcError(-32000, `${message}; meta-thread/session was not created; Effort reverse index was not updated for ${effortId}`)
+    }
+  }
+
   async getEffort(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const effortRef = requiredString(args, "effort_ref")
@@ -1113,6 +1123,7 @@ export class StackMcpServer {
     if (!title) throw new RpcError(-32602, "title or objective is required")
     const threadId = requiredString(args, "thread_id")
     const effort = this.optionalEffort(config, optionalString(args, "effort_ref"))
+    if (effort) await this.preflightEffortBoundMetaThreadCreate(effort.manifest.id)
     const manifest = await stackdCreateMetaThread({
       title,
       thread_id: threadId,
@@ -1168,6 +1179,7 @@ export class StackMcpServer {
       throw new RpcError(-32602, "status=blocked is operator-only; keep the goal active and record the blocker separately")
     }
     const effort = this.optionalEffort(config, optionalString(args, "effort_ref"))
+    if (effort) await this.preflightEffortBoundMetaThreadCreate(effort.manifest.id)
     const title = optionalString(args, "title") ?? objective ?? "new worker thread"
     const session = createSession(optionalString(args, "workspace_root") ?? config.workspaceRoot, harnessSessionCommand(config))
     session.displayName = title

@@ -1,5 +1,6 @@
 use crate::session::{StackSessionUsageSummary, StackSessionUsageTotals};
 use serde::{Deserialize, Serialize};
+use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use thiserror::Error;
 use tokio::fs;
@@ -367,7 +368,13 @@ pub async fn read_manifest(
     id: &str,
 ) -> Result<MetaThreadManifest, MetaThreadError> {
     let path = manifest_path(stack_dir, id)?;
-    let text = fs::read_to_string(&path).await?;
+    let text = match fs::read_to_string(&path).await {
+        Ok(text) => text,
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            return Err(MetaThreadError::NotFound(id.to_string()));
+        }
+        Err(error) => return Err(error.into()),
+    };
     Ok(serde_json::from_str(&text)?)
 }
 

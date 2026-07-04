@@ -40,6 +40,22 @@ export function stackdMissingEffortRefRouteMessage(error: unknown): string | und
   ].join("; ")
 }
 
+export async function stackdAssertMetaThreadEffortRefRoute(baseUrl = stackdBaseUrl()): Promise<void> {
+  const probeId = `__stack_effort_ref_route_probe_${Date.now()}_${Math.random().toString(16).slice(2)}`
+  try {
+    await stackdUpdateMetaThreadEffortRef(probeId, {
+      effort_ref: "__stack_effort_ref_route_probe__",
+      actor_id: "operator",
+      reason: "probe Stack Effort meta-thread backlink route",
+    }, baseUrl)
+  } catch (error) {
+    const routeMessage = stackdMissingEffortRefRouteMessage(error)
+    if (routeMessage) throw new Error(routeMessage)
+    if (error instanceof StackdHttpError && error.path.includes(encodeURIComponent(probeId)) && error.body.trim()) return
+    throw error
+  }
+}
+
 export type StackdThreadSummary = {
   id: string
   path: string
