@@ -173,8 +173,12 @@ stack effort finding banking77-top-score "Local GEPA scorecard" --kind proof --p
 stack effort finding banking77-top-score "Pulled hosted scorecard" --kind proof --receipt-path .stack/evidence/roundtrip/<receipt>.json
 stack effort capture banking77-top-score "Terminal heldout receipt" --capture-kind terminal --kind proof --path findings/proof/local-gepa/heldout-score.txt
 stack effort optimizer-candidate banking77-top-score --optimizer-run-id <run-id> --candidate-id <candidate-id> --score <score> --score-label "heldout accuracy" --split heldout --path findings/proof/local-gepa/<candidate-file>
+stack effort scope banking77-top-score --capabilities optimizer.gepa.local,smr.hosted
+stack effort launch banking77-top-score --kind optimizer --capability optimizer.gepa.local --config evals/stackeval/banking77_gepa.toml
+stack effort launch banking77-top-score --kind smr --capability smr.hosted --goal "Run Banking77 harness proof" --project-id <project-id>
 stack effort refs banking77-top-score --system optimizer --id <run-id> --lane hosted
 stack effort refs banking77-top-score --smr-run-id <run-id> --lane hosted
+stack effort artifact banking77-top-score --slug banking77-parallel-eval --split train --split heldout
 stack effort status banking77-top-score active
 stack effort archive banking77-top-score
 ```
@@ -313,6 +317,59 @@ Stack fills the release fields from that JSON. Generated handoffs include a
 `Release Artifacts` section when typed release proofs exist, and audit validates
 the receipt shape.
 
+`stack effort scope <effort>` shows or updates the launch capabilities declared
+on an Effort. Capabilities are explicit strings such as
+`optimizer.gepa.local`, `optimizer.gepa.hosted`, `smr.hosted`, and
+`container.pool.hosted`; Stack derives local/hosted lanes from those declared
+capabilities when showing scope and launch results.
+
+`stack effort launch <effort>` starts a run only when the requested capability
+is declared in the Effort scope. Wired launch clients cover local GEPA
+(`--kind optimizer --capability optimizer.gepa.local --config <toml>`), hosted
+GEPA (`optimizer.gepa.hosted` with optional `--tunnel-url` and
+`--container-pool`), hosted SMR (`--kind smr --capability smr.hosted --goal
+<text>` with optional project/factory ids), and hosted container-pool rollout
+(`--kind container --capability container.pool.hosted --pool <id>`). A
+successful launch records a lane-explicit launch ref and activity receipt on the
+Effort before returning the launch id.
+
+`stack effort artifact <effort> --slug <page>` records the latest local
+Artifact Site manifest row as typed `artifact.webpage` proof under
+`findings/proof/`. Use repeated `--split <name>` to say which benchmark splits
+the page cites. The receipt preserves the rendered page source, local URL,
+hosted/public URLs when present, hosted artifact id, page version, and sha256.
+
+### Artifact Sites
+
+Artifact Sites are local evidence pages for human review of eval results,
+research summaries, and release proof. They use a bundled Next.js scaffold under
+Stack state, keep page metadata in a manifest, and can be attached to an Effort
+as typed proof.
+
+CLI:
+
+```bash
+stack artifacts serve
+stack artifacts status
+stack artifacts create banking77-parallel-eval --title "Banking77 Parallel Eval" --kind result --effort banking77-top-score --page ./page.tsx --data ./scores.json
+stack artifacts update banking77-parallel-eval --page ./page.tsx
+stack artifacts lint banking77-parallel-eval
+stack artifacts list
+stack artifacts open banking77-parallel-eval
+stack artifacts publish banking77-parallel-eval --project-id <project-id> --hosted-effort-id <effort-id> --visibility org
+stack artifacts share banking77-parallel-eval --public banking77-parallel-eval --confirm-public
+stack artifacts stop
+```
+
+`stack artifacts create` accepts either `--page <tsx-file>` or `--html <file>`.
+The `--page` path is compiled through the Artifact Site scaffold; `--html`
+wraps an already-rendered body in the shared document shell. `stack artifacts
+lint` rejects missing source files, unsafe external requests, oversized pages,
+and missing source receipts when a page is expected to carry one. `stack
+artifacts publish` posts the compiled page to the selected Synth environment's
+hosted artifact route; `stack artifacts share` promotes a hosted page to a
+public URL when the backend allows public publication.
+
 For MCP workflows, `stack_effort_record_finding` accepts the same
 `path` or `receipt_path` inputs and returns receipt metadata alongside the usual
 Effort orientation payload, including the Effort-local `source_receipt_path` and
@@ -336,6 +393,8 @@ release artifact metadata and receipt fields. `stack_effort_get` includes
 `optimizer_candidates`, `run_evidence`, `benchmarks`, and `release_artifacts`
 tails, while `stack_effort_list` includes `latest_optimizer_candidate`,
 `latest_run_evidence`, `latest_benchmark`, and `latest_release_artifact`.
+`stack_effort_record_artifact` is the MCP twin of `stack effort artifact`, and
+`stack_effort_launch` is the MCP twin of `stack effort launch`.
 `stack_effort_record_acceptance` is the MCP twin of `stack effort acceptance`;
 it updates `acceptance-summary.md`, appends a typed acceptance activity receipt,
 and returns the current Effort orientation payload.
@@ -489,8 +548,10 @@ Stack MCP exposes the same Effort storage to gardeners and agents:
 - `stack_effort_record_optimizer_candidate`
 - `stack_effort_record_run_evidence`
 - `stack_effort_record_release_artifact`
+- `stack_effort_record_artifact`
 - `stack_effort_write_engineering_packet`
 - `stack_effort_update_refs`
+- `stack_effort_launch`
 - `stack_effort_update_status`
 
 Use `stack_pull_artifact` before `stack_effort_record_finding`,

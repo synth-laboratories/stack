@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs"
-import { resolve } from "node:path"
+import { join, resolve } from "node:path"
 import type { StackConfig } from "./config.js"
+import { artifactsRoot, readLatestArtifacts } from "./artifacts.js"
 import {
   stackdMissingEffortRefRouteMessage,
   stackdUpdateMetaThreadEffortRef,
@@ -8,8 +9,10 @@ import {
 } from "./client/stackd.js"
 import { formatTokenTotal, sessionTokenTotal } from "./codex/usage-cost.js"
 import {
+  EFFORT_LAUNCH_CAPABILITIES,
   STACK_EFFORT_STATUSES,
   appendEffortProgress,
+  effortScopeLanes,
   appendEffortResearchLog,
   auditEffort,
   bindEffortMetaThread,
@@ -25,12 +28,14 @@ import {
   readEffortBlockerTail,
   readEffortOpenBlockerTail,
   readEffortOptimizerCandidateSummaries,
+  parseEffortLaunchCapability,
   readEffortProgressTail,
   readEffortReleaseArtifactSummaries,
   readEffortRemainingWork,
   readEffortRunEvidenceSummaries,
   refreshEffortReceiptDigests,
   recordEffortAcceptance,
+  recordEffortArtifact,
   recordEffortBenchmark,
   recordEffortBlocker,
   recordEffortCapture,
@@ -43,6 +48,7 @@ import {
   recordEffortRunEvidence,
   resolveEffortBlocker,
   updateEffortRefs,
+  updateEffortScope,
   updateEffortStatus,
   writeEffortEngineeringPacket,
   writeEffortHandoff,
@@ -67,6 +73,7 @@ import {
   type StackEffortStatus,
   type StackEffortTemplateSummary,
 } from "./effort.js"
+import { EFFORT_LAUNCH_KINDS, launchEffortRun, type EffortLaunchKind } from "./effort-launch.js"
 import { readMetaThreadManifest } from "./meta-thread-goal.js"
 import { readRoundTripPullReceipt, type RoundTripPullReceiptRecord } from "./roundtrip.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
@@ -367,6 +374,80 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       return 0
     }
 
+    if (action === "scope") {
+      const ref = parsed.args[0]
+      if (!ref) return usageError("usage: stack effort scope <effort> [--capabilities <a,b,c>] [--json]")
+      const rawCapabilities = readFlagString(parsed, "capabilities")
+      if (parsed.flags.has("capabilities") && !rawCapabilities) {
+        return usageError(`stack effort scope --capabilities requires a comma-separated list; valid capabilities: ${EFFORT_LAUNCH_CAPABILITIES.join(", ")}`)
+      }
+      const effort = rawCapabilities !== undefined
+        ? updateEffortScope({ ...config, effortRef: ref, capabilities: rawCapabilities.split(",") })
+        : readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const capabilities = effort.manifest.scope.capabilities
+      const lanes = effortScopeLanes(effort.manifest)
+      if (json) {
+        console.log(JSON.stringify({
+          ok: true,
+          effort_id: effort.manifest.id,
+          slug: effort.manifest.slug,
+          scope: effort.manifest.scope,
+          lanes,
+        }, null, 2))
+      } else {
+        console.log(`${effort.manifest.slug} scope:`)
+        console.log(`  capabilities: ${capabilities.join(", ")}`)
+        console.log(`  lanes: ${lanes.join(", ") || "none"}`)
+      }
+      return 0
+    }
+
+    if (action === "launch") {
+      const ref = parsed.args[0]
+      const usage = `usage: stack effort launch <effort> --kind ${EFFORT_LAUNCH_KINDS.join("|")} --capability <${EFFORT_LAUNCH_CAPABILITIES.join("|")}> [--config <gepa toml path>] [--tunnel-url <url>] [--container-pool <id>] [--goal <text>] [--project-id <id>] [--factory-id <id>] [--pool <id>] [--task-id <id>] [--split <name>] [--seed <n>] [--image-ref <ref>|--service-url <url>] [--runtime-kind <kind>] [--release-name <name>] [--provider <name>] [--json]`
+      if (!ref) return usageError(usage)
+      const kind = readFlagString(parsed, "kind")
+      if (!kind || !(EFFORT_LAUNCH_KINDS as readonly string[]).includes(kind)) return usageError(usage)
+      const capability = readFlagString(parsed, "capability")
+      if (!capability) return usageError(usage)
+      const result = await launchEffortRun(config, {
+        effortRef: ref,
+        kind: kind as EffortLaunchKind,
+        capability: parseEffortLaunchCapability(capability),
+        configPath: readFlagString(parsed, "config"),
+        tunnelUrl: readFlagString(parsed, "tunnel-url"),
+        containerPool: readFlagString(parsed, "container-pool"),
+        goal: readFlagString(parsed, "goal"),
+        projectId: readFlagString(parsed, "project-id"),
+        factoryId: readFlagString(parsed, "factory-id"),
+        poolId: readFlagString(parsed, "pool"),
+        taskId: readFlagString(parsed, "task-id"),
+        split: readFlagString(parsed, "split"),
+        seed: readFlagInteger(parsed, "seed"),
+        imageRef: readFlagString(parsed, "image-ref"),
+        serviceUrl: readFlagString(parsed, "service-url"),
+        runtimeKind: readFlagString(parsed, "runtime-kind"),
+        releaseName: readFlagString(parsed, "release-name"),
+        provider: readFlagString(parsed, "provider"),
+        archiveBase64: readFlagString(parsed, "archive-base64"),
+        sourceStorageUri: readFlagString(parsed, "source-storage-uri"),
+        dockerfilePath: readFlagString(parsed, "dockerfile-path"),
+        baseImageRef: readFlagString(parsed, "base-image-ref"),
+      })
+      if (json) {
+        console.log(JSON.stringify(result, null, 2))
+      } else {
+        console.log(`launch ${result.ok ? "submitted" : "failed"} - kind ${result.kind} - lane ${result.lane} - capability ${result.capability}`)
+        if (result.id) console.log(`id: ${result.id}`)
+        console.log(`message: ${result.message}`)
+        if (result.ref) {
+          console.log(`recorded: ref ${result.ref.system}=${result.ref.id} lane=${result.ref.lane} role=${result.ref.role} in ${result.recorded_in}/effort.toml and ACTIVITY.jsonl`)
+        }
+      }
+      return result.ok ? 0 : 1
+    }
+
     if (action === "status") {
       const [ref, status] = parsed.args
       if (!ref || !status) return usageError("usage: stack effort status <effort> <active|paused|done|archived>")
@@ -660,6 +741,44 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       return 0
     }
 
+    if (action === "artifact" || action === "artifact-page") {
+      const ref = parsed.args[0]
+      const slug = readFlagString(parsed, "slug") ?? parsed.args[1]
+      if (!ref || !slug) return usageError("usage: stack effort artifact <effort> --slug <page> [--split <name>] [--body <text>]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const artifact = readLatestArtifacts(config).find((entry) => entry.slug === slug)
+      if (!artifact) return usageError(`artifact page not found: ${slug}`)
+      const result = recordEffortArtifact({
+        ...config,
+        effortRef: effort.manifest.id,
+        slug: artifact.slug,
+        title: artifact.title,
+        localUrl: artifact.local_url,
+        hostedUrl: artifact.hosted_url,
+        publicUrl: artifact.public_url,
+        hostedArtifactId: artifact.hosted_artifact_id,
+        artifactVersion: artifact.artifact_version ? String(artifact.artifact_version) : undefined,
+        sha256: artifact.sha256,
+        splitsCited: readFlagList(parsed, "split"),
+        body: readFlagString(parsed, "body"),
+        sourcePath: join(artifactsRoot(config), artifact.page_path),
+        filename: readFlagString(parsed, "filename"),
+      })
+      await printArtifactResult(config, result.effort, result.path, json, undefined, result.sourceReceiptPath, result.sourceReceipt, {
+        source_kind: "artifact.webpage",
+        slug: result.slug,
+        local_url: result.localUrl,
+        hosted_url: result.hostedUrl,
+        public_url: result.publicUrl,
+        hosted_artifact_id: result.hostedArtifactId,
+        artifact_version: result.artifactVersion,
+        sha256: result.sha256,
+        splits_cited: result.splitsCited,
+      })
+      return 0
+    }
+
     printEffortUsage()
     return 2
   } catch (error) {
@@ -894,6 +1013,7 @@ function missingEffortRemainingWork(): StackEffortRemainingWork {
     state: "untracked",
     summary: "effort folder or manifest missing",
     open_acceptance: [],
+    out_of_scope: [],
     latest_blocker: null,
     next_actions: [],
   }
@@ -956,6 +1076,7 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   console.log(`id: ${effort.manifest.id}`)
   console.log(`folder: ${effort.registry.folder_ref}`)
   console.log(`template: ${effort.manifest.template}`)
+  console.log(`scope: ${effort.manifest.scope.capabilities.join(", ")} (lanes: ${effortScopeLanes(effort.manifest).join(", ") || "none"})`)
   if (effort.manifest.links.meta_thread_refs.length > 0) {
     console.log(`meta-threads: ${effort.manifest.links.meta_thread_refs.join(", ")}`)
   }
@@ -1077,6 +1198,12 @@ function printEffortRemaining(effort: StackEffort, json: boolean): void {
     for (const level of remaining.open_acceptance) {
       const required = level.required_for_v1 ? " required-v1" : ""
       console.log(`  ${level.label}: ${level.title} - ${level.status}${required}`)
+    }
+  }
+  if (remaining.out_of_scope.length > 0) {
+    console.log("out of scope:")
+    for (const level of remaining.out_of_scope) {
+      console.log(`  ${level.label}: ${level.title} - out_of_scope`)
     }
   }
   if (latestBlocker) {
@@ -1305,6 +1432,8 @@ function printEffortUsage(): void {
   console.error("  stack effort handoff <effort> [--summary <text>] [--risk <text>] [--next <text>] [--owner <text>]")
   console.error("  stack effort engineering-packet <effort> [--repo <path>] [--base <ref>] [--summary <text>] [--file <path>] [--validation <text>] [--skipped-gate <text>] [--risk <text>] [--next <text>]")
   console.error("  stack effort refs <effort> [--factory-id <id>] [--hosted-effort-id <id>] [--project-id <id>] [--optimizer-run-id <id>] [--smr-run-id <id>] [--tinker-run-id <id>] [--repo-ref <ref>] [--initiative-id <id>]")
+  console.error("  stack effort scope <effort> [--capabilities <a,b,c>] [--json]")
+  console.error(`  stack effort launch <effort> --kind ${EFFORT_LAUNCH_KINDS.join("|")} --capability <${EFFORT_LAUNCH_CAPABILITIES.join("|")}> [--config <gepa toml path>] [--tunnel-url <url>] [--container-pool <id>] [--goal <text>] [--project-id <id>] [--factory-id <id>] [--pool <id>] [--task-id <id>] [--split <name>] [--seed <n>] [--image-ref <ref>|--service-url <url>] [--runtime-kind <kind>] [--release-name <name>] [--provider <name>] [--json]`)
   console.error("  stack effort idea <effort> <title> [--origin HUMAN|AGENT|MIXED] [--body <text>]")
   console.error("  stack effort note <effort> <title> [--kind human|note] [--body <text>]")
   console.error("  stack effort repo <effort> --path <path> [--repo-ref <ref>] [--title <title>] [--filename <name>]")
@@ -1314,6 +1443,7 @@ function printEffortUsage(): void {
   console.error("  stack effort optimizer-candidate <effort> [title] [--optimizer-run-id <id>] [--candidate-id <id>] [--score <value>] [--score-label <name>] [--split <name>] [--path <path>|--receipt-path <path>] [--body <text>]")
   console.error("  stack effort run-evidence <effort> [title] --run-kind <system> [--run-id <id>] [--project-id <id>] [--output-id <id>] [--artifact-name <name>] [--metric <text>] [--acceptance-level <claim>] [--path <path>|--receipt-path <path>] [--body <text>]")
   console.error("  stack effort release-artifact <effort> [title] [--version <version>] [--channel <channel>] [--target <triple>] [--archive <path-or-url>] [--sha256 <hex>] [--size <bytes>] [--manifest <path-or-url>] [--release-site <path-or-url>] [--publishable true|false] [--publish-blocker <text>] [--path <path>|--receipt-path <path>] [--body <text>]")
+  console.error("  stack effort artifact <effort> --slug <page> [--split <name>] [--body <text>]")
   console.error("  stack effort status <effort> <active|paused|done|archived>")
   console.error("  stack effort archive <effort>")
 }

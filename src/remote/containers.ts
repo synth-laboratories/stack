@@ -58,6 +58,29 @@ export type ContainerPoolRolloutResult = {
   data?: Record<string, unknown>
 }
 
+export type ContainerPoolRuntimeImageReleaseRequest = {
+  name?: string
+  provider?: string
+  runtime_kind?: "image_ref" | "service_url" | "docker_context" | "source_build" | string
+  image_ref?: string
+  service_url?: string
+  archive_base64?: string
+  source_storage_uri?: string
+  dockerfile_path?: string
+  base_image_ref?: string
+  entrypoint?: string
+  env_vars?: Record<string, unknown>
+  limits?: Record<string, unknown>
+  metadata?: Record<string, unknown>
+  [key: string]: unknown
+}
+
+export type ContainerPoolRuntimeImageDeployResult = ContainerPoolRolloutResult & {
+  releaseId?: string
+  release?: Record<string, unknown>
+  binding?: Record<string, unknown>
+}
+
 export type ContainersPanelSnapshot = {
   status: ContainersPanelStatus
   environmentName: string
@@ -199,6 +222,101 @@ export async function executeContainerPoolRollout(
   }
 }
 
+export async function createContainerPoolRuntimeImageRelease(
+  config: StackConfig,
+  options: { poolId: string; body: ContainerPoolRuntimeImageReleaseRequest },
+): Promise<ContainerPoolRolloutResult> {
+  const auth = environmentAuthStatus(config.environment)
+  const base = {
+    environmentName: config.environmentName,
+    apiBaseUrl: config.environment.apiBaseUrl,
+    poolId: options.poolId,
+  }
+  if (!auth.hasAuth) {
+    return {
+      ...base,
+      ok: false,
+      status: 0,
+      message: auth.message,
+    }
+  }
+
+  const result = await requestJson(config, `/v1/pools/${encodeURIComponent(options.poolId)}/runtime_image_releases`, {
+    method: "POST",
+    body: options.body,
+  })
+  return {
+    ...base,
+    ok: result.ok,
+    status: result.status,
+    message: result.ok ? "runtime image release created" : result.message,
+    data: asRecord(result.data) ?? { value: result.data },
+  }
+}
+
+export async function bindContainerPoolRuntimeImageRelease(
+  config: StackConfig,
+  options: { poolId: string; releaseId: string; taskId?: string },
+): Promise<ContainerPoolRolloutResult> {
+  const auth = environmentAuthStatus(config.environment)
+  const base = {
+    environmentName: config.environmentName,
+    apiBaseUrl: config.environment.apiBaseUrl,
+    poolId: options.poolId,
+    ...(options.taskId ? { taskId: options.taskId } : {}),
+  }
+  if (!auth.hasAuth) {
+    return {
+      ...base,
+      ok: false,
+      status: 0,
+      message: auth.message,
+    }
+  }
+
+  const poolId = encodeURIComponent(options.poolId)
+  const releaseId = encodeURIComponent(options.releaseId)
+  const path = options.taskId
+    ? `/v1/pools/${poolId}/tasks/${encodeURIComponent(options.taskId)}/runtime_image_releases/${releaseId}/bind`
+    : `/v1/pools/${poolId}/runtime_image_releases/${releaseId}/bind`
+  const result = await requestJson(config, path, { method: "POST" })
+  return {
+    ...base,
+    ok: result.ok,
+    status: result.status,
+    message: result.ok ? "runtime image release bound" : result.message,
+    data: asRecord(result.data) ?? { value: result.data },
+  }
+}
+
+export async function deployContainerPoolRuntimeImage(
+  config: StackConfig,
+  options: { poolId: string; taskId?: string; body: ContainerPoolRuntimeImageReleaseRequest },
+): Promise<ContainerPoolRuntimeImageDeployResult> {
+  const release = await createContainerPoolRuntimeImageRelease(config, { poolId: options.poolId, body: options.body })
+  if (!release.ok) return release
+  const releaseId = runtimeImageReleaseId(release.data)
+  if (!releaseId) {
+    return {
+      ...release,
+      ok: false,
+      message: "runtime image release response missing release id",
+      release: release.data,
+    }
+  }
+  const binding = await bindContainerPoolRuntimeImageRelease(config, {
+    poolId: options.poolId,
+    releaseId,
+    ...(options.taskId ? { taskId: options.taskId } : {}),
+  })
+  return {
+    ...binding,
+    releaseId,
+    release: release.data,
+    binding: binding.data,
+  }
+}
+
 function readPools(value: unknown): ContainerPoolSummary[] {
   return firstNonEmptyArray(value)
     .map(readPool)
@@ -292,6 +410,11 @@ function readString(value: unknown): string | undefined {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" ? value : undefined
+}
+
+function runtimeImageReleaseId(value: Record<string, unknown> | undefined): string | undefined {
+  if (!value) return undefined
+  return readString(value.release_id) ?? readString(value.id)
 }
 
 function sanitizeResponseValue(value: unknown): unknown {

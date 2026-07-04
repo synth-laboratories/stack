@@ -84,6 +84,43 @@ export type HostedArtifactSummary = {
   publishedAt?: string
 }
 
+export type PublishHostedArtifactRequest = {
+  title: string
+  htmlContent: string
+  visibility?: "private" | "org" | "public"
+  projectId?: string
+  effortId?: string
+  hostedArtifactId?: string
+  sourceRunIds?: string[]
+  traceId?: string
+  slugHint?: string
+}
+
+export type PublishHostedArtifactResult = {
+  ok: boolean
+  status: number
+  message: string
+  hostedArtifactId?: string
+  hostedUrl?: string
+  canonicalUrl?: string
+  publicUrl?: string
+  slug?: string
+  visibility?: string
+  artifactVersion?: number
+  sourceRunIds: string[]
+  traceId?: string
+  response?: unknown
+}
+
+export type PublishPublicHostedArtifactRequest = {
+  slug: string
+  kind?: string
+  theme?: string
+  summary?: string
+  factoryId?: string
+  effortId?: string
+}
+
 export type HostedArtifactsSnapshot = {
   status: RemoteResearchStatus
   environmentName: string
@@ -641,6 +678,66 @@ export async function readHostedArtifacts(
   }
 }
 
+export async function publishHostedArtifact(
+  config: StackConfig,
+  request: PublishHostedArtifactRequest,
+): Promise<PublishHostedArtifactResult> {
+  const payload = {
+    title: request.title,
+    html_content: request.htmlContent,
+    visibility: request.visibility ?? "org",
+    project_id: request.projectId,
+    effort_id: request.effortId,
+    hosted_artifact_id: request.hostedArtifactId,
+    source_run_ids: request.sourceRunIds ?? [],
+    trace_id: request.traceId,
+    slug_hint: request.slugHint,
+  }
+  const response = await postJsonBody(config, "/smr/hosted-artifacts", payload)
+  if (!response.ok) {
+    const message = response.status === 405
+      ? `POST /smr/hosted-artifacts returned 405 from ${config.environment.apiBaseUrl}; deploy or restart a backend that exposes the hosted artifact create route`
+      : response.message
+    return {
+      ok: false,
+      status: response.status,
+      message,
+      sourceRunIds: [],
+      response: response.payload,
+    }
+  }
+  return hostedArtifactPublishResult(response.status, response.payload)
+}
+
+export async function publishHostedArtifactPublic(
+  config: StackConfig,
+  hostedArtifactId: string,
+  request: PublishPublicHostedArtifactRequest,
+): Promise<PublishHostedArtifactResult> {
+  const response = await postJsonBody(
+    config,
+    `/smr/hosted-artifacts/${encodeURIComponent(hostedArtifactId)}/publish-public`,
+    {
+      slug: request.slug,
+      kind: request.kind ?? "result",
+      theme: request.theme,
+      summary: request.summary,
+      factory_id: request.factoryId,
+      effort_id: request.effortId,
+    },
+  )
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      message: response.message,
+      sourceRunIds: [],
+      response: response.payload,
+    }
+  }
+  return hostedArtifactPublishResult(response.status, response.payload)
+}
+
 async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySummary): Promise<RemoteFactorySummary> {
   try {
     const payload = asRecord(await getJson(config, `/smr/factories/${encodeURIComponent(factory.factoryId)}/status`))
@@ -940,6 +1037,45 @@ async function getJson(config: StackConfig, path: string): Promise<unknown> {
   return await response.json()
 }
 
+async function postJsonBody(
+  config: StackConfig,
+  path: string,
+  body: Record<string, unknown>,
+): Promise<{ ok: boolean; status: number; message: string; payload?: unknown }> {
+  const auth = environmentAuthStatus(config.environment)
+  const token = process.env[config.environment.authEnv]
+  if (!auth.hasAuth || !token) {
+    return { ok: false, status: 0, message: auth.message }
+  }
+  try {
+    const response = await fetch(`${config.environment.apiBaseUrl.replace(/\/+$/, "")}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(dropUndefined(body)),
+      signal: AbortSignal.timeout(30000),
+    })
+    const text = await response.text()
+    let payload: unknown
+    try {
+      payload = text ? JSON.parse(text) as unknown : undefined
+    } catch {
+      payload = text
+    }
+    return {
+      ok: response.ok,
+      status: response.status,
+      message: response.ok ? "ok" : readResponseErrorMessage(payload) ?? response.statusText,
+      payload,
+    }
+  } catch (error) {
+    return { ok: false, status: 0, message: errorMessage(error) }
+  }
+}
+
 export async function headUrlStatus(url: string, timeoutMs = 3000): Promise<number | undefined> {
   if (!/^https?:\/\//i.test(url)) return undefined
   try {
@@ -1010,6 +1146,47 @@ function readHostedArtifactRows(value: unknown): HostedArtifactSummary[] {
       }
     })
     .filter((artifact): artifact is HostedArtifactSummary => Boolean(artifact))
+}
+
+function hostedArtifactPublishResult(status: number, value: unknown): PublishHostedArtifactResult {
+  const payload = asRecord(value)
+  const hostedArtifactId = readString(payload?.hosted_artifact_id) ?? readString(payload?.hostedArtifactId)
+  const hostedUrl = readString(payload?.hosted_url) ?? readString(payload?.hostedUrl)
+  const canonicalUrl = readString(payload?.canonical_url) ?? readString(payload?.canonicalUrl)
+  const publicUrl = readString(payload?.public_url) ?? readString(payload?.publicUrl)
+  return {
+    ok: Boolean(hostedArtifactId || hostedUrl || publicUrl),
+    status,
+    message: hostedArtifactId || hostedUrl || publicUrl ? "ok" : "missing hosted artifact fields",
+    hostedArtifactId,
+    hostedUrl,
+    canonicalUrl,
+    publicUrl,
+    slug: readString(payload?.slug),
+    visibility: readString(payload?.visibility),
+    artifactVersion: readNumber(payload?.artifact_version) ?? readNumber(payload?.artifactVersion),
+    sourceRunIds: readStringArray(payload?.source_run_ids),
+    traceId: readString(payload?.trace_id),
+    response: value,
+  }
+}
+
+function dropUndefined(value: Record<string, unknown>): Record<string, unknown> {
+  const cleaned: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry !== undefined) cleaned[key] = entry
+  }
+  return cleaned
+}
+
+function readResponseErrorMessage(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim().slice(0, 500)
+  const record = asRecord(value)
+  const detail = record?.detail
+  if (typeof detail === "string" && detail.trim()) return detail.trim().slice(0, 500)
+  const detailRecord = asRecord(detail)
+  const message = readString(detailRecord?.message) ?? readString(record?.message) ?? readString(record?.error)
+  return message?.slice(0, 500)
 }
 
 function errorMessage(error: unknown): string {

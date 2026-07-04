@@ -17,6 +17,37 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260704.3] - 2026-07-04
+
+Effort launch and Artifact Site cockpit release.
+
+### Added
+
+- **Scoped Effort launches.** `stack effort scope`, `stack effort launch`, and
+  `stack_effort_launch` let an Effort declare which launch capabilities are in
+  scope, then launch only those explicit capabilities. The first wired launch
+  clients cover local GEPA, hosted GEPA, hosted SMR, and hosted container-pool
+  rollout. Successful launches append a lane-explicit `{system, id, lane,
+  role=launch}` ref and activity receipt to the Effort.
+- **Local Artifact Sites.** `stack artifacts` creates, serves, lints, lists,
+  opens, publishes, and shares local evidence pages from a bundled Next.js
+  scaffold. Pages live under Stack artifact state, can be bound to an Effort,
+  and can publish through hosted artifact routes when the selected Synth
+  environment exposes them.
+- **Artifact evidence adapter.** `stack effort artifact` and
+  `stack_effort_record_artifact` promote the latest local Artifact Site manifest
+  row into typed `artifact.webpage` Effort proof, preserving local, hosted, and
+  public URLs, hosted artifact ids, page version, sha256, cited splits, and a
+  source receipt for the rendered page.
+- **Artifact authoring skill.** The bundled `artifact-authoring` skill gives
+  agents a compact page-authoring contract for Stack Artifact Sites, including
+  the kit API, page template, citation expectations, and no-secret/no-external
+  request guardrails.
+- **Hosted artifact status in live ops.** Remote SMR and hosted optimizer
+  snapshots now surface hosted artifact rows and per-run hosted artifact status
+  so the cockpit can show whether a run has a hosted page, public URL, or
+  publishable artifact.
+
 ## [0.2.0-dev.20260704.2] - 2026-07-04
 
 Install runtime hotfix for the Efforts nightly.

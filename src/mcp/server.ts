@@ -60,6 +60,7 @@ import {
   readEffortRunEvidenceSummaries as readStackEffortRunEvidenceSummaries,
   refreshEffortReceiptDigests as refreshStackEffortReceiptDigests,
   recordEffortAcceptance as recordStackEffortAcceptance,
+  recordEffortArtifact as recordStackEffortArtifact,
   recordEffortBenchmark as recordStackEffortBenchmark,
   recordEffortBlocker as recordStackEffortBlocker,
   recordEffortCapture as recordStackEffortCapture,
@@ -71,6 +72,8 @@ import {
   recordEffortRepo as recordStackEffortRepo,
   recordEffortRunEvidence as recordStackEffortRunEvidence,
   resolveEffortBlocker as resolveStackEffortBlocker,
+  EFFORT_LAUNCH_CAPABILITIES,
+  parseEffortLaunchCapability,
   STACK_EFFORT_CAPTURE_KINDS,
   STACK_EFFORT_FINDING_KINDS,
   STACK_EFFORT_IDEA_ORIGINS,
@@ -88,6 +91,22 @@ import {
   type StackEffortNoteKind,
   type StackEffortStatus,
 } from "../effort.js"
+import {
+  artifactGalleryUrl,
+  artifactLocalUrl,
+  artifactsRoot as stackArtifactsRoot,
+  lintArtifact as lintStackArtifact,
+  publishArtifact as publishStackArtifact,
+  readArtifactStatus as readStackArtifactStatus,
+  readLatestArtifacts as readLatestStackArtifacts,
+  shareArtifact as shareStackArtifact,
+  writeArtifactPage as writeStackArtifactPage,
+} from "../artifacts.js"
+import {
+  EFFORT_LAUNCH_KINDS,
+  launchEffortRun as launchStackEffortRun,
+  type EffortLaunchKind,
+} from "../effort-launch.js"
 import { isUiPanelId, panelOpenAllowed, panelViewAllowed, UI_PANEL_IDS, UI_PANELS, type UiPanelOpener } from "../ui/vocabulary.js"
 import {
   stackdExport,
@@ -636,6 +655,7 @@ export class StackMcpServer {
               state: "untracked",
               summary: "effort folder or manifest missing",
               open_acceptance: [],
+              out_of_scope: [],
               latest_blocker: null,
               next_actions: [],
             },
@@ -1635,6 +1655,52 @@ export class StackMcpServer {
     return toJsonValue(await this.effortPayload(config, effort, {
       receipt: "lever.stack_mcp effort.status_updated",
     })) ?? null
+  }
+
+  async launchEffort(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const kind = requiredString(args, "kind")
+    if (!(EFFORT_LAUNCH_KINDS as readonly string[]).includes(kind)) {
+      throw new RpcError(-32602, `kind must be one of: ${EFFORT_LAUNCH_KINDS.join(", ")}`)
+    }
+    const capability = requiredString(args, "capability")
+    const result = await launchStackEffortRun(config, {
+      effortRef,
+      kind: kind as EffortLaunchKind,
+      capability: parseEffortLaunchCapability(capability),
+      configPath: optionalString(args, "config_path"),
+      tunnelUrl: optionalString(args, "tunnel_url"),
+      containerPool: optionalString(args, "container_pool"),
+      goal: optionalString(args, "goal"),
+      projectId: optionalString(args, "project_id"),
+      factoryId: optionalString(args, "factory_id"),
+      poolId: optionalString(args, "pool_id"),
+      taskId: optionalString(args, "task_id"),
+      split: optionalString(args, "split"),
+      seed: optionalInteger(args, "seed"),
+      imageRef: optionalString(args, "image_ref"),
+      serviceUrl: optionalString(args, "service_url"),
+      runtimeKind: optionalString(args, "runtime_kind"),
+      releaseName: optionalString(args, "release_name"),
+      provider: optionalString(args, "provider"),
+      archiveBase64: optionalString(args, "archive_base64"),
+      sourceStorageUri: optionalString(args, "source_storage_uri"),
+      dockerfilePath: optionalString(args, "dockerfile_path"),
+      baseImageRef: optionalString(args, "base_image_ref"),
+    })
+    return toJsonValue({
+      ok: result.ok,
+      capability: result.capability,
+      kind: result.kind,
+      lane: result.lane,
+      message: result.message,
+      id: result.id,
+      ref: result.ref,
+      recorded_in: result.recorded_in,
+      detail: result.detail,
+      receipt: "lever.stack_mcp effort.launch_submitted",
+    }) ?? null
   }
 
   async createMetaThread(args: JsonObject): Promise<JsonValue> {
@@ -2871,6 +2937,164 @@ export class StackMcpServer {
       message: openRes.message,
       receipt: openRes.ok ? `RECEIPT PASS hosted_url=${headStatus} [Open artifact ↗]` : null,
     }
+  }
+
+  async createArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const result = await writeStackArtifactPage(config, {
+      slug: requiredString(args, "slug"),
+      title: requiredString(args, "title"),
+      kind: optionalString(args, "kind"),
+      effort: optionalString(args, "effort"),
+      pagePath: optionalString(args, "page_path"),
+      htmlPath: optionalString(args, "html_path"),
+      dataPath: optionalString(args, "data_path"),
+    })
+    return {
+      ok: result.served.ok,
+      artifact: toJsonValue(result.artifact) ?? null,
+      local_url: result.localUrl,
+      gallery_url: artifactGalleryUrl(),
+      page_path: result.pagePath,
+      data_path: result.dataPath,
+      html_path: result.htmlPath ?? null,
+      served: toJsonValue(result.served) ?? null,
+      receipt: result.served.ok ? `RECEIPT PASS local_artifact_url=${result.localUrl}` : null,
+    }
+  }
+
+  async updateArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const result = await writeStackArtifactPage(config, {
+      slug: requiredString(args, "slug"),
+      title: optionalString(args, "title"),
+      kind: optionalString(args, "kind"),
+      effort: optionalString(args, "effort"),
+      pagePath: optionalString(args, "page_path"),
+      htmlPath: optionalString(args, "html_path"),
+      dataPath: optionalString(args, "data_path"),
+      update: true,
+    })
+    return {
+      ok: result.served.ok,
+      artifact: toJsonValue(result.artifact) ?? null,
+      local_url: result.localUrl,
+      gallery_url: artifactGalleryUrl(),
+      page_path: result.pagePath,
+      data_path: result.dataPath,
+      html_path: result.htmlPath ?? null,
+      served: toJsonValue(result.served) ?? null,
+      receipt: result.served.ok ? `RECEIPT PASS local_artifact_url=${result.localUrl}` : null,
+    }
+  }
+
+  async listArtifacts(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const status = await readStackArtifactStatus(config)
+    return {
+      ok: true,
+      running: status.running,
+      gallery_url: status.galleryUrl,
+      site_dir: status.siteDir,
+      manifest_path: status.manifestPath,
+      manifest_entries: status.manifestEntries,
+      artifacts: toJsonValue(status.artifacts) ?? [],
+      message: status.message,
+    }
+  }
+
+  async openArtifact(args: JsonObject): Promise<JsonValue> {
+    const slug = optionalString(args, "slug")
+    const url = slug ? artifactLocalUrl(slug) : artifactGalleryUrl()
+    const result = await openUrlInSystemBrowser(url)
+    return {
+      ok: result.ok,
+      slug: slug ?? null,
+      opened_url: result.ok ? url : null,
+      target_url: url,
+      message: result.message,
+      receipt: result.ok ? `RECEIPT PASS local_artifact_url=${url}` : null,
+    }
+  }
+
+  async lintArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const result = lintStackArtifact(config, requiredString(args, "slug"))
+    return {
+      ok: result.ok,
+      artifact: result.artifact ? toJsonValue(result.artifact) ?? null : null,
+      errors: result.errors,
+      warnings: result.warnings,
+      sha256: result.sha256 ?? null,
+      bytes: result.bytes ?? null,
+    }
+  }
+
+  async publishArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const result = await publishStackArtifact(config, {
+      slug: requiredString(args, "slug"),
+      visibility: optionalArtifactVisibility(args, "visibility"),
+      projectId: optionalString(args, "project_id"),
+      hostedEffortId: optionalString(args, "hosted_effort_id"),
+      sourceRunIds: optionalStringArray(args, "source_run_ids"),
+      traceId: optionalString(args, "trace_id"),
+    })
+    return toJsonValue(result) ?? null
+  }
+
+  async shareArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const result = await shareStackArtifact(config, {
+      slug: requiredString(args, "slug"),
+      visibility: optionalArtifactVisibility(args, "visibility"),
+      projectId: optionalString(args, "project_id"),
+      hostedEffortId: optionalString(args, "hosted_effort_id"),
+      sourceRunIds: optionalStringArray(args, "source_run_ids"),
+      traceId: optionalString(args, "trace_id"),
+      publicSlug: optionalString(args, "public_slug"),
+      confirmPublic: optionalBoolean(args, "confirm_public") ?? false,
+    })
+    return toJsonValue(result) ?? null
+  }
+
+  async recordEffortArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const slug = requiredString(args, "slug")
+    const artifact = readLatestStackArtifacts(config).find((entry) => entry.slug === slug)
+    if (!artifact) throw new RpcError(-32602, `artifact page not found: ${slug}`)
+    const result = recordStackEffortArtifact({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      slug: artifact.slug,
+      title: artifact.title,
+      localUrl: artifact.local_url,
+      hostedUrl: artifact.hosted_url,
+      publicUrl: artifact.public_url,
+      hostedArtifactId: artifact.hosted_artifact_id,
+      artifactVersion: artifact.artifact_version ? String(artifact.artifact_version) : undefined,
+      sha256: artifact.compiled_sha256 ?? artifact.sha256,
+      splitsCited: optionalStringArray(args, "splits_cited") ?? artifact.splits_cited ?? [],
+      sourcePath: join(stackArtifactsRoot(config), artifact.page_path),
+      body: optionalString(args, "body"),
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      source_kind: "artifact.webpage",
+      slug: result.slug,
+      local_url: result.localUrl ?? null,
+      hosted_url: result.hostedUrl ?? null,
+      public_url: result.publicUrl ?? null,
+      hosted_artifact_id: result.hostedArtifactId ?? null,
+      artifact_version: result.artifactVersion ?? null,
+      sha256: result.sha256 ?? null,
+      splits_cited: result.splitsCited,
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      receipt: "lever.stack_mcp effort.artifact_webpage_recorded",
+    })) ?? null
   }
 
   async listFactories(args: JsonObject): Promise<JsonValue> {
@@ -5209,6 +5433,93 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.openHostedArtifact(args),
     },
     {
+      name: "stack_artifact_create",
+      description: "Create a local Stack Artifact Site page from a TSX page or static HTML file, copy optional data JSON, auto-serve the local site, and return the localhost URL.",
+      inputSchema: objectSchema(
+        {
+          slug: stringProperty("Artifact slug, normalized to lowercase URL form."),
+          title: stringProperty("Artifact title."),
+          kind: { type: "string", enum: ["result", "analysis", "bloglet", "blog"], description: "Artifact kind. Defaults to result." },
+          effort: stringProperty("Optional Effort slug/id for receipt context."),
+          page_path: stringProperty("Workspace path to a TSX page. Mutually exclusive with html_path."),
+          html_path: stringProperty("Workspace path to a static HTML file. Mutually exclusive with page_path."),
+          data_path: stringProperty("Optional workspace path to JSON data copied into .stack/artifacts/data/<slug>/data.json."),
+        },
+        ["slug", "title"],
+      ),
+      handler: (args) => server.createArtifact(args),
+    },
+    {
+      name: "stack_artifact_update",
+      description: "Update an existing local Stack Artifact Site page, preserving identity while rewriting page/html/data metadata, then return the localhost URL.",
+      inputSchema: objectSchema({
+        slug: stringProperty("Existing artifact slug."),
+        title: stringProperty("Optional replacement title."),
+        kind: { type: "string", enum: ["result", "analysis", "bloglet", "blog"], description: "Optional replacement artifact kind." },
+        effort: stringProperty("Optional Effort slug/id for receipt context."),
+        page_path: stringProperty("Optional workspace path to a replacement TSX page. Mutually exclusive with html_path."),
+        html_path: stringProperty("Optional workspace path to replacement static HTML. Mutually exclusive with page_path."),
+        data_path: stringProperty("Optional workspace path to replacement JSON data."),
+      }, ["slug"]),
+      handler: (args) => server.updateArtifact(args),
+    },
+    {
+      name: "stack_artifact_list",
+      description: "List local Stack Artifact Site pages from the workspace .stack/artifacts manifest and report whether the local site is running.",
+      inputSchema: objectSchema({}),
+      handler: (args) => server.listArtifacts(args),
+    },
+    {
+      name: "stack_artifact_open",
+      description: "Open a local Stack Artifact Site page, or the gallery when slug is omitted, in the system browser.",
+      inputSchema: objectSchema({
+        slug: stringProperty("Optional artifact slug. Opens gallery when omitted."),
+      }),
+      handler: (args) => server.openArtifact(args),
+    },
+    {
+      name: "stack_artifact_lint",
+      description: "Run the local Artifact Site structural lint for a page: no external requests, receipt footer present, score-like stats cite splits, and compiled HTML stays below the 4 MiB cap.",
+      inputSchema: objectSchema({ slug: stringProperty("Artifact slug to lint.") }, ["slug"]),
+      handler: (args) => server.lintArtifact(args),
+    },
+    {
+      name: "stack_artifact_publish",
+      description: "Compile a local Artifact Site page to a self-contained HTML document and publish it as a Synth hosted artifact. Republish preserves hosted_artifact_id when present in the manifest.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          slug: stringProperty("Artifact slug to publish."),
+          visibility: enumProperty(["private", "org", "public"], "Hosted artifact visibility. Defaults to org."),
+          project_id: stringProperty("Synth project id for first publish. Republish can use the manifest hosted_artifact_id."),
+          hosted_effort_id: stringProperty("Optional Synth hosted Effort id. Distinct from local Stack effort slug."),
+          source_run_ids: arrayProperty("Optional source SMR run ids to carry into lineage."),
+          trace_id: stringProperty("Optional trace id."),
+        },
+        ["slug"],
+      ),
+      handler: (args) => server.publishArtifact(args),
+    },
+    {
+      name: "stack_artifact_share",
+      description: "Publish a local Artifact Site page if needed, then optionally promote it to a public Open Research artifact when public_slug and confirm_public=true are supplied.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          slug: stringProperty("Artifact slug to share."),
+          visibility: enumProperty(["private", "org", "public"], "Hosted artifact visibility for the publish step. Defaults to org."),
+          project_id: stringProperty("Synth project id for first publish. Republish can use the manifest hosted_artifact_id."),
+          hosted_effort_id: stringProperty("Optional Synth hosted Effort id. Distinct from local Stack effort slug."),
+          source_run_ids: arrayProperty("Optional source SMR run ids to carry into lineage."),
+          trace_id: stringProperty("Optional trace id."),
+          public_slug: stringProperty("Optional public Open Research slug. Omit to publish org/private only."),
+          confirm_public: { type: "boolean", description: "Must be true to create or reuse a public Open Research slug." },
+        },
+        ["slug"],
+      ),
+      handler: (args) => server.shareArtifact(args),
+    },
+    {
       name: "stack_list_factories",
       description: "List remote Research Factories and routable project/run hints for operator mediation. Uses stackd runtime snapshot first, with direct API fallback.",
       inputSchema: objectSchema({
@@ -5686,6 +5997,22 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.recordEffortReleaseArtifact(args),
     },
     {
+      name: "stack_effort_record_artifact",
+      description: "Record the current local Artifact Site page manifest row as typed artifact.webpage evidence under an Effort, including local/hosted/public URLs, sha256, version, and cited splits.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          slug: stringProperty("Local Artifact Site page slug."),
+          splits_cited: arrayProperty("Optional split names cited by the artifact page scores."),
+          body: stringProperty("Optional markdown note for the evidence body."),
+          filename: stringProperty("Optional target filename."),
+        },
+        ["effort_ref", "slug"],
+      ),
+      handler: (args) => server.recordEffortArtifact(args),
+    },
+    {
       name: "stack_effort_update_refs",
       description: "Attach durable external system refs to an Effort manifest as {system, id, lane, role} entries. Use system/id/lane for any external system (smr, tinker, optimizer, factory, project, github.pr, ...); the named *_id fields are conveniences for common systems. This records ids only; use findings for artifact evidence.",
       inputSchema: objectSchema(
@@ -5708,6 +6035,39 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["effort_ref"],
       ),
       handler: (args) => server.updateEffortRefs(args),
+    },
+    {
+      name: "stack_effort_launch",
+      description: "Launch a run for an Effort through an explicit declared capability. Refuses launches whose capability is outside the Effort's scope.capabilities, then records the launch ref on the Effort manifest and ACTIVITY.jsonl. Kinds: optimizer, smr, container, project, factory, artifact. Project/factory/artifact are scope-only here and should use their standalone Stack cloud tools.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          kind: enumProperty([...EFFORT_LAUNCH_KINDS], `Launch kind: ${EFFORT_LAUNCH_KINDS.join(", ")}.`),
+          capability: enumProperty([...EFFORT_LAUNCH_CAPABILITIES], "Exact capability id to use. Lane and optimizer derive from this value."),
+          config_path: stringProperty("GEPA config TOML path, required for kind=optimizer."),
+          tunnel_url: stringProperty("Optional tunnel URL for hosted optimizer runs."),
+          container_pool: stringProperty("Optional container pool override for hosted optimizer runs."),
+          goal: stringProperty("Launch objective text, required for kind=smr."),
+          project_id: stringProperty("Optional Synth project id for kind=smr."),
+          factory_id: stringProperty("Optional Synth factory id for kind=smr."),
+          pool_id: stringProperty("Container pool id, required for kind=container."),
+          task_id: stringProperty("Optional task id for kind=container rollouts."),
+          split: stringProperty("Dataset split for container.pool.hosted rollout body. Defaults to test."),
+          seed: numberProperty("Seed for container.pool.hosted rollout body. Defaults to 7."),
+          image_ref: stringProperty("Runtime image ref for container.deploy.hosted when runtime_kind=image_ref."),
+          service_url: stringProperty("Service URL for container.deploy.hosted when runtime_kind=service_url."),
+          runtime_kind: stringProperty("Runtime release kind for container.deploy.hosted. Defaults to image_ref, or service_url when service_url is supplied."),
+          release_name: stringProperty("Optional runtime image release name for container.deploy.hosted."),
+          provider: stringProperty("Optional runtime image release provider for container.deploy.hosted."),
+          archive_base64: stringProperty("Optional archive payload for docker_context/source_build runtime releases."),
+          source_storage_uri: stringProperty("Optional source storage URI for docker_context/source_build runtime releases."),
+          dockerfile_path: stringProperty("Dockerfile path for docker_context runtime releases."),
+          base_image_ref: stringProperty("Base image ref for source_build runtime releases."),
+        },
+        ["effort_ref", "kind", "capability"],
+      ),
+      handler: (args) => server.launchEffort(args),
     },
     {
       name: "stack_effort_update_status",
@@ -6425,6 +6785,13 @@ function optionalBridgeMode(args: JsonObject): StackBridgeMode | undefined {
   if (!value) return undefined
   if (value === "local" || value === "remote" || value === "all") return value
   throw new RpcError(-32602, "mode must be local, remote, or all")
+}
+
+function optionalArtifactVisibility(args: JsonObject, key: string): "private" | "org" | "public" | undefined {
+  const value = optionalString(args, key)
+  if (!value) return undefined
+  if (value === "private" || value === "org" || value === "public") return value
+  throw new RpcError(-32602, `${key} must be private, org, or public`)
 }
 
 function optionalMetaThreadLifecycle(

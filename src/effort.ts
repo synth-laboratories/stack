@@ -28,6 +28,27 @@ export type StackEffortCaptureKind = (typeof STACK_EFFORT_CAPTURE_KINDS)[number]
 export const STACK_EFFORT_REF_LANES = ["hosted", "local"] as const
 export type StackEffortRefLane = (typeof STACK_EFFORT_REF_LANES)[number]
 
+export const EFFORT_LAUNCH_CAPABILITIES = [
+  "optimizer.gepa.local",
+  "optimizer.gepa.hosted",
+  "optimizer.gelo.hosted",
+  "smr.hosted",
+  "project.hosted",
+  "factory.hosted",
+  "artifact.publish.hosted",
+  "container.pool.hosted",
+  "container.deploy.hosted",
+] as const
+export type StackEffortLaunchCapability = (typeof EFFORT_LAUNCH_CAPABILITIES)[number]
+
+export const EFFORT_WIRED_LAUNCH_CAPABILITIES = [
+  "optimizer.gepa.local",
+  "optimizer.gepa.hosted",
+  "smr.hosted",
+  "container.pool.hosted",
+  "container.deploy.hosted",
+] as const satisfies readonly StackEffortLaunchCapability[]
+
 export const STACK_EFFORT_IDEA_ORIGINS = ["HUMAN", "AGENT", "MIXED"] as const
 export type StackEffortIdeaOrigin = (typeof STACK_EFFORT_IDEA_ORIGINS)[number]
 
@@ -66,8 +87,13 @@ export type StackEffortClaim = {
   label: string
   title: string
   required: boolean
+  lanes?: StackEffortRefLane[]
   needs_refs: StackEffortClaimNeedsRef[]
   needs_evidence: StackEffortClaimNeedsEvidence[]
+}
+
+export type StackEffortScope = {
+  capabilities: StackEffortLaunchCapability[]
 }
 
 export type StackEffortAcceptance = {
@@ -83,6 +109,7 @@ export type StackEffortManifest = {
   status: StackEffortStatus
   topic: string
   links: StackEffortLinks
+  scope: StackEffortScope
   refs: StackEffortRef[]
   claims: StackEffortClaim[]
   acceptance: StackEffortAcceptance
@@ -361,6 +388,7 @@ export type StackEffortRemainingWork = {
   state: "open" | "clear" | "untracked"
   summary: string
   open_acceptance: StackEffortRemainingAcceptance[]
+  out_of_scope: StackEffortRemainingAcceptance[]
   latest_blocker: StackEffortBlockerRecord | null
   next_actions: string[]
 }
@@ -537,6 +565,34 @@ export type RecordEffortReleaseArtifactResult = RecordEffortFindingResult & {
   publishBlockers: string[]
 }
 
+export type RecordEffortArtifactInput = EffortLookupInput & {
+  effortRef: string
+  slug: string
+  title: string
+  localUrl?: string
+  hostedUrl?: string
+  publicUrl?: string
+  hostedArtifactId?: string
+  artifactVersion?: string
+  sha256?: string
+  splitsCited?: string[]
+  body?: string
+  sourcePath?: string
+  filename?: string
+}
+
+export type RecordEffortArtifactResult = RecordEffortFindingResult & {
+  slug: string
+  title: string
+  localUrl?: string
+  hostedUrl?: string
+  publicUrl?: string
+  hostedArtifactId?: string
+  artifactVersion?: string
+  sha256?: string
+  splitsCited: string[]
+}
+
 export type RefreshEffortReceiptDigestsInput = EffortLookupInput & {
   effortRef: string
 }
@@ -711,6 +767,7 @@ const SINGULAR_REF_SYSTEMS = new Set(["factory", "hosted-effort", "project"])
 type EffortTemplateDefaults = {
   acceptanceCriteria: string[]
   claims: StackEffortClaim[]
+  scope: StackEffortScope
   researchLog: boolean
 }
 
@@ -799,6 +856,7 @@ export function createEffort(input: CreateEffortInput): StackEffort {
       repo_refs: [],
       initiative_id: "",
     },
+    scope: templateDefaults.scope,
     refs: [],
     claims: templateDefaults.claims,
     acceptance: {
@@ -992,14 +1050,28 @@ export function readEffortAcceptancePacket(effort: StackEffort): StackEffortAcce
 
 export function readEffortRemainingWork(effort: StackEffort): StackEffortRemainingWork {
   const acceptance = readEffortAcceptancePacket(effort)
-  const openAcceptance = acceptance?.levels
-    .filter((level) => level.state !== "recorded")
+  const scopeLanes = effortScopeLanes(effort.manifest)
+  const claimOutOfScope = (label: string): boolean => {
+    const claim = effortClaim(effort.manifest, label)
+    return claim ? !claimInScope(claim, scopeLanes) : false
+  }
+  const openLevels = acceptance?.levels.filter((level) => level.state !== "recorded") ?? []
+  const outOfScope = openLevels
+    .filter((level) => claimOutOfScope(level.label))
+    .map((level): StackEffortRemainingAcceptance => ({
+      label: level.label,
+      title: level.title,
+      status: "out_of_scope",
+      required_for_v1: level.required_for_v1,
+    }))
+  const openAcceptance = openLevels
+    .filter((level) => !claimOutOfScope(level.label))
     .map((level): StackEffortRemainingAcceptance => ({
       label: level.label,
       title: level.title,
       status: level.status,
       required_for_v1: level.required_for_v1,
-    })) ?? []
+    }))
   const blockers = readEffortOpenBlockerTail(effort, 1)
   const latestBlocker = blockers[blockers.length - 1] ?? null
   const nextActions = uniqueStrings([
@@ -1015,6 +1087,9 @@ export function readEffortRemainingWork(effort: StackEffort): StackEffortRemaini
   if (openAcceptance.length > 0) {
     summaryParts.push(`open acceptance ${openAcceptance.map((level) => level.label).join("/")}`)
   }
+  if (outOfScope.length > 0) {
+    summaryParts.push(`out of scope ${outOfScope.map((level) => level.label).join("/")}`)
+  }
   if (latestBlocker) {
     summaryParts.push(`latest blocker owner ${latestBlocker.owner || "unassigned"}`)
   }
@@ -1027,6 +1102,7 @@ export function readEffortRemainingWork(effort: StackEffort): StackEffortRemaini
     state,
     summary,
     open_acceptance: openAcceptance,
+    out_of_scope: outOfScope,
     latest_blocker: latestBlocker,
     next_actions: nextActions,
   }
@@ -2387,6 +2463,52 @@ export function recordEffortReleaseArtifact(input: RecordEffortReleaseArtifactIn
   }
 }
 
+export function recordEffortArtifact(input: RecordEffortArtifactInput): RecordEffortArtifactResult {
+  const slug = input.slug.trim()
+  const title = input.title.trim()
+  if (!slug || !title) throw new Error("artifact evidence requires slug and title")
+  const splitsCited = cleanStringList(input.splitsCited)
+  const result = recordEffortEvidence({
+    stackDataRoot: input.stackDataRoot,
+    workspaceRoot: input.workspaceRoot,
+    effortRef: input.effortRef,
+    sourceKind: "artifact.webpage",
+    findingKind: "result",
+    title: `Artifact page - ${title}`,
+    fields: {
+      slug,
+      title,
+      local_url: input.localUrl,
+      hosted_url: input.hostedUrl,
+      public_url: input.publicUrl,
+      hosted_artifact_id: input.hostedArtifactId,
+      artifact_version: input.artifactVersion,
+      sha256: input.sha256,
+    },
+    lists: {
+      splits_cited: splitsCited,
+    },
+    body: input.body,
+    sourcePath: input.sourcePath,
+    filename: input.filename ?? `${safeFileSegment(slug)}-artifact-page.tsx`,
+  })
+  return {
+    effort: result.effort,
+    path: result.path,
+    sourceReceiptPath: result.sourceReceiptPath,
+    ...(result.sourceReceipt ? { sourceReceipt: result.sourceReceipt } : {}),
+    slug,
+    title,
+    ...(result.fields.local_url ? { localUrl: result.fields.local_url } : {}),
+    ...(result.fields.hosted_url ? { hostedUrl: result.fields.hosted_url } : {}),
+    ...(result.fields.public_url ? { publicUrl: result.fields.public_url } : {}),
+    ...(result.fields.hosted_artifact_id ? { hostedArtifactId: result.fields.hosted_artifact_id } : {}),
+    ...(result.fields.artifact_version ? { artifactVersion: result.fields.artifact_version } : {}),
+    ...(result.fields.sha256 ? { sha256: result.fields.sha256 } : {}),
+    splitsCited,
+  }
+}
+
 export function recordEffortIdea(input: RecordEffortIdeaInput): { effort: StackEffort; path: string } {
   assertIdeaOrigin(input.origin)
   const effort = requireEffort(input, input.effortRef)
@@ -2494,6 +2616,7 @@ export function readEffortManifest(path: string): StackEffortManifest | undefine
       repo_refs: readStringArray(links.repo_refs),
       initiative_id: readString(links.initiative_id) ?? "",
     },
+    scope: readEffortScope(parsed.scope),
     refs: mergeEffortRefs([
       ...readEffortRefEntries(parsed.refs),
       ...legacyHostedBlockRefs(asRecord(parsed.hosted)),
@@ -2503,6 +2626,22 @@ export function readEffortManifest(path: string): StackEffortManifest | undefine
       criteria: readStringArray(acceptance.criteria),
     },
   }
+}
+
+export function readEffortScope(value: unknown): StackEffortScope {
+  if (value === undefined) return { capabilities: [...EFFORT_WIRED_LAUNCH_CAPABILITIES] }
+  const record = asRecord(value)
+  if (!Object.prototype.hasOwnProperty.call(record, "capabilities")) {
+    throw new Error(`config error: [scope] requires capabilities = [...]; omit [scope] for all wired capabilities`)
+  }
+  if (!Array.isArray(record.capabilities)) {
+    throw new Error(`config error: [scope].capabilities must be a non-empty list; valid capabilities: ${EFFORT_LAUNCH_CAPABILITIES.join(", ")}`)
+  }
+  const listed = readStringArray(record.capabilities)
+  if (listed.length === 0) {
+    throw new Error(`config error: [scope].capabilities cannot be empty; valid capabilities: ${EFFORT_LAUNCH_CAPABILITIES.join(", ")}`)
+  }
+  return { capabilities: listed.map(parseEffortLaunchCapability) }
 }
 
 export function readEffortRefEntries(value: unknown): StackEffortRef[] {
@@ -2530,15 +2669,22 @@ export function readEffortClaimEntries(value: unknown): StackEffortClaim[] {
       const record = asRecord(entry)
       const label = readString(record.label)?.trim()
       if (!label) return undefined
+      const lanes = readClaimLanes(record.lanes)
       return {
         label,
         title: readString(record.title)?.trim() ?? label,
         required: record.required === true,
+        ...(lanes.length > 0 ? { lanes } : {}),
         needs_refs: readClaimNeedsRefs(record.needs_refs),
         needs_evidence: readClaimNeedsEvidence(record.needs_evidence),
       }
     })
     .filter((claim): claim is StackEffortClaim => Boolean(claim))
+}
+
+function readClaimLanes(value: unknown): StackEffortRefLane[] {
+  const lanes = readStringArray(value)
+  return STACK_EFFORT_REF_LANES.filter((lane) => lanes.includes(lane))
 }
 
 function readClaimNeedsRefs(value: unknown): StackEffortClaimNeedsRef[] {
@@ -2605,7 +2751,7 @@ function legacyHostedBlockRefs(hosted: Record<string, unknown>): StackEffortRef[
 function mergeEffortRefs(refs: StackEffortRef[]): StackEffortRef[] {
   const seen = new Map<string, StackEffortRef>()
   for (const ref of refs) {
-    const key = `${ref.system} ${ref.id}`
+    const key = `${ref.system}${ref.id}`
     const existing = seen.get(key)
     if (!existing) {
       seen.set(key, ref)
@@ -2630,6 +2776,81 @@ export function effortRefIds(manifest: StackEffortManifest, system: string, lane
 export function effortClaim(manifest: StackEffortManifest, label: string): StackEffortClaim | undefined {
   const normalized = label.trim().toUpperCase()
   return manifest.claims.find((claim) => claim.label.toUpperCase() === normalized)
+}
+
+export function parseEffortLaunchCapability(value: string): StackEffortLaunchCapability {
+  const cleaned = value.trim()
+  const capability = EFFORT_LAUNCH_CAPABILITIES.find((candidate) => candidate === cleaned)
+  if (!capability) {
+    throw new Error(`config error: unknown launch capability "${cleaned}"; valid capabilities: ${EFFORT_LAUNCH_CAPABILITIES.join(", ")}`)
+  }
+  return capability
+}
+
+export function effortScopeCapabilities(manifest: StackEffortManifest): StackEffortLaunchCapability[] {
+  return manifest.scope.capabilities
+}
+
+export function effortScopeLanes(manifest: StackEffortManifest): StackEffortRefLane[] {
+  return STACK_EFFORT_REF_LANES.filter((lane) =>
+    manifest.scope.capabilities.some((capability) => capability.endsWith(`.${lane}`))
+  )
+}
+
+export function claimInScope(claim: StackEffortClaim, scopeLanes: StackEffortRefLane[]): boolean {
+  if (!claim.lanes || claim.lanes.length === 0) return true
+  return claim.lanes.some((lane) => scopeLanes.includes(lane))
+}
+
+export function assertCapabilityInScope(effort: StackEffort, capability: StackEffortLaunchCapability): void {
+  if (effort.manifest.scope.capabilities.includes(capability)) return
+  throw new Error(
+    `config error: launch capability "${capability}" is out of scope for effort ${effort.manifest.slug} (scope: ${effort.manifest.scope.capabilities.join(", ")}); widen it with \`stack effort scope ${effort.manifest.slug} --capabilities <list>\``,
+  )
+}
+
+export function updateEffortScope(input: EffortLookupInput & { effortRef: string; capabilities: string[] }): StackEffort {
+  const requested = uniqueStrings(input.capabilities.map((value) => value.trim()).filter(Boolean))
+  if (requested.length === 0) {
+    throw new Error(`config error: effort scope requires at least one capability; valid capabilities: ${EFFORT_LAUNCH_CAPABILITIES.join(", ")}`)
+  }
+  const capabilities = requested.map(parseEffortLaunchCapability)
+  const effort = requireEffort(input, input.effortRef)
+  const previous = effort.manifest.scope.capabilities
+  effort.manifest.scope = { capabilities }
+  appendEffortProgressLine(effort.folder_path, `Scope set to ${capabilities.join(", ")}.`)
+  appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.scope_updated", `Scope set to ${capabilities.join(", ")}.`, {
+    previous_capabilities: previous,
+    capabilities,
+    lanes: effortScopeLanes(effort.manifest),
+  })
+  return persistEffort(input, effort)
+}
+
+export type RecordEffortLaunchInput = EffortLookupInput & {
+  effortRef: string
+  capability: StackEffortLaunchCapability
+  kind: string
+  lane: StackEffortRefLane
+  system: string
+  id: string
+}
+
+export function recordEffortLaunch(input: RecordEffortLaunchInput): StackEffort {
+  const effort = updateEffortRefs({
+    stackDataRoot: input.stackDataRoot,
+    workspaceRoot: input.workspaceRoot,
+    effortRef: input.effortRef,
+    refs: [{ system: input.system, id: input.id, lane: input.lane, role: "launch" }],
+  })
+  appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.launch_recorded", `Launched ${input.kind} via ${input.capability}: ${input.system}=${input.id} (lane ${input.lane}).`, {
+    kind: input.kind,
+    lane: input.lane,
+    capability: input.capability,
+    system: input.system,
+    id: input.id,
+  })
+  return effort
 }
 
 function requireEffort(input: EffortLookupInput, effortRef: string): StackEffort {
@@ -2708,6 +2929,9 @@ function effortManifestToml(manifest: StackEffortManifest): string {
     `repo_refs = ${tomlArray(manifest.links.repo_refs)}`,
     `initiative_id = ${tomlString(manifest.links.initiative_id)}`,
     "",
+    "[scope]",
+    `capabilities = ${tomlArray(manifest.scope.capabilities)}`,
+    "",
     ...manifest.refs.flatMap((ref) => [
       "[[refs]]",
       `system = ${tomlString(ref.system)}`,
@@ -2721,6 +2945,7 @@ function effortManifestToml(manifest: StackEffortManifest): string {
       `label = ${tomlString(claim.label)}`,
       `title = ${tomlString(claim.title)}`,
       `required = ${claim.required}`,
+      ...(claim.lanes && claim.lanes.length > 0 ? [`lanes = ${tomlArray(claim.lanes)}`] : []),
       `needs_refs = [${claim.needs_refs.map(claimNeedsRefToml).join(", ")}]`,
       `needs_evidence = [${claim.needs_evidence.map(claimNeedsEvidenceToml).join(", ")}]`,
       "",
@@ -2759,6 +2984,7 @@ function registryToManifest(record: StackEffortRegistryRecord): StackEffortManif
       repo_refs: [],
       initiative_id: "",
     },
+    scope: { capabilities: [...EFFORT_WIRED_LAUNCH_CAPABILITIES] },
     refs: normalizeRegistryRefs(record),
     claims: [],
     acceptance: { criteria: [] },
@@ -2827,17 +3053,19 @@ function copyTemplateTree(source: string, dest: string): void {
 
 function readEffortTemplateDefaults(templateDir: string): EffortTemplateDefaults {
   const path = join(templateDir, "template.toml")
-  if (!existsSync(path)) return { acceptanceCriteria: [], claims: [], researchLog: false }
+  const defaultScope = (): StackEffortScope => ({ capabilities: [...EFFORT_WIRED_LAUNCH_CAPABILITIES] })
+  if (!existsSync(path)) return { acceptanceCriteria: [], claims: [], scope: defaultScope(), researchLog: false }
   try {
     const parsed = Bun.TOML.parse(readFileSync(path, "utf8")) as Record<string, unknown>
     const acceptance = asRecord(parsed.acceptance)
     return {
       acceptanceCriteria: readStringArray(acceptance.criteria),
       claims: readEffortClaimEntries(parsed.claims),
+      scope: readEffortScope(parsed.scope),
       researchLog: asRecord(parsed.effort_template).research_log === true,
     }
   } catch {
-    return { acceptanceCriteria: [], claims: [], researchLog: false }
+    return { acceptanceCriteria: [], claims: [], scope: defaultScope(), researchLog: false }
   }
 }
 
@@ -3477,6 +3705,9 @@ function effortHandoffRemainingWorkLines(remaining: StackEffortRemainingWork): s
     const required = level.required_for_v1 ? " required-v1" : ""
     lines.push(`- Acceptance ${level.label}:${required} ${level.title} - ${level.status}`)
   }
+  for (const level of remaining.out_of_scope) {
+    lines.push(`- Acceptance ${level.label}: ${level.title} - out_of_scope`)
+  }
   if (remaining.latest_blocker) {
     lines.push(`- Latest blocker: ${remaining.latest_blocker.blocker}`)
     lines.push(`- Blocker owner: ${remaining.latest_blocker.owner}`)
@@ -3929,11 +4160,18 @@ function effortEvidenceAudit(effort: StackEffort): { ok: boolean; evidence: stri
 
 function effortClaimsAudit(effort: StackEffort): { status: StackEffortAuditStatus; evidence: string[] } {
   const packet = readEffortAcceptancePacket(effort)
+  const scopeLanes = effortScopeLanes(effort.manifest)
   const evidence: string[] = []
   let failed = 0
   let open = 0
   let openRequired = 0
+  let outOfScope = 0
   for (const claim of effort.manifest.claims) {
+    if (!claimInScope(claim, scopeLanes)) {
+      outOfScope += 1
+      evidence.push(`${claim.label} state=out_of_scope required=${claim.required} (claim lanes: ${(claim.lanes ?? []).join("/")}; scope lanes: ${scopeLanes.join("/") || "none"})`)
+      continue
+    }
     const state = packet?.levels.find((level) => level.label === claim.label)?.state ?? "missing"
     const evaluation = evaluateEffortClaim(effort, claim)
     evidence.push(`${claim.label} state=${state} required=${claim.required} requirements_met=${evaluation.ok}`)
@@ -3947,7 +4185,7 @@ function effortClaimsAudit(effort: StackEffort): { status: StackEffortAuditStatu
   }
   return {
     status: failed > 0 ? "fail" : openRequired > 0 ? "warn" : "pass",
-    evidence: [`claims=${effort.manifest.claims.length}`, `recorded_unmet=${failed}`, `open_required_unmet=${openRequired}`, `open_optional_unmet=${open}`, ...evidence],
+    evidence: [`claims=${effort.manifest.claims.length}`, `recorded_unmet=${failed}`, `open_required_unmet=${openRequired}`, `open_optional_unmet=${open}`, `out_of_scope=${outOfScope}`, ...evidence],
   }
 }
 
@@ -4080,6 +4318,7 @@ function assertAcceptanceUpdateAllowed(
   if (input.state !== "recorded") return
   const claim = effortClaim(effort.manifest, input.level)
   if (!claim || (claim.needs_refs.length === 0 && claim.needs_evidence.length === 0)) return
+  if (!claimInScope(claim, effortScopeLanes(effort.manifest))) return
   const evaluation = evaluateEffortClaim(effort, claim)
   if (evaluation.ok) return
   throw new Error(`recorded ${claim.label} acceptance requires the declared claim evidence; missing: ${evaluation.missing.join("; ")}`)

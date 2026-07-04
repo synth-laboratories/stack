@@ -43,7 +43,7 @@ import {
 import { stackTuiLayout } from "./layout.js"
 import { stackTuiTheme as theme } from "./theme.js"
 import { randomUUID } from "node:crypto"
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync as nodeReadFileSync, statSync as nodeStatSync, writeFileSync, type Stats } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, relative, resolve, join } from "node:path"
 import {
@@ -97,7 +97,8 @@ import {
   readMetaThreadManifest,
   reconcileMetaThreadGoalFromCodex,
 } from "../meta-thread-goal.js"
-import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, readEffortBenchmarkSummaries, readEffortOpenBlockerTail, readEffortOptimizerCandidateSummaries, readEffortRemainingWork, readEffortRunEvidenceSummaries, updateEffortStatus, writeEffortHandoff, type StackEffortSummary } from "../effort.js"
+import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, readEffortBenchmarkSummaries, readEffortOpenBlockerTail, readEffortOptimizerCandidateSummaries, readEffortRemainingWork, readEffortRunEvidenceSummaries, updateEffortStatus, writeEffortHandoff, type StackEffortBenchmarkSummary, type StackEffortOptimizerCandidateSummary, type StackEffortRunEvidenceSummary, type StackEffortSummary } from "../effort.js"
+import { readLatestArtifacts, type StackArtifactManifestEntry } from "../artifacts.js"
 import { stackdUpdateMetaThreadEffortRef, type StackdMetaSidePanel, type StackdMetaStatus, type StackdMetaThreadManifest } from "../client/stackd.js"
 import {
   formatCodexBudgetSuffix,
@@ -446,6 +447,31 @@ import {
   type UsageSlashView,
 } from "./slash-commands.js"
 import { runGoalSlashCommand, runGoalPanelAction, refreshGoalPanelState } from "./goal-slash-dispatch.js"
+
+function readFileSync(path: string, encoding: BufferEncoding): string {
+  return retryEintr(() => nodeReadFileSync(path, encoding))
+}
+
+function statSync(path: string): Stats {
+  return retryEintr(() => nodeStatSync(path))
+}
+
+function retryEintr<T>(operation: () => T): T {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return operation()
+    } catch (error) {
+      if (!isEintrError(error)) throw error
+      lastError = error
+    }
+  }
+  throw lastError
+}
+
+function isEintrError(error: unknown): boolean {
+  return typeof error === "object" && error !== null && (error as { code?: unknown }).code === "EINTR"
+}
 import { buildGoalWorkerKickoffPrompt, goalKickoffTranscriptLabel, harnessGoalPayloadFromManifest } from "../harness/goal-notify.js"
 import { navigateGoalPanelSelection, openGoalPanel, renderGoalPanel } from "./goal-panel.js"
 import {
@@ -2055,6 +2081,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
+    if (key.ctrl && key.name === "]" && !focusedInputEditing(state)) {
+      void openLatestLocalArtifact(options, state, remount)
+      return
+    }
+
     if (state.focusMode === "agent" && !focusedInputEditing(state) && (key.name === "]" || key.name === "[")) {
       void cycleStackEnvironmentFromUi(key.name === "]" ? 1 : -1)
       return
@@ -2902,7 +2933,7 @@ function createView(
                         padding: stackTuiLayout.panelPadding,
                       },
                       Text({
-                        content: renderEffortsPanelStyled(options, state, rightColumns, projectsRows),
+                        content: renderEffortsPanelStyled(options, state, rightColumns, lightsRows),
                         fg: theme.fgPrimary,
                       }),
                     ),
@@ -10729,8 +10760,41 @@ function agentStatsSuffix(options: StackAppOptions, state: AppState): string | u
   return text === "after first turn" ? undefined : text
 }
 
-function footerHint(_config: StackConfig, state: AppState, _sessionId: string): string {
+function latestLocalArtifact(config: StackConfig): StackArtifactManifestEntry | undefined {
+  try {
+    return readLatestArtifacts(config)[0]
+  } catch {
+    return undefined
+  }
+}
+
+function artifactDisplayUrl(artifact: StackArtifactManifestEntry): string {
+  return artifact.public_url ?? artifact.hosted_url ?? artifact.local_url
+}
+
+async function openLatestLocalArtifact(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  const artifact = latestLocalArtifact(options.config)
+  if (!artifact) {
+    appendStackBlock(state.blocks, "no local artifact page yet")
+    refresh()
+    return
+  }
+  const url = artifactDisplayUrl(artifact)
+  const result = await openUrlInSystemBrowser(url)
+  appendStackBlock(state.blocks, result.ok ? `opened artifact ${artifact.slug}: ${url}` : `artifact open failed: ${result.message}`)
+  refresh()
+}
+
+function footerHint(config: StackConfig, state: AppState, _sessionId: string): string {
   const parts: string[] = []
+  const artifact = latestLocalArtifact(config)
+  if (artifact) {
+    parts.push(`artifact Ctrl+] ${artifactDisplayUrl(artifact)}`)
+  }
   if (permissionsNeedsReminder(state.telemetryStatus?.tiers)) {
     parts.push("/permissions review telemetry")
   }
@@ -11180,8 +11244,8 @@ function renderEffortsPanelStyled(options: StackAppOptions, state: AppState, col
   if (efforts.length === 0) {
     lines.push({ text: "No Efforts yet.", color: theme.fgMuted })
   } else {
-    pushEffortSectionLines(lines, "Active", active, columns, options.config.workspaceRoot, options.config.stackDataRoot, selected?.id)
-    pushEffortSectionLines(lines, "Archived", archived, columns, options.config.workspaceRoot, options.config.stackDataRoot, selected?.id)
+    pushEffortSectionLines(lines, "Active", active, columns, options.config, selected?.id)
+    pushEffortSectionLines(lines, "Archived", archived, columns, options.config, selected?.id)
   }
 
   const rendered = lines.slice(0, Math.max(1, visibleRows))
@@ -11227,11 +11291,11 @@ function pushEffortSectionLines(
   title: string,
   efforts: StackEffortSummary[],
   columns: number,
-  workspaceRoot: string,
-  stackDataRoot: string,
+  config: StackConfig,
   selectedEffortId?: string,
 ): void {
   if (efforts.length === 0) return
+  const { workspaceRoot, stackDataRoot } = config
   if (lines.length > 2) lines.push({ text: "", color: theme.fgPrimary })
   lines.push({ text: `${title} (${efforts.length})`, color: theme.fgSecondary })
   for (const effort of efforts) {
@@ -11258,6 +11322,13 @@ function pushEffortSectionLines(
       lines.push({
         text: oneLine(`  artifacts - ${artifacts}`, columns),
         color: theme.fgMuted,
+      })
+    }
+    const artifactPage = latestArtifactForEffort(config, effort)
+    if (artifactPage) {
+      lines.push({
+        text: oneLine(`  artifact page - ${artifactPage.slug} - ${artifactDisplayUrl(artifactPage)}`, columns),
+        color: theme.fgSecondary,
       })
     }
     const audit = effortAuditLine(effort, workspaceRoot, stackDataRoot)
@@ -11330,6 +11401,21 @@ function pushEffortSectionLines(
         color: theme.fgSecondary,
       })
     }
+    if (selected) {
+      const detailLines = effortEvidenceDetailLines(effort, workspaceRoot, stackDataRoot)
+      if (detailLines.length > 0) {
+        lines.push({
+          text: oneLine("  evidence detail", columns),
+          color: theme.synth.amber,
+        })
+        for (const detail of detailLines) {
+          lines.push({
+            text: oneLine(`    ${detail}`, columns),
+            color: theme.fgSecondary,
+          })
+        }
+      }
+    }
     const remaining = effortRemainingWorkLine(effort, workspaceRoot, stackDataRoot)
     if (remaining) {
       lines.push({
@@ -11349,6 +11435,75 @@ function pushEffortSectionLines(
       color: theme.fgMuted,
     })
   }
+}
+
+function latestArtifactForEffort(config: StackConfig, effort: StackEffortSummary): StackArtifactManifestEntry | undefined {
+  try {
+    return readLatestArtifacts(config).find((artifact) => artifact.effort === effort.id || artifact.effort === effort.slug)
+  } catch {
+    return undefined
+  }
+}
+
+function effortEvidenceDetailLines(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string[] {
+  try {
+    const current = readEffort({ workspaceRoot, stackDataRoot }, effort.id)
+    if (!current) return []
+    const lines: string[] = []
+    for (const candidate of readEffortOptimizerCandidateSummaries(current, 3).slice().reverse()) {
+      lines.push(`cand - ${formatEffortCandidateDetail(candidate)}`)
+    }
+    for (const evidence of readEffortRunEvidenceSummaries(current, 3).slice().reverse()) {
+      lines.push(`run - ${formatEffortRunEvidenceDetail(evidence)}`)
+    }
+    for (const benchmark of readEffortBenchmarkSummaries(current, 3).slice().reverse()) {
+      lines.push(`bench - ${formatEffortBenchmarkDetail(benchmark)}`)
+    }
+    return lines.slice(0, 8)
+  } catch {
+    return []
+  }
+}
+
+function formatEffortCandidateDetail(candidate: StackEffortOptimizerCandidateSummary): string {
+  const parts = [
+    candidate.path ? `file ${effortEvidenceFileRef(candidate.path)}` : "",
+    candidate.score ? `${candidate.score_label || "score"} ${candidate.score}` : "",
+    candidate.split ?? "",
+    candidate.source_receipt_path ? `receipt ${effortEvidenceFileRef(candidate.source_receipt_path)}` : "",
+    candidate.candidate_id,
+    `run ${candidate.optimizer_run_id}`,
+  ].filter(Boolean)
+  return parts.join(" - ")
+}
+
+function formatEffortRunEvidenceDetail(evidence: StackEffortRunEvidenceSummary): string {
+  const parts = [
+    evidence.path ? `file ${effortEvidenceFileRef(evidence.path)}` : "",
+    evidence.metric ?? "",
+    evidence.source_receipt_path ? `receipt ${effortEvidenceFileRef(evidence.source_receipt_path)}` : "",
+    evidence.run_kind,
+    `run ${evidence.run_id}`,
+    evidence.acceptance_level ?? "",
+  ].filter(Boolean)
+  return parts.join(" - ")
+}
+
+function formatEffortBenchmarkDetail(benchmark: StackEffortBenchmarkSummary): string {
+  const id = benchmark.benchmark_id ? `${benchmark.benchmark_id} - ` : ""
+  const version = benchmark.version ? ` - ${benchmark.version}` : ""
+  const metrics = benchmark.metrics.length > 0 ? ` - metrics ${benchmark.metrics.join(", ")}` : ""
+  const file = benchmark.path ? `file ${effortEvidenceFileRef(benchmark.path)} - ` : ""
+  const receipt = benchmark.source_receipt_path ? ` - receipt ${effortEvidenceFileRef(benchmark.source_receipt_path)}` : ""
+  return `${file}${id}${benchmark.name}${version}${metrics}${receipt}`
+}
+
+function effortEvidenceFileRef(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean)
+  if (parts.length === 0) return path
+  const file = parts[parts.length - 1] ?? path
+  const dir = parts.slice(Math.max(0, parts.length - 3), -1).join("/")
+  return dir ? `${file} @ ${dir}` : file
 }
 
 function effortAgeLabel(effort: StackEffortSummary): string {
@@ -11551,9 +11706,9 @@ function effortOptimizerCandidateLine(effort: StackEffortSummary, workspaceRoot:
     const candidate = candidates[candidates.length - 1]
     if (!candidate) return ""
     const parts = [
-      candidate.candidate_id,
       candidate.score ? `${candidate.score_label || "score"} ${candidate.score}` : "",
       candidate.split ?? "",
+      candidate.candidate_id,
       `run ${candidate.optimizer_run_id}`,
       `updated ${lightsThreadRelativeAge(candidate.observed_at)} ago`,
     ].filter(Boolean)
@@ -11570,9 +11725,9 @@ function effortRunEvidenceLine(effort: StackEffortSummary, workspaceRoot: string
     const records = readEffortRunEvidenceSummaries(current, 1)
     const evidence = records[records.length - 1]
     if (!evidence) return ""
-    const metric = evidence.metric ? ` - ${evidence.metric}` : ""
+    const metric = evidence.metric ? `${evidence.metric} - ` : ""
     const level = evidence.acceptance_level ? ` - ${evidence.acceptance_level}` : ""
-    return `${evidence.run_kind} - run ${evidence.run_id}${metric}${level} - updated ${lightsThreadRelativeAge(evidence.observed_at)} ago`
+    return `${metric}${evidence.run_kind} - run ${evidence.run_id}${level} - updated ${lightsThreadRelativeAge(evidence.observed_at)} ago`
   } catch {
     return ""
   }
