@@ -1,7 +1,11 @@
 import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import type { StackConfig } from "./config.js"
-import { stackdUpdateMetaThreadEffortRef, type StackdMetaThreadManifest } from "./client/stackd.js"
+import {
+  stackdMissingEffortRefRouteMessage,
+  stackdUpdateMetaThreadEffortRef,
+  type StackdMetaThreadManifest,
+} from "./client/stackd.js"
 import { formatTokenTotal, sessionTokenTotal } from "./codex/usage-cost.js"
 import {
   appendEffortProgress,
@@ -134,11 +138,19 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       if (!ref || !metaThreadId) return usageError("usage: stack effort bind <effort> <meta-thread-id>")
       const current = readEffort(config, ref)
       if (!current) return notFound(ref)
-      await stackdUpdateMetaThreadEffortRef(metaThreadId, {
-        effort_ref: current.manifest.id,
-        actor_id: "operator",
-        reason: readFlagString(parsed, "reason") ?? "stack effort bind",
-      })
+      try {
+        await stackdUpdateMetaThreadEffortRef(metaThreadId, {
+          effort_ref: current.manifest.id,
+          actor_id: "operator",
+          reason: readFlagString(parsed, "reason") ?? "stack effort bind",
+        })
+      } catch (error) {
+        const routeMessage = stackdMissingEffortRefRouteMessage(error)
+        if (routeMessage) {
+          throw new Error(`${routeMessage}; Effort reverse index was not updated`)
+        }
+        throw error
+      }
       const effort = bindEffortMetaThread({ ...config, effortRef: ref, metaThreadId })
       await printEffort(config, effort, json)
       return 0

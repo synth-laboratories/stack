@@ -76,6 +76,7 @@ import {
   stackdExport,
   stackdBindMetaThreadRemoteSmrRun,
   stackdCreateMetaThread,
+  stackdMissingEffortRefRouteMessage,
   stackdMetaThread,
   stackdMetaThreads,
   stackdRuntimeAppendEvent,
@@ -91,6 +92,7 @@ import {
   stackdUpdateMetaThreadLifecycle,
   stackdUpdateMetaThreadTitle,
   type StackdFactorySnapshot,
+  type StackdMetaThreadManifest,
   type StackdMetaThreadLifecycleStatus,
   type StackdRuntimeEventAppendRequest,
   type StackdRuntimeFactoryResponse,
@@ -714,6 +716,27 @@ export class StackMcpServer {
     return effort
   }
 
+  private async ensureMetaThreadEffortRef(
+    effortId: string,
+    metaThreadId: string,
+    manifest?: StackdMetaThreadManifest,
+  ): Promise<StackdMetaThreadManifest> {
+    if (manifest?.effort_ref === effortId) return manifest
+    try {
+      return await stackdUpdateMetaThreadEffortRef(metaThreadId, {
+        effort_ref: effortId,
+        actor_id: "operator",
+        reason: "bind Stack Effort to meta-thread",
+      })
+    } catch (error) {
+      const routeMessage = stackdMissingEffortRefRouteMessage(error)
+      if (routeMessage) {
+        throw new RpcError(-32000, `${routeMessage}; Effort reverse index was not updated`)
+      }
+      throw error
+    }
+  }
+
   private async bindCreatedThreadToEffort(config: StackConfig, effortRef: string, metaThreadId: string): Promise<Record<string, unknown>> {
     const effort = bindStackEffortMetaThread({
       stackDataRoot: config.stackDataRoot,
@@ -802,11 +825,20 @@ export class StackMcpServer {
       workspaceRoot: config.workspaceRoot,
     }, effortRef)
     if (!current) throw new RpcError(-32602, `effort not found: ${effortRef}`)
-    const manifest = await stackdUpdateMetaThreadEffortRef(metaThreadId, {
-      effort_ref: current.manifest.id,
-      reason,
-      actor_id: actorId,
-    })
+    let manifest: StackdMetaThreadManifest
+    try {
+      manifest = await stackdUpdateMetaThreadEffortRef(metaThreadId, {
+        effort_ref: current.manifest.id,
+        reason,
+        actor_id: actorId,
+      })
+    } catch (error) {
+      const routeMessage = stackdMissingEffortRefRouteMessage(error)
+      if (routeMessage) {
+        throw new RpcError(-32000, `${routeMessage}; Effort reverse index was not updated`)
+      }
+      throw error
+    }
     const effort = bindStackEffortMetaThread({
       stackDataRoot: config.stackDataRoot,
       workspaceRoot: config.workspaceRoot,
@@ -1104,19 +1136,22 @@ export class StackMcpServer {
           }
         : undefined,
     })
+    const boundManifest = effort
+      ? await this.ensureMetaThreadEffortRef(effort.manifest.id, manifest.id, manifest)
+      : manifest
     const effortBinding = effort
-      ? await this.bindCreatedThreadToEffort(config, effort.manifest.id, manifest.id)
+      ? await this.bindCreatedThreadToEffort(config, effort.manifest.id, boundManifest.id)
       : null
     return toJsonValue({
       ok: true,
-      meta_thread_id: manifest.id,
-      thread_id: manifest.head_thread_id,
-      segment_id: manifest.head_segment_id,
-      lifecycle_status: manifest.lifecycle_status ?? "live",
-      active_goal: manifest.active_goal ?? null,
-      effort_ref: manifest.effort_ref ?? null,
+      meta_thread_id: boundManifest.id,
+      thread_id: boundManifest.head_thread_id,
+      segment_id: boundManifest.head_segment_id,
+      lifecycle_status: boundManifest.lifecycle_status ?? "live",
+      active_goal: boundManifest.active_goal ?? null,
+      effort_ref: boundManifest.effort_ref ?? null,
       effort: effortBinding,
-      manifest,
+      manifest: boundManifest,
       receipt: "lever.stack_mcp meta_thread.created",
     }) ?? null
   }
@@ -1166,21 +1201,24 @@ export class StackMcpServer {
           }
         : undefined,
     })
+    const boundManifest = effort
+      ? await this.ensureMetaThreadEffortRef(effort.manifest.id, manifest.id, manifest)
+      : manifest
     const effortBinding = effort
-      ? await this.bindCreatedThreadToEffort(config, effort.manifest.id, manifest.id)
+      ? await this.bindCreatedThreadToEffort(config, effort.manifest.id, boundManifest.id)
       : null
     return toJsonValue({
       ok: true,
       thread_id: session.id,
       session_path: sessionPath,
-      meta_thread_id: manifest.id,
-      segment_id: manifest.head_segment_id,
-      lifecycle_status: manifest.lifecycle_status ?? "live",
-      active_goal: manifest.active_goal ?? null,
+      meta_thread_id: boundManifest.id,
+      segment_id: boundManifest.head_segment_id,
+      lifecycle_status: boundManifest.lifecycle_status ?? "live",
+      active_goal: boundManifest.active_goal ?? null,
       appears_in_threads: true,
-      effort_ref: manifest.effort_ref ?? null,
+      effort_ref: boundManifest.effort_ref ?? null,
       effort: effortBinding,
-      manifest,
+      manifest: boundManifest,
       receipt: "lever.stack_mcp worker_thread.created",
     }) ?? null
   }

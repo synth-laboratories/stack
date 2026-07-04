@@ -18,6 +18,28 @@ export type StackdHealth = {
   session_log_dir: string
 }
 
+export class StackdHttpError extends Error {
+  constructor(
+    message: string,
+    readonly baseUrl: string,
+    readonly path: string,
+    readonly status: number,
+    readonly body: string,
+  ) {
+    super(message)
+    this.name = "StackdHttpError"
+  }
+}
+
+export function stackdMissingEffortRefRouteMessage(error: unknown): string | undefined {
+  if (!(error instanceof StackdHttpError)) return undefined
+  if (error.status !== 404 || !error.path.includes("/effort-ref") || error.body.trim()) return undefined
+  return [
+    `running stackd at ${error.baseUrl} does not expose PATCH /meta-threads/:id/effort-ref`,
+    "restart stackd from this Stack build, then retry the Effort thread binding",
+  ].join("; ")
+}
+
 export type StackdThreadSummary = {
   id: string
   path: string
@@ -1125,7 +1147,7 @@ async function requestJson<T>(baseUrl: string, path: string, init?: RequestInit)
   const response = await fetch(new URL(path, ensureTrailingSlash(baseUrl)), init)
   if (!response.ok) {
     const body = await response.text().catch(() => "")
-    throw new Error(`stackd ${path} failed with ${response.status}: ${body}`)
+    throw new StackdHttpError(`stackd ${path} failed with ${response.status}: ${body}`, baseUrl, path, response.status, body)
   }
   return (await response.json()) as T
 }
