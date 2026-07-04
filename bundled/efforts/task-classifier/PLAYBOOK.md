@@ -69,21 +69,41 @@ Record hosted optimizer, SMR, Factory, Project, or Tinker refs through
 Refs alone do not satisfy A2-A4. A hosted graduation claim also needs artifact
 evidence under `findings/proof/`, the config or recipe under `findings/code/`,
 and a research-log entry that names the run id, environment, result, and caveats.
+The template declares these as claims in `effort.toml`: A2 needs a hosted
+optimizer ref plus an `optimizer.candidate` proof, A3 needs an `smr` ref plus a
+`run.smr` proof, and A4 needs a `tinker` ref plus a `run.tinker` proof.
+Recorded acceptance writes are rejected until the claim's declared
+requirements are satisfied. Use `pending` until those artifacts exist.
 When evidence starts as a hosted optimizer artifact or saved SMR/WorkProduct
-download, pull it with `stack_pull_artifact` and attach the returned receipt
-with `stack effort finding --receipt-path <receipt>` or
-`stack_effort_record_finding receipt_path=<receipt>`. For local/ad-hoc
-evidence, use `stack effort finding --path <file-or-directory>` or
-`stack_effort_record_finding path=<file-or-directory>`; Stack writes the
-Effort-local source receipt sidecar directly.
+download, pull it with `stack_pull_artifact` and attach the returned receipt.
+Use `stack effort optimizer-candidate --receipt-path <receipt>` for A1/A2
+candidate score artifacts and `stack effort run-evidence --run-kind <system>
+--acceptance-level <claim> --receipt-path <receipt>` for run proof (for
+example `--run-kind smr --acceptance-level A3` or `--run-kind tinker
+--acceptance-level A4`). For local/ad-hoc
+evidence, use the same commands with `--path <file-or-directory>`, or fall back
+to `stack effort finding --path <file-or-directory>` /
+`stack_effort_record_finding path=<file-or-directory>` when no richer adapter
+fits. Stack writes the Effort-local source receipt sidecar directly.
 
 ## Artifact Routing
 
-- Save visible/train examples, heldout examples, traces, and splits under `findings/data/`.
+- Save benchmark intakes, visible/train examples, heldout examples, traces, and splits under `findings/data/`.
+- Record benchmark metadata with `stack effort benchmark` /
+  `stack_effort_record_benchmark` so source, license, task shape, splits,
+  metrics, and metadata receipts survive handoff.
 - Save candidate prompts, model configs, hosted GEPA configs, Tinker configs,
   and harness recipes under `findings/code/`.
 - Save scorecards, receipts, hosted artifact downloads/previews, SMR
   WorkProduct receipts, and heldout evidence under `findings/proof/`.
+- Record SMR harness and Tinker/training proof with
+  `stack effort run-evidence` / `stack_effort_record_run_evidence` so run ids,
+  project/output ids, metrics, acceptance lanes, and source receipts survive
+  handoff scans.
+- Record Stack release or nightly artifact proofs with
+  `stack effort release-artifact` / `stack_effort_record_release_artifact` so
+  version, target, sha256, size, publishable state, and manifest decisions
+  survive handoff scans.
 - Prefer pulled-artifact receipts for hosted/saved/local evidence that should
   be traceable across local and hosted lanes; keep the generated `.receipt.json`
   sidecar with the finding.

@@ -153,8 +153,10 @@ stack effort create banking77-top-score --template task-classifier
 stack effort templates
 stack effort list
 stack effort show banking77-top-score
+stack effort remaining banking77-top-score
 stack effort audit banking77-top-score
 stack effort activity banking77-top-score --limit 20
+stack effort refresh-receipts banking77-top-score
 stack effort bind banking77-top-score <meta-thread-id>
 stack effort progress banking77-top-score "Baseline and split protocol recorded"
 stack effort blocker banking77-top-score --blocker "Hosted graduation path not selected" --evidence "A0/A1 recorded; A2-A4 are optional graduation proofs" --owner operator --next "Choose hosted GEPA, SMR harness, or Tinker proof if stronger evidence is needed"
@@ -170,7 +172,8 @@ stack effort finding banking77-top-score "Local GEPA scorecard" --kind proof --p
 stack effort finding banking77-top-score "Pulled hosted scorecard" --kind proof --receipt-path .stack/evidence/roundtrip/<receipt>.json
 stack effort capture banking77-top-score "Terminal heldout receipt" --capture-kind terminal --kind proof --path findings/proof/local-gepa/heldout-score.txt
 stack effort optimizer-candidate banking77-top-score --optimizer-run-id <run-id> --candidate-id <candidate-id> --score <score> --score-label "heldout accuracy" --split heldout --path findings/proof/local-gepa/<candidate-file>
-stack effort refs banking77-top-score --optimizer-run-id <run-id> --smr-run-id <run-id> --tinker-run-id <run-id>
+stack effort refs banking77-top-score --system optimizer --id <run-id> --lane hosted
+stack effort refs banking77-top-score --smr-run-id <run-id> --lane hosted
 stack effort status banking77-top-score active
 stack effort archive banking77-top-score
 ```
@@ -183,15 +186,30 @@ present, and small progress/activity/blocker tails. Use `stack effort activity
 <effort> --limit <n>` for a dedicated human-readable or JSON activity timeline
 from `ACTIVITY.jsonl`.
 
+`stack effort remaining <effort>` is the direct "what remains?" view. It prints
+the parsed acceptance summary, open acceptance levels, latest unresolved blocker,
+next safe actions, and key handoff/acceptance paths. Use it before resuming an
+Effort, refreshing a handoff, or deciding whether a proof lane is ready to
+record.
+
 `stack effort audit <effort>` is the read-only coherence check for handoff and
 acceptance review. It reports `pass`, `warn`, or `fail` checks for scaffold
 files, manifest/registry agreement, research-log shape, progress and activity
 timelines, structured blocker receipts, human context, idea origin tags,
 promoted idea backlinks, promoted findings, generated handoff sections,
-acceptance summary presence, acceptance criteria coverage, task-classifier
-A0/A1 v1-bar evidence, optional hosted/SMR/Tinker graduation coverage,
-thread/repo/run refs, receipt-sidecar counts, and local meta-thread
-`effort_ref` back-links.
+acceptance summary presence, acceptance criteria coverage, typed acceptance
+receipt coverage for recorded levels, declared claim requirements,
+thread/repo/external refs, receipt-sidecar counts, and local meta-thread
+`effort_ref` back-links. Receipt-backed findings are checked for sidecar shape
+and current local digest integrity. If audit reports `finding_receipt_digests`
+drift after a local or ad hoc finding changed, run
+`stack effort refresh-receipts <effort>` to recompute current local file or
+directory digests and update stale receipt sidecars before refreshing handoff.
+When the Effort declares `[[claims]]`, the `claims` check evaluates every claim
+against its declared `needs_refs` and `needs_evidence` requirements: a recorded
+claim with unmet requirements fails the audit, an open required claim warns,
+and open optional claims stay visible in the evidence without degrading the
+audit.
 
 `stack effort acceptance <effort> <A0|A1|A2...>` records or updates one
 acceptance level in `findings/results/acceptance-summary.md`. Use `--state
@@ -199,6 +217,10 @@ recorded|pending|not_recorded`, `--status`, repeated `--evidence`, repeated
 `--path`, `--result`, `--decision`, and `--next` to preserve the proof and next
 action. Stack also appends a typed `effort.acceptance_recorded` activity record,
 so acceptance updates show up in orientation payloads and generated handoffs.
+When the Effort declares a `[[claims]]` entry for the level, recorded updates
+are rejected until the claim's declared `needs_refs` and `needs_evidence`
+requirements are satisfied; the error names exactly what is missing. Use
+`pending` while proof is still partial.
 
 `stack effort list` is the human scan view. It groups Efforts by status and
 shows the template, bound-thread count, repo/optimizer/SMR/Tinker ref counts
@@ -241,16 +263,54 @@ otherwise captures default to proof evidence, except benchmark captures default
 to data. Use `--body` for quick terminal/text excerpts, `--path` for local files
 or folders, and `--receipt-path` for previously pulled hosted/saved artifacts.
 
+`stack effort benchmark` is the first-class adapter for benchmark intake. It
+records into `findings/data/`, preserves benchmark id/name/version, source,
+license, task shape, splits, metrics, and source receipt provenance, and marks
+any sidecar as `source_kind=benchmark.intake`. Use it when downloading,
+adopting, or processing a new benchmark so the metadata survives handoffs:
+`stack effort benchmark <effort> --benchmark-id banking77 --name Banking77
+--version <snapshot> --source <url-or-repo> --license <license> --task-shape
+classifier --split train --split heldout --metric accuracy --path <metadata>`.
+Use generic `capture --capture-kind benchmark` only for supporting terminal,
+browser, or raw artifact captures when no structured intake is needed.
+Generated handoffs include a `Benchmark Intake` section when typed benchmark
+records exist, and audit treats that section as part of the packet contract.
+
 `stack effort optimizer-candidate` is the first-class adapter for GEPA and hosted
 optimizer candidate proof. It records into `findings/proof/`, preserves
 `optimizer_run_id`, `candidate_id`, `score`, `score_label`, and `split` in the
 activity receipt and MCP response, and marks any source sidecar as
 `source_kind=optimizer_candidate`. Use `--path` for local GEPA candidate files or
 `--receipt-path` after `stack_pull_artifact` for hosted optimizer artifacts.
-For `task-classifier` Efforts, `stack effort audit` requires this typed
-optimizer-candidate receipt before the optimizer-candidate check passes.
+The bundled task-classifier template's A1 claim requires this typed
+optimizer-candidate proof before A1 can be recorded.
 `stack effort show` prints recent typed candidates, and `stack effort list`
 prints the latest candidate line for quick Banking77-style scans.
+
+`stack effort run-evidence` is the first-class adapter for run proof from any
+run system. `--run-kind` is an open lowercase identifier - `smr` for hosted
+harness runs, `tinker` for training-style runs, `local` for local harness or
+cookbook runs, or any other system name. It records into `findings/proof/`,
+attaches a `{system: <run-kind>, id: <run-id>}` ref to the Effort manifest,
+preserves optional project/output ids, artifact name, and metric, tags an
+optional claim label with `--acceptance-level`, and marks any source sidecar as
+`source_kind=run.<run-kind>`. `stack effort smr-evidence` and
+`stack effort tinker-evidence` are aliases that preset `--run-kind`. Prefer
+`--receipt-path` after `stack_pull_artifact` when the evidence is a saved
+SMR/WorkProduct artifact; use `--path` for local scorecards or proof packets.
+Generated handoffs include a `Run Evidence` section when typed run evidence
+exists, and `stack effort audit` validates typed run-evidence receipts when
+present.
+
+`stack effort release-artifact` is the first-class adapter for Stack release or
+nightly artifact proof. It records into `findings/proof/`, preserves version,
+channel, target, archive, sha256, size, manifest, release-site path, publishable
+state, and publish blockers, and marks any source sidecar as
+`source_kind=release.artifact`. When `--path` points at a
+`scripts/package_release_artifact.ts` `summary.json` or generated manifest,
+Stack fills the release fields from that JSON. Generated handoffs include a
+`Release Artifacts` section when typed release proofs exist, and audit validates
+the receipt shape.
 
 For MCP workflows, `stack_effort_record_finding` accepts the same
 `path` or `receipt_path` inputs and returns receipt metadata alongside the usual
@@ -259,11 +319,22 @@ generic `source_receipt` object. `artifact_receipt` is populated for
 `stack_pull_artifact` receipts as a compatibility alias for hosted/saved pulls.
 `stack_effort_record_capture` is the MCP twin of `stack effort capture` and
 returns the same orientation payload plus `capture_kind`.
+`stack_effort_record_benchmark` is the MCP twin of `stack effort benchmark`; it
+returns benchmark metadata, source receipt fields, and the usual Effort
+orientation payload.
 `stack_effort_record_optimizer_candidate` is the MCP twin of
 `stack effort optimizer-candidate` and returns the same orientation payload plus
 candidate id, optimizer run id, score, score label, split, and receipt metadata.
-`stack_effort_get` includes an `optimizer_candidates` tail, and
-`stack_effort_list` includes `latest_optimizer_candidate`.
+`stack_effort_record_run_evidence` is the MCP twin of
+`stack effort run-evidence` and returns the same orientation payload plus run
+kind, run id, project/output ids, artifact name, metric, acceptance lane, and
+receipt metadata.
+`stack_effort_record_release_artifact` is the MCP twin of
+`stack effort release-artifact` and returns the same orientation payload plus
+release artifact metadata and receipt fields. `stack_effort_get` includes
+`optimizer_candidates`, `run_evidence`, `benchmarks`, and `release_artifacts`
+tails, while `stack_effort_list` includes `latest_optimizer_candidate`,
+`latest_run_evidence`, `latest_benchmark`, and `latest_release_artifact`.
 `stack_effort_record_acceptance` is the MCP twin of `stack effort acceptance`;
 it updates `acceptance-summary.md`, appends a typed acceptance activity receipt,
 and returns the current Effort orientation payload.
@@ -296,7 +367,28 @@ efforts/<slug>/
     results/
 ```
 
-`effort.toml` is the manifest and ref authority. `PROGRESS.md` is the terse
+`effort.toml` is the manifest and ref authority. It carries two declared
+structures beyond identity and links. `[[refs]]` entries are open edges to
+external systems - `{system, id, lane, role}` where `system` is any lowercase
+identifier (`optimizer`, `smr`, `tinker`, `factory`, `project`, `github.pr`,
+...) and `lane` states `hosted` or `local` explicitly; Stack never infers a
+lane from an id's spelling. `[[claims]]` entries declare acceptance levels and
+their proof requirements as data:
+
+```toml
+[[claims]]
+label = "A3"
+title = "harness run proof"
+required = false
+needs_refs = [{ system = "smr" }]
+needs_evidence = [{ source_kind = "run.smr", under = "findings/proof" }]
+```
+
+The engine enforces one rule for every claim, regardless of template: a claim
+recorded as accepted must satisfy its declared requirements. Templates seed
+claims at create time; any Effort - research, engineering, ship, blog, or
+benchmark - can declare its own ladder without engine changes.
+`PROGRESS.md` is the terse
 operator/gardener status log. `ACTIVITY.jsonl` is the typed append-only receipt
 trail for Effort mutations, suitable for agents and future cockpit timelines.
 `PLAYBOOK.md` is copied from the selected template
@@ -335,6 +427,10 @@ ideas/[MIXED]-gate-headroom-rule.md
 Human phrasing should remain visible when an idea is promoted. Once an idea has
 evidence, a concrete artifact, or a reusable conclusion, record the promoted
 claim under `findings/ideas/` and link back to the original idea file.
+Generated handoffs include an `Idea Graph` section whenever raw ideas or
+promoted idea findings exist. This is the v1 file-backed graph: it summarizes
+origin counts, raw idea nodes, and `findings/ideas` backlinks so human ideas and
+promoted claims can be reviewed without opening every markdown file.
 
 Findings are promoted artifacts:
 
@@ -372,8 +468,10 @@ Stack MCP exposes the same Effort storage to gardeners and agents:
 - `stack_effort_create`
 - `stack_effort_list`
 - `stack_effort_get`
+- `stack_effort_remaining`
 - `stack_effort_audit`
 - `stack_effort_activity`
+- `stack_effort_refresh_receipts`
 - `stack_effort_bind_thread`
 - `stack_effort_update_progress`
 - `stack_effort_record_blocker`
@@ -386,19 +484,28 @@ Stack MCP exposes the same Effort storage to gardeners and agents:
 - `stack_effort_record_repo`
 - `stack_effort_record_finding`
 - `stack_effort_record_capture`
+- `stack_effort_record_benchmark`
 - `stack_effort_record_optimizer_candidate`
+- `stack_effort_record_run_evidence`
+- `stack_effort_record_release_artifact`
 - `stack_effort_write_engineering_packet`
 - `stack_effort_update_refs`
 - `stack_effort_update_status`
 
 Use `stack_pull_artifact` before `stack_effort_record_finding`,
-`stack_effort_record_capture`, or `stack_effort_record_optimizer_candidate` when
-evidence comes from a hosted optimizer artifact or saved SMR/WorkProduct
-download. Pass the returned `receipt_path` instead of unpacking the receipt by
-hand. For local/ad-hoc evidence, pass `path`; Stack writes the Effort-local
-source receipt sidecar directly. The CLI equivalents are `stack effort finding
---receipt-path <receipt>`, `stack effort capture --receipt-path <receipt>`,
-`stack effort optimizer-candidate --receipt-path <receipt>`, and their `--path`
+`stack_effort_record_capture`, `stack_effort_record_benchmark`,
+`stack_effort_record_optimizer_candidate`, `stack_effort_record_run_evidence`,
+or `stack_effort_record_release_artifact`
+when evidence comes from a hosted optimizer artifact or saved SMR/WorkProduct
+download. Pass the returned `receipt_path`
+instead of unpacking the receipt by hand. For local/ad-hoc evidence, pass
+`path`; Stack writes the Effort-local source receipt sidecar directly. The CLI
+equivalents are `stack effort finding --receipt-path <receipt>`,
+`stack effort capture --receipt-path <receipt>`,
+`stack effort benchmark --receipt-path <receipt>`,
+`stack effort optimizer-candidate --receipt-path <receipt>`,
+`stack effort run-evidence --receipt-path <receipt>`,
+`stack effort release-artifact --receipt-path <receipt>`, and their `--path`
 variants.
 
 Thread creation tools can bind directly into an Effort too. Pass `effort_ref` to
@@ -426,6 +533,9 @@ each bound meta-thread. `blocker_tail` remains historical, while
 unresolved blockers. `remaining_work` combines open acceptance levels with the
 latest typed blocker next action. Effort MCP mutation responses return the same
 orientation context after applying the change.
+Use `stack_effort_remaining` when the operator asks "what remains?" or when a
+gardener needs just the open acceptance levels, latest unresolved blocker, and
+next safe actions without the full artifact inventory.
 `stack_effort_list` is also an orientation surface: each row includes path refs,
 audit status, latest progress, latest activity, latest unresolved blocker,
 latest typed optimizer candidate, repo/optimizer/SMR/Tinker ref counts, artifact
@@ -446,14 +556,19 @@ larger than the compact orientation tail.
 Use `stack_effort_audit` before handoff or review when the question is whether
 the Effort packet is structurally coherent rather than what the latest event was.
 The audit validates receipt sidecars when present, including schema,
-`receipt_path`, `workspace_path`, and the Effort-local finding they document.
+`receipt_path`, `workspace_path`, the Effort-local finding they document, and
+the current local digest for receipt-backed findings. If the
+`finding_receipt_digests` check fails after local artifact edits, use
+`stack effort refresh-receipts` or `stack_effort_refresh_receipts` before
+regenerating handoff.
 
 Use `active`, `paused`, `done`, or `archived` for Effort status. Do not use
-`blocked`. When progress depends on a decision, credential, hosted capacity, or
-another owner, keep the Effort active or paused and write the exact blocker,
-evidence, next owner, and next safe action in `PROGRESS.md`. Prefer
-`stack effort blocker` or `stack_effort_record_blocker` for this so the same
-entry also appears in `ACTIVITY.jsonl` as `effort.blocker_recorded`.
+`blocked`; `stack effort status` and `stack_effort_update_status` reject it.
+When progress depends on a decision, credential, hosted capacity, or another
+owner, keep the Effort active or paused and write the exact blocker, evidence,
+next owner, and next safe action in `PROGRESS.md`. Prefer `stack effort blocker`
+or `stack_effort_record_blocker` for this so the same entry also appears in
+`ACTIVITY.jsonl` as `effort.blocker_recorded`.
 When the dependency is cleared or superseded, use `stack effort resolve-blocker`
 or `stack_effort_resolve_blocker` with resolution evidence. Stack writes an
 `effort.blocker_resolved` receipt, keeps the original blocker in the historical
@@ -466,7 +581,11 @@ GEPA artifacts can be attached to the Effort: run id, candidate artifact,
 visible result, heldout scorecard, and research log entry. A2 records hosted
 GEPA graduation when available. A3 records synth-ai SMR harness proof. A4
 records synth-ai SMR/Tinker proof. `stack effort refs` and
-`stack_effort_update_refs` can attach optimizer, SMR, and Tinker run ids. The
+`stack_effort_update_refs` attach external system refs as
+`{system, id, lane, role}` entries - `--system <system> --id <id>` covers any
+system (`optimizer`, `smr`, `tinker`, `factory`, `project`, `github.pr`, ...),
+`--lane hosted|local` states the lane explicitly, and the named `--*-id` flags
+remain as conveniences. The
 `task-classifier` template seeds these
 criteria into `effort.toml` unless explicit criteria are provided at create time.
 A0 + A1 are the required v1 product bar; A2-A4 are stronger full-stack proofs.
@@ -479,8 +598,24 @@ Refs alone do not satisfy A2-A4: hosted graduation needs proof artifacts under
 After those proof artifacts exist, use `stack effort acceptance <effort> <A#>`
 or `stack_effort_record_acceptance` to update the matching acceptance section
 and append a typed `effort.acceptance_recorded` activity receipt.
-Generated handoffs include dedicated Acceptance Packet, Audit, and Recorded
-Blockers sections, plus a Remaining Work section that summarizes open acceptance
+Recorded writes for declared claims are rejected until the claim's
+`needs_refs` and `needs_evidence` requirements hold. The bundled task-classifier
+template declares the Banking77-style ladder: A2 needs a hosted `optimizer` ref
+plus `optimizer.candidate` proof, A3 needs an `smr` ref plus `run.smr` proof,
+and A4 needs a `tinker` ref plus `run.tinker` proof; use `pending` for partial
+evidence.
+`stack effort audit` checks recorded acceptance levels against those receipts;
+pre-receipt A0/A1 bootstrap packets remain accepted as explicit legacy v1
+bootstrap evidence, while recorded graduation levels require typed receipts.
+For levels with typed acceptance receipts, audit also compares the current
+packet state/status to the latest receipt and fails `acceptance_receipts` on
+drift. If a packet is stale or hand-edited, repair it with
+`stack effort acceptance` or `stack_effort_record_acceptance`, not by editing
+`acceptance-summary.md` directly.
+The audit's `claims` check keeps open claim requirements visible without
+collapsing them into recorded acceptance.
+Generated handoffs include dedicated Research Log, Acceptance Packet, Audit, and
+Recorded Blockers sections, plus a Remaining Work section that summarizes open acceptance
 levels and the latest unresolved blocker next action. The packet points at
 `findings/results/acceptance-summary.md` when present, embeds the latest
 coherence audit status, and surfaces recent `effort.blocker_recorded` receipts
@@ -488,7 +623,19 @@ from `ACTIVITY.jsonl`. If no explicit `--risk` values are supplied, handoffs
 derive Risks And Open Threads bullets from open acceptance levels and the latest
 unresolved blocker, and `stack effort audit` checks that generated handoff risks still
 reflect structured remaining work. Handoffs also show receipt-sidecar counts and
-a dedicated Receipt Sidecars artifact section.
+a dedicated Receipt Sidecars artifact section. Before the detailed sidecar list,
+generated handoffs include a `Receipt Summary` with sidecar count, readable
+receipt count, digest-backed receipt count, and source-kind/artifact-kind/
+environment totals, and audit requires that summary whenever receipt sidecars
+exist.
+For Efforts that declare `[[claims]]`, generated handoffs also include a
+`Claim Lanes` section. Each lane lists the claim's current acceptance state,
+whether its declared requirements are met, the satisfied and missing
+requirements, and the next action, so optional full-stack proof work is
+explicit without turning refs alone into accepted evidence.
+When idea material exists, generated handoffs also include `Idea Graph` with raw
+idea origin counts and promoted idea backlinks; audit treats the section as part
+of the handoff packet contract.
 
 Stack writes local session logs under `.stack/sessions/`. Current release includes
 read-only remote SMR visibility for jobs, run artifacts, WorkProducts, and

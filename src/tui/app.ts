@@ -43,9 +43,9 @@ import {
 import { stackTuiLayout } from "./layout.js"
 import { stackTuiTheme as theme } from "./theme.js"
 import { randomUUID } from "node:crypto"
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
-import { basename, relative, resolve, join } from "node:path"
+import { basename, dirname, relative, resolve, join } from "node:path"
 import {
   CODEX_MODEL_OPTIONS,
   CURSOR_MODEL_OPTIONS,
@@ -97,7 +97,7 @@ import {
   readMetaThreadManifest,
   reconcileMetaThreadGoalFromCodex,
 } from "../meta-thread-goal.js"
-import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, readEffortOpenBlockerTail, readEffortOptimizerCandidateSummaries, readEffortRemainingWork, updateEffortStatus, writeEffortHandoff, type StackEffortSummary } from "../effort.js"
+import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, readEffortBenchmarkSummaries, readEffortOpenBlockerTail, readEffortOptimizerCandidateSummaries, readEffortRemainingWork, readEffortRunEvidenceSummaries, updateEffortStatus, writeEffortHandoff, type StackEffortSummary } from "../effort.js"
 import { stackdUpdateMetaThreadEffortRef, type StackdMetaSidePanel, type StackdMetaStatus, type StackdMetaThreadManifest } from "../client/stackd.js"
 import {
   formatCodexBudgetSuffix,
@@ -532,6 +532,23 @@ type ThreadLightsPreview = {
 type HostedOptimizerActionKind = "cancel-run" | "preview-artifact" | "download-artifact"
 type MediationTargetKind = "remote-run" | "factory" | "hosted-optimizer"
 type LiveActionKind = RemoteActionKind
+type EvalFeedbackKind = "note" | "directive" | "complaint" | "hypothesis" | "correction" | "taste"
+
+const EVAL_FEEDBACK_KINDS: EvalFeedbackKind[] = [
+  "note",
+  "directive",
+  "complaint",
+  "hypothesis",
+  "correction",
+  "taste",
+]
+
+type EvalUiHandleSettings = {
+  evalModeEnabled: boolean
+  uiHandleEnabled: boolean
+  voiceInputEnabled: boolean
+  humanInputFile?: string
+}
 
 export type StackAppOptions = {
   config: StackConfig
@@ -692,6 +709,15 @@ type AppState = {
   voiceTranscribing: boolean
   voiceFinishInFlight: boolean
   voiceRecordingTarget?: VoiceInputTarget
+  evalModeEnabled: boolean
+  evalUiHandleEnabled: boolean
+  evalVoiceInputEnabled: boolean
+  evalHumanInputFile?: string
+  evalModalOpen: boolean
+  evalModalBuffer: string
+  evalModalKind: EvalFeedbackKind
+  evalModalVoiceUsed: boolean
+  evalModalNotice?: string
   gardenerNotice?: string
   monitorNotice?: string
   gardenerChatRunning: boolean
@@ -948,6 +974,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const initialMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
   const uxSettings = readStackUxSettings(options.config.stackDataRoot)
   const lightsViewState = readLightsThreadViewState(options.config.stackDataRoot)
+  const evalUiHandleSettings = readEvalUiHandleSettings()
   const state: AppState = {
     // First-launch approval must own key focus: with the agent input focused, printable
     // keys never reach the global telemetry key handler, so the modal's a/d/l keys go dead.
@@ -1074,6 +1101,14 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     voiceStatus: readVoiceStatus(options.config),
     voiceTranscribing: false,
     voiceFinishInFlight: false,
+    evalModeEnabled: evalUiHandleSettings.evalModeEnabled,
+    evalUiHandleEnabled: evalUiHandleSettings.uiHandleEnabled,
+    evalVoiceInputEnabled: evalUiHandleSettings.voiceInputEnabled,
+    evalHumanInputFile: evalUiHandleSettings.humanInputFile,
+    evalModalOpen: false,
+    evalModalBuffer: "",
+    evalModalKind: "note",
+    evalModalVoiceUsed: false,
     gardenerChatRunning: false,
     gardenerQueuedMessages: [],
     gardenerLiveBlocks: [],
@@ -1754,6 +1789,13 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   })
 
   renderer._internalKeyInput.onInternal("keypress", (key: StackKeyEvent) => {
+    if (
+      state.evalModalOpen &&
+      (isEnterKey(key) || key.name === "escape" || key.name === "tab" || /^[1-6]$/.test(key.name ?? "")) &&
+      handleEvalFeedbackKey(key, options, state, remount)
+    ) {
+      return
+    }
     if (isEnterKey(key) && key.ctrl && state.focusMode === "agent") {
       submitFromCurrentInput(key, true)
       return
@@ -1785,11 +1827,17 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       void capturePapercutFromUi(options, state, remount)
       return
     }
+    if (!state.evalModalOpen && key.ctrl && key.name === "e" && handleEvalFeedbackKey(key, options, state, remount)) {
+      return
+    }
     if (key.eventType === "release") {
       if (handleVoiceKeyEvent(key, "release")) return
     } else if (key.eventType !== "repeat") {
       if (handleVoiceKeyEvent(key, "press")) return
     } else {
+      return
+    }
+    if (state.evalModalOpen && handleEvalFeedbackKey(key, options, state, remount)) {
       return
     }
     if (handlePermissionsKey(key, options, state, remount)) return
@@ -2425,6 +2473,7 @@ function createView(
     ),
     gardenerControlRow(options, state, refresh, transcriptViewport.columns),
   ]
+  const evalFeedbackModal = renderEvalFeedbackModal(state)
   const agentChildren = showCoreGardenerPanel ? gardenerCoreChildren : [
     agentPanelIdsCopyIcon(renderer, options, state, refresh),
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
@@ -2435,6 +2484,7 @@ function createView(
     ...(configSettings ? [configSettings] : []),
     ...(experimentalSettings ? [experimentalSettings] : []),
     ...(permissionsSettings ? [permissionsSettings] : []),
+    ...(evalFeedbackModal ? [evalFeedbackModal] : []),
     agentControlRow(options, state, transcriptViewport.columns, refresh),
   ]
 
@@ -6811,7 +6861,218 @@ function submitInputValue(
   )
 }
 
+function readEvalUiHandleSettings(): EvalUiHandleSettings {
+  const evalModeEnabled = process.env.STACK_EFFORT_EVAL_MODE === "1"
+  const uiHandleRequested = process.env.STACK_EFFORT_UI_HANDLE === "1"
+  return {
+    evalModeEnabled,
+    uiHandleEnabled: evalModeEnabled && uiHandleRequested,
+    voiceInputEnabled: evalModeEnabled && uiHandleRequested && process.env.STACK_EFFORT_VOICE_INPUT === "1",
+    humanInputFile: process.env.STACK_EFFORT_HUMAN_INPUT_FILE || undefined,
+  }
+}
+
+function evalFeedbackEnabled(state: AppState): boolean {
+  return state.evalModeEnabled && state.evalUiHandleEnabled
+}
+
+function openEvalFeedbackModal(state: AppState, refresh: () => void): void {
+  if (!evalFeedbackEnabled(state)) return
+  state.evalModalOpen = true
+  state.evalModalNotice = undefined
+  refresh()
+}
+
+function closeEvalFeedbackModal(state: AppState, refresh: () => void): void {
+  state.evalModalOpen = false
+  state.evalModalNotice = undefined
+  refresh()
+}
+
+function cycleEvalFeedbackKind(state: AppState, direction: number): void {
+  const current = EVAL_FEEDBACK_KINDS.indexOf(state.evalModalKind)
+  const next = (current + direction + EVAL_FEEDBACK_KINDS.length) % EVAL_FEEDBACK_KINDS.length
+  state.evalModalKind = EVAL_FEEDBACK_KINDS[next] ?? "note"
+}
+
+function setEvalFeedbackKindByIndex(state: AppState, sequence: string): boolean {
+  const index = Number.parseInt(sequence, 10) - 1
+  const kind = EVAL_FEEDBACK_KINDS[index]
+  if (!kind) return false
+  state.evalModalKind = kind
+  return true
+}
+
+function appendEvalHumanInputEvent(options: StackAppOptions, state: AppState, source: "keyboard" | "voice"): void {
+  const body = state.evalModalBuffer.trim()
+  if (!body || !state.evalHumanInputFile) return
+  mkdirSync(dirname(state.evalHumanInputFile), { recursive: true })
+  appendFileSync(
+    state.evalHumanInputFile,
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      type: "human.eval_feedback",
+      source,
+      kind: state.evalModalKind,
+      session_id: options.session.id,
+      meta_thread_id: options.session.metaThreadId,
+      body,
+    }) + "\n",
+  )
+}
+
+function submitEvalFeedbackModal(options: StackAppOptions, state: AppState, refresh: () => void): boolean {
+  const body = state.evalModalBuffer.trim()
+  if (!body) {
+    state.evalModalNotice = "write feedback before saving"
+    refresh()
+    return true
+  }
+  try {
+    appendEvalHumanInputEvent(options, state, state.evalModalVoiceUsed ? "voice" : "keyboard")
+    appendStackBlock(state.blocks, `eval feedback saved · ${state.evalModalKind} · ${oneLine(body, 80)}`)
+    state.evalModalBuffer = ""
+    state.evalModalVoiceUsed = false
+    state.evalModalOpen = false
+    state.evalModalNotice = undefined
+  } catch (error) {
+    state.evalModalNotice = `save failed: ${errorMessage(error)}`
+  }
+  refresh()
+  return true
+}
+
+function appendVoiceTranscriptToEvalFeedback(
+  state: AppState,
+  text: string,
+  provider: string,
+  refresh: () => void,
+): boolean {
+  const trimmed = text.trim()
+  if (!trimmed) {
+    state.evalModalNotice = "voice: no speech detected"
+    refresh()
+    return false
+  }
+  if (isLikelyJunkVoiceTranscript(trimmed)) {
+    state.evalModalNotice = "voice: ignored filler; try again"
+    refresh()
+    return false
+  }
+  state.evalModalBuffer = state.evalModalBuffer.trim()
+    ? `${state.evalModalBuffer.trim()} ${trimmed}`
+    : trimmed
+  state.evalModalVoiceUsed = true
+  state.evalModalNotice = `voice ready · ${provider} · enter saves`
+  refresh()
+  return true
+}
+
+function handleEvalFeedbackKey(
+  key: StackKeyEvent,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): boolean {
+  if (!evalFeedbackEnabled(state)) return false
+  if (!state.evalModalOpen) {
+    if (key.ctrl && key.name === "e") {
+      openEvalFeedbackModal(state, refresh)
+      return true
+    }
+    return false
+  }
+  if (key.name === "escape") {
+    closeEvalFeedbackModal(state, refresh)
+    return true
+  }
+  if (isEnterKey(key)) return submitEvalFeedbackModal(options, state, refresh)
+  if (key.name === "tab") {
+    cycleEvalFeedbackKind(state, key.shift ? -1 : 1)
+    refresh()
+    return true
+  }
+  if (typeof key.name === "string" && /^[1-6]$/.test(key.name) && setEvalFeedbackKindByIndex(state, key.name)) {
+    refresh()
+    return true
+  }
+  return true
+}
+
+function handleRawEvalFeedbackInput(
+  sequence: string,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): boolean {
+  if (!evalFeedbackEnabled(state)) return false
+  if (!state.evalModalOpen) {
+    if (sequence === "\x05") {
+      openEvalFeedbackModal(state, refresh)
+      return true
+    }
+    return false
+  }
+  if (sequence === "\x1b") {
+    closeEvalFeedbackModal(state, refresh)
+    return true
+  }
+  if (isRawEnterSequence(sequence)) return submitEvalFeedbackModal(options, state, refresh)
+  if (sequence === "\t") {
+    cycleEvalFeedbackKind(state, 1)
+    refresh()
+    return true
+  }
+  if (sequence === "\x7f" || sequence === "\b") {
+    state.evalModalBuffer = state.evalModalBuffer.slice(0, -1)
+    state.evalModalNotice = undefined
+    refresh()
+    return true
+  }
+  if (setEvalFeedbackKindByIndex(state, sequence)) {
+    refresh()
+    return true
+  }
+  if (sequence.length === 1 && sequence >= " ") {
+    state.evalModalBuffer += sequence
+    state.evalModalNotice = undefined
+    refresh()
+    return true
+  }
+  return true
+}
+
+function renderEvalFeedbackModal(state: AppState) {
+  if (!evalFeedbackEnabled(state) || !state.evalModalOpen) return undefined
+  const kindLine = EVAL_FEEDBACK_KINDS
+    .map((kind, index) => `${index + 1} ${kind === state.evalModalKind ? `[${kind}]` : kind}`)
+    .join("  ")
+  const voiceHint = state.evalVoiceInputEnabled ? "Shift+V voice" : "voice off"
+  const body = state.evalModalBuffer || "Type feedback for the eval trace..."
+  return Box(
+    {
+      border: true,
+      borderStyle: "double",
+      borderColor: theme.synth.amber,
+      title: "Effort Bench Feedback",
+      flexDirection: "column",
+      gap: 1,
+      padding: 1,
+      width: "100%",
+    },
+    Text({ content: kindLine, fg: theme.synth.gold }),
+    Text({ content: body, fg: state.evalModalBuffer ? theme.fgPrimary : theme.fgMuted }),
+    Text({
+      content: `${voiceHint} · 1-6 kind · Tab cycle · Enter save · Esc close`,
+      fg: theme.fgMuted,
+    }),
+    ...(state.evalModalNotice ? [Text({ content: state.evalModalNotice, fg: theme.synth.amber })] : []),
+    Text({ content: `capture ${state.evalHumanInputFile ? relative(process.cwd(), state.evalHumanInputFile) : "not configured"}`, fg: theme.fgMuted }),
+  )
+}
+
 function resolveVoiceInputTarget(state: AppState): VoiceInputTarget | undefined {
+  if (state.evalModalOpen && state.evalVoiceInputEnabled) return "worker"
   if (state.focusMode === "gardener") return "gardener"
   if (state.gardenerInputBuffer.trim().length > 0) return "gardener"
   if (state.focusMode === "monitor") return "monitor"
@@ -7111,6 +7372,8 @@ async function finishVoiceHold(ctx: VoiceKeyContext): Promise<void> {
       }
     } else if (target === "monitor") {
       applyVoiceTranscriptToMonitorInput(state, transcription.text, transcription.provider, refresh)
+    } else if (state.evalModalOpen && state.evalVoiceInputEnabled) {
+      appendVoiceTranscriptToEvalFeedback(state, transcription.text, transcription.provider, refresh)
     } else {
       applyVoiceTranscriptToWorkerInput(state, transcription.text, transcription.provider, refresh)
     }
@@ -7362,6 +7625,7 @@ function handleRawInputInner(
     if (chunkKey) handlePermissionsKey(chunkKey, options, state, refresh)
     return true
   }
+  if (handleRawEvalFeedbackInput(sequence, options, state, refresh)) return true
 
   if (consumeRawExitCommand(sequence, state)) {
     exitStack()
@@ -9420,6 +9684,7 @@ function lightsCompanionSections(
 ): LightsPanelSection[] {
   if (state.lightsThreadsOnly) return []
   return [
+    lightsEffortsSection(options, state, width),
     lightsGardenersSection(options, state, width),
     lightsActorsSection(input, width),
     lightsCloudSection(state, input, width),
@@ -10054,6 +10319,69 @@ function lightsThreadsSection(
   }
 }
 
+function lightsEffortsSection(options: StackAppOptions, state: AppState, columns: number): LightsPanelSection {
+  let efforts: StackEffortSummary[]
+  try {
+    efforts = readEffortsPanelSummaries(options)
+  } catch (error) {
+    return {
+      id: "efforts",
+      header: "Efforts · unavailable",
+      lines: [`  ${oneLine(errorMessage(error), Math.max(20, columns - 2))}`],
+    }
+  }
+
+  const active = efforts.filter((effort) => effort.status !== "archived")
+  const archived = efforts.filter((effort) => effort.status === "archived")
+  const header = `Efforts · ${active.length} active · ${archived.length} archived`
+  if (efforts.length === 0) {
+    return { id: "efforts", header, lines: ["  (none)"] }
+  }
+  if (active.length === 0) {
+    const latestArchived = archived[0]
+    return {
+      id: "efforts",
+      header,
+      lines: latestArchived
+        ? [`  archived latest · ${oneLine(latestArchived.title || latestArchived.slug, Math.max(20, columns - 22))}`]
+        : ["  (none)"],
+    }
+  }
+
+  const lines: string[] = []
+  for (const effort of active.slice(0, 3)) {
+    const metaCount = effort.meta_thread_refs.length
+    const metaLabel = `${metaCount} thread${metaCount === 1 ? "" : "s"}`
+    const primary = `${effort.title || effort.slug} · ${effort.template} · ${metaLabel} · updated ${effortAgeLabel(effort)}`
+    lines.push(`  ${oneLine(primary, Math.max(20, columns - 2))}`)
+
+    for (const signal of effortLightsSignals(effort, options.config.workspaceRoot, options.config.stackDataRoot).slice(0, 2)) {
+      lines.push(`  ${oneLine(signal, Math.max(20, columns - 2))}`)
+    }
+  }
+  if (active.length > 3) lines.push(`  ... +${active.length - 3} active efforts`)
+  return { id: "efforts", header, lines }
+}
+
+function effortLightsSignals(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string[] {
+  const signals: string[] = []
+  const goal = effortGoalContextLine(effort, stackDataRoot)
+  if (goal) signals.push(`goal - ${goal}`)
+  const acceptance = effortAcceptanceLine(effort, workspaceRoot, stackDataRoot)
+  if (acceptance) signals.push(`acceptance - ${acceptance}`)
+  const remaining = effortRemainingWorkLine(effort, workspaceRoot, stackDataRoot)
+  if (remaining) signals.push(`remaining - ${remaining}`)
+  const runEvidence = effortRunEvidenceLine(effort, workspaceRoot, stackDataRoot)
+  if (runEvidence) signals.push(`run evidence - ${runEvidence}`)
+  const candidate = effortOptimizerCandidateLine(effort, workspaceRoot, stackDataRoot)
+  if (candidate) signals.push(`candidate - ${candidate}`)
+  const progress = effortLatestProgressLine(effort, workspaceRoot)
+  if (progress) signals.push(`progress - ${progress}`)
+  const handoff = effortHandoffLine(effort, workspaceRoot)
+  if (handoff) signals.push(`handoff - ${handoff}`)
+  return signals
+}
+
 function lightsGardenersSection(options: StackAppOptions, state: AppState, columns: number): LightsPanelSection {
   const inboxCount = readGardenerInbox(options.config.stackDataRoot, state.gardenerThreadId).length
   const status = state.gardenerChatRunning ? "running" : inboxCount > 0 ? "queued" : "idle"
@@ -10322,6 +10650,9 @@ function footerHint(_config: StackConfig, state: AppState, _sessionId: string): 
   }
   if (agentChatPauseEligible(state)) {
     parts.push(state.agentChatPaused ? "Esc stop turn · Enter steer · ctrl+enter queue" : "Esc pause")
+  }
+  if (evalFeedbackEnabled(state)) {
+    parts.push("Ctrl+E eval feedback")
   }
   parts.push("/exit quit")
   return parts.join(" · ")
@@ -10899,6 +11230,20 @@ function pushEffortSectionLines(
         color: theme.fgSecondary,
       })
     }
+    const runEvidence = effortRunEvidenceLine(effort, workspaceRoot, stackDataRoot)
+    if (runEvidence) {
+      lines.push({
+        text: oneLine(`  run evidence - ${runEvidence}`, columns),
+        color: theme.fgSecondary,
+      })
+    }
+    const benchmark = effortBenchmarkLine(effort, workspaceRoot, stackDataRoot)
+    if (benchmark) {
+      lines.push({
+        text: oneLine(`  benchmark - ${benchmark}`, columns),
+        color: theme.fgSecondary,
+      })
+    }
     const remaining = effortRemainingWorkLine(effort, workspaceRoot, stackDataRoot)
     if (remaining) {
       lines.push({
@@ -10926,13 +11271,14 @@ function effortAgeLabel(effort: StackEffortSummary): string {
 }
 
 function effortSummaryRefs(effort: StackEffortSummary): string {
-  const refs: string[] = []
-  if (effort.hosted_refs.project_id) refs.push(`project ${effort.hosted_refs.project_id}`)
-  if (effort.hosted_refs.factory_id) refs.push(`factory ${effort.hosted_refs.factory_id}`)
-  if (effort.hosted_refs.optimizer_run_ids.length > 0) refs.push(`${effort.hosted_refs.optimizer_run_ids.length} opt`)
-  if (effort.hosted_refs.smr_run_ids.length > 0) refs.push(`${effort.hosted_refs.smr_run_ids.length} smr`)
-  if (effort.hosted_refs.tinker_run_ids.length > 0) refs.push(`${effort.hosted_refs.tinker_run_ids.length} tinker`)
-  return refs.join(" - ")
+  const counts = new Map<string, number>()
+  for (const ref of effort.refs) {
+    counts.set(ref.system, (counts.get(ref.system) ?? 0) + 1)
+  }
+  return Array.from(counts.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([system, count]) => (count === 1 ? system : `${count} ${system}`))
+    .join(" - ")
 }
 
 function effortArtifactInventoryLine(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string {
@@ -11118,8 +11464,44 @@ function effortOptimizerCandidateLine(effort: StackEffortSummary, workspaceRoot:
     const candidates = readEffortOptimizerCandidateSummaries(current, 1)
     const candidate = candidates[candidates.length - 1]
     if (!candidate) return ""
-    const score = `${candidate.score_label || "score"} ${candidate.score}`
-    return `${candidate.candidate_id} - ${score} - ${candidate.split} - run ${candidate.optimizer_run_id} - updated ${lightsThreadRelativeAge(candidate.observed_at)} ago`
+    const parts = [
+      candidate.candidate_id,
+      candidate.score ? `${candidate.score_label || "score"} ${candidate.score}` : "",
+      candidate.split ?? "",
+      `run ${candidate.optimizer_run_id}`,
+      `updated ${lightsThreadRelativeAge(candidate.observed_at)} ago`,
+    ].filter(Boolean)
+    return parts.join(" - ")
+  } catch {
+    return ""
+  }
+}
+
+function effortRunEvidenceLine(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string {
+  try {
+    const current = readEffort({ workspaceRoot, stackDataRoot }, effort.id)
+    if (!current) return ""
+    const records = readEffortRunEvidenceSummaries(current, 1)
+    const evidence = records[records.length - 1]
+    if (!evidence) return ""
+    const metric = evidence.metric ? ` - ${evidence.metric}` : ""
+    const level = evidence.acceptance_level ? ` - ${evidence.acceptance_level}` : ""
+    return `${evidence.run_kind} - run ${evidence.run_id}${metric}${level} - updated ${lightsThreadRelativeAge(evidence.observed_at)} ago`
+  } catch {
+    return ""
+  }
+}
+
+function effortBenchmarkLine(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string {
+  try {
+    const current = readEffort({ workspaceRoot, stackDataRoot }, effort.id)
+    if (!current) return ""
+    const records = readEffortBenchmarkSummaries(current, 1)
+    const benchmark = records[records.length - 1]
+    if (!benchmark) return ""
+    const id = benchmark.benchmark_id ? `${benchmark.benchmark_id} - ` : ""
+    const metrics = benchmark.metrics.length > 0 ? ` - ${benchmark.metrics.join(", ")}` : ""
+    return `${id}${benchmark.name}${metrics} - updated ${lightsThreadRelativeAge(benchmark.observed_at)} ago`
   } catch {
     return ""
   }

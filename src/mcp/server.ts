@@ -50,19 +50,26 @@ import {
   readEffort as readStackEffort,
   readEffortAcceptancePacket as readStackEffortAcceptancePacket,
   readEffortActivityTail as readStackEffortActivityTail,
+  readEffortBenchmarkSummaries as readStackEffortBenchmarkSummaries,
   readEffortBlockerTail as readStackEffortBlockerTail,
   readEffortOpenBlockerTail as readStackEffortOpenBlockerTail,
   readEffortOptimizerCandidateSummaries as readStackEffortOptimizerCandidateSummaries,
   readEffortProgressTail as readStackEffortProgressTail,
+  readEffortReleaseArtifactSummaries as readStackEffortReleaseArtifactSummaries,
   readEffortRemainingWork as readStackEffortRemainingWork,
+  readEffortRunEvidenceSummaries as readStackEffortRunEvidenceSummaries,
+  refreshEffortReceiptDigests as refreshStackEffortReceiptDigests,
   recordEffortAcceptance as recordStackEffortAcceptance,
+  recordEffortBenchmark as recordStackEffortBenchmark,
   recordEffortBlocker as recordStackEffortBlocker,
   recordEffortCapture as recordStackEffortCapture,
   recordEffortFinding as recordStackEffortFinding,
   recordEffortIdea as recordStackEffortIdea,
   recordEffortNote as recordStackEffortNote,
   recordEffortOptimizerCandidate as recordStackEffortOptimizerCandidate,
+  recordEffortReleaseArtifact as recordStackEffortReleaseArtifact,
   recordEffortRepo as recordStackEffortRepo,
+  recordEffortRunEvidence as recordStackEffortRunEvidence,
   resolveEffortBlocker as resolveStackEffortBlocker,
   STACK_EFFORT_CAPTURE_KINDS,
   STACK_EFFORT_FINDING_KINDS,
@@ -612,9 +619,7 @@ export class StackMcpServer {
             ref_counts: {
               meta_threads: summary.meta_thread_refs.length,
               repos: 0,
-              optimizer_runs: summary.hosted_refs.optimizer_run_ids.length,
-              smr_runs: summary.hosted_refs.smr_run_ids.length,
-              tinker_runs: summary.hosted_refs.tinker_run_ids.length,
+              external_refs: summary.refs.length,
             },
             artifact_counts: {
               total: 0,
@@ -624,6 +629,9 @@ export class StackMcpServer {
             has_handoff: false,
             has_acceptance_summary: false,
             latest_optimizer_candidate: null,
+            latest_run_evidence: null,
+            latest_benchmark: null,
+            latest_release_artifact: null,
             remaining_work: {
               state: "untracked",
               summary: "effort folder or manifest missing",
@@ -640,6 +648,9 @@ export class StackMcpServer {
         const activityTail = readStackEffortActivityTail(effort, 1)
         const blockerTail = readStackEffortOpenBlockerTail(effort, 1)
         const optimizerCandidates = readStackEffortOptimizerCandidateSummaries(effort, 1)
+        const runEvidence = readStackEffortRunEvidenceSummaries(effort, 1)
+        const benchmarks = readStackEffortBenchmarkSummaries(effort, 1)
+        const releaseArtifacts = readStackEffortReleaseArtifactSummaries(effort, 1)
         const remainingWork = readStackEffortRemainingWork(effort)
         const audit = auditStackEffort(effort)
         return {
@@ -656,9 +667,7 @@ export class StackMcpServer {
           ref_counts: {
             meta_threads: effort.manifest.links.meta_thread_refs.length,
             repos: effort.manifest.links.repo_refs.length,
-            optimizer_runs: effort.manifest.hosted.optimizer_run_ids.length,
-            smr_runs: effort.manifest.hosted.smr_run_ids.length,
-            tinker_runs: effort.manifest.hosted.tinker_run_ids.length,
+            external_refs: effort.manifest.refs.length,
           },
           artifact_counts: {
             total: artifactInventory.counts.total,
@@ -669,6 +678,9 @@ export class StackMcpServer {
           has_acceptance_summary: Boolean(paths.acceptance_summary),
           acceptance_packet: acceptancePacket,
           latest_optimizer_candidate: optimizerCandidates[optimizerCandidates.length - 1] ?? null,
+          latest_run_evidence: runEvidence[runEvidence.length - 1] ?? null,
+          latest_benchmark: benchmarks[benchmarks.length - 1] ?? null,
+          latest_release_artifact: releaseArtifacts[releaseArtifacts.length - 1] ?? null,
           remaining_work: remainingWork,
         }
       })
@@ -701,6 +713,9 @@ export class StackMcpServer {
     const blockerTail = readStackEffortBlockerTail(effort, 5)
     const openBlockerTail = readStackEffortOpenBlockerTail(effort, 5)
     const optimizerCandidates = readStackEffortOptimizerCandidateSummaries(effort, 5)
+    const runEvidence = readStackEffortRunEvidenceSummaries(effort, 5)
+    const benchmarks = readStackEffortBenchmarkSummaries(effort, 5)
+    const releaseArtifacts = readStackEffortReleaseArtifactSummaries(effort, 5)
     const remainingWork = readStackEffortRemainingWork(effort)
     const boundMetaThreads = await Promise.all(
       effort.manifest.links.meta_thread_refs.map(async (metaThreadId): Promise<JsonObject> => {
@@ -720,6 +735,9 @@ export class StackMcpServer {
       artifact_inventory: stackEffortArtifactInventory(effort),
       acceptance_packet: readStackEffortAcceptancePacket(effort) ?? null,
       optimizer_candidates: optimizerCandidates,
+      run_evidence: runEvidence,
+      benchmarks,
+      release_artifacts: releaseArtifacts,
       remaining_work: remainingWork,
       latest_progress: progressTail[progressTail.length - 1] ?? "",
       progress_tail: progressTail,
@@ -799,6 +817,28 @@ export class StackMcpServer {
     return toJsonValue(await this.effortPayload(config, effort)) ?? null
   }
 
+  async getEffortRemaining(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const openBlockerTail = readStackEffortOpenBlockerTail(effort, 1)
+    return toJsonValue({
+      ok: true,
+      effort_id: effort.manifest.id,
+      slug: effort.manifest.slug,
+      status: effort.manifest.status,
+      folder_ref: effort.registry.folder_ref,
+      paths: stackEffortPathRefs(effort),
+      acceptance_packet: readStackEffortAcceptancePacket(effort) ?? null,
+      remaining_work: readStackEffortRemainingWork(effort),
+      latest_blocker: openBlockerTail[openBlockerTail.length - 1] ?? null,
+    }) ?? null
+  }
+
   async auditEffort(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const effortRef = requiredString(args, "effort_ref")
@@ -831,6 +871,25 @@ export class StackMcpServer {
       count: activity.length,
       activity,
     }) ?? null
+  }
+
+  async refreshEffortReceiptDigests(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const result = refreshStackEffortReceiptDigests({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      receipt_refresh: {
+        checked: result.checked,
+        updated: result.updated,
+        skipped: result.skipped,
+        refreshed: result.refreshed,
+      },
+      receipt: "lever.stack_mcp effort.receipt_digests_refreshed",
+    })) ?? null
   }
 
   async createEffort(args: JsonObject): Promise<JsonValue> {
@@ -1233,6 +1292,80 @@ export class StackMcpServer {
     })) ?? null
   }
 
+  async recordEffortBenchmark(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const rawSourcePath = optionalString(args, "path")
+    const receiptPath = optionalString(args, "receipt_path")
+    if (rawSourcePath && receiptPath) {
+      throw new RpcError(-32602, "provide path or receipt_path, not both")
+    }
+    let artifactReceipt: Awaited<ReturnType<typeof readRoundTripPullReceipt>> | undefined
+    if (receiptPath) {
+      try {
+        artifactReceipt = await readRoundTripPullReceipt(config, receiptPath)
+      } catch (error) {
+        throw new RpcError(-32602, `artifact receipt invalid: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const sourcePath = artifactReceipt
+      ? artifactReceipt.workspace_path
+      : rawSourcePath ? resolveEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined
+    const result = recordStackEffortBenchmark({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef: effort.manifest.id,
+      title: optionalString(args, "title"),
+      benchmarkId: optionalString(args, "benchmark_id"),
+      name: optionalString(args, "name"),
+      version: optionalString(args, "version"),
+      source: optionalString(args, "source"),
+      license: optionalString(args, "license"),
+      taskShape: optionalString(args, "task_shape"),
+      splits: optionalStringArray(args, "splits"),
+      metrics: optionalStringArray(args, "metrics"),
+      body: optionalString(args, "body"),
+      sourcePath,
+      sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      benchmark_id: result.benchmarkId ?? null,
+      name: result.name,
+      version: result.version ?? null,
+      source: result.source ?? null,
+      license: result.license ?? null,
+      task_shape: result.taskShape ?? null,
+      splits: result.splits,
+      metrics: result.metrics,
+      kind: "data",
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : null,
+      source_receipt: result.sourceReceipt ?? null,
+      artifact_receipt: artifactReceipt ? {
+        receipt_path: artifactReceipt.receipt_path,
+        artifact_kind: artifactReceipt.artifact_kind,
+        source_kind: artifactReceipt.source_kind,
+        environment: artifactReceipt.environment,
+        run_id: artifactReceipt.run_id ?? null,
+        project_id: artifactReceipt.project_id ?? null,
+        artifact_name: artifactReceipt.artifact_name ?? null,
+        output_id: artifactReceipt.output_id ?? null,
+        label: artifactReceipt.label ?? null,
+        workspace_path: artifactReceipt.workspace_path,
+        digest: artifactReceipt.digest,
+        pulled_at: artifactReceipt.pulled_at,
+      } : null,
+      receipt: "lever.stack_mcp effort.benchmark_recorded",
+    })) ?? null
+  }
+
   async recordEffortOptimizerCandidate(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const effortRef = requiredString(args, "effort_ref")
@@ -1301,6 +1434,157 @@ export class StackMcpServer {
     })) ?? null
   }
 
+  async recordEffortRunEvidence(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const rawSourcePath = optionalString(args, "path")
+    const receiptPath = optionalString(args, "receipt_path")
+    if (rawSourcePath && receiptPath) {
+      throw new RpcError(-32602, "provide path or receipt_path, not both")
+    }
+    let artifactReceipt: Awaited<ReturnType<typeof readRoundTripPullReceipt>> | undefined
+    if (receiptPath) {
+      try {
+        artifactReceipt = await readRoundTripPullReceipt(config, receiptPath)
+      } catch (error) {
+        throw new RpcError(-32602, `artifact receipt invalid: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const sourcePath = artifactReceipt
+      ? artifactReceipt.workspace_path
+      : rawSourcePath ? resolveEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined
+    const runKind = requiredEffortRunEvidenceKind(args, "run_kind")
+    const result = recordStackEffortRunEvidence({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef: effort.manifest.id,
+      runKind,
+      title: optionalString(args, "title"),
+      runId: optionalString(args, "run_id"),
+      projectId: optionalString(args, "project_id"),
+      outputId: optionalString(args, "output_id"),
+      artifactName: optionalString(args, "artifact_name"),
+      metric: optionalString(args, "metric"),
+      acceptanceLevel: optionalString(args, "acceptance_level"),
+      body: optionalString(args, "body"),
+      sourcePath,
+      sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      run_kind: result.runKind,
+      run_id: result.runId ?? null,
+      project_id: result.projectId ?? null,
+      output_id: result.outputId ?? null,
+      artifact_name: result.artifactName ?? null,
+      metric: result.metric ?? null,
+      acceptance_level: result.acceptanceLevel ?? null,
+      kind: "proof",
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : null,
+      source_receipt: result.sourceReceipt ?? null,
+      artifact_receipt: artifactReceipt ? {
+        receipt_path: artifactReceipt.receipt_path,
+        artifact_kind: artifactReceipt.artifact_kind,
+        source_kind: artifactReceipt.source_kind,
+        environment: artifactReceipt.environment,
+        run_id: artifactReceipt.run_id ?? null,
+        project_id: artifactReceipt.project_id ?? null,
+        artifact_name: artifactReceipt.artifact_name ?? null,
+        output_id: artifactReceipt.output_id ?? null,
+        label: artifactReceipt.label ?? null,
+        workspace_path: artifactReceipt.workspace_path,
+        digest: artifactReceipt.digest,
+        pulled_at: artifactReceipt.pulled_at,
+      } : null,
+      receipt: "lever.stack_mcp effort.run_evidence_recorded",
+    })) ?? null
+  }
+
+  async recordEffortReleaseArtifact(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const rawSourcePath = optionalString(args, "path")
+    const receiptPath = optionalString(args, "receipt_path")
+    if (rawSourcePath && receiptPath) {
+      throw new RpcError(-32602, "provide path or receipt_path, not both")
+    }
+    let artifactReceipt: Awaited<ReturnType<typeof readRoundTripPullReceipt>> | undefined
+    if (receiptPath) {
+      try {
+        artifactReceipt = await readRoundTripPullReceipt(config, receiptPath)
+      } catch (error) {
+        throw new RpcError(-32602, `artifact receipt invalid: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const sourcePath = artifactReceipt
+      ? artifactReceipt.workspace_path
+      : rawSourcePath ? resolveEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined
+    const result = recordStackEffortReleaseArtifact({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef: effort.manifest.id,
+      title: optionalString(args, "title"),
+      version: optionalString(args, "version"),
+      channel: optionalString(args, "channel"),
+      target: optionalString(args, "target"),
+      archive: optionalString(args, "archive"),
+      sha256: optionalString(args, "sha256"),
+      size: optionalString(args, "size"),
+      manifest: optionalString(args, "manifest"),
+      releaseSite: optionalString(args, "release_site"),
+      publishable: optionalBoolean(args, "publishable"),
+      publishBlockers: optionalStringArray(args, "publish_blockers"),
+      body: optionalString(args, "body"),
+      sourcePath,
+      sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      version: result.version ?? null,
+      channel: result.channel ?? null,
+      target: result.target ?? null,
+      archive: result.archive ?? null,
+      sha256: result.sha256 ?? null,
+      size: result.size ?? null,
+      manifest: result.manifest ?? null,
+      release_site: result.releaseSite ?? null,
+      publishable: result.publishable ?? null,
+      publish_blockers: result.publishBlockers,
+      kind: "proof",
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : null,
+      source_receipt: result.sourceReceipt ?? null,
+      artifact_receipt: artifactReceipt ? {
+        receipt_path: artifactReceipt.receipt_path,
+        artifact_kind: artifactReceipt.artifact_kind,
+        source_kind: artifactReceipt.source_kind,
+        environment: artifactReceipt.environment,
+        run_id: artifactReceipt.run_id ?? null,
+        project_id: artifactReceipt.project_id ?? null,
+        artifact_name: artifactReceipt.artifact_name ?? null,
+        output_id: artifactReceipt.output_id ?? null,
+        label: artifactReceipt.label ?? null,
+        workspace_path: artifactReceipt.workspace_path,
+        digest: artifactReceipt.digest,
+        pulled_at: artifactReceipt.pulled_at,
+      } : null,
+      receipt: "lever.stack_mcp effort.release_artifact_recorded",
+    })) ?? null
+  }
+
   async updateEffortRefs(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const effortRef = requiredString(args, "effort_ref")
@@ -1308,6 +1592,15 @@ export class StackMcpServer {
       stackDataRoot: config.stackDataRoot,
       workspaceRoot: config.workspaceRoot,
       effortRef,
+      refs: optionalString(args, "system") && optionalString(args, "id")
+        ? [{
+            system: optionalString(args, "system")!,
+            id: optionalString(args, "id")!,
+            lane: optionalString(args, "lane"),
+            role: optionalString(args, "role"),
+          }]
+        : undefined,
+      refLane: optionalString(args, "lane"),
       factoryId: optionalString(args, "factory_id"),
       hostedEffortId: optionalString(args, "hosted_effort_id"),
       projectId: optionalString(args, "project_id"),
@@ -1318,7 +1611,7 @@ export class StackMcpServer {
       initiativeId: optionalString(args, "initiative_id"),
     })
     return toJsonValue(await this.effortPayload(config, effort, {
-      hosted_refs: effort.manifest.hosted,
+      refs: effort.manifest.refs,
       repo_refs: effort.manifest.links.repo_refs,
       initiative_id: effort.manifest.links.initiative_id,
       receipt: "lever.stack_mcp effort.refs_updated",
@@ -4978,7 +5271,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_list",
-      description: "List durable Stack Efforts with orientation fields: paths, latest progress/activity/unresolved blocker, latest typed optimizer candidate, remaining_work, ref counts, artifact counts, handoff state, and parsed acceptance packet state. Efforts are long-lived workspaces for research or engineering work across threads, runs, findings, ideas, and proof artifacts.",
+      description: "List durable Stack Efforts with orientation fields: paths, latest progress/activity/unresolved blocker, latest typed optimizer candidate/run evidence/benchmark intake/release artifact proof, remaining_work, ref counts, artifact counts, handoff state, and parsed acceptance packet state. Efforts are long-lived workspaces for research or engineering work across threads, runs, findings, ideas, and proof artifacts.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         status: enumProperty([...STACK_EFFORT_STATUSES, "all"], "Optional Effort status filter. Defaults to all."),
@@ -4995,7 +5288,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_get",
-      description: "Read one durable Stack Effort by id or slug, including manifest, registry record, workspace path refs, machine-readable artifact_inventory, parsed acceptance_packet when present, typed optimizer_candidates, remaining_work, latest progress/activity, historical blocker tail, unresolved blocker tail, and bound meta-thread context.",
+      description: "Read one durable Stack Effort by id or slug, including manifest, registry record, workspace path refs, machine-readable artifact_inventory, parsed acceptance_packet when present, typed optimizer_candidates, typed run_evidence, typed benchmark intakes, typed release_artifacts, remaining_work, latest progress/activity, historical blocker tail, unresolved blocker tail, and bound meta-thread context.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
@@ -5006,8 +5299,20 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.getEffort(args),
     },
     {
+      name: "stack_effort_remaining",
+      description: "Answer what remains for one Effort: parsed acceptance state, open acceptance levels, latest unresolved blocker, next safe actions, and key handoff/acceptance paths. Use this before handoff, resumption, or deciding whether A-level proof can be recorded.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.getEffortRemaining(args),
+    },
+    {
       name: "stack_effort_audit",
-      description: "Run a read-only coherence audit for one Effort: scaffold, manifest/registry agreement, research-log shape, timelines, blockers, human context, idea origin tags, promoted idea backlinks, findings, receipt sidecars, handoff packet, acceptance packet, acceptance criteria coverage, task-classifier A0/A1 v1-bar evidence, optional hosted/SMR/Tinker graduation coverage, refs, and meta-thread effort_ref back-links.",
+      description: "Run a read-only coherence audit for one Effort: scaffold, manifest/registry agreement, research-log shape, timelines, blockers, human context, idea origin tags, promoted idea backlinks, findings, receipt sidecars and digest integrity, handoff packet, acceptance packet, acceptance criteria coverage, declared claim requirements for recorded levels, refs, and meta-thread effort_ref back-links.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
@@ -5029,6 +5334,18 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["effort_ref"],
       ),
       handler: (args) => server.getEffortActivity(args),
+    },
+    {
+      name: "stack_effort_refresh_receipts",
+      description: "Refresh local digest metadata for existing receipt-backed Effort findings. Use after local/ad-hoc findings or nested proof directories changed and stack_effort_audit reports finding_receipt_digests drift.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.refreshEffortReceiptDigests(args),
     },
     {
       name: "stack_effort_create",
@@ -5109,7 +5426,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_record_acceptance",
-      description: "Record or update one acceptance level in an Effort's findings/results/acceptance-summary.md and append a typed acceptance activity receipt. Use this after concrete proof artifacts, receipts, or run ids exist for A0/A1/A2/A3/A4-style acceptance evidence.",
+      description: "Record or update one acceptance level in an Effort's findings/results/acceptance-summary.md and append a typed acceptance activity receipt. Use this after concrete proof artifacts, receipts, or run ids exist. When the Effort declares a claim for the level, recorded updates are rejected until the claim's declared needs_refs and needs_evidence requirements are satisfied; use pending while proof is partial.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
@@ -5271,6 +5588,31 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.recordEffortCapture(args),
     },
     {
+      name: "stack_effort_record_benchmark",
+      description: "Record first-class benchmark intake metadata under findings/data with optional local or pulled source receipt provenance. Use this when adopting or downloading a benchmark so source, license, task shape, splits, and metrics survive handoffs.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          title: stringProperty("Optional benchmark intake title. Defaults from name, version, or benchmark id."),
+          benchmark_id: stringProperty("Optional benchmark id, slug, or registry key."),
+          name: stringProperty("Optional benchmark display name. Defaults from title or benchmark_id."),
+          version: stringProperty("Optional benchmark version, snapshot, commit, or date."),
+          source: stringProperty("Optional benchmark source URL, repo, registry ref, or citation."),
+          license: stringProperty("Optional license or access constraint."),
+          task_shape: stringProperty("Optional task shape summary, such as classifier, agentic, non-verifiable, or long-horizon."),
+          splits: arrayProperty("Optional split names or split policy, such as train, visible, heldout."),
+          metrics: arrayProperty("Optional metric names or score definitions."),
+          body: stringProperty("Optional markdown notes about ingestion, caveats, provenance, or processing."),
+          path: stringProperty("Optional local benchmark metadata/source path. Relative paths first resolve inside the Effort folder, then from Stack workingDir."),
+          receipt_path: stringProperty("Optional stack_pull_artifact receipt path. Mutually exclusive with path; records pulled workspace_path and hosted/saved receipt metadata."),
+          filename: stringProperty("Optional target filename under findings/data/."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.recordEffortBenchmark(args),
+    },
+    {
       name: "stack_effort_record_optimizer_candidate",
       description: "Record a typed optimizer candidate/score artifact under an Effort's findings/proof folder. Use this for GEPA or hosted optimizer candidates when candidate id, score, split, and source artifact provenance matter more than a generic optimizer capture.",
       inputSchema: objectSchema(
@@ -5293,12 +5635,67 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.recordEffortOptimizerCandidate(args),
     },
     {
-      name: "stack_effort_update_refs",
-      description: "Attach durable external refs to an Effort manifest: Factory/Effort/Project ids, optimizer run id, SMR run id, Tinker run id, repo ref, or initiative id. This records ids only; use findings for artifact evidence.",
+      name: "stack_effort_record_run_evidence",
+      description: "Record typed run proof under an Effort's findings/proof folder for any run system (smr, tinker, local, ...). This attaches the run/project refs, tags an optional claim label, and preserves pulled-artifact or local source receipt provenance; record it before recording a claim that requires run evidence.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
           effort_ref: stringProperty("Effort id or slug."),
+          run_kind: stringProperty("Run evidence kind: an open lowercase identifier for the run system, such as smr for hosted harness runs, tinker for training-style runs, or local for local harness runs."),
+          title: stringProperty("Optional evidence title. Defaults from run kind, run id, and metric."),
+          run_id: stringProperty("Optional SMR or Tinker run id. When receipt_path is provided, defaults from the receipt run id when available."),
+          project_id: stringProperty("Optional Synth project id. When receipt_path is provided, defaults from the receipt project id when available."),
+          output_id: stringProperty("Optional WorkProduct/artifact/model output id."),
+          artifact_name: stringProperty("Optional artifact or scorecard name."),
+          metric: stringProperty("Optional metric/result string, such as heldout accuracy 0.86."),
+          acceptance_level: stringProperty("Optional acceptance lane this evidence supports, such as A3 or A4."),
+          body: stringProperty("Optional markdown notes about the run evidence."),
+          path: stringProperty("Optional local run evidence path. Relative paths first resolve inside the Effort folder, then from Stack workingDir."),
+          receipt_path: stringProperty("Optional stack_pull_artifact receipt path. Mutually exclusive with path; records pulled workspace_path and hosted/saved receipt metadata."),
+          filename: stringProperty("Optional target filename."),
+        },
+        ["effort_ref", "run_kind"],
+      ),
+      handler: (args) => server.recordEffortRunEvidence(args),
+    },
+    {
+      name: "stack_effort_record_release_artifact",
+      description: "Record typed release artifact proof under an Effort's findings/proof folder. Use this for Stack release/nightly tarball summaries or manifests so version, target, sha256, size, publishability, and receipt provenance survive handoffs.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          title: stringProperty("Optional release artifact title. Defaults from version and target."),
+          version: stringProperty("Optional release or dev version. When path points at package_release_artifact summary JSON, defaults from that file."),
+          channel: stringProperty("Optional release channel, such as nightly, dev, or stable."),
+          target: stringProperty("Optional target triple, such as aarch64-apple-darwin."),
+          archive: stringProperty("Optional archive path or URL."),
+          sha256: stringProperty("Optional archive sha256."),
+          size: stringProperty("Optional archive size in bytes."),
+          manifest: stringProperty("Optional manifest path or URL."),
+          release_site: stringProperty("Optional release-site path or URL."),
+          publishable: { type: "boolean", description: "Optional publishable flag from the artifact summary." },
+          publish_blockers: arrayProperty("Optional publish blockers from the artifact summary."),
+          body: stringProperty("Optional markdown notes about packaging, publish caveats, or manifest decisions."),
+          path: stringProperty("Optional local release artifact summary/manifest path. Relative paths first resolve inside the Effort folder, then from Stack workingDir."),
+          receipt_path: stringProperty("Optional stack_pull_artifact receipt path. Mutually exclusive with path; records pulled workspace_path and hosted/saved receipt metadata."),
+          filename: stringProperty("Optional target filename."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.recordEffortReleaseArtifact(args),
+    },
+    {
+      name: "stack_effort_update_refs",
+      description: "Attach durable external system refs to an Effort manifest as {system, id, lane, role} entries. Use system/id/lane for any external system (smr, tinker, optimizer, factory, project, github.pr, ...); the named *_id fields are conveniences for common systems. This records ids only; use findings for artifact evidence.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          system: stringProperty("Optional external system for a generic ref, such as smr, tinker, optimizer, factory, project, or github.pr. Requires id."),
+          id: stringProperty("Optional external id for the generic system ref."),
+          lane: stringProperty("Optional lane for the ref: hosted or local. Also applies to the named *_id conveniences."),
+          role: stringProperty("Optional free-form role label for the generic ref."),
           factory_id: stringProperty("Optional Synth Factory id to set or replace."),
           hosted_effort_id: stringProperty("Optional hosted/backend Effort id to set or replace."),
           project_id: stringProperty("Optional Synth project id to set or replace."),
@@ -6056,6 +6453,9 @@ function optionalEffortStatusOrAll(args: JsonObject, key: string): StackEffortSt
 function requiredEffortStatus(args: JsonObject, key: string): StackEffortStatus {
   const value = requiredString(args, key)
   if (STACK_EFFORT_STATUSES.includes(value as StackEffortStatus)) return value as StackEffortStatus
+  if (value === "blocked") {
+    throw new RpcError(-32602, "Efforts never use status=blocked; keep the Effort active or paused and record the blocker with stack_effort_record_blocker")
+  }
   throw new RpcError(-32602, `${key} must be active, paused, done, or archived`)
 }
 
@@ -6076,6 +6476,12 @@ function requiredEffortCaptureKind(args: JsonObject, key: string): StackEffortCa
   const value = requiredString(args, key)
   if (STACK_EFFORT_CAPTURE_KINDS.includes(value as StackEffortCaptureKind)) return value as StackEffortCaptureKind
   throw new RpcError(-32602, `${key} must be terminal, browser, screenshot, video, local, monitor, memory, text, benchmark, or optimizer`)
+}
+
+function requiredEffortRunEvidenceKind(args: JsonObject, key: string): string {
+  const value = requiredString(args, key)
+  if (/^[a-z][a-z0-9_-]*$/.test(value)) return value
+  throw new RpcError(-32602, `${key} must be a lowercase identifier like smr, tinker, or local`)
 }
 
 function optionalEffortIdeaOrigin(args: JsonObject, key: string): StackEffortIdeaOrigin | undefined {

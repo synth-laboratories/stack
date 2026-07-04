@@ -7,6 +7,7 @@ export const MAX_RIGHT_PANEL_WIDTH_FRACTION = 0.45
 
 export const LIGHTS_PANEL_SECTION_IDS = [
   "threads",
+  "efforts",
   "gardeners",
   "actors",
   "cloud",

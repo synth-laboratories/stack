@@ -8,6 +8,7 @@ import {
 } from "./client/stackd.js"
 import { formatTokenTotal, sessionTokenTotal } from "./codex/usage-cost.js"
 import {
+  STACK_EFFORT_STATUSES,
   appendEffortProgress,
   appendEffortResearchLog,
   auditEffort,
@@ -20,19 +21,26 @@ import {
   readEffortAcceptancePacket,
   readEffort,
   readEffortActivityTail,
+  readEffortBenchmarkSummaries,
   readEffortBlockerTail,
   readEffortOpenBlockerTail,
   readEffortOptimizerCandidateSummaries,
   readEffortProgressTail,
+  readEffortReleaseArtifactSummaries,
   readEffortRemainingWork,
+  readEffortRunEvidenceSummaries,
+  refreshEffortReceiptDigests,
   recordEffortAcceptance,
+  recordEffortBenchmark,
   recordEffortBlocker,
   recordEffortCapture,
   recordEffortFinding,
   recordEffortIdea,
   recordEffortNote,
   recordEffortOptimizerCandidate,
+  recordEffortReleaseArtifact,
   recordEffortRepo,
+  recordEffortRunEvidence,
   resolveEffortBlocker,
   updateEffortRefs,
   updateEffortStatus,
@@ -43,6 +51,7 @@ import {
   type StackEffortAcceptanceUpdateState,
   type StackEffortAudit,
   type StackEffortAuditStatus,
+  type StackEffortBenchmarkSummary,
   type StackEffortBlockerRecord,
   type StackEffortCaptureKind,
   type StackEffort,
@@ -51,7 +60,9 @@ import {
   type StackEffortIdeaOrigin,
   type StackEffortNoteKind,
   type StackEffortOptimizerCandidateSummary,
+  type StackEffortReleaseArtifactSummary,
   type StackEffortRemainingWork,
+  type StackEffortRunEvidenceSummary,
   type StackEffortSummary,
   type StackEffortStatus,
   type StackEffortTemplateSummary,
@@ -127,6 +138,15 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       return 0
     }
 
+    if (action === "remaining" || action === "remains" || action === "what-remains") {
+      const ref = parsed.args[0]
+      if (!ref) return usageError("usage: stack effort remaining <effort> [--json]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      printEffortRemaining(effort, json)
+      return 0
+    }
+
     if (action === "audit" || action === "check") {
       const ref = parsed.args[0]
       if (!ref) return usageError("usage: stack effort audit <effort> [--json]")
@@ -142,6 +162,31 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       const effort = readEffort(config, ref)
       if (!effort) return notFound(ref)
       printEffortActivity(effort, readFlagInteger(parsed, "limit") ?? 20, json)
+      return 0
+    }
+
+    if (action === "refresh-receipts" || action === "receipt-refresh" || action === "receipts") {
+      const ref = parsed.args[0]
+      if (!ref) return usageError("usage: stack effort refresh-receipts <effort> [--json]")
+      const result = refreshEffortReceiptDigests({ ...config, effortRef: ref })
+      if (json) {
+        console.log(JSON.stringify({
+          receipt_refresh: {
+            checked: result.checked,
+            updated: result.updated,
+            skipped: result.skipped,
+            refreshed: result.refreshed,
+          },
+          effort: result.effort,
+        }, null, 2))
+      } else {
+        console.log(`receipt digests: ${result.updated} updated - ${result.checked} checked - ${result.skipped.length} skipped`)
+        for (const entry of result.refreshed.slice(0, 10)) {
+          console.log(`  refreshed ${entry.sidecar_path} -> ${entry.finding_path}`)
+        }
+        if (result.refreshed.length > 10) console.log(`  ... ${result.refreshed.length - 10} more`)
+        await printEffort(config, result.effort, false)
+      }
       return 0
     }
 
@@ -298,10 +343,17 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
 
     if (action === "refs" || action === "link") {
       const ref = parsed.args[0]
-      if (!ref) return usageError("usage: stack effort refs <effort> [--factory-id <id>] [--hosted-effort-id <id>] [--project-id <id>] [--optimizer-run-id <id>] [--smr-run-id <id>] [--tinker-run-id <id>] [--repo-ref <ref>] [--initiative-id <id>]")
+      if (!ref) return usageError("usage: stack effort refs <effort> [--system <system> --id <id> [--role <role>]] [--lane hosted|local] [--factory-id <id>] [--hosted-effort-id <id>] [--project-id <id>] [--optimizer-run-id <id>] [--smr-run-id <id>] [--tinker-run-id <id>] [--repo-ref <ref>] [--initiative-id <id>]")
+      const system = readFlagString(parsed, "system")
+      const refId = readFlagString(parsed, "id")
+      if ((system && !refId) || (!system && refId)) return usageError("provide --system and --id together")
       const effort = updateEffortRefs({
         ...config,
         effortRef: ref,
+        refs: system && refId
+          ? [{ system, id: refId, lane: readFlagString(parsed, "lane"), role: readFlagString(parsed, "role") }]
+          : undefined,
+        refLane: readFlagString(parsed, "lane"),
         factoryId: readFlagString(parsed, "factory-id"),
         hostedEffortId: readFlagString(parsed, "hosted-effort-id"),
         projectId: readFlagString(parsed, "project-id"),
@@ -318,7 +370,9 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
     if (action === "status") {
       const [ref, status] = parsed.args
       if (!ref || !status) return usageError("usage: stack effort status <effort> <active|paused|done|archived>")
-      const effort = updateEffortStatus({ ...config, effortRef: ref, status: status as StackEffortStatus })
+      const parsedStatus = parseCliEffortStatus(status)
+      if (!parsedStatus.ok) return usageError(parsedStatus.message)
+      const effort = updateEffortStatus({ ...config, effortRef: ref, status: parsedStatus.status })
       await printEffort(config, effort, json)
       return 0
     }
@@ -441,6 +495,48 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       return 0
     }
 
+    if (action === "benchmark") {
+      const ref = parsed.args[0]
+      const title = readFlagString(parsed, "title") ?? parsed.args.slice(1).join(" ").trim()
+      if (!ref) return usageError("usage: stack effort benchmark <effort> [title] [--benchmark-id <id>] [--name <name>] [--version <version>] [--source <url-or-ref>] [--license <license>] [--task-shape <text>] [--split <name>] [--metric <name>] [--path <path>|--receipt-path <path>] [--body <text>]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const rawSourcePath = readFlagString(parsed, "path")
+      const receiptPath = readFlagString(parsed, "receipt-path")
+      if (rawSourcePath && receiptPath) return usageError("provide --path or --receipt-path, not both")
+      const artifactReceipt = receiptPath ? await readRoundTripPullReceipt(config, receiptPath) : undefined
+      const result = recordEffortBenchmark({
+        ...config,
+        effortRef: effort.manifest.id,
+        title,
+        benchmarkId: readFlagString(parsed, "benchmark-id"),
+        name: readFlagString(parsed, "name"),
+        version: readFlagString(parsed, "version"),
+        source: readFlagString(parsed, "source"),
+        license: readFlagString(parsed, "license"),
+        taskShape: readFlagString(parsed, "task-shape"),
+        splits: readFlagList(parsed, "split"),
+        metrics: readFlagList(parsed, "metric"),
+        body: readFlagString(parsed, "body"),
+        sourcePath: artifactReceipt
+          ? artifactReceipt.workspace_path
+          : rawSourcePath ? resolveCliEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined,
+        sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+        filename: readFlagString(parsed, "filename"),
+      })
+      await printArtifactResult(config, result.effort, result.path, json, artifactReceipt, result.sourceReceiptPath, result.sourceReceipt, {
+        benchmark_id: result.benchmarkId,
+        name: result.name,
+        version: result.version,
+        source: result.source,
+        license: result.license,
+        task_shape: result.taskShape,
+        splits: result.splits,
+        metrics: result.metrics,
+      })
+      return 0
+    }
+
     if (action === "optimizer-candidate" || action === "candidate") {
       const ref = parsed.args[0]
       const title = readFlagString(parsed, "title") ?? parsed.args.slice(1).join(" ").trim()
@@ -477,6 +573,93 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       return 0
     }
 
+    if (action === "run-evidence" || action === "smr-evidence" || action === "tinker-evidence") {
+      const ref = parsed.args[0]
+      const title = readFlagString(parsed, "title") ?? parsed.args.slice(1).join(" ").trim()
+      if (!ref) return usageError("usage: stack effort run-evidence <effort> [title] --run-kind <system> [--run-id <id>] [--project-id <id>] [--output-id <id>] [--artifact-name <name>] [--metric <text>] [--acceptance-level <claim>] [--path <path>|--receipt-path <path>] [--body <text>]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const rawSourcePath = readFlagString(parsed, "path")
+      const receiptPath = readFlagString(parsed, "receipt-path")
+      if (rawSourcePath && receiptPath) return usageError("provide --path or --receipt-path, not both")
+      const artifactReceipt = receiptPath ? await readRoundTripPullReceipt(config, receiptPath) : undefined
+      const runKind = readRunEvidenceKind(parsed, action)
+      const result = recordEffortRunEvidence({
+        ...config,
+        effortRef: effort.manifest.id,
+        runKind,
+        title,
+        runId: readFlagString(parsed, "run-id"),
+        projectId: readFlagString(parsed, "project-id"),
+        outputId: readFlagString(parsed, "output-id"),
+        artifactName: readFlagString(parsed, "artifact-name"),
+        metric: readFlagString(parsed, "metric"),
+        acceptanceLevel: readFlagString(parsed, "acceptance-level"),
+        body: readFlagString(parsed, "body"),
+        sourcePath: artifactReceipt
+          ? artifactReceipt.workspace_path
+          : rawSourcePath ? resolveCliEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined,
+        sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+        filename: readFlagString(parsed, "filename"),
+      })
+      await printArtifactResult(config, result.effort, result.path, json, artifactReceipt, result.sourceReceiptPath, result.sourceReceipt, {
+        run_kind: result.runKind,
+        run_id: result.runId,
+        project_id: result.projectId,
+        output_id: result.outputId,
+        artifact_name: result.artifactName,
+        metric: result.metric,
+        acceptance_level: result.acceptanceLevel,
+      })
+      return 0
+    }
+
+    if (action === "release-artifact" || action === "release-proof") {
+      const ref = parsed.args[0]
+      const title = readFlagString(parsed, "title") ?? parsed.args.slice(1).join(" ").trim()
+      if (!ref) return usageError("usage: stack effort release-artifact <effort> [title] [--version <version>] [--channel <channel>] [--target <triple>] [--archive <path-or-url>] [--sha256 <hex>] [--size <bytes>] [--manifest <path-or-url>] [--release-site <path-or-url>] [--publishable true|false] [--publish-blocker <text>] [--path <path>|--receipt-path <path>] [--body <text>]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const rawSourcePath = readFlagString(parsed, "path")
+      const receiptPath = readFlagString(parsed, "receipt-path")
+      if (rawSourcePath && receiptPath) return usageError("provide --path or --receipt-path, not both")
+      const artifactReceipt = receiptPath ? await readRoundTripPullReceipt(config, receiptPath) : undefined
+      const result = recordEffortReleaseArtifact({
+        ...config,
+        effortRef: effort.manifest.id,
+        title,
+        version: readFlagString(parsed, "version"),
+        channel: readFlagString(parsed, "channel"),
+        target: readFlagString(parsed, "target"),
+        archive: readFlagString(parsed, "archive"),
+        sha256: readFlagString(parsed, "sha256"),
+        size: readFlagString(parsed, "size"),
+        manifest: readFlagString(parsed, "manifest"),
+        releaseSite: readFlagString(parsed, "release-site"),
+        publishable: readFlagBoolean(parsed, "publishable"),
+        publishBlockers: readFlagList(parsed, "publish-blocker"),
+        body: readFlagString(parsed, "body"),
+        sourcePath: artifactReceipt
+          ? artifactReceipt.workspace_path
+          : rawSourcePath ? resolveCliEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined,
+        sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+        filename: readFlagString(parsed, "filename"),
+      })
+      await printArtifactResult(config, result.effort, result.path, json, artifactReceipt, result.sourceReceiptPath, result.sourceReceipt, {
+        version: result.version,
+        channel: result.channel,
+        target: result.target,
+        archive: result.archive,
+        sha256: result.sha256,
+        size: result.size,
+        manifest: result.manifest,
+        release_site: result.releaseSite,
+        publishable: result.publishable,
+        publish_blockers: result.publishBlockers,
+      })
+      return 0
+    }
+
     printEffortUsage()
     return 2
   } catch (error) {
@@ -497,9 +680,7 @@ type EffortCliListItem = StackEffortSummary & {
   ref_counts: {
     meta_threads: number
     repos: number
-    optimizer_runs: number
-    smr_runs: number
-    tinker_runs: number
+    external_refs: number
   }
   artifact_counts: {
     total: number
@@ -510,6 +691,9 @@ type EffortCliListItem = StackEffortSummary & {
   has_acceptance_summary: boolean
   acceptance_packet: StackEffortAcceptancePacket | null
   latest_optimizer_candidate: StackEffortOptimizerCandidateSummary | null
+  latest_run_evidence: StackEffortRunEvidenceSummary | null
+  latest_benchmark: StackEffortBenchmarkSummary | null
+  latest_release_artifact: StackEffortReleaseArtifactSummary | null
   remaining_work: StackEffortRemainingWork
 }
 
@@ -530,9 +714,7 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
         ref_counts: {
           meta_threads: summary.meta_thread_refs.length,
           repos: 0,
-          optimizer_runs: summary.hosted_refs.optimizer_run_ids.length,
-          smr_runs: summary.hosted_refs.smr_run_ids.length,
-          tinker_runs: summary.hosted_refs.tinker_run_ids.length,
+          external_refs: summary.refs.length,
         },
         artifact_counts: {
           total: 0,
@@ -543,6 +725,9 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
         has_acceptance_summary: false,
         acceptance_packet: null,
         latest_optimizer_candidate: null,
+        latest_run_evidence: null,
+        latest_benchmark: null,
+        latest_release_artifact: null,
         remaining_work: missingEffortRemainingWork(),
       }
     }
@@ -554,6 +739,9 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
     const artifactInventory = effortArtifactInventory(effort)
     const acceptancePacket = readEffortAcceptancePacket(effort) ?? null
     const optimizerCandidates = readEffortOptimizerCandidateSummaries(effort, 1)
+    const runEvidence = readEffortRunEvidenceSummaries(effort, 1)
+    const benchmarks = readEffortBenchmarkSummaries(effort, 1)
+    const releaseArtifacts = readEffortReleaseArtifactSummaries(effort, 1)
     const remainingWork = readEffortRemainingWork(effort)
     return {
       ...summary,
@@ -568,9 +756,7 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
       ref_counts: {
         meta_threads: effort.manifest.links.meta_thread_refs.length,
         repos: effort.manifest.links.repo_refs.length,
-        optimizer_runs: effort.manifest.hosted.optimizer_run_ids.length,
-        smr_runs: effort.manifest.hosted.smr_run_ids.length,
-        tinker_runs: effort.manifest.hosted.tinker_run_ids.length,
+        external_refs: effort.manifest.refs.length,
       },
       artifact_counts: {
         total: artifactInventory.counts.total,
@@ -581,6 +767,9 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
       has_acceptance_summary: Boolean(paths.acceptance_summary),
       acceptance_packet: acceptancePacket,
       latest_optimizer_candidate: optimizerCandidates[optimizerCandidates.length - 1] ?? null,
+      latest_run_evidence: runEvidence[runEvidence.length - 1] ?? null,
+      latest_benchmark: benchmarks[benchmarks.length - 1] ?? null,
+      latest_release_artifact: releaseArtifacts[releaseArtifacts.length - 1] ?? null,
       remaining_work: remainingWork,
     }
   })
@@ -611,6 +800,15 @@ function printEffortList(efforts: EffortCliListItem[]): void {
       if (effort.latest_optimizer_candidate) {
         console.log(`    candidate: ${formatOptimizerCandidateCompact(effort.latest_optimizer_candidate)}`)
       }
+      if (effort.latest_run_evidence) {
+        console.log(`    run evidence: ${formatRunEvidenceCompact(effort.latest_run_evidence)}`)
+      }
+      if (effort.latest_benchmark) {
+        console.log(`    benchmark: ${formatBenchmarkCompact(effort.latest_benchmark)}`)
+      }
+      if (effort.latest_release_artifact) {
+        console.log(`    release: ${formatReleaseArtifactCompact(effort.latest_release_artifact)}`)
+      }
       if (effort.remaining_work.state === "open") {
         console.log(`    remaining: ${clipCli(effort.remaining_work.summary, 150)}`)
       }
@@ -632,9 +830,7 @@ function formatEffortListAudit(effort: EffortCliListItem): string {
 function formatEffortListRefs(effort: EffortCliListItem): string[] {
   const refs: string[] = []
   if (effort.ref_counts.repos > 0) refs.push(`repos ${effort.ref_counts.repos}`)
-  if (effort.ref_counts.optimizer_runs > 0) refs.push(`optimizer ${effort.ref_counts.optimizer_runs}`)
-  if (effort.ref_counts.smr_runs > 0) refs.push(`smr ${effort.ref_counts.smr_runs}`)
-  if (effort.ref_counts.tinker_runs > 0) refs.push(`tinker ${effort.ref_counts.tinker_runs}`)
+  if (effort.ref_counts.external_refs > 0) refs.push(`refs ${effort.ref_counts.external_refs}`)
   if (effort.has_handoff) refs.push("handoff")
   if (effort.acceptance_packet) refs.push(`acceptance ${formatAcceptancePacketCompact(effort.acceptance_packet)}`)
   else if (effort.has_acceptance_summary) refs.push("acceptance")
@@ -649,8 +845,35 @@ function formatAcceptancePacketCompact(packet: StackEffortAcceptancePacket): str
 }
 
 function formatOptimizerCandidateCompact(candidate: StackEffortOptimizerCandidateSummary): string {
-  const score = `${candidate.score_label || "score"} ${candidate.score}`
-  return `${candidate.candidate_id} - ${score} - ${candidate.split} - run ${candidate.optimizer_run_id} - ${candidate.path}`
+  const parts = [
+    candidate.candidate_id,
+    candidate.score ? `${candidate.score_label || "score"} ${candidate.score}` : "",
+    candidate.split ?? "",
+    `run ${candidate.optimizer_run_id}`,
+    candidate.path,
+  ].filter(Boolean)
+  return parts.join(" - ")
+}
+
+function formatRunEvidenceCompact(evidence: StackEffortRunEvidenceSummary): string {
+  const metric = evidence.metric ? ` - ${evidence.metric}` : ""
+  const level = evidence.acceptance_level ? ` - ${evidence.acceptance_level}` : ""
+  return `${evidence.run_kind} - run ${evidence.run_id}${metric}${level} - ${evidence.path}`
+}
+
+function formatBenchmarkCompact(benchmark: StackEffortBenchmarkSummary): string {
+  const id = benchmark.benchmark_id ? `${benchmark.benchmark_id} - ` : ""
+  const version = benchmark.version ? ` - ${benchmark.version}` : ""
+  const metrics = benchmark.metrics.length > 0 ? ` - metrics ${benchmark.metrics.join(", ")}` : ""
+  return `${id}${benchmark.name}${version}${metrics} - ${benchmark.path}`
+}
+
+function formatReleaseArtifactCompact(artifact: StackEffortReleaseArtifactSummary): string {
+  const version = artifact.version ? `${artifact.version} - ` : ""
+  const target = artifact.target ? ` - ${artifact.target}` : ""
+  const sha = artifact.sha256 ? ` - sha256 ${artifact.sha256}` : ""
+  const publishable = artifact.publishable !== undefined ? ` - publishable ${artifact.publishable}` : ""
+  return `${version}${artifact.path}${target}${sha}${publishable}`
 }
 
 function formatRemainingWorkLine(remaining: StackEffortRemainingWork): string {
@@ -702,6 +925,9 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   const openBlockerTail = readEffortOpenBlockerTail(effort, 5)
   const acceptancePacket = readEffortAcceptancePacket(effort) ?? null
   const optimizerCandidates = readEffortOptimizerCandidateSummaries(effort, 5)
+  const runEvidence = readEffortRunEvidenceSummaries(effort, 5)
+  const benchmarks = readEffortBenchmarkSummaries(effort, 5)
+  const releaseArtifacts = readEffortReleaseArtifactSummaries(effort, 5)
   const remainingWork = readEffortRemainingWork(effort)
   const boundMetaThreads = await readBoundMetaThreadSummaries(config, effort)
   if (json) {
@@ -718,6 +944,9 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
       open_blocker_tail: openBlockerTail,
       acceptance_packet: acceptancePacket,
       optimizer_candidates: optimizerCandidates,
+      run_evidence: runEvidence,
+      benchmarks,
+      release_artifacts: releaseArtifacts,
       remaining_work: remainingWork,
       bound_meta_threads: boundMetaThreads,
     }, null, 2))
@@ -736,17 +965,12 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
       console.log(`  ${formatBoundMetaThreadLine(thread)}`)
     }
   }
-  if (effort.manifest.hosted.factory_id) console.log(`factory: ${effort.manifest.hosted.factory_id}`)
-  if (effort.manifest.hosted.effort_id) console.log(`hosted-effort: ${effort.manifest.hosted.effort_id}`)
-  if (effort.manifest.hosted.project_id) console.log(`project: ${effort.manifest.hosted.project_id}`)
-  if (effort.manifest.hosted.optimizer_run_ids.length > 0) {
-    console.log(`optimizer-runs: ${effort.manifest.hosted.optimizer_run_ids.join(", ")}`)
-  }
-  if (effort.manifest.hosted.smr_run_ids.length > 0) {
-    console.log(`smr-runs: ${effort.manifest.hosted.smr_run_ids.join(", ")}`)
-  }
-  if (effort.manifest.hosted.tinker_run_ids.length > 0) {
-    console.log(`tinker-runs: ${effort.manifest.hosted.tinker_run_ids.join(", ")}`)
+  if (effort.manifest.refs.length > 0) {
+    console.log("refs:")
+    for (const ref of effort.manifest.refs) {
+      const suffix = [ref.lane ? `lane=${ref.lane}` : "", ref.role ? `role=${ref.role}` : ""].filter(Boolean).join(" ")
+      console.log(`  ${ref.system}: ${ref.id}${suffix ? ` (${suffix})` : ""}`)
+    }
   }
   if (effort.manifest.links.repo_refs.length > 0) {
     console.log(`repos: ${effort.manifest.links.repo_refs.join(", ")}`)
@@ -774,6 +998,27 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
     for (const candidate of optimizerCandidates) {
       const receipt = candidate.source_receipt_path ? ` - receipt ${candidate.source_receipt_path}` : ""
       console.log(`  ${formatOptimizerCandidateCompact(candidate)}${receipt}`)
+    }
+  }
+  if (runEvidence.length > 0) {
+    console.log("run evidence:")
+    for (const evidence of runEvidence) {
+      const receipt = evidence.source_receipt_path ? ` - receipt ${evidence.source_receipt_path}` : ""
+      console.log(`  ${formatRunEvidenceCompact(evidence)}${receipt}`)
+    }
+  }
+  if (benchmarks.length > 0) {
+    console.log("benchmarks:")
+    for (const benchmark of benchmarks) {
+      const receipt = benchmark.source_receipt_path ? ` - receipt ${benchmark.source_receipt_path}` : ""
+      console.log(`  ${formatBenchmarkCompact(benchmark)}${receipt}`)
+    }
+  }
+  if (releaseArtifacts.length > 0) {
+    console.log("release artifacts:")
+    for (const artifact of releaseArtifacts) {
+      const receipt = artifact.source_receipt_path ? ` - receipt ${artifact.source_receipt_path}` : ""
+      console.log(`  ${formatReleaseArtifactCompact(artifact)}${receipt}`)
     }
   }
   if (remainingWork.state !== "untracked") {
@@ -804,6 +1049,46 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
     console.log("recorded blockers:")
     for (const blocker of blockerTail) console.log(`  ${formatBlockerLine(blocker)}`)
   }
+}
+
+function printEffortRemaining(effort: StackEffort, json: boolean): void {
+  const paths = effortPathRefs(effort)
+  const remaining = readEffortRemainingWork(effort)
+  const acceptancePacket = readEffortAcceptancePacket(effort) ?? null
+  const latestBlocker = readEffortOpenBlockerTail(effort, 1)[0] ?? null
+  if (json) {
+    console.log(JSON.stringify({
+      ok: true,
+      effort_id: effort.manifest.id,
+      slug: effort.manifest.slug,
+      status: effort.manifest.status,
+      folder_ref: effort.registry.folder_ref,
+      paths,
+      acceptance_packet: acceptancePacket,
+      remaining_work: remaining,
+      latest_blocker: latestBlocker,
+    }, null, 2))
+    return
+  }
+  console.log(`${effort.manifest.slug} remaining - ${remaining.state} - ${remaining.summary}`)
+  if (acceptancePacket) console.log(`acceptance: ${acceptancePacket.summary}`)
+  if (remaining.open_acceptance.length > 0) {
+    console.log("open acceptance:")
+    for (const level of remaining.open_acceptance) {
+      const required = level.required_for_v1 ? " required-v1" : ""
+      console.log(`  ${level.label}: ${level.title} - ${level.status}${required}`)
+    }
+  }
+  if (latestBlocker) {
+    console.log("latest blocker:")
+    console.log(`  ${formatBlockerLine(latestBlocker)}`)
+  }
+  if (remaining.next_actions.length > 0) {
+    console.log("next actions:")
+    for (const action of remaining.next_actions) console.log(`  ${action}`)
+  }
+  console.log(`handoff: ${paths.handoff}`)
+  if (paths.acceptance_summary) console.log(`acceptance-summary: ${paths.acceptance_summary}`)
 }
 
 async function printArtifactResult(
@@ -1007,8 +1292,10 @@ function printEffortUsage(): void {
   console.error("  stack effort list [--json]")
   console.error("  stack effort templates [--json]")
   console.error("  stack effort show <effort> [--json]")
+  console.error("  stack effort remaining <effort> [--json]")
   console.error("  stack effort audit <effort> [--json]")
   console.error("  stack effort activity <effort> [--limit <n>] [--json]")
+  console.error("  stack effort refresh-receipts <effort> [--json]")
   console.error("  stack effort bind <effort> <meta-thread-id>")
   console.error("  stack effort progress <effort> <message>")
   console.error("  stack effort blocker <effort> --blocker <text> --evidence <text> --owner <owner> --next <text>")
@@ -1023,9 +1310,25 @@ function printEffortUsage(): void {
   console.error("  stack effort repo <effort> --path <path> [--repo-ref <ref>] [--title <title>] [--filename <name>]")
   console.error("  stack effort finding <effort> [title] --kind idea|code|data|proof|result [--path <path>|--receipt-path <path>] [--body <text>]")
   console.error("  stack effort capture <effort> [title] --capture-kind terminal|browser|screenshot|video|local|monitor|memory|text|benchmark|optimizer [--kind idea|code|data|proof|result] [--path <path>|--receipt-path <path>|--body <text>]")
+  console.error("  stack effort benchmark <effort> [title] [--benchmark-id <id>] [--name <name>] [--version <version>] [--source <url-or-ref>] [--license <license>] [--task-shape <text>] [--split <name>] [--metric <name>] [--path <path>|--receipt-path <path>] [--body <text>]")
   console.error("  stack effort optimizer-candidate <effort> [title] [--optimizer-run-id <id>] [--candidate-id <id>] [--score <value>] [--score-label <name>] [--split <name>] [--path <path>|--receipt-path <path>] [--body <text>]")
+  console.error("  stack effort run-evidence <effort> [title] --run-kind <system> [--run-id <id>] [--project-id <id>] [--output-id <id>] [--artifact-name <name>] [--metric <text>] [--acceptance-level <claim>] [--path <path>|--receipt-path <path>] [--body <text>]")
+  console.error("  stack effort release-artifact <effort> [title] [--version <version>] [--channel <channel>] [--target <triple>] [--archive <path-or-url>] [--sha256 <hex>] [--size <bytes>] [--manifest <path-or-url>] [--release-site <path-or-url>] [--publishable true|false] [--publish-blocker <text>] [--path <path>|--receipt-path <path>] [--body <text>]")
   console.error("  stack effort status <effort> <active|paused|done|archived>")
   console.error("  stack effort archive <effort>")
+}
+
+function parseCliEffortStatus(status: string): { ok: true; status: StackEffortStatus } | { ok: false; message: string } {
+  if (status === "blocked") {
+    return {
+      ok: false,
+      message: "Efforts never use status=blocked; keep the Effort active or paused and record the blocker with `stack effort blocker`.",
+    }
+  }
+  if (STACK_EFFORT_STATUSES.includes(status as StackEffortStatus)) {
+    return { ok: true, status: status as StackEffortStatus }
+  }
+  return { ok: false, message: "status must be active, paused, done, or archived" }
 }
 
 function printEffortTemplates(templates: StackEffortTemplateSummary[], json: boolean): void {
@@ -1074,6 +1377,22 @@ function parseFlags(argv: string[]): ParsedFlags {
 function readFlagString(parsed: ParsedFlags, name: string): string | undefined {
   const value = parsed.flags.get(name)
   return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+function readFlagBoolean(parsed: ParsedFlags, name: string): boolean | undefined {
+  const value = readFlagString(parsed, name)
+  if (!value) return undefined
+  const normalized = value.toLowerCase()
+  if (normalized === "true" || normalized === "1" || normalized === "yes") return true
+  if (normalized === "false" || normalized === "0" || normalized === "no") return false
+  throw new Error(`${name} must be true or false`)
+}
+
+function readRunEvidenceKind(parsed: ParsedFlags, action: string): string {
+  const value = readFlagString(parsed, "run-kind")
+    ?? (action === "smr-evidence" ? "smr" : action === "tinker-evidence" ? "tinker" : undefined)
+  if (value && /^[a-z][a-z0-9_-]*$/.test(value)) return value
+  throw new Error("run-kind must be a lowercase identifier like smr, tinker, or local")
 }
 
 function readFlagList(parsed: ParsedFlags, name: string): string[] | undefined {

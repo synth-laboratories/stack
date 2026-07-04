@@ -19,3 +19,32 @@ criteria = [
   "A4 synth-ai SMR/Tinker proof: Tinker run id or equivalent SMR proof refs are recorded when available.",
   "Handoff: HANDOFF.md summarizes status, bound threads, refs, progress, latest activity, recorded blockers, acceptance criteria, artifacts, risks, and next action.",
 ]
+
+[[claims]]
+label = "A0"
+title = "Effort walkthrough"
+required = true
+
+[[claims]]
+label = "A1"
+title = "local optimizer proof"
+required = true
+needs_evidence = [{ source_kind = "optimizer.candidate", under = "findings/proof" }]
+
+[[claims]]
+label = "A2"
+title = "hosted optimizer graduation"
+needs_refs = [{ system = "optimizer", lane = "hosted" }]
+needs_evidence = [{ source_kind = "optimizer.candidate", under = "findings/proof" }]
+
+[[claims]]
+label = "A3"
+title = "harness run proof"
+needs_refs = [{ system = "smr" }]
+needs_evidence = [{ source_kind = "run.smr", under = "findings/proof" }]
+
+[[claims]]
+label = "A4"
+title = "training run proof"
+needs_refs = [{ system = "tinker" }]
+needs_evidence = [{ source_kind = "run.tinker", under = "findings/proof" }]

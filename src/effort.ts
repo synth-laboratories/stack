@@ -25,6 +25,9 @@ export type StackEffortFindingKind = (typeof STACK_EFFORT_FINDING_KINDS)[number]
 export const STACK_EFFORT_CAPTURE_KINDS = ["terminal", "browser", "screenshot", "video", "local", "monitor", "memory", "text", "benchmark", "optimizer"] as const
 export type StackEffortCaptureKind = (typeof STACK_EFFORT_CAPTURE_KINDS)[number]
 
+export const STACK_EFFORT_REF_LANES = ["hosted", "local"] as const
+export type StackEffortRefLane = (typeof STACK_EFFORT_REF_LANES)[number]
+
 export const STACK_EFFORT_IDEA_ORIGINS = ["HUMAN", "AGENT", "MIXED"] as const
 export type StackEffortIdeaOrigin = (typeof STACK_EFFORT_IDEA_ORIGINS)[number]
 
@@ -40,13 +43,31 @@ export type StackEffortLinks = {
   initiative_id: string
 }
 
-export type StackEffortHostedRefs = {
-  factory_id: string
-  effort_id: string
-  project_id: string
-  optimizer_run_ids: string[]
-  smr_run_ids: string[]
-  tinker_run_ids: string[]
+export type StackEffortRef = {
+  system: string
+  id: string
+  lane: string
+  role: string
+}
+
+export type StackEffortClaimNeedsRef = {
+  system: string
+  lane: string
+  min: number
+}
+
+export type StackEffortClaimNeedsEvidence = {
+  source_kind: string
+  under: string
+  min: number
+}
+
+export type StackEffortClaim = {
+  label: string
+  title: string
+  required: boolean
+  needs_refs: StackEffortClaimNeedsRef[]
+  needs_evidence: StackEffortClaimNeedsEvidence[]
 }
 
 export type StackEffortAcceptance = {
@@ -62,7 +83,8 @@ export type StackEffortManifest = {
   status: StackEffortStatus
   topic: string
   links: StackEffortLinks
-  hosted: StackEffortHostedRefs
+  refs: StackEffortRef[]
+  claims: StackEffortClaim[]
   acceptance: StackEffortAcceptance
 }
 
@@ -75,7 +97,7 @@ export type StackEffortRegistryRecord = {
   status: StackEffortStatus
   folder_ref: string
   meta_thread_refs: string[]
-  hosted_refs: StackEffortHostedRefs
+  refs: StackEffortRef[]
   created_at: string
   updated_at: string
 }
@@ -152,9 +174,7 @@ export type StackEffortAudit = {
     human_ideas: number
     human_notes: number
     repo_refs: number
-    optimizer_runs: number
-    smr_runs: number
-    tinker_runs: number
+    external_refs: number
     receipt_sidecars: number
     findings: Record<"ideas" | "code" | "data" | "proof" | "results", number>
   }
@@ -170,7 +190,7 @@ export type StackEffortSummary = {
   status: StackEffortStatus
   folder_ref: string
   meta_thread_refs: string[]
-  hosted_refs: StackEffortHostedRefs
+  refs: StackEffortRef[]
   updated_at: string
 }
 
@@ -228,9 +248,82 @@ export type StackEffortOptimizerCandidateSummary = {
   observed_at: string
   optimizer_run_id: string
   candidate_id: string
-  score: string
+  score?: string
   score_label?: string
-  split: string
+  split?: string
+  path: string
+  source_receipt_path?: string
+  source_kind?: string
+  digest_sha256?: string
+}
+
+export type StackEffortEvidenceSummary = {
+  activity_id: string
+  observed_at: string
+  source_kind: string
+  title: string
+  claim_label: string
+  fields: Record<string, string>
+  lists: Record<string, string[]>
+  path: string
+  source_receipt_path?: string
+  source_receipt_kind?: string
+  digest_sha256?: string
+}
+
+export type StackEffortClaimEvaluation = {
+  label: string
+  ok: boolean
+  satisfied: string[]
+  missing: string[]
+}
+
+export type StackEffortRunEvidenceSummary = {
+  activity_id: string
+  observed_at: string
+  run_kind: string
+  run_id: string
+  project_id?: string
+  output_id?: string
+  artifact_name?: string
+  metric?: string
+  acceptance_level?: string
+  path: string
+  source_receipt_path?: string
+  source_kind?: string
+  digest_sha256?: string
+}
+
+export type StackEffortBenchmarkSummary = {
+  activity_id: string
+  observed_at: string
+  benchmark_id?: string
+  name: string
+  version?: string
+  source?: string
+  license?: string
+  task_shape?: string
+  splits: string[]
+  metrics: string[]
+  path: string
+  source_receipt_path?: string
+  source_kind?: string
+  digest_sha256?: string
+}
+
+export type StackEffortReleaseArtifactSummary = {
+  activity_id: string
+  observed_at: string
+  version?: string
+  channel?: string
+  target?: string
+  archive?: string
+  sha256?: string
+  size?: string
+  manifest?: string
+  release_site?: string
+  publishable?: boolean
+  publish_blockers: string[]
   path: string
   source_receipt_path?: string
   source_kind?: string
@@ -358,6 +451,117 @@ export type RecordEffortOptimizerCandidateResult = RecordEffortFindingResult & {
   split?: string
 }
 
+export type RecordEffortRunEvidenceInput = EffortLookupInput & {
+  effortRef: string
+  runKind: string
+  title?: string
+  runId?: string
+  projectId?: string
+  outputId?: string
+  artifactName?: string
+  metric?: string
+  acceptanceLevel?: string
+  body?: string
+  sourcePath?: string
+  sourceReceipt?: StackEffortFindingSourceReceipt
+  filename?: string
+}
+
+export type RecordEffortRunEvidenceResult = RecordEffortFindingResult & {
+  runKind: string
+  runId?: string
+  projectId?: string
+  outputId?: string
+  artifactName?: string
+  metric?: string
+  acceptanceLevel?: string
+}
+
+export type RecordEffortBenchmarkInput = EffortLookupInput & {
+  effortRef: string
+  title?: string
+  benchmarkId?: string
+  name?: string
+  version?: string
+  source?: string
+  license?: string
+  taskShape?: string
+  splits?: string[]
+  metrics?: string[]
+  body?: string
+  sourcePath?: string
+  sourceReceipt?: StackEffortFindingSourceReceipt
+  filename?: string
+}
+
+export type RecordEffortBenchmarkResult = RecordEffortFindingResult & {
+  benchmarkId?: string
+  name: string
+  version?: string
+  source?: string
+  license?: string
+  taskShape?: string
+  splits: string[]
+  metrics: string[]
+}
+
+export type RecordEffortReleaseArtifactInput = EffortLookupInput & {
+  effortRef: string
+  title?: string
+  version?: string
+  channel?: string
+  target?: string
+  archive?: string
+  sha256?: string
+  size?: string
+  manifest?: string
+  releaseSite?: string
+  publishable?: boolean
+  publishBlockers?: string[]
+  body?: string
+  sourcePath?: string
+  sourceReceipt?: StackEffortFindingSourceReceipt
+  filename?: string
+}
+
+export type RecordEffortReleaseArtifactResult = RecordEffortFindingResult & {
+  version?: string
+  channel?: string
+  target?: string
+  archive?: string
+  sha256?: string
+  size?: string
+  manifest?: string
+  releaseSite?: string
+  publishable?: boolean
+  publishBlockers: string[]
+}
+
+export type RefreshEffortReceiptDigestsInput = EffortLookupInput & {
+  effortRef: string
+}
+
+export type RefreshEffortReceiptDigestRecord = {
+  sidecar_path: string
+  finding_path: string
+  old_digest?: {
+    sha256?: string
+    bytes?: number
+  }
+  new_digest: {
+    sha256: string
+    bytes: number
+  }
+}
+
+export type RefreshEffortReceiptDigestsResult = {
+  effort: StackEffort
+  checked: number
+  updated: number
+  skipped: string[]
+  refreshed: RefreshEffortReceiptDigestRecord[]
+}
+
 export type RecordEffortAcceptanceInput = EffortLookupInput & {
   effortRef: string
   level: string
@@ -481,23 +685,35 @@ export type WriteEffortEngineeringPacketResult = {
   }
 }
 
+export type UpdateEffortRefInput = {
+  system: string
+  id: string
+  lane?: string
+  role?: string
+}
+
 export type UpdateEffortRefsInput = EffortLookupInput & {
   effortRef: string
+  refs?: UpdateEffortRefInput[]
   factoryId?: string
   hostedEffortId?: string
   projectId?: string
   optimizerRunId?: string
   smrRunId?: string
   tinkerRunId?: string
+  refLane?: string
   repoRef?: string
   initiativeId?: string
 }
 
+const SINGULAR_REF_SYSTEMS = new Set(["factory", "hosted-effort", "project"])
+
 type EffortTemplateDefaults = {
   acceptanceCriteria: string[]
+  claims: StackEffortClaim[]
+  researchLog: boolean
 }
 
-const RESEARCH_TEMPLATES = new Set(["research", "system-optimizer", "task-classifier", "task-agentic", "task-nonverifiable"])
 
 export function effortsRegistryDir(stackDataRoot: string): string {
   return join(stackDataRoot, ".stack", "efforts")
@@ -568,7 +784,7 @@ export function createEffort(input: CreateEffortInput): StackEffort {
 
   mkdirSync(folderPath, { recursive: true })
   copyTemplateTree(templateDir, folderPath)
-  ensureEffortDirs(folderPath, RESEARCH_TEMPLATES.has(template))
+  ensureEffortDirs(folderPath, templateDefaults.researchLog)
 
   const manifest: StackEffortManifest = {
     schema: STACK_EFFORT_SCHEMA,
@@ -583,7 +799,8 @@ export function createEffort(input: CreateEffortInput): StackEffort {
       repo_refs: [],
       initiative_id: "",
     },
-    hosted: emptyHostedRefs(),
+    refs: [],
+    claims: templateDefaults.claims,
     acceptance: {
       criteria: acceptanceCriteria,
     },
@@ -597,7 +814,7 @@ export function createEffort(input: CreateEffortInput): StackEffort {
     status: "active",
     folder_ref: folderRef,
     meta_thread_refs: manifest.links.meta_thread_refs,
-    hosted_refs: manifest.hosted,
+    refs: manifest.refs,
     created_at: now,
     updated_at: now,
   }
@@ -621,7 +838,7 @@ export function listEfforts(input: EffortLookupInput): StackEffortSummary[] {
     status: record.status,
     folder_ref: record.folder_ref,
     meta_thread_refs: record.meta_thread_refs,
-    hosted_refs: normalizeHostedRefs(record.hosted_refs),
+    refs: normalizeRegistryRefs(record),
     updated_at: record.updated_at,
   }))
 }
@@ -629,7 +846,7 @@ export function listEfforts(input: EffortLookupInput): StackEffortSummary[] {
 export function readEffort(input: EffortLookupInput, effortRef: string): StackEffort | undefined {
   const record = findRegistryRecord(input.stackDataRoot, effortRef)
   if (!record) return undefined
-  record.hosted_refs = normalizeHostedRefs(record.hosted_refs)
+  record.refs = normalizeRegistryRefs(record)
   const folderPath = resolveEffortFolder(input.workspaceRoot, record.folder_ref)
   const manifest = readEffortManifest(join(folderPath, "effort.toml")) ?? registryToManifest(record)
   return { registry: record, manifest, folder_path: folderPath }
@@ -728,9 +945,10 @@ export function readEffortAcceptancePacket(effort: StackEffort): StackEffortAcce
   const path = join(effort.folder_path, "findings", "results", "acceptance-summary.md")
   if (!existsSync(path)) return undefined
   const text = safeReadText(path)
-  const labels = effort.manifest.template === "task-classifier"
-    ? ["A0", "A1", "A2", "A3", "A4"]
-    : acceptanceLevelLabels(text)
+  const labels = uniqueStrings([
+    ...effort.manifest.claims.map((claim) => claim.label),
+    ...acceptanceLevelLabels(text),
+  ])
   const levels = labels.map((label): StackEffortAcceptanceLevel => {
     const section = acceptanceSection(text, label)
     const heading = acceptanceSectionHeading(section, label)
@@ -740,21 +958,20 @@ export function readEffortAcceptancePacket(effort: StackEffort): StackEffortAcce
       title: heading,
       status: status.text,
       state: status.state,
-      required_for_v1: effort.manifest.template === "task-classifier" && (label === "A0" || label === "A1"),
+      required_for_v1: effortClaim(effort.manifest, label)?.required === true,
     }
   })
   const recordedLevels = levels.filter((level) => level.state === "recorded").map((level) => level.label)
   const openLevels = levels
     .filter((level) => level.state !== "recorded")
     .map((level) => level.label)
-  const v1Status = effort.manifest.template === "task-classifier"
-    ? levels.filter((level) => level.required_for_v1).every((level) => level.state === "recorded") ? "pass" : "missing"
+  const requiredLevels = levels.filter((level) => level.required_for_v1)
+  const v1Status = requiredLevels.length > 0
+    ? requiredLevels.every((level) => level.state === "recorded") ? "pass" : "missing"
     : "not_applicable"
-  const graduationLevels = effort.manifest.template === "task-classifier"
-    ? levels.filter((level) => ["A2", "A3", "A4"].includes(level.label))
-    : []
+  const graduationLevels = levels.filter((level) => !level.required_for_v1 && Boolean(effortClaim(effort.manifest, level.label)))
   const graduationRecorded = graduationLevels.filter((level) => level.state === "recorded").length
-  const graduationStatus = effort.manifest.template !== "task-classifier"
+  const graduationStatus = graduationLevels.length === 0
     ? "not_applicable"
     : graduationRecorded === graduationLevels.length
       ? "complete"
@@ -858,39 +1075,225 @@ export function readEffortActivityTail(effort: StackEffort, limit = 10): StackEf
 }
 
 export function readEffortOptimizerCandidateSummaries(effort: StackEffort, limit = 5): StackEffortOptimizerCandidateSummary[] {
-  const boundedLimit = Math.max(1, Math.min(50, Math.floor(limit)))
-  const summaries = readEffortActivityRecords(effort)
-    .filter((record) => record.type === "effort.optimizer_candidate_recorded")
-    .map((record): StackEffortOptimizerCandidateSummary | undefined => {
-      const payload = asRecord(record.payload)
-      const optimizerRunId = readString(payload.optimizer_run_id)?.trim()
-      const candidateId = readString(payload.candidate_id)?.trim()
-      const score = readString(payload.score)?.trim()
-      const scoreLabel = readString(payload.score_label)?.trim()
-      const split = readString(payload.split)?.trim()
-      const path = readString(payload.path)?.trim()
-      const sourceReceiptPath = readString(payload.source_receipt_path)?.trim()
-      const sourceReceipt = asRecord(payload.source_receipt)
-      const sourceKind = readString(sourceReceipt.source_kind)?.trim()
-      const digest = asRecord(sourceReceipt.digest)
-      const digestSha256 = readString(digest.sha256)?.trim()
-      if (!optimizerRunId || !candidateId || !score || !split || !path) return undefined
+  return readEffortEvidenceSummaries(effort, { sourceKind: "optimizer.candidate", limit })
+    .map((entry): StackEffortOptimizerCandidateSummary | undefined => {
+      const optimizerRunId = entry.fields.optimizer_run_id
+      const candidateId = entry.fields.candidate_id
+      if (!optimizerRunId || !candidateId) return undefined
       return {
-        activity_id: record.activity_id,
-        observed_at: record.observed_at,
+        activity_id: entry.activity_id,
+        observed_at: entry.observed_at,
         optimizer_run_id: optimizerRunId,
         candidate_id: candidateId,
-        score,
-        ...(scoreLabel ? { score_label: scoreLabel } : {}),
-        split,
-        path,
-        ...(sourceReceiptPath ? { source_receipt_path: sourceReceiptPath } : {}),
-        ...(sourceKind ? { source_kind: sourceKind } : {}),
-        ...(digestSha256 ? { digest_sha256: digestSha256 } : {}),
+        ...(entry.fields.score ? { score: entry.fields.score } : {}),
+        ...(entry.fields.score_label ? { score_label: entry.fields.score_label } : {}),
+        ...(entry.fields.split ? { split: entry.fields.split } : {}),
+        path: entry.path,
+        ...(entry.source_receipt_path ? { source_receipt_path: entry.source_receipt_path } : {}),
+        ...(entry.source_receipt_kind ? { source_kind: entry.source_receipt_kind } : {}),
+        ...(entry.digest_sha256 ? { digest_sha256: entry.digest_sha256 } : {}),
       }
     })
     .filter((summary): summary is StackEffortOptimizerCandidateSummary => Boolean(summary))
+}
+
+export function readEffortEvidenceSummaries(
+  effort: StackEffort,
+  options: { sourceKind?: string; prefix?: string; limit?: number } = {},
+): StackEffortEvidenceSummary[] {
+  const boundedLimit = Math.max(1, Math.min(200, Math.floor(options.limit ?? 50)))
+  const summaries = readEffortActivityRecords(effort)
+    .map((record) => normalizeEvidenceActivity(record))
+    .filter((summary): summary is StackEffortEvidenceSummary => Boolean(summary))
+    .filter((summary) => (options.sourceKind ? summary.source_kind === options.sourceKind : true))
+    .filter((summary) => (options.prefix ? summary.source_kind.startsWith(options.prefix) : true))
   return summaries.slice(Math.max(0, summaries.length - boundedLimit))
+}
+
+const LEGACY_EVIDENCE_ACTIVITY_KINDS: Record<string, string> = {
+  "effort.run_evidence_recorded": "",
+  "effort.benchmark_recorded": "benchmark.intake",
+  "effort.release_artifact_recorded": "release.artifact",
+  "effort.optimizer_candidate_recorded": "optimizer.candidate",
+}
+
+const LEGACY_RECEIPT_SOURCE_KINDS: Record<string, string> = {
+  smr_run_evidence: "run.smr",
+  tinker_run_evidence: "run.tinker",
+  benchmark_metadata: "benchmark.intake",
+  release_artifact: "release.artifact",
+  optimizer_candidate: "optimizer.candidate",
+}
+
+export function normalizeEvidenceSourceKind(kind: string | undefined): string {
+  const cleaned = kind?.trim() ?? ""
+  return LEGACY_RECEIPT_SOURCE_KINDS[cleaned] ?? cleaned
+}
+
+function normalizeEvidenceActivity(record: StackEffortActivityRecord): StackEffortEvidenceSummary | undefined {
+  const isNative = record.type === "effort.evidence_recorded"
+  if (!isNative && !(record.type in LEGACY_EVIDENCE_ACTIVITY_KINDS)) return undefined
+  const payload = asRecord(record.payload)
+  const path = readString(payload.path)?.trim()
+  if (!path) return undefined
+  const sourceKind = isNative
+    ? readString(payload.source_kind)?.trim() ?? ""
+    : record.type === "effort.run_evidence_recorded"
+      ? `run.${readString(payload.run_kind)?.trim() ?? ""}`
+      : LEGACY_EVIDENCE_ACTIVITY_KINDS[record.type] ?? ""
+  if (!sourceKind || sourceKind === "run.") return undefined
+  const fields: Record<string, string> = {}
+  const lists: Record<string, string[]> = {}
+  if (isNative) {
+    const rawFields = asRecord(payload.fields)
+    for (const [key, value] of Object.entries(rawFields)) {
+      const text = readString(value)?.trim() ?? readNumberishString(value) ?? (typeof value === "boolean" ? String(value) : undefined)
+      if (text) fields[key] = text
+    }
+    const rawLists = asRecord(payload.lists)
+    for (const [key, value] of Object.entries(rawLists)) {
+      const entries = readStringArray(value)
+      if (entries.length > 0) lists[key] = entries
+    }
+  } else {
+    for (const [key, value] of Object.entries(payload)) {
+      if (key === "path" || key === "source_receipt" || key === "source_receipt_path" || key === "acceptance_level" || key === "title") continue
+      const text = readString(value)?.trim() ?? readNumberishString(value) ?? (typeof value === "boolean" ? String(value) : undefined)
+      if (text) {
+        fields[key] = text
+        continue
+      }
+      const entries = readStringArray(value)
+      if (entries.length > 0) lists[key] = entries
+    }
+  }
+  const sourceReceipt = asRecord(payload.source_receipt)
+  const receiptKind = readString(sourceReceipt.source_kind)?.trim()
+  const digest = asRecord(sourceReceipt.digest)
+  const digestSha256 = readString(digest.sha256)?.trim()
+  const sourceReceiptPath = readString(payload.source_receipt_path)?.trim()
+  return {
+    activity_id: record.activity_id,
+    observed_at: record.observed_at,
+    source_kind: sourceKind,
+    title: readString(payload.title)?.trim() ?? "",
+    claim_label: (readString(payload.claim_label) ?? readString(payload.acceptance_level))?.trim().toUpperCase() ?? "",
+    fields,
+    lists,
+    path,
+    ...(sourceReceiptPath ? { source_receipt_path: sourceReceiptPath } : {}),
+    ...(receiptKind ? { source_receipt_kind: normalizeEvidenceSourceKind(receiptKind) } : {}),
+    ...(digestSha256 ? { digest_sha256: digestSha256 } : {}),
+  }
+}
+
+export function evaluateEffortClaim(effort: StackEffort, claim: StackEffortClaim): StackEffortClaimEvaluation {
+  const satisfied: string[] = []
+  const missing: string[] = []
+  for (const need of claim.needs_refs) {
+    const matches = effort.manifest.refs.filter((ref) => ref.system === need.system && (!need.lane || ref.lane === need.lane))
+    const label = `ref system=${need.system}${need.lane ? ` lane=${need.lane}` : ""}`
+    if (matches.length >= need.min) {
+      satisfied.push(`${label}: ${matches.slice(0, 3).map((ref) => ref.id).join(", ")}`)
+    } else {
+      missing.push(`${label} (${matches.length}/${need.min})`)
+    }
+  }
+  if (claim.needs_evidence.length > 0) {
+    const evidence = readEffortEvidenceSummaries(effort, { limit: 200 })
+    for (const need of claim.needs_evidence) {
+      const matches = evidence.filter((entry) => {
+        if (entry.source_kind !== need.source_kind) return false
+        if (need.under && !entry.path.startsWith(`${need.under.replace(/\/$/, "")}/`)) return false
+        if (entry.claim_label && entry.claim_label !== claim.label.toUpperCase()) return false
+        const resolved = join(effort.folder_path, ...entry.path.split("/").filter(Boolean))
+        return isPathInside(effort.folder_path, resolved) && existsSync(resolved)
+      })
+      const label = `evidence source_kind=${need.source_kind}${need.under ? ` under=${need.under}` : ""}`
+      if (matches.length >= need.min) {
+        satisfied.push(`${label}: ${matches.slice(0, 3).map((entry) => entry.path).join(", ")}`)
+      } else {
+        missing.push(`${label} (${matches.length}/${need.min})`)
+      }
+    }
+  }
+  return {
+    label: claim.label,
+    ok: missing.length === 0,
+    satisfied,
+    missing,
+  }
+}
+
+export function readEffortRunEvidenceSummaries(effort: StackEffort, limit = 5): StackEffortRunEvidenceSummary[] {
+  return readEffortEvidenceSummaries(effort, { prefix: "run.", limit })
+    .map((entry): StackEffortRunEvidenceSummary | undefined => {
+      const runId = entry.fields.run_id
+      if (!runId) return undefined
+      return {
+        activity_id: entry.activity_id,
+        observed_at: entry.observed_at,
+        run_kind: entry.source_kind.slice("run.".length),
+        run_id: runId,
+        ...(entry.fields.project_id ? { project_id: entry.fields.project_id } : {}),
+        ...(entry.fields.output_id ? { output_id: entry.fields.output_id } : {}),
+        ...(entry.fields.artifact_name ? { artifact_name: entry.fields.artifact_name } : {}),
+        ...(entry.fields.metric ? { metric: entry.fields.metric } : {}),
+        ...(entry.claim_label ? { acceptance_level: entry.claim_label } : {}),
+        path: entry.path,
+        ...(entry.source_receipt_path ? { source_receipt_path: entry.source_receipt_path } : {}),
+        ...(entry.source_receipt_kind ? { source_kind: entry.source_receipt_kind } : {}),
+        ...(entry.digest_sha256 ? { digest_sha256: entry.digest_sha256 } : {}),
+      }
+    })
+    .filter((summary): summary is StackEffortRunEvidenceSummary => Boolean(summary))
+}
+
+export function readEffortBenchmarkSummaries(effort: StackEffort, limit = 5): StackEffortBenchmarkSummary[] {
+  return readEffortEvidenceSummaries(effort, { sourceKind: "benchmark.intake", limit })
+    .map((entry): StackEffortBenchmarkSummary | undefined => {
+      const name = entry.fields.name || entry.title
+      if (!name) return undefined
+      return {
+        activity_id: entry.activity_id,
+        observed_at: entry.observed_at,
+        ...(entry.fields.benchmark_id ? { benchmark_id: entry.fields.benchmark_id } : {}),
+        name,
+        ...(entry.fields.version ? { version: entry.fields.version } : {}),
+        ...(entry.fields.source ? { source: entry.fields.source } : {}),
+        ...(entry.fields.license ? { license: entry.fields.license } : {}),
+        ...(entry.fields.task_shape ? { task_shape: entry.fields.task_shape } : {}),
+        splits: entry.lists.splits ?? [],
+        metrics: entry.lists.metrics ?? [],
+        path: entry.path,
+        ...(entry.source_receipt_path ? { source_receipt_path: entry.source_receipt_path } : {}),
+        ...(entry.source_receipt_kind ? { source_kind: entry.source_receipt_kind } : {}),
+        ...(entry.digest_sha256 ? { digest_sha256: entry.digest_sha256 } : {}),
+      }
+    })
+    .filter((summary): summary is StackEffortBenchmarkSummary => Boolean(summary))
+}
+
+export function readEffortReleaseArtifactSummaries(effort: StackEffort, limit = 5): StackEffortReleaseArtifactSummary[] {
+  return readEffortEvidenceSummaries(effort, { sourceKind: "release.artifact", limit })
+    .map((entry): StackEffortReleaseArtifactSummary => ({
+      activity_id: entry.activity_id,
+      observed_at: entry.observed_at,
+      ...(entry.fields.version ? { version: entry.fields.version } : {}),
+      ...(entry.fields.channel ? { channel: entry.fields.channel } : {}),
+      ...(entry.fields.target ? { target: entry.fields.target } : {}),
+      ...(entry.fields.archive ? { archive: entry.fields.archive } : {}),
+      ...(entry.fields.sha256 ? { sha256: entry.fields.sha256 } : {}),
+      ...(entry.fields.size ? { size: entry.fields.size } : {}),
+      ...(entry.fields.manifest ? { manifest: entry.fields.manifest } : {}),
+      ...(entry.fields.release_site ? { release_site: entry.fields.release_site } : {}),
+      ...(entry.fields.publishable ? { publishable: entry.fields.publishable === "true" } : {}),
+      publish_blockers: entry.lists.publish_blockers ?? [],
+      path: entry.path,
+      ...(entry.source_receipt_path ? { source_receipt_path: entry.source_receipt_path } : {}),
+      ...(entry.source_receipt_kind ? { source_kind: entry.source_receipt_kind } : {}),
+      ...(entry.digest_sha256 ? { digest_sha256: entry.digest_sha256 } : {}),
+    }))
 }
 
 export function readEffortBlockerTail(effort: StackEffort, limit = 5): StackEffortBlockerRecord[] {
@@ -951,16 +1354,14 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
       ...missingDirs.map((rel) => `missing dir: ${joinPathRef(effort.registry.folder_ref, rel)}`),
     ],
   )
-  const researchRequired = RESEARCH_TEMPLATES.has(effort.manifest.template)
+  const researchRequired = existsSync(join(effort.folder_path, "research_log.md"))
   const researchLogPath = join(effort.folder_path, "research_log.md")
   check(
     "research_log",
     !researchRequired || existsSync(researchLogPath) ? "pass" : "fail",
     researchRequired
-      ? existsSync(researchLogPath)
-        ? "Research-derived Effort has a research_log.md."
-        : "Research-derived Effort is missing research_log.md."
-      : "Template does not require a research log.",
+      ? "Effort carries a research_log.md."
+      : "Effort does not carry a research log.",
     researchRequired ? [joinPathRef(effort.registry.folder_ref, "research_log.md")] : [],
   )
   if (researchRequired && existsSync(researchLogPath)) {
@@ -1063,6 +1464,19 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
       : "Some finding receipt sidecars are malformed or point at missing findings.",
     receiptSidecars.evidence,
   )
+  const receiptDigests = findingReceiptDigestAudit(effort, findingFiles)
+  check(
+    "finding_receipt_digests",
+    receiptDigests.status,
+    receiptDigests.status === "pass"
+      ? receiptDigests.count > 0
+        ? "Finding receipt digests match current Effort artifacts."
+        : "No finding receipt digests are recorded."
+      : receiptDigests.status === "warn"
+        ? "Some finding receipts do not carry digest metadata."
+        : "Some finding receipt digests do not match current Effort artifacts.",
+    receiptDigests.evidence,
+  )
   const promotedIdeaBacklinks = promotedIdeaBacklinkAudit(effort, findingFiles.ideas)
   check(
     "promoted_idea_backlinks",
@@ -1070,13 +1484,32 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
     promotedIdeaBacklinks.missing.length === 0 ? "Promoted idea findings link back to raw idea files." : "Some promoted idea findings do not link back to a raw origin idea.",
     promotedIdeaBacklinks.evidence,
   )
+  const evidenceAudit = effortEvidenceAudit(effort)
+  check(
+    "evidence_receipts",
+    evidenceAudit.ok ? "pass" : "fail",
+    evidenceAudit.ok
+      ? "Typed evidence records are valid when present."
+      : "Some typed evidence records are malformed or point at missing artifacts.",
+    evidenceAudit.evidence,
+  )
   const handoffPath = join(effort.folder_path, "HANDOFF.md")
   const handoffText = existsSync(handoffPath) ? safeReadText(handoffPath) : ""
   const handoffMissing: string[] = []
+  const runEvidence = readEffortRunEvidenceSummaries(effort, 1)
+  const benchmarks = readEffortBenchmarkSummaries(effort, 1)
+  const releaseArtifacts = readEffortReleaseArtifactSummaries(effort, 1)
   if (!handoffText.includes("## Latest Activity")) handoffMissing.push("Latest Activity")
+  if (paths.research_log && !handoffText.includes("## Research Log")) handoffMissing.push("Research Log")
+  if ((artifactInventory.ideas.length > 0 || artifactInventory.findings.ideas.length > 0) && !handoffText.includes("## Idea Graph")) handoffMissing.push("Idea Graph")
+  if (benchmarks.length > 0 && !handoffText.includes("## Benchmark Intake")) handoffMissing.push("Benchmark Intake")
+  if (runEvidence.length > 0 && !handoffText.includes("## Run Evidence")) handoffMissing.push("Run Evidence")
+  if (releaseArtifacts.length > 0 && !handoffText.includes("## Release Artifacts")) handoffMissing.push("Release Artifacts")
   if (blockerTail.length > 0 && !handoffText.includes("## Recorded Blockers")) handoffMissing.push("Recorded Blockers")
   if (paths.acceptance_summary && !handoffText.includes("## Acceptance Packet")) handoffMissing.push("Acceptance Packet")
+  if (effort.manifest.claims.length > 0 && !handoffText.includes("## Claim Lanes")) handoffMissing.push("Claim Lanes")
   if (!handoffText.includes("## Audit")) handoffMissing.push("Audit")
+  if (artifactInventory.counts.receipt_sidecars > 0 && !handoffText.includes("### Receipt Summary")) handoffMissing.push("Receipt Summary")
   check(
     "handoff_packet",
     existsSync(handoffPath) && handoffMissing.length === 0 ? "pass" : effort.manifest.acceptance.criteria.length > 0 ? "fail" : "warn",
@@ -1115,42 +1548,43 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
       coverage.missing.length === 0 ? "Acceptance summary covers every recorded acceptance criterion." : "Acceptance summary is missing recorded acceptance criteria.",
       coverage.evidence,
     )
-    if (effort.manifest.template === "task-classifier") {
-      const optimizerCandidate = taskClassifierOptimizerCandidateAudit(effort, artifactInventory, activityRecords)
+    const acceptancePacket = readEffortAcceptancePacket(effort)
+    if (acceptancePacket) {
+      const acceptanceReceipts = acceptanceReceiptAudit(acceptancePacket, activityRecords)
       check(
-        "task_classifier_optimizer_candidate",
-        optimizerCandidate.ok ? "pass" : "fail",
-        optimizerCandidate.ok ? "Task-classifier optimizer candidate proof is typed and receipt-backed." : "Task-classifier optimizer candidate proof is missing typed candidate receipt evidence.",
-        optimizerCandidate.evidence,
-      )
-      const v1Bar = taskClassifierV1BarAudit(effort, acceptanceSummaryText, findingFiles, researchLogPath)
-      check(
-        "task_classifier_v1_bar",
-        v1Bar.ok ? "pass" : "fail",
-        v1Bar.ok ? "Task-classifier v1 bar is proved by A0/A1 evidence." : "Task-classifier v1 bar is missing A0/A1 evidence.",
-        v1Bar.evidence,
-      )
-      const graduation = taskClassifierGraduationAudit(effort, acceptanceSummaryText)
-      check(
-        "task_classifier_graduation_refs",
-        graduation.ok ? "pass" : "fail",
-        graduation.ok ? "Hosted/SMR/Tinker graduation refs are either absent or covered by recorded acceptance sections." : "Hosted/SMR/Tinker refs exist without recorded acceptance sections.",
-        graduation.evidence,
+        "acceptance_receipts",
+        acceptanceReceipts.status,
+        acceptanceReceipts.status === "pass"
+          ? "Recorded acceptance levels are covered by typed receipts or explicit v1 bootstrap evidence, and typed receipt state matches the packet."
+          : "Some acceptance levels lack typed receipts or drift from the latest typed receipt.",
+        acceptanceReceipts.evidence,
       )
     }
   }
+  if (effort.manifest.claims.length > 0) {
+    const claimsAudit = effortClaimsAudit(effort)
+    check(
+      "claims",
+      claimsAudit.status,
+      claimsAudit.status === "pass"
+        ? "Recorded claims satisfy their declared requirements; open optional claims stay visible without degrading the audit."
+        : claimsAudit.status === "warn"
+          ? "Some required claims are still open with unmet requirements."
+          : "Some recorded claims do not satisfy their declared requirements.",
+      claimsAudit.evidence,
+    )
+  }
   const repoRefCount = effort.manifest.links.repo_refs.length
-  const hostedRefCount = effort.manifest.hosted.optimizer_run_ids.length + effort.manifest.hosted.smr_run_ids.length + effort.manifest.hosted.tinker_run_ids.length
+  const externalRefCount = effort.manifest.refs.length
   check(
     "refs",
-    repoRefCount > 0 || hostedRefCount > 0 || effort.manifest.links.meta_thread_refs.length > 0 ? "pass" : "warn",
-    repoRefCount > 0 || hostedRefCount > 0 || effort.manifest.links.meta_thread_refs.length > 0 ? "Effort has thread, repo, or run refs." : "No thread, repo, or run refs are recorded yet.",
+    repoRefCount > 0 || externalRefCount > 0 || effort.manifest.links.meta_thread_refs.length > 0 ? "pass" : "warn",
+    repoRefCount > 0 || externalRefCount > 0 || effort.manifest.links.meta_thread_refs.length > 0 ? "Effort has thread, repo, or external system refs." : "No thread, repo, or external system refs are recorded yet.",
     [
       `meta_threads=${effort.manifest.links.meta_thread_refs.length}`,
       `repo_refs=${repoRefCount}`,
-      `optimizer_runs=${effort.manifest.hosted.optimizer_run_ids.length}`,
-      `smr_runs=${effort.manifest.hosted.smr_run_ids.length}`,
-      `tinker_runs=${effort.manifest.hosted.tinker_run_ids.length}`,
+      `external_refs=${externalRefCount}`,
+      ...effortRefEvidenceLines(effort.manifest.refs),
     ],
   )
   const metaThreadBacklinks = metaThreadBacklinkAudit(effort)
@@ -1182,9 +1616,7 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
       human_ideas: humanIdeas.length,
       human_notes: humanNotes.length,
       repo_refs: repoRefCount,
-      optimizer_runs: effort.manifest.hosted.optimizer_run_ids.length,
-      smr_runs: effort.manifest.hosted.smr_run_ids.length,
-      tinker_runs: effort.manifest.hosted.tinker_run_ids.length,
+      external_refs: externalRefCount,
       receipt_sidecars: artifactInventory.counts.receipt_sidecars,
       findings: {
         ideas: findingFiles.ideas.length,
@@ -1345,6 +1777,12 @@ export function recordEffortAcceptance(input: RecordEffortAcceptanceInput): Reco
   const state = input.state ?? "recorded"
   assertAcceptanceUpdateState(state)
   const status = acceptanceUpdateStatus(input.status, state)
+  const evidence = cleanStringList(input.evidence)
+  const acceptancePaths = cleanStringList(input.paths)
+  assertAcceptanceUpdateAllowed(effort, {
+    level,
+    state,
+  })
   const path = join(effort.folder_path, "findings", "results", "acceptance-summary.md")
   mkdirSync(dirname(path), { recursive: true })
   const previous = existsSync(path) ? safeReadText(path) : "# Acceptance summary\n"
@@ -1353,8 +1791,8 @@ export function recordEffortAcceptance(input: RecordEffortAcceptanceInput): Reco
     level,
     state,
     status,
-    evidence: cleanStringList(input.evidence),
-    paths: cleanStringList(input.paths),
+    evidence,
+    paths: acceptancePaths,
     result: input.result?.trim(),
     decision: input.decision?.trim(),
     next: input.next?.trim(),
@@ -1365,8 +1803,8 @@ export function recordEffortAcceptance(input: RecordEffortAcceptanceInput): Reco
     level,
     state,
     status,
-    evidence: cleanStringList(input.evidence),
-    paths: cleanStringList(input.paths),
+    evidence,
+    paths: acceptancePaths,
     result: input.result?.trim() || "",
     decision: input.decision?.trim() || "",
     next: input.next?.trim() || "",
@@ -1417,39 +1855,46 @@ export function writeEffortEngineeringPacket(input: WriteEffortEngineeringPacket
 export function updateEffortRefs(input: UpdateEffortRefsInput): StackEffort {
   const effort = requireEffort(input, input.effortRef)
   const changes: string[] = []
-  const factoryId = cleanOptional(input.factoryId)
-  const hostedEffortId = cleanOptional(input.hostedEffortId)
-  const projectId = cleanOptional(input.projectId)
-  const optimizerRunId = cleanOptional(input.optimizerRunId)
-  const smrRunId = cleanOptional(input.smrRunId)
-  const tinkerRunId = cleanOptional(input.tinkerRunId)
+  const lane = cleanOptional(input.refLane) ?? ""
+  const requested: UpdateEffortRefInput[] = [
+    ...(input.refs ?? []),
+    ...(cleanOptional(input.factoryId) ? [{ system: "factory", id: input.factoryId!.trim(), lane: lane || "hosted" }] : []),
+    ...(cleanOptional(input.hostedEffortId) ? [{ system: "hosted-effort", id: input.hostedEffortId!.trim(), lane: lane || "hosted" }] : []),
+    ...(cleanOptional(input.projectId) ? [{ system: "project", id: input.projectId!.trim(), lane: lane || "hosted" }] : []),
+    ...(cleanOptional(input.optimizerRunId) ? [{ system: "optimizer", id: input.optimizerRunId!.trim(), lane }] : []),
+    ...(cleanOptional(input.smrRunId) ? [{ system: "smr", id: input.smrRunId!.trim(), lane }] : []),
+    ...(cleanOptional(input.tinkerRunId) ? [{ system: "tinker", id: input.tinkerRunId!.trim(), lane }] : []),
+  ]
+  for (const entry of requested) {
+    const system = entry.system.trim()
+    const id = entry.id.trim()
+    if (!system || !id) continue
+    const ref: StackEffortRef = {
+      system,
+      id,
+      lane: entry.lane?.trim() ?? "",
+      role: entry.role?.trim() ?? "",
+    }
+    const existing = effort.manifest.refs.find((candidate) => candidate.system === system && candidate.id === id)
+    if (existing) {
+      if (ref.lane && existing.lane !== ref.lane) {
+        existing.lane = ref.lane
+        changes.push(`${system}=${id} lane=${ref.lane}`)
+      }
+      if (ref.role && existing.role !== ref.role) {
+        existing.role = ref.role
+        changes.push(`${system}=${id} role=${ref.role}`)
+      }
+      continue
+    }
+    if (SINGULAR_REF_SYSTEMS.has(system)) {
+      effort.manifest.refs = effort.manifest.refs.filter((candidate) => candidate.system !== system)
+    }
+    effort.manifest.refs = [...effort.manifest.refs, ref]
+    changes.push(`${system}=${id}${ref.lane ? ` lane=${ref.lane}` : ""}`)
+  }
   const repoRef = cleanOptional(input.repoRef)
   const initiativeId = cleanOptional(input.initiativeId)
-
-  if (factoryId !== undefined && effort.manifest.hosted.factory_id !== factoryId) {
-    effort.manifest.hosted.factory_id = factoryId
-    changes.push(`factory_id=${factoryId || "<cleared>"}`)
-  }
-  if (hostedEffortId !== undefined && effort.manifest.hosted.effort_id !== hostedEffortId) {
-    effort.manifest.hosted.effort_id = hostedEffortId
-    changes.push(`hosted_effort_id=${hostedEffortId || "<cleared>"}`)
-  }
-  if (projectId !== undefined && effort.manifest.hosted.project_id !== projectId) {
-    effort.manifest.hosted.project_id = projectId
-    changes.push(`project_id=${projectId || "<cleared>"}`)
-  }
-  if (optimizerRunId && !effort.manifest.hosted.optimizer_run_ids.includes(optimizerRunId)) {
-    effort.manifest.hosted.optimizer_run_ids = uniqueStrings([...effort.manifest.hosted.optimizer_run_ids, optimizerRunId])
-    changes.push(`optimizer_run_id=${optimizerRunId}`)
-  }
-  if (smrRunId && !effort.manifest.hosted.smr_run_ids.includes(smrRunId)) {
-    effort.manifest.hosted.smr_run_ids = uniqueStrings([...effort.manifest.hosted.smr_run_ids, smrRunId])
-    changes.push(`smr_run_id=${smrRunId}`)
-  }
-  if (tinkerRunId && !effort.manifest.hosted.tinker_run_ids.includes(tinkerRunId)) {
-    effort.manifest.hosted.tinker_run_ids = uniqueStrings([...effort.manifest.hosted.tinker_run_ids, tinkerRunId])
-    changes.push(`tinker_run_id=${tinkerRunId}`)
-  }
   if (repoRef && !effort.manifest.links.repo_refs.includes(repoRef)) {
     effort.manifest.links.repo_refs = uniqueStrings([...effort.manifest.links.repo_refs, repoRef])
     changes.push(`repo_ref=${repoRef}`)
@@ -1462,7 +1907,7 @@ export function updateEffortRefs(input: UpdateEffortRefsInput): StackEffort {
   appendEffortProgressLine(effort.folder_path, `Updated refs: ${changes.join(", ")}.`)
   appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.refs_updated", `Updated refs: ${changes.join(", ")}.`, {
     changes,
-    hosted_refs: effort.manifest.hosted,
+    refs: effort.manifest.refs,
     repo_refs: effort.manifest.links.repo_refs,
     initiative_id: effort.manifest.links.initiative_id,
   })
@@ -1513,6 +1958,71 @@ export function recordEffortFinding(input: RecordEffortFindingInput): RecordEffo
   }
 }
 
+export function refreshEffortReceiptDigests(input: RefreshEffortReceiptDigestsInput): RefreshEffortReceiptDigestsResult {
+  const effort = requireEffort(input, input.effortRef)
+  const refreshed: RefreshEffortReceiptDigestRecord[] = []
+  const skipped: string[] = []
+  let checked = 0
+  for (const source of effortArtifactInventory(effort).receipt_sources) {
+    const sidecarPath = effortPathFromRef(effort, source.sidecar_path)
+    const findingPath = join(effort.folder_path, ...source.finding_path.split("/").filter(Boolean))
+    if (!sidecarPath || !existsSync(sidecarPath)) {
+      skipped.push(`${source.sidecar_path}: sidecar missing`)
+      continue
+    }
+    if (!isPathInside(effort.folder_path, findingPath) || !existsSync(findingPath)) {
+      skipped.push(`${source.sidecar_path}: finding missing`)
+      continue
+    }
+    const parsed = readEffortFindingSourceReceipt(sidecarPath)
+    const receipt = normalizeEffortFindingSourceReceipt(parsed?.receipt)
+    if (!receipt) {
+      skipped.push(`${source.sidecar_path}: receipt invalid`)
+      continue
+    }
+    const digest = localPathDigest(findingPath)
+    if (!digest) {
+      skipped.push(`${source.sidecar_path}: digest unavailable`)
+      continue
+    }
+    checked += 1
+    if (receipt.digest?.sha256 === digest.sha256 && receipt.digest.bytes === digest.bytes) continue
+    const payload = {
+      schema: "stack/effort/finding-source-receipt/v1",
+      receipt: {
+        ...receipt,
+        digest,
+      },
+      recorded_at: parsed?.recorded_at?.trim() || new Date().toISOString(),
+      refreshed_at: new Date().toISOString(),
+      finding_path: source.finding_path,
+    }
+    writeFileSync(sidecarPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
+    refreshed.push({
+      sidecar_path: source.sidecar_path,
+      finding_path: source.finding_path,
+      ...(receipt.digest ? { old_digest: receipt.digest } : {}),
+      new_digest: digest,
+    })
+  }
+  if (refreshed.length > 0) {
+    appendEffortProgressLine(effort.folder_path, `Refreshed receipt digests: ${refreshed.length} updated, ${checked} checked.`)
+    appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.receipt_digests_refreshed", `Refreshed receipt digests: ${refreshed.length} updated, ${checked} checked.`, {
+      checked,
+      updated: refreshed.length,
+      skipped,
+      refreshed,
+    })
+  }
+  return {
+    effort: refreshed.length > 0 ? persistEffort(input, effort) : effort,
+    checked,
+    updated: refreshed.length,
+    skipped,
+    refreshed,
+  }
+}
+
 export function recordEffortCapture(input: RecordEffortCaptureInput): RecordEffortCaptureResult {
   assertCaptureKind(input.captureKind)
   const kind = input.findingKind ?? defaultCaptureFindingKind(input.captureKind)
@@ -1551,45 +2061,120 @@ export function recordEffortCapture(input: RecordEffortCaptureInput): RecordEffo
 }
 
 export function recordEffortOptimizerCandidate(input: RecordEffortOptimizerCandidateInput): RecordEffortOptimizerCandidateResult {
-  const optimizerRunId = input.optimizerRunId?.trim()
+  const optimizerRunId = input.optimizerRunId?.trim() || input.sourceReceipt?.run_id?.trim()
   const candidateId = input.candidateId?.trim()
+  if (!optimizerRunId || !candidateId) {
+    throw new Error("optimizer candidate proof requires optimizer_run_id and candidate_id so the candidate stays identifiable across handoffs")
+  }
   const score = input.score?.trim()
   const scoreLabel = input.scoreLabel?.trim()
   const split = input.split?.trim()
   const title = input.title?.trim() || [
-    candidateId ? `Candidate ${candidateId}` : "Optimizer candidate",
+    `Candidate ${candidateId}`,
     score ? `${scoreLabel || "score"} ${score}` : "",
   ].filter(Boolean).join(" - ")
+  const result = recordEffortEvidence({
+    stackDataRoot: input.stackDataRoot,
+    workspaceRoot: input.workspaceRoot,
+    effortRef: input.effortRef,
+    sourceKind: "optimizer.candidate",
+    findingKind: "proof",
+    title,
+    fields: {
+      optimizer_run_id: optimizerRunId,
+      candidate_id: candidateId,
+      score,
+      score_label: scoreLabel,
+      split,
+    },
+    refs: [{ system: "optimizer", id: optimizerRunId }],
+    body: input.body,
+    sourcePath: input.sourcePath,
+    sourceReceipt: input.sourceReceipt,
+    filename: input.filename,
+  })
+  return {
+    effort: result.effort,
+    path: result.path,
+    sourceReceiptPath: result.sourceReceiptPath,
+    ...(result.sourceReceipt ? { sourceReceipt: result.sourceReceipt } : {}),
+    optimizerRunId,
+    candidateId,
+    ...(score ? { score } : {}),
+    ...(scoreLabel ? { scoreLabel } : {}),
+    ...(split ? { split } : {}),
+  }
+}
+
+export type RecordEffortEvidenceInput = EffortLookupInput & {
+  effortRef: string
+  sourceKind: string
+  findingKind?: StackEffortFindingKind
+  title?: string
+  claimLabel?: string
+  fields?: Record<string, string | undefined>
+  lists?: Record<string, string[] | undefined>
+  body?: string
+  refs?: UpdateEffortRefInput[]
+  sourcePath?: string
+  sourceReceipt?: StackEffortFindingSourceReceipt
+  filename?: string
+}
+
+export type RecordEffortEvidenceResult = RecordEffortFindingResult & {
+  sourceKind: string
+  claimLabel?: string
+  fields: Record<string, string>
+  lists: Record<string, string[]>
+}
+
+export function recordEffortEvidence(input: RecordEffortEvidenceInput): RecordEffortEvidenceResult {
+  const sourceKind = normalizeNewEvidenceSourceKind(input.sourceKind)
+  const claimLabel = input.claimLabel?.trim().toUpperCase() || undefined
+  const fields: Record<string, string> = {}
+  for (const [key, value] of Object.entries(input.fields ?? {})) {
+    const cleaned = value?.trim()
+    if (cleaned) fields[key] = cleaned
+  }
+  const lists: Record<string, string[]> = {}
+  for (const [key, value] of Object.entries(input.lists ?? {})) {
+    const cleaned = cleanStringList(value)
+    if (cleaned.length > 0) lists[key] = cleaned
+  }
+  const title = input.title?.trim() || [sourceKind, fields.run_id ?? fields.name ?? fields.version].filter(Boolean).join(" - ")
+  const refs = (input.refs ?? []).filter((ref) => ref.system.trim() && ref.id.trim())
+  const effort = refs.length > 0
+    ? updateEffortRefs({
+        stackDataRoot: input.stackDataRoot,
+        workspaceRoot: input.workspaceRoot,
+        effortRef: input.effortRef,
+        refs,
+      })
+    : requireEffort(input, input.effortRef)
   const sourceReceipt = input.sourceReceipt
-    ? optimizerCandidateSourceReceipt(input.sourceReceipt)
+    ? evidenceSourceReceipt(input.sourceReceipt, sourceKind)
     : input.sourcePath && existsSync(input.sourcePath)
-      ? optimizerCandidateSourceReceipt(localEffortFindingSourceReceipt(input.sourcePath))
+      ? evidenceSourceReceipt(localEffortFindingSourceReceipt(input.sourcePath), sourceKind)
       : undefined
   const result = recordEffortFinding({
     stackDataRoot: input.stackDataRoot,
     workspaceRoot: input.workspaceRoot,
-    effortRef: input.effortRef,
-    kind: "proof",
+    effortRef: effort.manifest.id,
+    kind: input.findingKind ?? "proof",
     title,
-    body: optimizerCandidateBody({
-      optimizerRunId,
-      candidateId,
-      score,
-      scoreLabel,
-      split,
-      body: input.body,
-    }),
+    body: evidenceBody({ sourceKind, claimLabel, fields, lists, body: input.body }),
     sourcePath: input.sourcePath,
     sourceReceipt,
     filename: input.filename,
   })
-  appendEffortProgressLine(result.effort.folder_path, `Recorded optimizer candidate: ${relative(result.effort.folder_path, result.path)}.`)
-  appendEffortActivityLine(result.effort.folder_path, result.effort.manifest, "effort.optimizer_candidate_recorded", `Recorded optimizer candidate: ${relative(result.effort.folder_path, result.path)}.`, {
-    optimizer_run_id: optimizerRunId,
-    candidate_id: candidateId,
-    score,
-    score_label: scoreLabel,
-    split,
+  const summaryLine = `Recorded ${sourceKind} evidence: ${relative(result.effort.folder_path, result.path)}.`
+  appendEffortProgressLine(result.effort.folder_path, summaryLine)
+  appendEffortActivityLine(result.effort.folder_path, result.effort.manifest, "effort.evidence_recorded", summaryLine, {
+    source_kind: sourceKind,
+    title,
+    claim_label: claimLabel,
+    fields,
+    lists,
     path: relative(result.effort.folder_path, result.path),
     source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : undefined,
     source_receipt: result.sourceReceipt,
@@ -1597,11 +2182,208 @@ export function recordEffortOptimizerCandidate(input: RecordEffortOptimizerCandi
   return {
     ...result,
     effort: persistEffort(input, result.effort),
-    ...(optimizerRunId ? { optimizerRunId } : {}),
-    ...(candidateId ? { candidateId } : {}),
-    ...(score ? { score } : {}),
-    ...(scoreLabel ? { scoreLabel } : {}),
-    ...(split ? { split } : {}),
+    sourceKind,
+    ...(claimLabel ? { claimLabel } : {}),
+    fields,
+    lists,
+  }
+}
+
+function normalizeNewEvidenceSourceKind(kind: string): string {
+  const cleaned = normalizeEvidenceSourceKind(kind)
+  if (!/^[a-z][a-z0-9_-]*(\.[a-z][a-z0-9_-]*)+$/.test(cleaned)) {
+    throw new Error(`evidence source_kind must be a namespaced lowercase identifier like run.smr or benchmark.intake: ${kind}`)
+  }
+  return cleaned
+}
+
+function evidenceBody(input: {
+  sourceKind: string
+  claimLabel?: string
+  fields: Record<string, string>
+  lists: Record<string, string[]>
+  body?: string
+}): string {
+  return [
+    `Evidence kind: ${input.sourceKind}`,
+    ...(input.claimLabel ? [`Claim: ${input.claimLabel}`] : []),
+    ...Object.entries(input.fields).map(([key, value]) => `${evidenceFieldLabel(key)}: ${value}`),
+    ...Object.entries(input.lists).map(([key, value]) => `${evidenceFieldLabel(key)}: ${value.join(", ")}`),
+    "",
+    input.body?.trim() || `${input.sourceKind} evidence.`,
+  ].join("\n")
+}
+
+function evidenceFieldLabel(key: string): string {
+  const spaced = key.replace(/_/g, " ")
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+}
+
+export function recordEffortRunEvidence(input: RecordEffortRunEvidenceInput): RecordEffortRunEvidenceResult {
+  const runKind = normalizeRunEvidenceKind(input.runKind)
+  const runId = input.runId?.trim() || input.sourceReceipt?.run_id?.trim()
+  if (!runId) {
+    throw new Error("run evidence requires a run id: pass run_id or a source receipt that carries one")
+  }
+  const projectId = input.projectId?.trim() || input.sourceReceipt?.project_id?.trim() || undefined
+  const acceptanceLevel = input.acceptanceLevel?.trim().toUpperCase()
+  const result = recordEffortEvidence({
+    stackDataRoot: input.stackDataRoot,
+    workspaceRoot: input.workspaceRoot,
+    effortRef: input.effortRef,
+    sourceKind: `run.${runKind}`,
+    findingKind: "proof",
+    title: input.title?.trim() || [`${runKind} run evidence`, runId, input.metric?.trim()].filter(Boolean).join(" - "),
+    claimLabel: acceptanceLevel,
+    fields: {
+      run_id: runId,
+      project_id: projectId,
+      output_id: input.outputId?.trim() || input.sourceReceipt?.output_id?.trim(),
+      artifact_name: input.artifactName?.trim() || input.sourceReceipt?.artifact_name?.trim(),
+      metric: input.metric,
+    },
+    refs: [
+      { system: runKind, id: runId },
+      ...(projectId ? [{ system: "project", id: projectId, lane: "hosted" }] : []),
+    ],
+    body: input.body,
+    sourcePath: input.sourcePath,
+    sourceReceipt: input.sourceReceipt,
+    filename: input.filename,
+  })
+  return {
+    effort: result.effort,
+    path: result.path,
+    sourceReceiptPath: result.sourceReceiptPath,
+    ...(result.sourceReceipt ? { sourceReceipt: result.sourceReceipt } : {}),
+    runKind,
+    runId,
+    ...(projectId ? { projectId } : {}),
+    ...(result.fields.output_id ? { outputId: result.fields.output_id } : {}),
+    ...(result.fields.artifact_name ? { artifactName: result.fields.artifact_name } : {}),
+    ...(result.fields.metric ? { metric: result.fields.metric } : {}),
+    ...(acceptanceLevel ? { acceptanceLevel } : {}),
+  }
+}
+
+export function recordEffortBenchmark(input: RecordEffortBenchmarkInput): RecordEffortBenchmarkResult {
+  const benchmarkId = input.benchmarkId?.trim()
+  const name = input.name?.trim() || input.title?.trim() || benchmarkId || "Benchmark"
+  const version = input.version?.trim()
+  const source = input.source?.trim()
+  const license = input.license?.trim()
+  const taskShape = input.taskShape?.trim()
+  const splits = cleanStringList(input.splits)
+  const metrics = cleanStringList(input.metrics)
+  const title = input.title?.trim() || [
+    name,
+    version ? `version ${version}` : "",
+  ].filter(Boolean).join(" - ")
+  const result = recordEffortEvidence({
+    stackDataRoot: input.stackDataRoot,
+    workspaceRoot: input.workspaceRoot,
+    effortRef: input.effortRef,
+    sourceKind: "benchmark.intake",
+    findingKind: "data",
+    title,
+    fields: {
+      benchmark_id: benchmarkId,
+      name,
+      version,
+      source,
+      license,
+      task_shape: taskShape,
+    },
+    lists: {
+      splits,
+      metrics,
+    },
+    body: input.body,
+    sourcePath: input.sourcePath,
+    sourceReceipt: input.sourceReceipt,
+    filename: input.filename,
+  })
+  return {
+    effort: result.effort,
+    path: result.path,
+    sourceReceiptPath: result.sourceReceiptPath,
+    ...(result.sourceReceipt ? { sourceReceipt: result.sourceReceipt } : {}),
+    ...(benchmarkId ? { benchmarkId } : {}),
+    name,
+    ...(version ? { version } : {}),
+    ...(source ? { source } : {}),
+    ...(license ? { license } : {}),
+    ...(taskShape ? { taskShape } : {}),
+    splits,
+    metrics,
+  }
+}
+
+export function recordEffortReleaseArtifact(input: RecordEffortReleaseArtifactInput): RecordEffortReleaseArtifactResult {
+  const parsed = input.sourcePath && existsSync(input.sourcePath)
+    ? releaseArtifactFieldsFromPath(input.sourcePath)
+    : {}
+  const version = input.version?.trim() || parsed.version
+  const channel = input.channel?.trim() || parsed.channel
+  const target = input.target?.trim() || parsed.target
+  const archive = input.archive?.trim() || parsed.archive
+  const sha256 = input.sha256?.trim() || parsed.sha256
+  const size = input.size?.trim() || parsed.size
+  const manifest = input.manifest?.trim() || parsed.manifest
+  const releaseSite = input.releaseSite?.trim() || parsed.releaseSite
+  const publishable = input.publishable ?? parsed.publishable
+  const publishBlockers = cleanStringList(input.publishBlockers).length > 0
+    ? cleanStringList(input.publishBlockers)
+    : parsed.publishBlockers ?? []
+  if (!version || !sha256) {
+    throw new Error("release artifact proof requires version and sha256: pass them explicitly or point --path at a release summary/manifest JSON that carries them")
+  }
+  const title = input.title?.trim() || [
+    "Release artifact",
+    version,
+    target,
+  ].filter(Boolean).join(" - ")
+  const result = recordEffortEvidence({
+    stackDataRoot: input.stackDataRoot,
+    workspaceRoot: input.workspaceRoot,
+    effortRef: input.effortRef,
+    sourceKind: "release.artifact",
+    findingKind: "proof",
+    title,
+    fields: {
+      version,
+      channel,
+      target,
+      archive,
+      sha256,
+      size,
+      manifest,
+      release_site: releaseSite,
+      ...(publishable !== undefined ? { publishable: String(publishable) } : {}),
+    },
+    lists: {
+      publish_blockers: publishBlockers,
+    },
+    body: input.body,
+    sourcePath: input.sourcePath,
+    sourceReceipt: input.sourceReceipt,
+    filename: input.filename,
+  })
+  return {
+    effort: result.effort,
+    path: result.path,
+    sourceReceiptPath: result.sourceReceiptPath,
+    ...(result.sourceReceipt ? { sourceReceipt: result.sourceReceipt } : {}),
+    ...(version ? { version } : {}),
+    ...(channel ? { channel } : {}),
+    ...(target ? { target } : {}),
+    ...(archive ? { archive } : {}),
+    ...(sha256 ? { sha256 } : {}),
+    ...(size ? { size } : {}),
+    ...(manifest ? { manifest } : {}),
+    ...(releaseSite ? { releaseSite } : {}),
+    ...(publishable !== undefined ? { publishable } : {}),
+    publishBlockers,
   }
 }
 
@@ -1696,7 +2478,6 @@ export function readEffortManifest(path: string): StackEffortManifest | undefine
   if (!existsSync(path)) return undefined
   const parsed = Bun.TOML.parse(readFileSync(path, "utf8")) as Record<string, unknown>
   const links = asRecord(parsed.links)
-  const hosted = asRecord(parsed.hosted)
   const acceptance = asRecord(parsed.acceptance)
   const status = readString(parsed.status) || "active"
   assertEffortStatus(status)
@@ -1713,18 +2494,142 @@ export function readEffortManifest(path: string): StackEffortManifest | undefine
       repo_refs: readStringArray(links.repo_refs),
       initiative_id: readString(links.initiative_id) ?? "",
     },
-    hosted: {
-      factory_id: readString(hosted.factory_id) ?? "",
-      effort_id: readString(hosted.effort_id) ?? "",
-      project_id: readString(hosted.project_id) ?? "",
-      optimizer_run_ids: readStringArray(hosted.optimizer_run_ids),
-      smr_run_ids: readStringArray(hosted.smr_run_ids),
-      tinker_run_ids: readStringArray(hosted.tinker_run_ids),
-    },
+    refs: mergeEffortRefs([
+      ...readEffortRefEntries(parsed.refs),
+      ...legacyHostedBlockRefs(asRecord(parsed.hosted)),
+    ]),
+    claims: readEffortClaimEntries(parsed.claims),
     acceptance: {
       criteria: readStringArray(acceptance.criteria),
     },
   }
+}
+
+export function readEffortRefEntries(value: unknown): StackEffortRef[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry): StackEffortRef | undefined => {
+      const record = asRecord(entry)
+      const system = readString(record.system)?.trim()
+      const id = readString(record.id)?.trim()
+      if (!system || !id) return undefined
+      return {
+        system,
+        id,
+        lane: readString(record.lane)?.trim() ?? "",
+        role: readString(record.role)?.trim() ?? "",
+      }
+    })
+    .filter((ref): ref is StackEffortRef => Boolean(ref))
+}
+
+export function readEffortClaimEntries(value: unknown): StackEffortClaim[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry): StackEffortClaim | undefined => {
+      const record = asRecord(entry)
+      const label = readString(record.label)?.trim()
+      if (!label) return undefined
+      return {
+        label,
+        title: readString(record.title)?.trim() ?? label,
+        required: record.required === true,
+        needs_refs: readClaimNeedsRefs(record.needs_refs),
+        needs_evidence: readClaimNeedsEvidence(record.needs_evidence),
+      }
+    })
+    .filter((claim): claim is StackEffortClaim => Boolean(claim))
+}
+
+function readClaimNeedsRefs(value: unknown): StackEffortClaimNeedsRef[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry): StackEffortClaimNeedsRef | undefined => {
+      const record = asRecord(entry)
+      const system = readString(record.system)?.trim()
+      if (!system) return undefined
+      return {
+        system,
+        lane: readString(record.lane)?.trim() ?? "",
+        min: readClaimMin(record.min),
+      }
+    })
+    .filter((need): need is StackEffortClaimNeedsRef => Boolean(need))
+}
+
+function readClaimNeedsEvidence(value: unknown): StackEffortClaimNeedsEvidence[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map((entry): StackEffortClaimNeedsEvidence | undefined => {
+      const record = asRecord(entry)
+      const sourceKind = readString(record.source_kind)?.trim()
+      if (!sourceKind) return undefined
+      return {
+        source_kind: sourceKind,
+        under: readString(record.under)?.trim() ?? "",
+        min: readClaimMin(record.min),
+      }
+    })
+    .filter((need): need is StackEffortClaimNeedsEvidence => Boolean(need))
+}
+
+function readClaimMin(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value) && value >= 1) return Math.floor(value)
+  return 1
+}
+
+function legacyHostedBlockRefs(hosted: Record<string, unknown>): StackEffortRef[] {
+  const refs: StackEffortRef[] = []
+  const singular: Array<[string, string]> = [
+    ["factory_id", "factory"],
+    ["effort_id", "hosted-effort"],
+    ["project_id", "project"],
+  ]
+  for (const [key, system] of singular) {
+    const id = readString(hosted[key])?.trim()
+    if (id) refs.push({ system, id, lane: "hosted", role: "" })
+  }
+  const plural: Array<[string, string]> = [
+    ["optimizer_run_ids", "optimizer"],
+    ["smr_run_ids", "smr"],
+    ["tinker_run_ids", "tinker"],
+  ]
+  for (const [key, system] of plural) {
+    for (const id of readStringArray(hosted[key])) {
+      refs.push({ system, id, lane: "", role: "" })
+    }
+  }
+  return refs
+}
+
+function mergeEffortRefs(refs: StackEffortRef[]): StackEffortRef[] {
+  const seen = new Map<string, StackEffortRef>()
+  for (const ref of refs) {
+    const key = `${ref.system} ${ref.id}`
+    const existing = seen.get(key)
+    if (!existing) {
+      seen.set(key, ref)
+      continue
+    }
+    seen.set(key, {
+      system: existing.system,
+      id: existing.id,
+      lane: existing.lane || ref.lane,
+      role: existing.role || ref.role,
+    })
+  }
+  return Array.from(seen.values())
+}
+
+export function effortRefIds(manifest: StackEffortManifest, system: string, lane?: string): string[] {
+  return manifest.refs
+    .filter((ref) => ref.system === system && (lane === undefined || ref.lane === lane))
+    .map((ref) => ref.id)
+}
+
+export function effortClaim(manifest: StackEffortManifest, label: string): StackEffortClaim | undefined {
+  const normalized = label.trim().toUpperCase()
+  return manifest.claims.find((claim) => claim.label.toUpperCase() === normalized)
 }
 
 function requireEffort(input: EffortLookupInput, effortRef: string): StackEffort {
@@ -1741,7 +2646,7 @@ function persistEffort(input: EffortLookupInput, effort: StackEffort): StackEffo
   effort.registry.template = effort.manifest.template
   effort.registry.status = effort.manifest.status
   effort.registry.meta_thread_refs = effort.manifest.links.meta_thread_refs
-  effort.registry.hosted_refs = effort.manifest.hosted
+  effort.registry.refs = effort.manifest.refs
   writeEffortManifest(join(effort.folder_path, "effort.toml"), effort.manifest)
   writeRegistryRecord(input.stackDataRoot, effort.registry)
   return effort
@@ -1803,18 +2708,41 @@ function effortManifestToml(manifest: StackEffortManifest): string {
     `repo_refs = ${tomlArray(manifest.links.repo_refs)}`,
     `initiative_id = ${tomlString(manifest.links.initiative_id)}`,
     "",
-    "[hosted]",
-    `factory_id = ${tomlString(manifest.hosted.factory_id)}`,
-    `effort_id = ${tomlString(manifest.hosted.effort_id)}`,
-    `project_id = ${tomlString(manifest.hosted.project_id)}`,
-    `optimizer_run_ids = ${tomlArray(manifest.hosted.optimizer_run_ids)}`,
-    `smr_run_ids = ${tomlArray(manifest.hosted.smr_run_ids)}`,
-    `tinker_run_ids = ${tomlArray(manifest.hosted.tinker_run_ids)}`,
-    "",
+    ...manifest.refs.flatMap((ref) => [
+      "[[refs]]",
+      `system = ${tomlString(ref.system)}`,
+      `id = ${tomlString(ref.id)}`,
+      `lane = ${tomlString(ref.lane)}`,
+      `role = ${tomlString(ref.role)}`,
+      "",
+    ]),
+    ...manifest.claims.flatMap((claim) => [
+      "[[claims]]",
+      `label = ${tomlString(claim.label)}`,
+      `title = ${tomlString(claim.title)}`,
+      `required = ${claim.required}`,
+      `needs_refs = [${claim.needs_refs.map(claimNeedsRefToml).join(", ")}]`,
+      `needs_evidence = [${claim.needs_evidence.map(claimNeedsEvidenceToml).join(", ")}]`,
+      "",
+    ]),
     "[acceptance]",
     `criteria = ${tomlArray(manifest.acceptance.criteria)}`,
     "",
   ].join("\n")
+}
+
+function claimNeedsRefToml(need: StackEffortClaimNeedsRef): string {
+  const parts = [`system = ${tomlString(need.system)}`]
+  if (need.lane) parts.push(`lane = ${tomlString(need.lane)}`)
+  if (need.min > 1) parts.push(`min = ${need.min}`)
+  return `{ ${parts.join(", ")} }`
+}
+
+function claimNeedsEvidenceToml(need: StackEffortClaimNeedsEvidence): string {
+  const parts = [`source_kind = ${tomlString(need.source_kind)}`]
+  if (need.under) parts.push(`under = ${tomlString(need.under)}`)
+  if (need.min > 1) parts.push(`min = ${need.min}`)
+  return `{ ${parts.join(", ")} }`
 }
 
 function registryToManifest(record: StackEffortRegistryRecord): StackEffortManifest {
@@ -1831,9 +2759,18 @@ function registryToManifest(record: StackEffortRegistryRecord): StackEffortManif
       repo_refs: [],
       initiative_id: "",
     },
-    hosted: normalizeHostedRefs(record.hosted_refs),
+    refs: normalizeRegistryRefs(record),
+    claims: [],
     acceptance: { criteria: [] },
   }
+}
+
+function normalizeRegistryRefs(record: StackEffortRegistryRecord): StackEffortRef[] {
+  const legacy = (record as unknown as Record<string, unknown>).hosted_refs
+  return mergeEffortRefs([
+    ...readEffortRefEntries(record.refs),
+    ...legacyHostedBlockRefs(asRecord(legacy)),
+  ])
 }
 
 function ensureEffortDirs(folderPath: string, includeResearchLog: boolean): void {
@@ -1890,13 +2827,17 @@ function copyTemplateTree(source: string, dest: string): void {
 
 function readEffortTemplateDefaults(templateDir: string): EffortTemplateDefaults {
   const path = join(templateDir, "template.toml")
-  if (!existsSync(path)) return { acceptanceCriteria: [] }
+  if (!existsSync(path)) return { acceptanceCriteria: [], claims: [], researchLog: false }
   try {
     const parsed = Bun.TOML.parse(readFileSync(path, "utf8")) as Record<string, unknown>
     const acceptance = asRecord(parsed.acceptance)
-    return { acceptanceCriteria: readStringArray(acceptance.criteria) }
+    return {
+      acceptanceCriteria: readStringArray(acceptance.criteria),
+      claims: readEffortClaimEntries(parsed.claims),
+      researchLog: asRecord(parsed.effort_template).research_log === true,
+    }
   } catch {
-    return { acceptanceCriteria: [] }
+    return { acceptanceCriteria: [], claims: [], researchLog: false }
   }
 }
 
@@ -2077,6 +3018,10 @@ function effortHandoffMarkdown(
   const findingFiles = artifactInventory.findings
   const acceptancePacket = findingFiles.results.find((path) => path.endsWith("/findings/results/acceptance-summary.md"))
   const parsedAcceptance = readEffortAcceptancePacket(effort)
+  const researchLogLines = paths.research_log ? effortHandoffResearchLogLines(effort) : []
+  const benchmarkLines = effortHandoffBenchmarkLines(effort)
+  const runEvidenceLines = effortHandoffRunEvidenceLines(effort)
+  const releaseArtifactLines = effortHandoffReleaseArtifactLines(effort)
   const remainingWork = readEffortRemainingWork(effort)
   const riskLines = effortHandoffRiskLines(input.risks, remainingWork)
   const lines = [
@@ -2109,13 +3054,11 @@ function effortHandoffMarkdown(
     "",
     ...bulletLines("Meta-threads", effort.manifest.links.meta_thread_refs),
     ...bulletLines("Repos", effort.manifest.links.repo_refs),
-    ...bulletLines("Optimizer runs", effort.manifest.hosted.optimizer_run_ids),
-    ...bulletLines("SMR runs", effort.manifest.hosted.smr_run_ids),
-    ...bulletLines("Tinker runs", effort.manifest.hosted.tinker_run_ids),
   ]
-  if (effort.manifest.hosted.factory_id) lines.push(`- Factory: ${effort.manifest.hosted.factory_id}`)
-  if (effort.manifest.hosted.project_id) lines.push(`- Project: ${effort.manifest.hosted.project_id}`)
-  if (effort.manifest.hosted.effort_id) lines.push(`- Hosted Effort: ${effort.manifest.hosted.effort_id}`)
+  for (const ref of effort.manifest.refs) {
+    const suffix = [ref.lane ? `lane=${ref.lane}` : "", ref.role ? `role=${ref.role}` : ""].filter(Boolean).join(" ")
+    lines.push(`- ${ref.system}: ${ref.id}${suffix ? ` (${suffix})` : ""}`)
+  }
   if (effort.manifest.links.initiative_id) lines.push(`- Initiative: ${effort.manifest.links.initiative_id}`)
   lines.push(
     "",
@@ -2128,6 +3071,36 @@ function effortHandoffMarkdown(
     ...(activity.length > 0
       ? activity.map((entry) => `- ${entry.observed_at} - ${entry.type}: ${entry.summary}`)
       : ["- No activity entries recorded."]),
+    ...(paths.research_log ? [
+      "",
+      "## Research Log",
+      "",
+      ...researchLogLines,
+    ] : []),
+    ...(artifactInventory.ideas.length > 0 || artifactInventory.findings.ideas.length > 0 ? [
+      "",
+      "## Idea Graph",
+      "",
+      ...effortHandoffIdeaGraphLines(effort, artifactInventory),
+    ] : []),
+    ...(benchmarkLines.length > 0 ? [
+      "",
+      "## Benchmark Intake",
+      "",
+      ...benchmarkLines,
+    ] : []),
+    ...(runEvidenceLines.length > 0 ? [
+      "",
+      "## Run Evidence",
+      "",
+      ...runEvidenceLines,
+    ] : []),
+    ...(releaseArtifactLines.length > 0 ? [
+      "",
+      "## Release Artifacts",
+      "",
+      ...releaseArtifactLines,
+    ] : []),
     "",
     "## Recorded Blockers",
     "",
@@ -2146,6 +3119,12 @@ function effortHandoffMarkdown(
     "## Remaining Work",
     "",
     ...effortHandoffRemainingWorkLines(remainingWork),
+    ...(effort.manifest.claims.length > 0 ? [
+      "",
+      "## Claim Lanes",
+      "",
+      ...effortHandoffClaimLaneLines(effort, parsedAcceptance),
+    ] : []),
     "",
     "## Audit",
     "",
@@ -2155,6 +3134,10 @@ function effortHandoffMarkdown(
     "",
     `Total indexed artifacts: ${artifactInventory.counts.total}`,
     `Receipt sidecars: ${artifactInventory.counts.receipt_sidecars}`,
+    "",
+    "### Receipt Summary",
+    "",
+    ...receiptSummaryLines(artifactInventory),
     "",
     "### Generated",
     "",
@@ -2221,7 +3204,7 @@ function effortHandoffAuditLines(audit: StackEffortAudit | undefined): string[] 
     `Checked: ${audit.checked_at}`,
     `Failures: ${failures}`,
     `Warnings: ${warnings}`,
-    `Counts: progress=${audit.counts.progress_entries}, activity=${audit.counts.activity_receipts}, blockers=${audit.counts.blockers}, repos=${audit.counts.repo_refs}, optimizer=${audit.counts.optimizer_runs}, smr=${audit.counts.smr_runs}, tinker=${audit.counts.tinker_runs}`,
+    `Counts: progress=${audit.counts.progress_entries}, activity=${audit.counts.activity_receipts}, blockers=${audit.counts.blockers}, repos=${audit.counts.repo_refs}, external_refs=${audit.counts.external_refs}`,
   ]
   if (audit.latest_blocker) {
     lines.push(`Latest blocker: ${audit.latest_blocker.blocker} | owner=${audit.latest_blocker.owner} | next=${audit.latest_blocker.next}`)
@@ -2305,6 +3288,186 @@ function effortHandoffAcceptanceLines(
   return lines
 }
 
+function effortHandoffResearchLogLines(effort: StackEffort): string[] {
+  const path = join(effort.folder_path, "research_log.md")
+  if (!existsSync(path)) return ["- No research log recorded."]
+  const text = safeReadText(path)
+  const entries = researchLogEntrySummaries(text).slice(-5)
+  if (entries.length === 0) return [`- ${joinPathRef(effort.registry.folder_ref, "research_log.md")} has no dated entries yet.`]
+  const lines = [`- Full log: ${joinPathRef(effort.registry.folder_ref, "research_log.md")}`]
+  for (const entry of entries) {
+    const parts = [
+      entry.work ? `Work: ${entry.work}` : "",
+      entry.result ? `Result: ${entry.result}` : "",
+      entry.next ? `Next: ${entry.next}` : "",
+    ].filter(Boolean)
+    lines.push(`- ${entry.title}${parts.length > 0 ? ` | ${parts.join(" | ")}` : ""}`)
+  }
+  return lines
+}
+
+function effortHandoffIdeaGraphLines(effort: StackEffort, inventory: StackEffortArtifactInventory): string[] {
+  const originCounts = new Map<string, number>()
+  for (const idea of inventory.ideas) {
+    incrementCount(originCounts, ideaOriginFromRef(idea))
+  }
+  const lines = [
+    `- Raw ideas: ${inventory.ideas.length}`,
+    `- Promoted idea findings: ${inventory.findings.ideas.length}`,
+    `- Origin counts: ${formatCountMap(originCounts)}`,
+    "",
+    "### Raw Ideas",
+    "",
+    ...(inventory.ideas.length > 0
+      ? inventory.ideas.map((idea) => `- ${ideaOriginFromRef(idea)}: ${idea}`)
+      : ["- None recorded."]),
+    "",
+    "### Promoted Idea Links",
+    "",
+  ]
+  if (inventory.findings.ideas.length === 0) {
+    lines.push("- None recorded.")
+    return lines
+  }
+  for (const finding of inventory.findings.ideas) {
+    const links = promotedIdeaBacklinksForFinding(effort, finding)
+    lines.push(`- ${finding}${links.length > 0 ? ` -> ${links.join(", ")}` : " -> missing raw idea backlink"}`)
+  }
+  return lines
+}
+
+function effortHandoffRunEvidenceLines(effort: StackEffort): string[] {
+  const summaries = readEffortRunEvidenceSummaries(effort, 10)
+  if (summaries.length === 0) return []
+  return summaries.map((summary) => {
+    const details = [
+      `run=${summary.run_id}`,
+      summary.project_id ? `project=${summary.project_id}` : "",
+      summary.output_id ? `output=${summary.output_id}` : "",
+      summary.artifact_name ? `artifact=${summary.artifact_name}` : "",
+      summary.metric ? `metric=${summary.metric}` : "",
+      summary.acceptance_level ? `acceptance=${summary.acceptance_level}` : "",
+      summary.source_receipt_path ? `receipt=${summary.source_receipt_path}` : "",
+    ].filter(Boolean).join(" - ")
+    return `- ${summary.observed_at} - ${summary.run_kind.toUpperCase()}: ${summary.path} - ${details}`
+  })
+}
+
+function effortHandoffBenchmarkLines(effort: StackEffort): string[] {
+  const summaries = readEffortBenchmarkSummaries(effort, 10)
+  if (summaries.length === 0) return []
+  return summaries.map((summary) => {
+    const details = [
+      summary.benchmark_id ? `id=${summary.benchmark_id}` : "",
+      summary.version ? `version=${summary.version}` : "",
+      summary.source ? `source=${summary.source}` : "",
+      summary.license ? `license=${summary.license}` : "",
+      summary.task_shape ? `task=${summary.task_shape}` : "",
+      summary.splits.length > 0 ? `splits=${summary.splits.join(",")}` : "",
+      summary.metrics.length > 0 ? `metrics=${summary.metrics.join(",")}` : "",
+      summary.source_receipt_path ? `receipt=${summary.source_receipt_path}` : "",
+    ].filter(Boolean).join(" - ")
+    return `- ${summary.observed_at} - ${summary.name}: ${summary.path} - ${details}`
+  })
+}
+
+function effortHandoffReleaseArtifactLines(effort: StackEffort): string[] {
+  const summaries = readEffortReleaseArtifactSummaries(effort, 10)
+  if (summaries.length === 0) return []
+  return summaries.map((summary) => {
+    const details = [
+      summary.version ? `version=${summary.version}` : "",
+      summary.channel ? `channel=${summary.channel}` : "",
+      summary.target ? `target=${summary.target}` : "",
+      summary.sha256 ? `sha256=${summary.sha256}` : "",
+      summary.size ? `size=${summary.size}` : "",
+      summary.publishable !== undefined ? `publishable=${summary.publishable}` : "",
+      summary.publish_blockers.length > 0 ? `blockers=${summary.publish_blockers.join(";")}` : "",
+      summary.source_receipt_path ? `receipt=${summary.source_receipt_path}` : "",
+    ].filter(Boolean).join(" - ")
+    return `- ${summary.observed_at} - ${summary.path}${details ? ` - ${details}` : ""}`
+  })
+}
+
+function ideaOriginFromRef(ref: string): string {
+  const match = /^\[(HUMAN|AGENT|MIXED)\]-/.exec(basename(ref))
+  return match?.[1] ?? "UNTAGGED"
+}
+
+function promotedIdeaBacklinksForFinding(effort: StackEffort, ref: string): string[] {
+  const path = effortPathFromRef(effort, ref)
+  const text = path ? safeReadText(path) : ""
+  const links = new Set<string>()
+  for (const match of text.matchAll(/\bideas\/\[(HUMAN|AGENT|MIXED)\]-[^\s)\]]+\.md\b/g)) {
+    if (match[0]) links.add(match[0])
+  }
+  return Array.from(links).sort()
+}
+
+function researchLogEntrySummaries(text: string): Array<{ title: string; work?: string; result?: string; next?: string }> {
+  const lines = text.split(/\r?\n/)
+  const entries: Array<{ title: string; body: string[] }> = []
+  let current: { title: string; body: string[] } | undefined
+  for (const line of lines) {
+    const heading = /^##\s+(.+)$/.exec(line)
+    if (heading) {
+      if (current) entries.push(current)
+      current = { title: heading[1]?.trim() || "Untitled research log entry", body: [] }
+      continue
+    }
+    if (current) current.body.push(line)
+  }
+  if (current) entries.push(current)
+  return entries.map((entry) => {
+    const body = entry.body.join("\n")
+    return {
+      title: clipHandoffLine(entry.title, 120),
+      ...(extractResearchLogWork(body) ? { work: extractResearchLogWork(body) } : {}),
+      ...(extractResearchLogResult(body) ? { result: extractResearchLogResult(body) } : {}),
+      ...(extractResearchLogNext(body) ? { next: extractResearchLogNext(body) } : {}),
+    }
+  })
+}
+
+function extractResearchLogWork(body: string): string | undefined {
+  const match = /\*\*Work \(summarized\):\*\*\s*(.+)/.exec(body)
+  return match?.[1] ? clipHandoffLine(match[1], 180) : undefined
+}
+
+function extractResearchLogResult(body: string): string | undefined {
+  const result = markdownSubsectionFirstParagraph(body, "Result")
+  return result ? clipHandoffLine(result, 180) : undefined
+}
+
+function extractResearchLogNext(body: string): string | undefined {
+  const match = /\*\*Next toward mission:\*\*\s*(.+)/.exec(body)
+  return match?.[1] ? clipHandoffLine(match[1], 180) : undefined
+}
+
+function markdownSubsectionFirstParagraph(markdown: string, heading: string): string | undefined {
+  const lines = markdown.split(/\r?\n/)
+  const start = lines.findIndex((line) => line.trim() === `### ${heading}`)
+  if (start < 0) return undefined
+  const collected: string[] = []
+  for (const line of lines.slice(start + 1)) {
+    if (/^#{2,3}\s+/.test(line)) break
+    const trimmed = line.trim()
+    if (!trimmed) {
+      if (collected.length > 0) break
+      continue
+    }
+    if (trimmed.startsWith("- ")) continue
+    collected.push(trimmed)
+  }
+  return collected.join(" ").trim() || undefined
+}
+
+function clipHandoffLine(value: string, maxLength: number): string {
+  const cleaned = value.replace(/\s+/g, " ").trim()
+  if (cleaned.length <= maxLength) return cleaned
+  return `${cleaned.slice(0, Math.max(0, maxLength - 3))}...`
+}
+
 function effortHandoffRemainingWorkLines(remaining: StackEffortRemainingWork): string[] {
   const lines = [
     `- State: ${remaining.state}`,
@@ -2324,6 +3487,33 @@ function effortHandoffRemainingWorkLines(remaining: StackEffortRemainingWork): s
   }
   return lines
 }
+
+function effortHandoffClaimLaneLines(
+  effort: StackEffort,
+  acceptance: StackEffortAcceptancePacket | undefined,
+): string[] {
+  const lines: string[] = []
+  for (const claim of effort.manifest.claims) {
+    const level = acceptance?.levels.find((candidate) => candidate.label === claim.label)
+    const state = level?.state ?? "missing"
+    const status = level?.status || "not recorded"
+    const evaluation = evaluateEffortClaim(effort, claim)
+    lines.push(`- ${claim.label} ${level?.title || claim.title}${claim.required ? " (required)" : ""}`)
+    lines.push(`  State: ${state}; status: ${status}; requirements met: ${evaluation.ok}`)
+    for (const line of evaluation.satisfied.slice(0, 5)) lines.push(`  Satisfied: ${line}`)
+    for (const line of evaluation.missing.slice(0, 5)) lines.push(`  Missing: ${line}`)
+    const next = state === "recorded"
+      ? "No action needed unless new evidence supersedes the recorded acceptance."
+      : evaluation.ok
+        ? `Record ${claim.label} through the typed acceptance writer.`
+        : `Satisfy the missing requirements, then record ${claim.label} through the typed acceptance writer.`
+    lines.push(`  Next: ${next}`)
+  }
+  return lines
+}
+
+
+
 
 function effortHandoffRiskLines(inputRisks: string[] | undefined, remaining: StackEffortRemainingWork): string[] {
   const risks = cleanStringList(inputRisks)
@@ -2459,6 +3649,42 @@ function receiptSourceLines(inventory: StackEffortArtifactInventory): string[] {
   return shown
 }
 
+function receiptSummaryLines(inventory: StackEffortArtifactInventory): string[] {
+  if (inventory.receipt_sidecars.length === 0) return ["- No receipt sidecars recorded."]
+  const sourceKindCounts = new Map<string, number>()
+  const artifactKindCounts = new Map<string, number>()
+  const environmentCounts = new Map<string, number>()
+  let digestCount = 0
+  for (const source of inventory.receipt_sources) {
+    incrementCount(sourceKindCounts, source.receipt.source_kind ?? "unknown")
+    incrementCount(artifactKindCounts, source.receipt.artifact_kind ?? "unknown")
+    incrementCount(environmentCounts, source.receipt.environment ?? "unknown")
+    if (source.receipt.digest?.sha256) digestCount += 1
+  }
+  const unreadable = Math.max(0, inventory.receipt_sidecars.length - inventory.receipt_sources.length)
+  return [
+    `- Sidecars: ${inventory.receipt_sidecars.length}`,
+    `- Readable source receipts: ${inventory.receipt_sources.length}`,
+    `- Digest-backed receipts: ${digestCount}`,
+    ...(unreadable > 0 ? [`- Unreadable source receipts: ${unreadable}`] : []),
+    `- Source kinds: ${formatCountMap(sourceKindCounts)}`,
+    `- Artifact kinds: ${formatCountMap(artifactKindCounts)}`,
+    `- Environments: ${formatCountMap(environmentCounts)}`,
+  ]
+}
+
+function incrementCount(counts: Map<string, number>, key: string): void {
+  counts.set(key, (counts.get(key) ?? 0) + 1)
+}
+
+function formatCountMap(counts: Map<string, number>): string {
+  if (counts.size === 0) return "none"
+  return Array.from(counts.entries())
+    .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0]))
+    .map(([key, count]) => `${key}=${count}`)
+    .join(", ")
+}
+
 function effortRelativeFiles(effort: StackEffort, ...parts: string[]): string[] {
   const root = join(effort.folder_path, ...parts)
   if (!existsSync(root)) return []
@@ -2578,8 +3804,58 @@ function findingReceiptSidecarAudit(
   }
 }
 
+function findingReceiptDigestAudit(
+  effort: StackEffort,
+  findingFiles: Record<"ideas" | "code" | "data" | "proof" | "results", string[]>,
+): { status: StackEffortAuditStatus; count: number; evidence: string[] } {
+  const sidecarRefs = Object.values(findingFiles).flat().filter(isFindingReceiptSidecarRef)
+  const checked: string[] = []
+  const missingDigest: string[] = []
+  const invalid: string[] = []
+  for (const ref of sidecarRefs) {
+    const path = effortPathFromRef(effort, ref)
+    const parsed = path ? parseJsonObject(path) : undefined
+    const findingPath = readString(parsed?.finding_path)?.trim()
+    const referencedFinding = findingPath ? join(effort.folder_path, ...findingPath.split("/").filter(Boolean)) : ""
+    const receipt = normalizeEffortFindingSourceReceipt(parsed?.receipt)
+    const expected = receipt?.digest
+    if (!path || !receipt || !findingPath || !isPathInside(effort.folder_path, referencedFinding) || !existsSync(referencedFinding)) {
+      continue
+    }
+    if (!expected?.sha256 && expected?.bytes === undefined) {
+      missingDigest.push(ref)
+      continue
+    }
+    const actual = localPathDigest(referencedFinding)
+    if (!actual) {
+      invalid.push(`${ref}: digest unavailable for ${findingPath}`)
+      continue
+    }
+    const problems: string[] = []
+    if (expected.sha256 && expected.sha256 !== actual.sha256) problems.push(`sha256 ${expected.sha256} != ${actual.sha256}`)
+    if (expected.bytes !== undefined && expected.bytes !== actual.bytes) problems.push(`bytes ${expected.bytes} != ${actual.bytes}`)
+    if (problems.length > 0) invalid.push(`${ref}: ${problems.join(", ")}`)
+    else checked.push(ref)
+  }
+  return {
+    status: invalid.length > 0 ? "fail" : missingDigest.length > 0 ? "warn" : "pass",
+    count: checked.length,
+    evidence: sidecarRefs.length === 0
+      ? ["receipt_sidecars=0"]
+      : [
+          `receipt_sidecars=${sidecarRefs.length}`,
+          `checked=${checked.length}`,
+          `missing_digest=${missingDigest.length}`,
+          `invalid=${invalid.length}`,
+          ...invalid.slice(0, 10),
+          ...missingDigest.slice(0, 10).map((entry) => `missing digest: ${entry}`),
+          ...checked.slice(0, 10).map((entry) => `valid digest: ${entry}`),
+        ],
+  }
+}
+
 function isFindingReceiptSidecarRef(ref: string): boolean {
-  return ref.endsWith(".receipt.json") || ref.endsWith("/_receipt.json")
+  return ref.endsWith(".receipt.json") || ref === "_receipt.json" || ref.endsWith("/_receipt.json")
 }
 
 function acceptanceCriteriaCoverage(criteria: string[], summaryText: string): { missing: string[]; evidence: string[] } {
@@ -2616,136 +3892,141 @@ function acceptanceCriterionMarker(criterion: string): { kind: "section" | "text
   return { kind: "text", value: criterion.trim().split(/\s+/).slice(0, 6).join(" ") }
 }
 
-function taskClassifierV1BarAudit(
-  effort: StackEffort,
-  summaryText: string,
-  findingFiles: Record<"ideas" | "code" | "data" | "proof" | "results", string[]>,
-  researchLogPath: string,
-): { ok: boolean; evidence: string[] } {
-  const a0 = acceptanceSection(summaryText, "A0")
-  const a1 = acceptanceSection(summaryText, "A1")
-  const humanContextCount = effortRelativeFiles(effort, "human").length + effortRelativeFiles(effort, "ideas").filter((path) => basename(path).startsWith("[HUMAN]-")).length
-  const researchLog = existsSync(researchLogPath) ? researchLogShape(researchLogPath) : { ok: false, evidence: ["missing research_log.md"] }
-  const a0Ok = acceptanceSectionIsRecorded(a0)
-    && effort.manifest.links.meta_thread_refs.length > 0
-    && humanContextCount > 0
-    && existsSync(join(effort.folder_path, "HANDOFF.md"))
-  const a1Ok = acceptanceSectionIsRecorded(a1)
-    && effort.manifest.hosted.optimizer_run_ids.length > 0
-    && findingFiles.code.length > 0
-    && findingFiles.data.length > 0
-    && findingFiles.proof.length > 0
-    && researchLog.ok
-    && /candidate/i.test(a1)
-    && /heldout/i.test(a1)
-    && /research log/i.test(a1)
-  return {
-    ok: a0Ok && a1Ok,
-    evidence: [
-      `A0_section=${sectionState(a0)}`,
-      `A0_meta_threads=${effort.manifest.links.meta_thread_refs.length}`,
-      `A0_human_context=${humanContextCount}`,
-      `A0_handoff=${existsSync(join(effort.folder_path, "HANDOFF.md")) ? "present" : "missing"}`,
-      `A1_section=${sectionState(a1)}`,
-      `A1_optimizer_runs=${effort.manifest.hosted.optimizer_run_ids.length}`,
-      `A1_code_findings=${findingFiles.code.length}`,
-      `A1_data_findings=${findingFiles.data.length}`,
-      `A1_proof_findings=${findingFiles.proof.length}`,
-      `A1_mentions_candidate=${/candidate/i.test(a1)}`,
-      `A1_mentions_heldout=${/heldout/i.test(a1)}`,
-      `A1_mentions_research_log=${/research log/i.test(a1)}`,
-      `research_log_shape=${researchLog.ok ? "pass" : "missing_or_weak"}`,
-    ],
-  }
-}
 
-function taskClassifierOptimizerCandidateAudit(
-  effort: StackEffort,
-  artifactInventory: StackEffortArtifactInventory,
-  activityRecords: StackEffortActivityRecord[],
-): { ok: boolean; evidence: string[] } {
-  const candidateSources = artifactInventory.receipt_sources.filter((source) => source.receipt.source_kind === "optimizer_candidate")
-  const candidateActivities = activityRecords.filter((record) => record.type === "effort.optimizer_candidate_recorded")
-  const validActivities: string[] = []
-  const invalidActivities: string[] = []
-  for (const record of candidateActivities) {
-    const payload = asRecord(record.payload)
-    const pathRef = readString(payload.path)?.trim()
-    const sourceReceiptPath = readString(payload.source_receipt_path)?.trim()
-    const sourceReceipt = asRecord(payload.source_receipt)
+
+function effortEvidenceAudit(effort: StackEffort): { ok: boolean; evidence: string[] } {
+  const entries = readEffortEvidenceSummaries(effort, { limit: 200 })
+  const valid: string[] = []
+  const invalid: string[] = []
+  for (const entry of entries) {
     const problems: string[] = []
-    if (!readString(payload.optimizer_run_id)?.trim()) problems.push("missing optimizer_run_id")
-    if (!readString(payload.candidate_id)?.trim()) problems.push("missing candidate_id")
-    if (!readString(payload.score)?.trim()) problems.push("missing score")
-    if (!readString(payload.split)?.trim()) problems.push("missing split")
-    if (!pathRef) problems.push("missing path")
-    else {
-      const path = join(effort.folder_path, ...pathRef.split("/").filter(Boolean))
-      if (!isPathInside(effort.folder_path, path) || !existsSync(path)) problems.push("missing candidate artifact")
+    const path = join(effort.folder_path, ...entry.path.split("/").filter(Boolean))
+    if (!isPathInside(effort.folder_path, path) || !existsSync(path)) problems.push("missing evidence artifact")
+    if (entry.source_receipt_path) {
+      const sidecarPath = join(effort.folder_path, ...entry.source_receipt_path.split("/").filter(Boolean))
+      if (!isPathInside(effort.folder_path, sidecarPath) || !existsSync(sidecarPath)) problems.push("missing source receipt sidecar")
+      if (entry.source_receipt_kind && entry.source_receipt_kind !== entry.source_kind) {
+        problems.push(`receipt source_kind ${entry.source_receipt_kind} does not match ${entry.source_kind}`)
+      }
     }
-    if (!sourceReceiptPath) problems.push("missing source_receipt_path")
-    if (readString(sourceReceipt.source_kind) !== "optimizer_candidate") problems.push("source_kind is not optimizer_candidate")
-    if (problems.length > 0) {
-      invalidActivities.push(`${record.observed_at}: ${problems.join(", ")}`)
-    } else {
-      validActivities.push(`${record.observed_at}: ${pathRef}`)
+    const summary = `${entry.observed_at} - ${entry.source_kind}: ${entry.path}`
+    if (problems.length > 0) invalid.push(`${summary} (${problems.join(", ")})`)
+    else valid.push(summary)
+  }
+  return {
+    ok: invalid.length === 0,
+    evidence: entries.length === 0
+      ? ["evidence_records=0"]
+      : [
+          `evidence_records=${entries.length}`,
+          `valid=${valid.length}`,
+          `invalid=${invalid.length}`,
+          ...invalid.slice(0, 10),
+          ...valid.slice(0, 10).map((entry) => `evidence: ${entry}`),
+        ],
+  }
+}
+
+function effortClaimsAudit(effort: StackEffort): { status: StackEffortAuditStatus; evidence: string[] } {
+  const packet = readEffortAcceptancePacket(effort)
+  const evidence: string[] = []
+  let failed = 0
+  let open = 0
+  let openRequired = 0
+  for (const claim of effort.manifest.claims) {
+    const state = packet?.levels.find((level) => level.label === claim.label)?.state ?? "missing"
+    const evaluation = evaluateEffortClaim(effort, claim)
+    evidence.push(`${claim.label} state=${state} required=${claim.required} requirements_met=${evaluation.ok}`)
+    evidence.push(...evaluation.satisfied.slice(0, 5).map((line) => `${claim.label} satisfied: ${line}`))
+    evidence.push(...evaluation.missing.slice(0, 5).map((line) => `${claim.label} missing: ${line}`))
+    if (state === "recorded" && !evaluation.ok) failed += 1
+    if (state !== "recorded" && !evaluation.ok) {
+      if (claim.required) openRequired += 1
+      else open += 1
     }
   }
-  const missingSourceArtifacts = candidateSources.flatMap((source) => {
-    const path = join(effort.folder_path, ...source.finding_path.split("/").filter(Boolean))
-    return !isPathInside(effort.folder_path, path) || !existsSync(path)
-      ? [`missing candidate source artifact: ${source.finding_path}`]
-      : []
-  })
   return {
-    ok: candidateSources.length > 0 && validActivities.length > 0 && invalidActivities.length === 0 && missingSourceArtifacts.length === 0,
+    status: failed > 0 ? "fail" : openRequired > 0 ? "warn" : "pass",
+    evidence: [`claims=${effort.manifest.claims.length}`, `recorded_unmet=${failed}`, `open_required_unmet=${openRequired}`, `open_optional_unmet=${open}`, ...evidence],
+  }
+}
+
+function effortRefEvidenceLines(refs: StackEffortRef[]): string[] {
+  const counts = new Map<string, number>()
+  for (const ref of refs) {
+    incrementCount(counts, ref.lane ? `${ref.system}/${ref.lane}` : ref.system)
+  }
+  return Array.from(counts.entries())
+    .sort((left, right) => left[0].localeCompare(right[0]))
+    .map(([key, count]) => `${key}=${count}`)
+}
+
+function acceptanceReceiptAudit(
+  acceptance: StackEffortAcceptancePacket,
+  activityRecords: StackEffortActivityRecord[],
+): { status: StackEffortAuditStatus; evidence: string[] } {
+  const acceptanceRecords = activityRecords.filter((record) => record.type === "effort.acceptance_recorded")
+  const recordsByLevel = new Map<string, StackEffortActivityRecord[]>()
+  for (const record of acceptanceRecords) {
+    const payload = asRecord(record.payload)
+    const level = readString(payload.level)?.trim().toUpperCase()
+    if (!level) continue
+    recordsByLevel.set(level, [...(recordsByLevel.get(level) ?? []), record])
+  }
+  const recordedLevels = acceptance.levels.filter((level) => level.state === "recorded")
+  const covered: string[] = []
+  const legacyV1: string[] = []
+  const missing: string[] = []
+  const drift: string[] = []
+  for (const [level, records] of recordsByLevel.entries()) {
+    const latest = records[records.length - 1]
+    if (!latest) continue
+    const payload = asRecord(latest.payload)
+    const receiptState = readString(payload.state)?.trim()
+    const receiptStatus = readString(payload.status)?.trim()
+    if (!receiptState || !isAcceptanceUpdateState(receiptState)) continue
+    const packetLevel = acceptance.levels.find((entry) => entry.label === level)
+    if (!packetLevel) {
+      drift.push(`${level}: missing from packet; latest receipt ${latest.observed_at} is ${receiptState}`)
+      continue
+    }
+    if (packetLevel.state !== receiptState || (receiptStatus && packetLevel.status !== receiptStatus)) {
+      const receiptLabel = receiptStatus ? `${receiptState}/${receiptStatus}` : receiptState
+      drift.push(`${level}: packet ${packetLevel.state}/${packetLevel.status}; latest receipt ${latest.observed_at} ${receiptLabel}`)
+    }
+  }
+  for (const level of recordedLevels) {
+    const matchingRecords = (recordsByLevel.get(level.label) ?? []).filter((record) => {
+      const payload = asRecord(record.payload)
+      return readString(payload.state)?.trim() === "recorded"
+    })
+    if (matchingRecords.length > 0) {
+      const latest = matchingRecords[matchingRecords.length - 1]
+      covered.push(`${level.label}: ${latest?.observed_at ?? "recorded"}`)
+    } else if (level.required_for_v1) {
+      legacyV1.push(`${level.label}: ${level.status}`)
+    } else {
+      missing.push(`${level.label}: ${level.status}`)
+    }
+  }
+  return {
+    status: missing.length === 0 && drift.length === 0 ? "pass" : "fail",
     evidence: [
-      `optimizer_candidate_receipts=${candidateSources.length}`,
-      `optimizer_candidate_activities=${candidateActivities.length}`,
-      `valid_optimizer_candidate_activities=${validActivities.length}`,
-      `invalid_optimizer_candidate_activities=${invalidActivities.length}`,
-      ...missingSourceArtifacts.slice(0, 10),
-      ...invalidActivities.slice(0, 10),
-      ...candidateSources.slice(0, 10).map((source) => `receipt: ${source.sidecar_path} -> ${source.finding_path}`),
-      ...validActivities.slice(0, 10).map((activity) => `activity: ${activity}`),
+      `recorded_levels=${recordedLevels.map((level) => level.label).join(",") || "none"}`,
+      `acceptance_receipts=${acceptanceRecords.length}`,
+      `covered=${covered.length}`,
+      `legacy_v1_bootstrap=${legacyV1.length}`,
+      `missing=${missing.length}`,
+      `drift=${drift.length}`,
+      ...covered.slice(0, 10).map((entry) => `receipt: ${entry}`),
+      ...legacyV1.slice(0, 10).map((entry) => `legacy v1 bootstrap: ${entry}`),
+      ...missing.slice(0, 10).map((entry) => `missing receipt: ${entry}`),
+      ...drift.slice(0, 10).map((entry) => `receipt drift: ${entry}`),
     ],
   }
 }
 
-function taskClassifierGraduationAudit(effort: StackEffort, summaryText: string): { ok: boolean; evidence: string[] } {
-  const checks = [
-    {
-      label: "A2",
-      required: Boolean(effort.manifest.hosted.factory_id || effort.manifest.hosted.project_id || effort.manifest.hosted.effort_id),
-      refs: [
-        effort.manifest.hosted.factory_id ? `factory=${effort.manifest.hosted.factory_id}` : "",
-        effort.manifest.hosted.project_id ? `project=${effort.manifest.hosted.project_id}` : "",
-        effort.manifest.hosted.effort_id ? `hosted_effort=${effort.manifest.hosted.effort_id}` : "",
-      ].filter(Boolean),
-    },
-    {
-      label: "A3",
-      required: effort.manifest.hosted.smr_run_ids.length > 0,
-      refs: effort.manifest.hosted.smr_run_ids.map((id) => `smr=${id}`),
-    },
-    {
-      label: "A4",
-      required: effort.manifest.hosted.tinker_run_ids.length > 0,
-      refs: effort.manifest.hosted.tinker_run_ids.map((id) => `tinker=${id}`),
-    },
-  ]
-  const evidence: string[] = []
-  let ok = true
-  for (const check of checks) {
-    const section = acceptanceSection(summaryText, check.label)
-    const recorded = acceptanceSectionIsRecorded(section)
-    if (check.required && !recorded) ok = false
-    evidence.push(`${check.label}_required=${check.required}`)
-    evidence.push(`${check.label}_section=${sectionState(section)}`)
-    evidence.push(...(check.refs.length > 0 ? check.refs : [`${check.label}_refs=none`]))
-  }
-  return { ok, evidence }
-}
+
 
 function acceptanceLevelLabels(summaryText: string): string[] {
   const labels = new Set<string>()
@@ -2763,16 +4044,51 @@ function normalizeAcceptanceLevel(level: string): string {
 }
 
 function assertAcceptanceUpdateState(state: string): asserts state is StackEffortAcceptanceUpdateState {
-  if ((STACK_EFFORT_ACCEPTANCE_UPDATE_STATES as readonly string[]).includes(state)) return
+  if (isAcceptanceUpdateState(state)) return
   throw new Error(`acceptance state must be one of ${STACK_EFFORT_ACCEPTANCE_UPDATE_STATES.join(", ")}`)
+}
+
+function isAcceptanceUpdateState(state: string): state is StackEffortAcceptanceUpdateState {
+  return (STACK_EFFORT_ACCEPTANCE_UPDATE_STATES as readonly string[]).includes(state)
 }
 
 function acceptanceUpdateStatus(status: string | undefined, state: StackEffortAcceptanceUpdateState): string {
   const cleaned = status?.trim()
-  if (cleaned) return cleaned
+  if (cleaned) {
+    const parsedState = acceptanceSectionStatus(`Status: ${cleaned}`).state
+    if (parsedState === state) return cleaned
+    if (parsedState !== "unknown") {
+      throw new Error(`acceptance status text implies ${parsedState}, but state is ${state}`)
+    }
+    return `${acceptanceUpdateStateLabel(state)} - ${cleaned}`
+  }
   if (state === "not_recorded") return "not recorded"
   return state
 }
+
+function acceptanceUpdateStateLabel(state: StackEffortAcceptanceUpdateState): string {
+  return state === "not_recorded" ? "not recorded" : state
+}
+
+function assertAcceptanceUpdateAllowed(
+  effort: StackEffort,
+  input: {
+    level: string
+    state: StackEffortAcceptanceUpdateState
+  },
+): void {
+  if (input.state !== "recorded") return
+  const claim = effortClaim(effort.manifest, input.level)
+  if (!claim || (claim.needs_refs.length === 0 && claim.needs_evidence.length === 0)) return
+  const evaluation = evaluateEffortClaim(effort, claim)
+  if (evaluation.ok) return
+  throw new Error(`recorded ${claim.label} acceptance requires the declared claim evidence; missing: ${evaluation.missing.join("; ")}`)
+}
+
+
+
+
+
 
 function updateAcceptanceSummaryText(
   text: string,
@@ -2890,9 +4206,8 @@ function acceptanceSectionIsRecorded(section: string): boolean {
   return acceptanceSectionStatus(section).state === "recorded"
 }
 
-function sectionState(section: string): "missing" | "not_recorded" | "recorded" {
-  if (!section.trim()) return "missing"
-  return acceptanceSectionIsRecorded(section) ? "recorded" : "not_recorded"
+function sectionState(section: string): StackEffortAcceptanceLevelState {
+  return acceptanceSectionStatus(section).state
 }
 
 function normalizedIncludes(text: string, needle: string): boolean {
@@ -3144,10 +4459,11 @@ function effortCaptureSourceReceipt(receipt: StackEffortFindingSourceReceipt, ca
   }
 }
 
-function optimizerCandidateSourceReceipt(receipt: StackEffortFindingSourceReceipt): StackEffortFindingSourceReceipt {
+
+function evidenceSourceReceipt(receipt: StackEffortFindingSourceReceipt, sourceKind: string): StackEffortFindingSourceReceipt {
   return {
     ...receipt,
-    source_kind: "optimizer_candidate",
+    source_kind: sourceKind,
   }
 }
 
@@ -3162,24 +4478,53 @@ function effortCaptureBody(captureKind: StackEffortCaptureKind, body: string | u
   return [`Capture kind: ${captureKind}`, "", trimmed || "Captured evidence."].join("\n")
 }
 
-function optimizerCandidateBody(input: {
-  optimizerRunId?: string
-  candidateId?: string
-  score?: string
-  scoreLabel?: string
-  split?: string
-  body?: string
-}): string {
-  const lines = [
-    "Evidence kind: optimizer candidate",
-    ...(input.optimizerRunId ? [`Optimizer run: ${input.optimizerRunId}`] : []),
-    ...(input.candidateId ? [`Candidate: ${input.candidateId}`] : []),
-    ...(input.score ? [`Score: ${input.scoreLabel ? `${input.scoreLabel} ` : ""}${input.score}`] : []),
-    ...(input.split ? [`Split: ${input.split}`] : []),
-    "",
-    input.body?.trim() || "Optimizer candidate evidence.",
-  ]
-  return lines.join("\n")
+
+
+
+
+function releaseArtifactFieldsFromPath(path: string): {
+  version?: string
+  channel?: string
+  target?: string
+  archive?: string
+  sha256?: string
+  size?: string
+  manifest?: string
+  releaseSite?: string
+  publishable?: boolean
+  publishBlockers?: string[]
+} {
+  try {
+    const payload = JSON.parse(readFileSync(path, "utf8")) as unknown
+    const record = asRecord(payload)
+    const targets = asRecord(record.targets)
+    const firstTarget = Object.keys(targets)[0]
+    const targetRecord = asRecord(firstTarget ? targets[firstTarget] : undefined)
+    const version = readString(record.version)?.trim()
+    const channel = readString(record.channel)?.trim()
+    const target = readString(record.target)?.trim() || firstTarget
+    const archive = readString(record.archive)?.trim() || readString(targetRecord.url)?.trim()
+    const sha256 = readString(record.sha256)?.trim() || readString(targetRecord.sha256)?.trim()
+    const size = readNumberishString(record.size) || readNumberishString(targetRecord.size)
+    const manifest = readString(record.manifest)?.trim()
+    const releaseSite = readString(record.release_site)?.trim()
+    const publishable = readBoolean(record.publishable)
+    const publishBlockers = readStringArray(record.publish_blockers)
+    return {
+      ...(version ? { version } : {}),
+      ...(channel ? { channel } : {}),
+      ...(target ? { target } : {}),
+      ...(archive ? { archive } : {}),
+      ...(sha256 ? { sha256 } : {}),
+      ...(size ? { size } : {}),
+      ...(manifest ? { manifest } : {}),
+      ...(releaseSite ? { releaseSite } : {}),
+      ...(publishable !== undefined ? { publishable } : {}),
+      ...(publishBlockers.length > 0 ? { publishBlockers } : {}),
+    }
+  } catch {
+    return {}
+  }
 }
 
 function readEngineeringGitSnapshot(repoPath: string, baseRef: string | undefined): {
@@ -3343,27 +4688,6 @@ function findingDirName(kind: StackEffortFindingKind): string {
   return kind === "idea" ? "ideas" : kind
 }
 
-function emptyHostedRefs(): StackEffortHostedRefs {
-  return {
-    factory_id: "",
-    effort_id: "",
-    project_id: "",
-    optimizer_run_ids: [],
-    smr_run_ids: [],
-    tinker_run_ids: [],
-  }
-}
-
-function normalizeHostedRefs(refs: Partial<StackEffortHostedRefs> | undefined): StackEffortHostedRefs {
-  return {
-    factory_id: refs?.factory_id ?? "",
-    effort_id: refs?.effort_id ?? "",
-    project_id: refs?.project_id ?? "",
-    optimizer_run_ids: uniqueStrings(refs?.optimizer_run_ids ?? []),
-    smr_run_ids: uniqueStrings(refs?.smr_run_ids ?? []),
-    tinker_run_ids: uniqueStrings(refs?.tinker_run_ids ?? []),
-  }
-}
 
 function assertEffortStatus(status: string): asserts status is StackEffortStatus {
   if (!STACK_EFFORT_STATUSES.includes(status as StackEffortStatus)) {
@@ -3381,6 +4705,14 @@ function assertCaptureKind(kind: string): asserts kind is StackEffortCaptureKind
   if (!STACK_EFFORT_CAPTURE_KINDS.includes(kind as StackEffortCaptureKind)) {
     throw new Error(`unsupported effort capture kind: ${kind}`)
   }
+}
+
+function normalizeRunEvidenceKind(kind: string): string {
+  const cleaned = kind.trim().toLowerCase()
+  if (!/^[a-z][a-z0-9_-]*$/.test(cleaned)) {
+    throw new Error(`run evidence kind must be a lowercase identifier like smr, tinker, or local: ${kind}`)
+  }
+  return cleaned
 }
 
 function assertIdeaOrigin(origin: string): asserts origin is StackEffortIdeaOrigin {
@@ -3428,6 +4760,16 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined
+}
+
+function readBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined
+}
+
+function readNumberishString(value: unknown): string | undefined {
+  if (typeof value === "string") return value.trim() || undefined
+  if (typeof value === "number" && Number.isFinite(value)) return String(value)
+  return undefined
 }
 
 function cleanOptional(value: string | undefined): string | undefined {

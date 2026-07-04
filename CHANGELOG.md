@@ -17,6 +17,108 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260704.1] - 2026-07-04
+
+Efforts acceptance hardening release.
+
+### Added
+
+- **Effort remaining-work command.** `stack effort remaining` and
+  `stack_effort_remaining` expose the parsed "what remains?" state directly:
+  open acceptance levels, latest unresolved blocker, next safe actions, and
+  handoff/acceptance paths without requiring the full show/get payload.
+- **Effort no-blocked lifecycle guard.** `stack effort status` and
+  `stack_effort_update_status` now reject `blocked` with a recovery message that
+  points operators and gardeners to blocker receipts instead of lifecycle state.
+- **Effort receipt digest repair.** `stack effort audit` now has a documented
+  companion repair path: `stack effort refresh-receipts <effort>` and
+  `stack_effort_refresh_receipts` recompute current local file/directory digests
+  for receipt-backed findings and update only stale sidecars after audit reports
+  `finding_receipt_digests` drift.
+- **Effort acceptance receipt audit.** `stack effort audit` now checks recorded
+  acceptance levels against typed `effort.acceptance_recorded` receipts. Legacy
+  A0/A1 bootstrap packets can remain accepted as explicit v1 bootstrap evidence,
+  but recorded graduation levels require the typed acceptance writer. The audit
+  also fails when an acceptance packet drifts from the latest typed receipt for
+  that level, and acceptance writes now make custom status text parseable as the
+  requested state.
+- **Generic Effort refs.** `effort.toml` now records external system edges as
+  open `[[refs]]` entries - `{system, id, lane, role}` - replacing the
+  per-product `[hosted]` columns. Lanes (`hosted`/`local`) are declared
+  explicitly at write time; nothing is inferred from id substrings. Legacy
+  `[hosted]` blocks and registry `hosted_refs` are still read and migrate on
+  the next write. `stack effort refs --system <system> --id <id> --lane
+  hosted|local` and the matching `stack_effort_update_refs` args cover any
+  system; the named `--*-id` flags remain as conveniences.
+- **Declared Effort claims.** `effort.toml` and effort templates now declare
+  acceptance levels as `[[claims]]` with `needs_refs` and `needs_evidence`
+  requirements. One generic rule replaces all template-specific guards: a claim
+  recorded as accepted must satisfy its declared requirements, and
+  `stack effort acceptance` / `stack_effort_record_acceptance` reject recorded
+  writes naming exactly what is missing. The audit's new `claims` check fails
+  recorded-but-unmet claims, warns on open required claims, and keeps open
+  optional claims visible without degrading the audit. The bundled
+  task-classifier template ships the Banking77-style A0-A4 ladder as declared
+  claims; the engine itself knows nothing about GEPA, SMR, or Tinker.
+- **Effort handoff research-log summary.** Generated handoffs for research
+  Efforts now include a compact `Research Log` section with the latest dated
+  entries, summarized work, results, and next actions instead of only linking to
+  `research_log.md`.
+- **Effort handoff receipt summary.** Generated handoffs now include a compact
+  `Receipt Summary` with sidecar count, readable receipt count, digest-backed
+  receipt count, and source-kind/artifact-kind/environment totals. `stack effort
+  audit` requires the section whenever an Effort has receipt sidecars.
+- **Claim lanes in handoffs.** Generated handoffs for any Effort that declares
+  `[[claims]]` include a `Claim Lanes` section listing each claim's state,
+  requirement satisfaction, satisfied/missing requirements, and next action;
+  audit requires the section whenever claims are declared.
+- **Effort handoff idea graph.** Generated handoffs now include an `Idea Graph`
+  section whenever an Effort has raw ideas or promoted idea findings. The
+  section summarizes origin counts, raw `[HUMAN]`/`[AGENT]`/`[MIXED]` idea
+  nodes, and promoted `findings/ideas` backlinks, and audit requires it when
+  idea material exists.
+- **Typed run evidence for any run system.** `stack effort run-evidence` plus
+  `stack_effort_record_run_evidence` record run proof under `findings/proof/`
+  with an open `--run-kind` system identifier (`smr`, `tinker`, `local`, ...),
+  run/project/output ids, artifact name, metric, an optional claim label, and
+  receipt-backed source provenance (`source_kind=run.<kind>`). The run id is
+  attached to the manifest as a `{system: <kind>, id: <run-id>}` ref. Effort
+  list/show, MCP get/list, `/efforts`, handoffs, audit, playbooks, and gardener
+  profiles surface this path; claims that declare `run.<kind>` evidence are
+  satisfied by it.
+- **One evidence machine.** Optimizer candidates, run evidence, benchmark
+  intake, and release artifact proof are all presets over a single generic
+  evidence recorder with namespaced source kinds (`optimizer.candidate`,
+  `run.<kind>`, `benchmark.intake`, `release.artifact`); legacy activity types
+  and receipt kinds normalize into the same view, one audit validates all
+  evidence records, and `stack effort audit` reports it as
+  `evidence_receipts`. Presets enforce identifiability at write time: run
+  evidence requires a run id, optimizer candidates require optimizer_run_id
+  and candidate_id (and attach the optimizer ref to the manifest), and release
+  artifact proof requires version and sha256.
+- **Receipt refresh preserves provenance.** `stack effort refresh-receipts`
+  now keeps the original `recorded_at` on refreshed sidecars and stamps
+  `refreshed_at` separately, so digest repairs stay distinguishable from the
+  original recording.
+- **Banking77 effort-acceptance eval.** The Banking77 graduation policy moved
+  out of Stack core into `stackeval/banking77-effort-acceptance/`, a hermetic
+  lane that proves template-seeded claims, guard rejections, preset evidence
+  satisfaction, open run kinds, explicit ref lanes, and green audit/handoff
+  end-to-end against the shipped template.
+- **Typed release artifact proof.** `stack effort release-artifact` plus
+  `stack_effort_record_release_artifact` record release/nightly tarball proof
+  under `findings/proof/` with version, channel, target, archive, sha256, size,
+  manifest, release-site path, publishable state, publish blockers, and
+  receipt-backed source provenance. Effort list/show, MCP get/list, generated
+  handoffs, audit, docs, and playbooks now surface release proofs as first-class
+  artifacts instead of generic proof captures.
+- **Effort benchmark intake.** `stack effort benchmark` plus
+  `stack_effort_record_benchmark` record benchmark source, license, task shape,
+  splits, metrics, version, and metadata/source receipt provenance under
+  `findings/data/`. Effort list/show, MCP get/list, `/efforts`, generated
+  handoffs, audit, playbooks, and gardener profiles now surface benchmark
+  adoption as first-class metadata instead of a generic capture.
+
 ## [0.2.0-dev.20260703.2] - 2026-07-03
 
 Monitor Gardener Goal release.
