@@ -178,6 +178,7 @@ export type StackEffortArtifactInventory = {
   repos: string[]
   findings: Record<"ideas" | "code" | "data" | "proof" | "results", string[]>
   receipt_sidecars: string[]
+  receipt_sources: StackEffortArtifactReceiptSource[]
   all: string[]
   counts: {
     generated: number
@@ -189,6 +190,13 @@ export type StackEffortArtifactInventory = {
     receipt_sidecars: number
     total: number
   }
+}
+
+export type StackEffortArtifactReceiptSource = {
+  sidecar_path: string
+  finding_path: string
+  recorded_at?: string
+  receipt: StackEffortFindingSourceReceipt
 }
 
 export type StackEffortTemplateSummary = {
@@ -508,6 +516,7 @@ export function effortArtifactInventory(effort: StackEffort): StackEffortArtifac
     results: effortRelativeFiles(effort, "findings", "results"),
   }
   const receiptSidecars = Object.values(findings).flat().filter(isFindingReceiptSidecarRef)
+  const receiptSources = effortFindingSourceReceiptRecords(effort, receiptSidecars)
   const inventory = {
     generated,
     ideas: effortRelativeFiles(effort, "ideas"),
@@ -516,6 +525,7 @@ export function effortArtifactInventory(effort: StackEffort): StackEffortArtifac
     repos: effortRelativeFiles(effort, "repos"),
     findings,
     receipt_sidecars: receiptSidecars,
+    receipt_sources: receiptSources,
   }
   const generatedRefs = Object.values(generated).filter((value): value is string => Boolean(value))
   const all = uniqueStrings([
@@ -546,6 +556,28 @@ export function effortArtifactInventory(effort: StackEffort): StackEffortArtifac
       total: all.length,
     },
   }
+}
+
+function effortFindingSourceReceiptRecords(
+  effort: StackEffort,
+  sidecarRefs: string[],
+): StackEffortArtifactReceiptSource[] {
+  const records: StackEffortArtifactReceiptSource[] = []
+  for (const ref of sidecarRefs) {
+    const path = effortPathFromRef(effort, ref)
+    const parsed = path ? readEffortFindingSourceReceipt(path) : undefined
+    const receipt = normalizeEffortFindingSourceReceipt(parsed?.receipt)
+    const findingPath = readString(parsed?.finding_path)?.trim()
+    if (!receipt || !findingPath) continue
+    const recordedAt = readString(parsed?.recorded_at)?.trim()
+    records.push({
+      sidecar_path: ref,
+      finding_path: findingPath,
+      ...(recordedAt ? { recorded_at: recordedAt } : {}),
+      receipt,
+    })
+  }
+  return records
 }
 
 export function readEffortProgressTail(effort: StackEffort, limit = 5): string[] {
@@ -1612,7 +1644,7 @@ function effortHandoffMarkdown(
   lines.push(
     "### Receipt Sidecars",
     "",
-    ...limitedArtifactLines(artifactInventory.receipt_sidecars),
+    ...receiptSourceLines(artifactInventory),
     "",
   )
   lines.push(
@@ -1694,6 +1726,25 @@ function limitedArtifactLines(paths: string[]): string[] {
   if (paths.length === 0) return ["- None recorded."]
   const shown = paths.slice(0, 20).map((path) => `- ${path}`)
   if (paths.length > shown.length) shown.push(`- ... ${paths.length - shown.length} more`)
+  return shown
+}
+
+function receiptSourceLines(inventory: StackEffortArtifactInventory): string[] {
+  if (inventory.receipt_sidecars.length === 0) return ["- None recorded."]
+  const sources = new Map(inventory.receipt_sources.map((source) => [source.sidecar_path, source]))
+  const shown = inventory.receipt_sidecars.slice(0, 20).map((sidecarPath) => {
+    const source = sources.get(sidecarPath)
+    if (!source) return `- ${sidecarPath} -> unreadable source receipt; see audit`
+    const receipt = source.receipt
+    const label = [
+      receipt.source_kind ?? "source",
+      receipt.artifact_kind ?? "",
+      receipt.environment ? `env=${receipt.environment}` : "",
+    ].filter(Boolean).join(", ")
+    const digest = receipt.digest?.sha256 ? ` sha256=${receipt.digest.sha256}` : ""
+    return `- ${sidecarPath} -> ${source.finding_path} (${label}) source=${receipt.workspace_path}${digest}`
+  })
+  if (inventory.receipt_sidecars.length > shown.length) shown.push(`- ... ${inventory.receipt_sidecars.length - shown.length} more`)
   return shown
 }
 
@@ -2142,14 +2193,60 @@ function readEffortFindingSourceReceipt(path: string): {
   schema?: string
   receipt?: unknown
   finding_path?: string
+  recorded_at?: string
 } | undefined {
   try {
     const payload = JSON.parse(readFileSync(path, "utf8")) as unknown
     if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined
-    return payload as { schema?: string; receipt?: unknown; finding_path?: string }
+    return payload as { schema?: string; receipt?: unknown; finding_path?: string; recorded_at?: string }
   } catch {
     return undefined
   }
+}
+
+function normalizeEffortFindingSourceReceipt(value: unknown): StackEffortFindingSourceReceipt | undefined {
+  const record = asRecord(value)
+  const receiptPath = readString(record.receipt_path)?.trim()
+  const workspacePath = readString(record.workspace_path)?.trim()
+  if (!receiptPath || !workspacePath) return undefined
+  const artifactKind = readString(record.artifact_kind)?.trim()
+  const sourceKind = readString(record.source_kind)?.trim()
+  const environment = readString(record.environment)?.trim()
+  const runId = optionalNullableString(record.run_id)
+  const projectId = optionalNullableString(record.project_id)
+  const artifactName = optionalNullableString(record.artifact_name)
+  const outputId = optionalNullableString(record.output_id)
+  const label = optionalNullableString(record.label)
+  const pulledAt = readString(record.pulled_at)?.trim()
+  const digestRecord = asRecord(record.digest)
+  const sha256 = readString(digestRecord.sha256)?.trim()
+  const bytes = typeof digestRecord.bytes === "number" ? digestRecord.bytes : undefined
+  const digest = sha256 || bytes !== undefined
+    ? {
+        ...(sha256 ? { sha256 } : {}),
+        ...(bytes !== undefined ? { bytes } : {}),
+      }
+    : undefined
+  return {
+    receipt_path: receiptPath,
+    ...(artifactKind ? { artifact_kind: artifactKind } : {}),
+    ...(sourceKind ? { source_kind: sourceKind } : {}),
+    ...(environment ? { environment } : {}),
+    ...(runId !== undefined ? { run_id: runId } : {}),
+    ...(projectId !== undefined ? { project_id: projectId } : {}),
+    ...(artifactName !== undefined ? { artifact_name: artifactName } : {}),
+    ...(outputId !== undefined ? { output_id: outputId } : {}),
+    ...(label !== undefined ? { label } : {}),
+    workspace_path: workspacePath,
+    ...(digest ? { digest } : {}),
+    ...(pulledAt ? { pulled_at: pulledAt } : {}),
+  }
+}
+
+function optionalNullableString(value: unknown): string | null | undefined {
+  if (value === null) return null
+  const string = readString(value)?.trim()
+  return string || undefined
 }
 
 function effortFindingSourceReceiptPath(findingPath: string): string {
