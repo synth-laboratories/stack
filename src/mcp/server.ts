@@ -51,6 +51,7 @@ import {
   readEffortAcceptancePacket as readStackEffortAcceptancePacket,
   readEffortActivityTail as readStackEffortActivityTail,
   readEffortBlockerTail as readStackEffortBlockerTail,
+  readEffortOpenBlockerTail as readStackEffortOpenBlockerTail,
   readEffortOptimizerCandidateSummaries as readStackEffortOptimizerCandidateSummaries,
   readEffortProgressTail as readStackEffortProgressTail,
   readEffortRemainingWork as readStackEffortRemainingWork,
@@ -62,6 +63,7 @@ import {
   recordEffortNote as recordStackEffortNote,
   recordEffortOptimizerCandidate as recordStackEffortOptimizerCandidate,
   recordEffortRepo as recordStackEffortRepo,
+  resolveEffortBlocker as resolveStackEffortBlocker,
   STACK_EFFORT_CAPTURE_KINDS,
   STACK_EFFORT_FINDING_KINDS,
   STACK_EFFORT_IDEA_ORIGINS,
@@ -636,7 +638,7 @@ export class StackMcpServer {
         const acceptancePacket = readStackEffortAcceptancePacket(effort) ?? null
         const progressTail = readStackEffortProgressTail(effort, 1)
         const activityTail = readStackEffortActivityTail(effort, 1)
-        const blockerTail = readStackEffortBlockerTail(effort, 1)
+        const blockerTail = readStackEffortOpenBlockerTail(effort, 1)
         const optimizerCandidates = readStackEffortOptimizerCandidateSummaries(effort, 1)
         const remainingWork = readStackEffortRemainingWork(effort)
         const audit = auditStackEffort(effort)
@@ -697,6 +699,7 @@ export class StackMcpServer {
     const progressTail = readStackEffortProgressTail(effort, 5)
     const activityTail = readStackEffortActivityTail(effort, 5)
     const blockerTail = readStackEffortBlockerTail(effort, 5)
+    const openBlockerTail = readStackEffortOpenBlockerTail(effort, 5)
     const optimizerCandidates = readStackEffortOptimizerCandidateSummaries(effort, 5)
     const remainingWork = readStackEffortRemainingWork(effort)
     const boundMetaThreads = await Promise.all(
@@ -722,8 +725,9 @@ export class StackMcpServer {
       progress_tail: progressTail,
       latest_activity: activityTail[activityTail.length - 1] ?? null,
       activity_tail: activityTail,
-      latest_blocker: blockerTail[blockerTail.length - 1] ?? null,
+      latest_blocker: openBlockerTail[openBlockerTail.length - 1] ?? null,
       blocker_tail: blockerTail,
+      open_blocker_tail: openBlockerTail,
       bound_meta_threads: boundMetaThreads,
       manifest: effort.manifest,
       registry: effort.registry,
@@ -916,6 +920,23 @@ export class StackMcpServer {
     })
     return toJsonValue(await this.effortPayload(config, effort, {
       receipt: "lever.stack_mcp effort.blocker_recorded",
+    })) ?? null
+  }
+
+  async resolveEffortBlocker(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = resolveStackEffortBlocker({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      blockerActivityId: optionalString(args, "activity_id"),
+      resolution: requiredString(args, "resolution"),
+      evidence: optionalString(args, "evidence"),
+      owner: optionalString(args, "owner"),
+    })
+    return toJsonValue(await this.effortPayload(config, effort, {
+      receipt: "lever.stack_mcp effort.blocker_resolved",
     })) ?? null
   }
 
@@ -4957,7 +4978,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_list",
-      description: "List durable Stack Efforts with orientation fields: paths, latest progress/activity/blocker, latest typed optimizer candidate, remaining_work, ref counts, artifact counts, handoff state, and parsed acceptance packet state. Efforts are long-lived workspaces for research or engineering work across threads, runs, findings, ideas, and proof artifacts.",
+      description: "List durable Stack Efforts with orientation fields: paths, latest progress/activity/unresolved blocker, latest typed optimizer candidate, remaining_work, ref counts, artifact counts, handoff state, and parsed acceptance packet state. Efforts are long-lived workspaces for research or engineering work across threads, runs, findings, ideas, and proof artifacts.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         status: enumProperty([...STACK_EFFORT_STATUSES, "all"], "Optional Effort status filter. Defaults to all."),
@@ -4974,7 +4995,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_get",
-      description: "Read one durable Stack Effort by id or slug, including manifest, registry record, workspace path refs, machine-readable artifact_inventory, parsed acceptance_packet when present, typed optimizer_candidates, remaining_work, latest progress/activity/blocker tails, and bound meta-thread context.",
+      description: "Read one durable Stack Effort by id or slug, including manifest, registry record, workspace path refs, machine-readable artifact_inventory, parsed acceptance_packet when present, typed optimizer_candidates, remaining_work, latest progress/activity, historical blocker tail, unresolved blocker tail, and bound meta-thread context.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
@@ -5069,6 +5090,22 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["effort_ref", "blocker", "evidence", "owner", "next"],
       ),
       handler: (args) => server.recordEffortBlocker(args),
+    },
+    {
+      name: "stack_effort_resolve_blocker",
+      description: "Resolve a previously recorded Effort blocker with an explicit activity receipt. Historical blocker evidence stays in ACTIVITY.jsonl and handoffs, but resolved blockers no longer drive latest_blocker or remaining_work.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          activity_id: stringProperty("Optional effort.blocker_recorded activity id. Defaults to the latest unresolved blocker."),
+          resolution: stringProperty("How the blocker was cleared or superseded."),
+          evidence: stringProperty("Optional evidence for the resolution, such as an audit result, run id, or artifact path."),
+          owner: stringProperty("Optional owner who cleared or verified the resolution."),
+        },
+        ["effort_ref", "resolution"],
+      ),
+      handler: (args) => server.resolveEffortBlocker(args),
     },
     {
       name: "stack_effort_record_acceptance",

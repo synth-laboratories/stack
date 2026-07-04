@@ -31,10 +31,10 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   non-verifiable task, and product workstreams. `stack effort ...` and
   `stack_effort_*` MCP tools share the same storage path, while `/efforts`
   shows active/archived Efforts, refs, bound thread context, recent progress,
-  recent activity, latest blocker, handoff state, acceptance summaries, and
+  recent activity, latest unresolved blocker, handoff state, acceptance summaries, and
   engineering change-packet summaries. `stack effort list` now works as a compact
   scan view with grouped status, ref counts, audit status, handoff/acceptance
-  markers, latest progress, latest activity, and latest blocker.
+  markers, latest progress, latest activity, and latest unresolved blocker.
   The `/efforts` panel is now selectable: `j`/`k` move the selected Effort, `n`
   starts `/efforts new`, `h` refreshes its generated handoff packet, `a`
   archives or reactivates it, and `b` binds the current meta-thread via stackd
@@ -67,7 +67,7 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   handoffs, `stack_effort_get`, `stack_effort_list`, and `/efforts` surface that
   summary so resume agents can see what remains without parsing markdown.
   Generated handoffs also derive Risks And Open Threads bullets from open
-  acceptance levels and the latest blocker when callers do not provide
+  acceptance levels and the latest unresolved blocker when callers do not provide
   explicit `--risk` entries, and `stack effort audit` now checks that generated
   handoff risks still reflect structured remaining work.
   `stack effort acceptance` and `stack_effort_record_acceptance` now update a
@@ -79,7 +79,11 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   evidence, next owner, and next safe action while keeping Effort status
   `active` or `paused`; the mutation writes `PROGRESS.md` and an
   `effort.blocker_recorded` activity receipt instead of introducing a
-  `blocked` lifecycle state. Generated handoffs now include a dedicated
+  `blocked` lifecycle state. `stack effort resolve-blocker` and
+  `stack_effort_resolve_blocker` append an `effort.blocker_resolved` receipt so
+  the original blocker remains in the historical trail while resolved blockers
+  stop driving `latest_blocker`, `open_blocker_tail`, generated risks, and
+  structured `remaining_work`. Generated handoffs now include a dedicated
   Recorded Blockers section from those receipts plus an embedded audit summary
   so the packet carries its own coherence status.
 - **Machine-readable Effort artifact inventory.** `stack effort show --json`,

@@ -21,6 +21,7 @@ import {
   readEffort,
   readEffortActivityTail,
   readEffortBlockerTail,
+  readEffortOpenBlockerTail,
   readEffortOptimizerCandidateSummaries,
   readEffortProgressTail,
   readEffortRemainingWork,
@@ -32,6 +33,7 @@ import {
   recordEffortNote,
   recordEffortOptimizerCandidate,
   recordEffortRepo,
+  resolveEffortBlocker,
   updateEffortRefs,
   updateEffortStatus,
   writeEffortEngineeringPacket,
@@ -185,6 +187,21 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
         evidence: readFlagString(parsed, "evidence") ?? "",
         owner: readFlagString(parsed, "owner") ?? "",
         next: readFlagString(parsed, "next") ?? "",
+      })
+      await printEffort(config, effort, json)
+      return 0
+    }
+
+    if (action === "resolve-blocker" || action === "blocker-resolve" || action === "unblock") {
+      const ref = parsed.args[0]
+      if (!ref) return usageError("usage: stack effort resolve-blocker <effort> --resolution <text> [--activity-id <id>] [--evidence <text>] [--owner <owner>]")
+      const effort = resolveEffortBlocker({
+        ...config,
+        effortRef: ref,
+        blockerActivityId: readFlagString(parsed, "activity-id"),
+        resolution: readFlagString(parsed, "resolution") ?? "",
+        evidence: readFlagString(parsed, "evidence"),
+        owner: readFlagString(parsed, "owner"),
       })
       await printEffort(config, effort, json)
       return 0
@@ -531,7 +548,7 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
     }
     const progressTail = readEffortProgressTail(effort, 1)
     const activityTail = readEffortActivityTail(effort, 1)
-    const blockerTail = readEffortBlockerTail(effort, 1)
+    const blockerTail = readEffortOpenBlockerTail(effort, 1)
     const audit = auditEffort(effort)
     const paths = effortPathRefs(effort)
     const artifactInventory = effortArtifactInventory(effort)
@@ -641,6 +658,14 @@ function formatRemainingWorkLine(remaining: StackEffortRemainingWork): string {
   return `${remaining.summary}${next}`
 }
 
+function formatBlockerLine(blocker: StackEffortBlockerRecord): string {
+  if (blocker.resolved_at) {
+    const evidence = blocker.resolution_evidence ? ` - evidence ${blocker.resolution_evidence}` : ""
+    return `${blocker.observed_at} - ${blocker.blocker} - resolved ${blocker.resolved_at}: ${blocker.resolution ?? "resolution recorded"}${evidence}`
+  }
+  return `${blocker.observed_at} - ${blocker.blocker} - open - owner ${blocker.owner} - next ${blocker.next}`
+}
+
 function missingEffortRemainingWork(): StackEffortRemainingWork {
   return {
     state: "untracked",
@@ -674,6 +699,7 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   const progressTail = readEffortProgressTail(effort, 5)
   const activityTail = readEffortActivityTail(effort, 5)
   const blockerTail = readEffortBlockerTail(effort, 5)
+  const openBlockerTail = readEffortOpenBlockerTail(effort, 5)
   const acceptancePacket = readEffortAcceptancePacket(effort) ?? null
   const optimizerCandidates = readEffortOptimizerCandidateSummaries(effort, 5)
   const remainingWork = readEffortRemainingWork(effort)
@@ -687,8 +713,9 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
       progress_tail: progressTail,
       latest_activity: activityTail[activityTail.length - 1] ?? null,
       activity_tail: activityTail,
-      latest_blocker: blockerTail[blockerTail.length - 1] ?? null,
+      latest_blocker: openBlockerTail[openBlockerTail.length - 1] ?? null,
       blocker_tail: blockerTail,
+      open_blocker_tail: openBlockerTail,
       acceptance_packet: acceptancePacket,
       optimizer_candidates: optimizerCandidates,
       remaining_work: remainingWork,
@@ -775,7 +802,7 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   }
   if (blockerTail.length > 0) {
     console.log("recorded blockers:")
-    for (const blocker of blockerTail) console.log(`  ${blocker.observed_at} - ${blocker.blocker} - owner ${blocker.owner} - next ${blocker.next}`)
+    for (const blocker of blockerTail) console.log(`  ${formatBlockerLine(blocker)}`)
   }
 }
 
@@ -795,6 +822,7 @@ async function printArtifactResult(
     const progressTail = readEffortProgressTail(effort, 5)
     const activityTail = readEffortActivityTail(effort, 5)
     const blockerTail = readEffortBlockerTail(effort, 5)
+    const openBlockerTail = readEffortOpenBlockerTail(effort, 5)
     console.log(JSON.stringify({
       effort,
       path,
@@ -804,8 +832,9 @@ async function printArtifactResult(
       progress_tail: progressTail,
       latest_activity: activityTail[activityTail.length - 1] ?? null,
       activity_tail: activityTail,
-      latest_blocker: blockerTail[blockerTail.length - 1] ?? null,
+      latest_blocker: openBlockerTail[openBlockerTail.length - 1] ?? null,
       blocker_tail: blockerTail,
+      open_blocker_tail: openBlockerTail,
       bound_meta_threads: await readBoundMetaThreadSummaries(config, effort),
       artifact_receipt: artifactReceipt ?? null,
       source_receipt_path: sourceReceiptPath ?? null,
@@ -983,6 +1012,7 @@ function printEffortUsage(): void {
   console.error("  stack effort bind <effort> <meta-thread-id>")
   console.error("  stack effort progress <effort> <message>")
   console.error("  stack effort blocker <effort> --blocker <text> --evidence <text> --owner <owner> --next <text>")
+  console.error("  stack effort resolve-blocker <effort> --resolution <text> [--activity-id <id>] [--evidence <text>] [--owner <owner>]")
   console.error("  stack effort acceptance <effort> <A0|A1|A2...> [--state recorded|pending|not_recorded] [--status <text>] [--evidence <text>] [--path <path>] [--result <text>] [--decision <text>] [--next <text>]")
   console.error("  stack effort research-log <effort> <title> --work-summary <text> [--operator-message <text>] [--result <text>] [--metric <text>] [--path <path>] [--command <command>] [--next <text>]")
   console.error("  stack effort handoff <effort> [--summary <text>] [--risk <text>] [--next <text>] [--owner <text>]")

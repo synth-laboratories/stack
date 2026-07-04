@@ -158,6 +158,7 @@ stack effort activity banking77-top-score --limit 20
 stack effort bind banking77-top-score <meta-thread-id>
 stack effort progress banking77-top-score "Baseline and split protocol recorded"
 stack effort blocker banking77-top-score --blocker "Hosted graduation path not selected" --evidence "A0/A1 recorded; A2-A4 are optional graduation proofs" --owner operator --next "Choose hosted GEPA, SMR harness, or Tinker proof if stronger evidence is needed"
+stack effort resolve-blocker banking77-top-score --resolution "Hosted graduation path selected" --evidence "A2 path recorded in acceptance packet" --owner operator
 stack effort acceptance banking77-top-score A1 --state recorded --status "heldout proof recorded" --evidence "scorecard receipt <path>" --path findings/proof/local-gepa/heldout-score.txt --result "candidate beat baseline" --next "Review graduation path"
 stack effort research-log banking77-top-score "Local GEPA smoke" --work-summary "Ran local optimizer and copied scorecard artifacts" --operator-message "Use Banking77 as the acceptance Effort"
 stack effort handoff banking77-top-score --summary "Banking77 A0/A1 packet is ready for review" --next "Review heldout proof and decide hosted graduation"
@@ -176,7 +177,7 @@ stack effort archive banking77-top-score
 
 `stack effort show` prints the same orientation cues as `stack_effort_get`: key
 file paths, acceptance summary when present, bound meta-thread context, latest
-progress, latest activity, latest blocker, parsed acceptance packet state,
+progress, latest activity, latest unresolved blocker, parsed acceptance packet state,
 receipt-source provenance when
 present, and small progress/activity/blocker tails. Use `stack effort activity
 <effort> --limit <n>` for a dedicated human-readable or JSON activity timeline
@@ -202,7 +203,7 @@ so acceptance updates show up in orientation payloads and generated handoffs.
 `stack effort list` is the human scan view. It groups Efforts by status and
 shows the template, bound-thread count, repo/optimizer/SMR/Tinker ref counts
 when present, audit status, handoff and acceptance markers, latest progress,
-latest activity, latest typed optimizer candidate, latest blocker, last update
+latest activity, latest typed optimizer candidate, latest unresolved blocker, last update
 time, and visible folder ref. JSON mode includes the same orientation fields for
 scripts and review packets.
 
@@ -376,6 +377,7 @@ Stack MCP exposes the same Effort storage to gardeners and agents:
 - `stack_effort_bind_thread`
 - `stack_effort_update_progress`
 - `stack_effort_record_blocker`
+- `stack_effort_resolve_blocker`
 - `stack_effort_record_acceptance`
 - `stack_effort_record_research_log`
 - `stack_effort_write_handoff`
@@ -417,13 +419,15 @@ status, recorded levels, and open levels. It also returns a machine-readable
 notes, repo pointers, findings, receipt sidecar paths, and parsed
 `receipt_sources` provenance with source kind, workspace path, finding path,
 and digest when available. It also returns typed optimizer candidates, the
-latest progress line, latest blocker, `remaining_work`, small
+latest progress line, latest unresolved blocker, `remaining_work`, small
 progress/activity/blocker tails, and compact `bound_meta_threads` context for
-each bound meta-thread. `remaining_work` combines open acceptance levels with the
+each bound meta-thread. `blocker_tail` remains historical, while
+`open_blocker_tail`, `latest_blocker`, and `remaining_work` only count
+unresolved blockers. `remaining_work` combines open acceptance levels with the
 latest typed blocker next action. Effort MCP mutation responses return the same
 orientation context after applying the change.
 `stack_effort_list` is also an orientation surface: each row includes path refs,
-audit status, latest progress, latest activity, latest blocker,
+audit status, latest progress, latest activity, latest unresolved blocker,
 latest typed optimizer candidate, repo/optimizer/SMR/Tinker ref counts, artifact
 counts, `remaining_work`, and handoff/acceptance markers so gardeners can choose
 the right Effort before calling `stack_effort_get`.
@@ -450,6 +454,11 @@ another owner, keep the Effort active or paused and write the exact blocker,
 evidence, next owner, and next safe action in `PROGRESS.md`. Prefer
 `stack effort blocker` or `stack_effort_record_blocker` for this so the same
 entry also appears in `ACTIVITY.jsonl` as `effort.blocker_recorded`.
+When the dependency is cleared or superseded, use `stack effort resolve-blocker`
+or `stack_effort_resolve_blocker` with resolution evidence. Stack writes an
+`effort.blocker_resolved` receipt, keeps the original blocker in the historical
+trail, and removes it from `latest_blocker`, `open_blocker_tail`, generated
+risk derivation, and structured `remaining_work`.
 
 Banking77 is the acceptance Effort. A0 proves scaffold, CLI/MCP/TUI visibility,
 a bound meta-thread, a `[HUMAN]` idea, and progress capture. A1 proves local
@@ -472,12 +481,12 @@ or `stack_effort_record_acceptance` to update the matching acceptance section
 and append a typed `effort.acceptance_recorded` activity receipt.
 Generated handoffs include dedicated Acceptance Packet, Audit, and Recorded
 Blockers sections, plus a Remaining Work section that summarizes open acceptance
-levels and the latest blocker next action. The packet points at
+levels and the latest unresolved blocker next action. The packet points at
 `findings/results/acceptance-summary.md` when present, embeds the latest
 coherence audit status, and surfaces recent `effort.blocker_recorded` receipts
 from `ACTIVITY.jsonl`. If no explicit `--risk` values are supplied, handoffs
 derive Risks And Open Threads bullets from open acceptance levels and the latest
-blocker, and `stack effort audit` checks that generated handoff risks still
+unresolved blocker, and `stack effort audit` checks that generated handoff risks still
 reflect structured remaining work. Handoffs also show receipt-sidecar counts and
 a dedicated Receipt Sidecars artifact section.
 

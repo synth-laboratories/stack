@@ -97,7 +97,7 @@ import {
   readMetaThreadManifest,
   reconcileMetaThreadGoalFromCodex,
 } from "../meta-thread-goal.js"
-import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, readEffortOptimizerCandidateSummaries, readEffortRemainingWork, updateEffortStatus, writeEffortHandoff, type StackEffortSummary } from "../effort.js"
+import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, readEffortOpenBlockerTail, readEffortOptimizerCandidateSummaries, readEffortRemainingWork, updateEffortStatus, writeEffortHandoff, type StackEffortSummary } from "../effort.js"
 import { stackdUpdateMetaThreadEffortRef, type StackdMetaSidePanel, type StackdMetaStatus, type StackdMetaThreadManifest } from "../client/stackd.js"
 import {
   formatCodexBudgetSuffix,
@@ -10862,7 +10862,7 @@ function pushEffortSectionLines(
         color: theme.fgSecondary,
       })
     }
-    const blocker = effortLatestBlockerLine(effort, workspaceRoot)
+    const blocker = effortLatestBlockerLine(effort, workspaceRoot, stackDataRoot)
     if (blocker) {
       lines.push({
         text: oneLine(`  blocker - ${blocker}`, columns),
@@ -11053,37 +11053,17 @@ function effortLatestActivityLine(effort: StackEffortSummary, workspaceRoot: str
   return ""
 }
 
-function effortLatestBlockerLine(effort: StackEffortSummary, workspaceRoot: string): string {
-  const root = resolve(workspaceRoot)
-  const folder = resolve(root, effort.folder_ref)
-  const rel = relative(root, folder)
-  if (!rel || /^\.\.(?:[\\/]|$)/.test(rel)) return ""
-  const activityPath = join(folder, "ACTIVITY.jsonl")
-  if (!existsSync(activityPath)) return ""
+function effortLatestBlockerLine(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string {
   try {
-    const lines = readFileSync(activityPath, "utf8").split(/\r?\n/)
-    for (let index = lines.length - 1; index >= 0; index -= 1) {
-      const line = lines[index]?.trim()
-      if (!line) continue
-      const entry = JSON.parse(line) as {
-        type?: unknown
-        summary?: unknown
-        payload?: { blocker?: unknown; owner?: unknown; next?: unknown }
-      }
-      if (entry.type !== "effort.blocker_recorded") continue
-      const blocker = typeof entry.payload?.blocker === "string" && entry.payload.blocker.trim()
-        ? entry.payload.blocker.trim()
-        : typeof entry.summary === "string"
-          ? entry.summary.trim()
-          : ""
-      const owner = typeof entry.payload?.owner === "string" ? entry.payload.owner.trim() : ""
-      const next = typeof entry.payload?.next === "string" ? entry.payload.next.trim() : ""
-      return [blocker, owner ? `owner ${owner}` : "", next ? `next ${next}` : ""].filter(Boolean).join(" - ")
-    }
+    const current = readEffort({ workspaceRoot, stackDataRoot }, effort.id)
+    if (!current) return ""
+    const blockers = readEffortOpenBlockerTail(current, 1)
+    const blocker = blockers[blockers.length - 1]
+    if (!blocker) return ""
+    return [blocker.blocker, blocker.owner ? `owner ${blocker.owner}` : "", blocker.next ? `next ${blocker.next}` : ""].filter(Boolean).join(" - ")
   } catch {
     return ""
   }
-  return ""
 }
 
 function effortHandoffLine(effort: StackEffortSummary, workspaceRoot: string): string {

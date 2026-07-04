@@ -106,6 +106,24 @@ export type StackEffortBlockerRecord = {
   evidence: string
   owner: string
   next: string
+  resolved_at?: string
+  resolved_by_activity_id?: string
+  resolution?: string
+  resolution_evidence?: string
+  resolved_by_owner?: string
+}
+
+export type StackEffortBlockerResolutionRecord = {
+  activity_id: string
+  observed_at: string
+  effort_id: string
+  slug: string
+  summary: string
+  blocker_activity_id: string
+  blocker: string
+  resolution: string
+  evidence?: string
+  owner?: string
 }
 
 export type StackEffortAuditStatus = "pass" | "warn" | "fail"
@@ -420,6 +438,14 @@ export type RecordEffortBlockerInput = EffortLookupInput & {
   evidence: string
   owner: string
   next: string
+}
+
+export type ResolveEffortBlockerInput = EffortLookupInput & {
+  effortRef: string
+  blockerActivityId?: string
+  resolution: string
+  evidence?: string
+  owner?: string
 }
 
 export type WriteEffortHandoffInput = EffortLookupInput & {
@@ -757,7 +783,7 @@ export function readEffortRemainingWork(effort: StackEffort): StackEffortRemaini
       status: level.status,
       required_for_v1: level.required_for_v1,
     })) ?? []
-  const blockers = readEffortBlockerTail(effort, 1)
+  const blockers = readEffortOpenBlockerTail(effort, 1)
   const latestBlocker = blockers[blockers.length - 1] ?? null
   const nextActions = uniqueStrings([
     latestBlocker?.next ?? "",
@@ -868,10 +894,42 @@ export function readEffortOptimizerCandidateSummaries(effort: StackEffort, limit
 }
 
 export function readEffortBlockerTail(effort: StackEffort, limit = 5): StackEffortBlockerRecord[] {
+  const records = readEffortBlockerRecords(effort)
+  return records.slice(Math.max(0, records.length - limit))
+}
+
+export function readEffortOpenBlockerTail(effort: StackEffort, limit = 5): StackEffortBlockerRecord[] {
+  const records = readEffortBlockerRecords(effort).filter((record) => !record.resolved_at)
+  return records.slice(Math.max(0, records.length - limit))
+}
+
+export function readEffortBlockerResolutionTail(effort: StackEffort, limit = 5): StackEffortBlockerResolutionRecord[] {
   const records = readEffortActivityRecords(effort)
+    .map(effortBlockerResolutionFromActivity)
+    .filter((record): record is StackEffortBlockerResolutionRecord => Boolean(record))
+  return records.slice(Math.max(0, records.length - limit))
+}
+
+function readEffortBlockerRecords(effort: StackEffort): StackEffortBlockerRecord[] {
+  const resolutions = new Map<string, StackEffortBlockerResolutionRecord>()
+  for (const resolution of readEffortBlockerResolutionTail(effort, 2000)) {
+    resolutions.set(resolution.blocker_activity_id, resolution)
+  }
+  return readEffortActivityRecords(effort)
     .map(effortBlockerFromActivity)
     .filter((record): record is StackEffortBlockerRecord => Boolean(record))
-  return records.slice(Math.max(0, records.length - limit))
+    .map((record) => {
+      const resolution = resolutions.get(record.activity_id)
+      if (!resolution) return record
+      return {
+        ...record,
+        resolved_at: resolution.observed_at,
+        resolved_by_activity_id: resolution.activity_id,
+        resolution: resolution.resolution,
+        ...(resolution.evidence ? { resolution_evidence: resolution.evidence } : {}),
+        ...(resolution.owner ? { resolved_by_owner: resolution.owner } : {}),
+      }
+    })
 }
 
 export function auditEffort(effort: StackEffort): StackEffortAudit {
@@ -933,6 +991,7 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
   const activityRecords = readEffortActivityRecords(effort)
   const activityTail = activityRecords.slice(Math.max(0, activityRecords.length - 200))
   const blockerTail = readEffortBlockerTail(effort, 20)
+  const openBlockerTail = readEffortOpenBlockerTail(effort, 20)
   check(
     "timeline",
     progressTail.length > 0 && activityTail.length > 0 ? "pass" : "fail",
@@ -1135,7 +1194,7 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
         results: findingFiles.results.length,
       },
     },
-    latest_blocker: blockerTail[blockerTail.length - 1] ?? null,
+    latest_blocker: openBlockerTail[openBlockerTail.length - 1] ?? null,
     checks,
   }
 }
@@ -1210,6 +1269,34 @@ export function recordEffortBlocker(input: RecordEffortBlockerInput): StackEffor
     evidence,
     owner,
     next,
+  })
+  return persistEffort(input, effort)
+}
+
+export function resolveEffortBlocker(input: ResolveEffortBlockerInput): StackEffort {
+  const resolution = input.resolution.trim()
+  if (!resolution) throw new Error("blocker resolution is required")
+  const evidence = input.evidence?.trim()
+  const owner = input.owner?.trim()
+  const blockerActivityId = input.blockerActivityId?.trim()
+  const effort = requireEffort(input, input.effortRef)
+  const blockers = readEffortBlockerTail(effort, 2000)
+  const unresolved = blockers.filter((blocker) => !blocker.resolved_at)
+  const target = blockerActivityId
+    ? blockers.find((blocker) => blocker.activity_id === blockerActivityId)
+    : unresolved[unresolved.length - 1]
+  if (!target) {
+    throw new Error(blockerActivityId ? `blocker activity not found: ${blockerActivityId}` : "no unresolved blocker is recorded")
+  }
+  if (target.resolved_at) throw new Error(`blocker already resolved: ${target.activity_id}`)
+  const message = `Resolved blocker: ${target.blocker} Resolution: ${resolution}${evidence ? ` Evidence: ${evidence}` : ""}${owner ? ` Owner: ${owner}` : ""}`
+  appendEffortProgressLine(effort.folder_path, message)
+  appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.blocker_resolved", message, {
+    blocker_activity_id: target.activity_id,
+    blocker: target.blocker,
+    resolution,
+    ...(evidence ? { evidence } : {}),
+    ...(owner ? { owner } : {}),
   })
   return persistEffort(input, effort)
 }
@@ -2296,7 +2383,12 @@ function effortBlockerRecords(effort: StackEffort, pending: StackEffortActivityR
 
 function effortBlockerLines(records: StackEffortBlockerRecord[]): string[] {
   if (records.length === 0) return ["- None recorded."]
-  return records.map((record) => `- ${record.observed_at} - ${record.blocker} Evidence: ${record.evidence}. Owner: ${record.owner}. Next safe action: ${record.next}.`)
+  return records.map((record) => {
+    const status = record.resolved_at
+      ? `Resolved ${record.resolved_at}: ${record.resolution ?? "resolution recorded"}${record.resolution_evidence ? ` Evidence: ${record.resolution_evidence}.` : ""}`
+      : `Open. Owner: ${record.owner}. Next safe action: ${record.next}.`
+    return `- ${record.observed_at} - ${record.blocker} Evidence: ${record.evidence}. ${status}`
+  })
 }
 
 function effortBlockerFromActivity(record: StackEffortActivityRecord): StackEffortBlockerRecord | undefined {
@@ -2312,6 +2404,28 @@ function effortBlockerFromActivity(record: StackEffortActivityRecord): StackEffo
     evidence: readString(payload.evidence)?.trim() || "not recorded",
     owner: readString(payload.owner)?.trim() || "not recorded",
     next: readString(payload.next)?.trim() || "not recorded",
+  }
+}
+
+function effortBlockerResolutionFromActivity(record: StackEffortActivityRecord): StackEffortBlockerResolutionRecord | undefined {
+  if (record.type !== "effort.blocker_resolved") return undefined
+  const payload = asRecord(record.payload)
+  const blockerActivityId = readString(payload.blocker_activity_id)?.trim()
+  const resolution = readString(payload.resolution)?.trim()
+  if (!blockerActivityId || !resolution) return undefined
+  const evidence = readString(payload.evidence)?.trim()
+  const owner = readString(payload.owner)?.trim()
+  return {
+    activity_id: record.activity_id,
+    observed_at: record.observed_at,
+    effort_id: record.effort_id,
+    slug: record.slug,
+    summary: record.summary,
+    blocker_activity_id: blockerActivityId,
+    blocker: readString(payload.blocker)?.trim() || "not recorded",
+    resolution,
+    ...(evidence ? { evidence } : {}),
+    ...(owner ? { owner } : {}),
   }
 }
 
