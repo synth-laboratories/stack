@@ -46,6 +46,8 @@ export const EFFORT_WIRED_LAUNCH_CAPABILITIES = [
   "optimizer.gepa.local",
   "optimizer.gepa.hosted",
   "smr.hosted",
+  "project.hosted",
+  "factory.hosted",
   "container.pool.hosted",
   "container.deploy.hosted",
 ] as const satisfies readonly StackEffortLaunchCapability[]

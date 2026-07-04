@@ -11,7 +11,7 @@ import {
   type StackEffortRefLane,
 } from "./effort.js"
 import { launchLocalGepaRun } from "./local/optimizers.js"
-import { createRemoteLaunch } from "./remote/actions.js"
+import { createRemoteFactory, createRemoteLaunch, createRemoteRunnableProject, type RemoteFactoryCreateRequest, type RemoteProjectCreateRequest } from "./remote/actions.js"
 import { deployContainerPoolRuntimeImage, executeContainerPoolRollout, type ContainerPoolRuntimeImageReleaseRequest } from "./remote/containers.js"
 import { submitHostedGepaRun } from "./remote/optimizers.js"
 
@@ -37,6 +37,10 @@ export type EffortLaunchInput = {
   seed?: number
   policyName?: string
   policyConfig?: Record<string, unknown>
+  request?: Record<string, unknown>
+  name?: string
+  description?: string
+  status?: string
   imageRef?: string
   serviceUrl?: string
   runtimeKind?: string
@@ -113,15 +117,13 @@ export const EFFORT_LAUNCH_CAPABILITY_METADATA: Partial<Record<StackEffortLaunch
     capability: "project.hosted",
     kind: "project",
     lane: "hosted",
-    wired: false,
-    scopeOnly: true,
+    wired: true,
   },
   "factory.hosted": {
     capability: "factory.hosted",
     kind: "factory",
     lane: "hosted",
-    wired: false,
-    scopeOnly: true,
+    wired: true,
   },
   "training.tinker.hosted": {
     capability: "training.tinker.hosted",
@@ -269,6 +271,51 @@ async function executeEffortLaunch(
       },
     }
   }
+  if (capability === "project.hosted") {
+    const request = input.request
+    if (!request || Object.keys(request).length === 0) {
+      throw new Error(`config error: launch capability "${capability}" requires --request-json <SmrRunnableProjectCreateRequest>`)
+    }
+    const result = await createRemoteRunnableProject(config, request as RemoteProjectCreateRequest)
+    const id = remoteEntityId(result.data, ["project_id", "projectId", "id"])
+    return {
+      ok: result.ok,
+      message: result.ok ? "remote runnable project created" : result.message,
+      system: "project",
+      ...(id ? { id } : {}),
+      detail: {
+        status: result.status,
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        ...(result.data ? { response: result.data } : {}),
+      },
+    }
+  }
+  if (capability === "factory.hosted") {
+    const request: RemoteFactoryCreateRequest = {
+      ...(input.request ?? {}),
+    } as RemoteFactoryCreateRequest
+    if (input.name) request.name = input.name
+    if (input.description) request.description = input.description
+    if (input.status) request.status = input.status
+    if (!request.name || !String(request.name).trim()) {
+      throw new Error(`config error: launch capability "${capability}" requires --name <factory name> or --request-json with name`)
+    }
+    const result = await createRemoteFactory(config, request)
+    const id = remoteEntityId(result.data, ["factory_id", "factoryId", "id"])
+    return {
+      ok: result.ok,
+      message: result.ok ? "remote factory created" : result.message,
+      system: "factory",
+      ...(id ? { id } : {}),
+      detail: {
+        status: result.status,
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        ...(result.data ? { response: result.data } : {}),
+      },
+    }
+  }
   const poolId = input.poolId?.trim()
   if (!poolId) throw new Error(`config error: launch capability "${capability}" requires --pool <id>`)
   if (capability === "container.deploy.hosted") {
@@ -378,6 +425,15 @@ function remoteLaunchId(data: Record<string, unknown> | undefined): string | und
       const value = (launch as Record<string, unknown>)[key]
       if (typeof value === "string" && value.trim()) return value
     }
+  }
+  return undefined
+}
+
+function remoteEntityId(data: Record<string, unknown> | undefined, keys: string[]): string | undefined {
+  if (!data) return undefined
+  for (const key of keys) {
+    const value = data[key]
+    if (typeof value === "string" && value.trim()) return value
   }
   return undefined
 }

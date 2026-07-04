@@ -1691,6 +1691,10 @@ export class StackMcpServer {
       seed: optionalInteger(args, "seed"),
       policyName: optionalString(args, "policy_name"),
       policyConfig: optionalJsonObject(args, "policy_config"),
+      request: optionalJsonObject(args, "request"),
+      name: optionalString(args, "name"),
+      description: optionalString(args, "description"),
+      status: optionalString(args, "status"),
       imageRef: optionalString(args, "image_ref"),
       serviceUrl: optionalString(args, "service_url"),
       runtimeKind: optionalString(args, "runtime_kind"),
@@ -6304,7 +6308,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_launch",
-      description: "Launch a run for an Effort through an explicit declared capability. Refuses launches whose capability is outside the Effort's scope.capabilities, then records the launch ref on the Effort manifest and ACTIVITY.jsonl. Kinds: optimizer, smr, container, project, factory, training, artifact. Project/factory/training/artifact are scope-only here and should use their standalone Stack cloud tools.",
+      description: "Launch a run for an Effort through an explicit declared capability. Refuses launches whose capability is outside the Effort's scope.capabilities, then records the launch ref on the Effort manifest and ACTIVITY.jsonl. Kinds: optimizer, smr, container, project, factory, training, artifact. Project/factory/container launch through owner-route clients here; training/artifact are scope-only and should use their standalone Stack cloud tools.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
@@ -6323,6 +6327,10 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           seed: numberProperty("Seed for container.pool.hosted rollout body. Defaults to 7."),
           policy_name: stringProperty("Policy name for container.pool.hosted rollout body. Defaults to stack_effort_launch."),
           policy_config: objectSchema({}, []),
+          request: jsonObjectProperty("Raw owner-route request body for project.hosted or factory.hosted launches. For project.hosted this must match SmrRunnableProjectCreateRequest."),
+          name: stringProperty("Factory name for factory.hosted when request.name is omitted."),
+          description: stringProperty("Optional factory description for factory.hosted."),
+          status: stringProperty("Optional factory status for factory.hosted."),
           image_ref: stringProperty("Runtime image ref for container.deploy.hosted when runtime_kind=image_ref."),
           service_url: stringProperty("Service URL for container.deploy.hosted when runtime_kind=service_url."),
           runtime_kind: stringProperty("Runtime release kind for container.deploy.hosted. Defaults to image_ref, or service_url when service_url is supplied."),
