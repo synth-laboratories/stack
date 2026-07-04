@@ -13,6 +13,7 @@ Use these tools through the Stack MCP server when available.
 - `stack_list_remote_projects`: Synth projects with associated live/recent SMR runs and linked Factory/cloud badges; runtime-first with direct API fallback, supports `tick`.
 - `stack_create_runnable_project`: create a runnable Managed Research project through `POST /smr/projects:runnable`.
 - `stack_create_factory`: create a Managed Research Factory through `POST /smr/factories`.
+- `stack_deploy_container_pool_runtime`: create a pool runtime image release and bind it; returns the `release_id` needed for pool-backed scoring.
 - `stack_prepare_cloud_promotion_packet`: local-to-cloud promotion packet from StackEval + runtime state; no mutation.
 - `stack_launch_cloud_promotion`: create a cloud launch from a promotion packet; dry-run by default and requires explicit confirm to mutate.
 - `stack_get_cloud_launch`: inspect one Managed Research cloud launch.
@@ -49,6 +50,13 @@ Use these tools through the Stack MCP server when available.
 ## Factories
 
 - `stack_message_factory_project`: send an operator message through the Factory-owned route.
+
+## Container Pools
+
+- `stack_list_container_pools`: list visible container pools through `/v1/pools`.
+- `stack_container_health`: read pool or task-scoped `/container/health`.
+- `stack_container_rollout`: run pool or task-scoped `/container/rollout`.
+- `stack_deploy_container_pool_runtime`: create `/runtime_image_releases`, bind the returned release, and return `release_id`.
 
 ## Hosted Optimizers
 

@@ -184,7 +184,13 @@ import {
   type RoundTripApplyMode,
   type RoundTripSourceKind,
 } from "../roundtrip.js"
-import { executeContainerPoolRollout, readContainerPoolHealth, readContainerPools } from "../remote/containers.js"
+import {
+  deployContainerPoolRuntimeImage,
+  executeContainerPoolRollout,
+  readContainerPoolHealth,
+  readContainerPools,
+  type ContainerPoolRuntimeImageReleaseRequest,
+} from "../remote/containers.js"
 import { readRemoteInferenceCatalog } from "../remote/inference.js"
 import { readRemoteInferenceUsage } from "../remote/inference-usage.js"
 import {
@@ -2998,6 +3004,51 @@ export class StackMcpServer {
     }
   }
 
+  async deployContainerPoolRuntime(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    void emitFeatureUsed("hosted_ops")
+    const poolId = requiredString(args, "pool_id")
+    const taskId = optionalString(args, "task_id")
+    const result = await deployContainerPoolRuntimeImage(config, {
+      poolId,
+      ...(taskId ? { taskId } : {}),
+      body: containerPoolRuntimeReleaseRequest(args),
+    })
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.container_pool.runtime_deployed",
+      source: "lever.stack_mcp",
+      subject: { kind: "container_pool", id: poolId },
+      correlation: {
+        deployment_id: result.releaseId ?? undefined,
+      },
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+        pool_id: poolId,
+        task_id: taskId ?? null,
+        release_id: result.releaseId ?? null,
+      },
+    })
+    return toJsonValue({
+      ok: result.ok,
+      status: result.status,
+      environment: result.environmentName,
+      api_base_url: result.apiBaseUrl,
+      pool_id: poolId,
+      task_id: taskId ?? null,
+      release_id: result.releaseId ?? null,
+      message: result.message,
+      release: result.release ?? null,
+      binding: result.binding ?? null,
+      runtime_event: runtimeEvent,
+      ...(result.data ? { response: result.data } : {}),
+      receipt: result.ok ? "lever.container_pool.runtime_deployed" : null,
+    }) ?? null
+  }
+
   async openHostedArtifact(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const runId = requiredString(args, "run_id")
@@ -4719,6 +4770,44 @@ function remoteActionEntityId(result: RemoteActionResult, keys: string[]): strin
   return undefined
 }
 
+function containerPoolRuntimeReleaseRequest(args: JsonObject): ContainerPoolRuntimeImageReleaseRequest {
+  const body = { ...(optionalJsonObject(args, "body") ?? {}) } as ContainerPoolRuntimeImageReleaseRequest
+  const name = optionalString(args, "release_name")
+  if (name) body.name = name
+  const provider = optionalString(args, "provider")
+  if (provider) body.provider = provider
+  const runtimeKind = optionalString(args, "runtime_kind") ?? (optionalString(args, "service_url") ? "service_url" : undefined)
+  if (runtimeKind) body.runtime_kind = runtimeKind
+  const imageRef = optionalString(args, "image_ref")
+  if (imageRef) body.image_ref = imageRef
+  const serviceUrl = optionalString(args, "service_url")
+  if (serviceUrl) body.service_url = serviceUrl
+  const archiveBase64 = optionalString(args, "archive_base64")
+  if (archiveBase64) body.archive_base64 = archiveBase64
+  const sourceStorageUri = optionalString(args, "source_storage_uri")
+  if (sourceStorageUri) body.source_storage_uri = sourceStorageUri
+  const dockerfilePath = optionalString(args, "dockerfile_path")
+  if (dockerfilePath) body.dockerfile_path = dockerfilePath
+  const baseImageRef = optionalString(args, "base_image_ref")
+  if (baseImageRef) body.base_image_ref = baseImageRef
+  const entrypoint = optionalString(args, "entrypoint")
+  if (entrypoint) body.entrypoint = entrypoint
+  const envVars = optionalJsonObject(args, "env_vars")
+  if (envVars) body.env_vars = envVars
+  const limits = optionalJsonObject(args, "limits")
+  if (limits) body.limits = limits
+  const metadata = optionalJsonObject(args, "metadata")
+  if (metadata) body.metadata = metadata
+  if (!body.runtime_kind) body.runtime_kind = body.service_url ? "service_url" : "image_ref"
+  if (body.runtime_kind === "image_ref" && !body.image_ref) {
+    throw new RpcError(-32602, "runtime_kind=image_ref requires image_ref")
+  }
+  if (body.runtime_kind === "service_url" && !body.service_url) {
+    throw new RpcError(-32602, "runtime_kind=service_url requires service_url")
+  }
+  return body
+}
+
 function errorToRuntimeUnavailable(error: unknown): {
   status: string
   events_appended?: number | null
@@ -5567,6 +5656,33 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["pool_id", "body"],
       ),
       handler: (args) => server.containerRollout(args),
+    },
+    {
+      name: "stack_deploy_container_pool_runtime",
+      description: "Create a runtime image release for a Synth container pool and bind it to the pool or task. Returns release_id for pool-backed heldout scoring.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          pool_id: stringProperty("Synth container pool id."),
+          task_id: stringProperty("Optional pool task id for task-scoped release bind."),
+          runtime_kind: stringProperty("Runtime release kind. Defaults to image_ref, or service_url when service_url is supplied."),
+          release_name: stringProperty("Optional runtime image release name."),
+          provider: stringProperty("Optional runtime image release provider."),
+          image_ref: stringProperty("Runtime image ref when runtime_kind=image_ref."),
+          service_url: stringProperty("Service URL when runtime_kind=service_url."),
+          archive_base64: stringProperty("Optional archive payload for docker_context/source_build runtime releases."),
+          source_storage_uri: stringProperty("Optional source storage URI for docker_context/source_build runtime releases."),
+          dockerfile_path: stringProperty("Dockerfile path for docker_context runtime releases."),
+          base_image_ref: stringProperty("Base image ref for source_build runtime releases."),
+          entrypoint: stringProperty("Optional runtime entrypoint."),
+          env_vars: jsonObjectProperty("Optional runtime environment variables."),
+          limits: jsonObjectProperty("Optional runtime resource limits."),
+          metadata: jsonObjectProperty("Optional runtime release metadata."),
+          body: jsonObjectProperty("Optional raw runtime_image_releases request body. Explicit top-level fields override this object."),
+        },
+        ["pool_id"],
+      ),
+      handler: (args) => server.deployContainerPoolRuntime(args),
     },
     {
       name: "stack_open_hosted_artifact",
