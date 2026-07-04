@@ -255,7 +255,6 @@ async function executeEffortLaunch(
     const result = await createRemoteLaunch(config, {
       objective: goal,
       ...(input.projectId ? { project_id: input.projectId } : {}),
-      ...(input.factoryId ? { factory_id: input.factoryId } : {}),
       metadata: { source: "stack_effort_launch", effort_id: effortId },
     })
     const id = remoteLaunchId(result.data)
