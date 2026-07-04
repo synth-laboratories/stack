@@ -866,19 +866,25 @@ function readString(value: unknown): string | undefined {
 function remoteTriggerBody(request: RemoteLaunchRequest): Record<string, unknown> {
   const {
     project_id: _projectId,
-    task_id: _taskId,
+    task_id,
     objective,
     runbook,
     runbook_preset,
     metadata,
     ...rest
   } = request
+  const launchMetadata = task_id
+    ? {
+        ...(metadata ?? {}),
+        source_task_id: task_id,
+      }
+    : metadata
   return dropUndefined({
     ...rest,
     objective,
     runbook,
     runbook_preset: runbook_preset ?? runbook,
-    metadata,
+    metadata: launchMetadata,
   })
 }
 

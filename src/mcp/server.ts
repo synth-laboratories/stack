@@ -2439,18 +2439,20 @@ export class StackMcpServer {
     }
     const taskId = optionalString(args, "task_id") ?? packet.task_id ?? undefined
     const objective = optionalString(args, "objective")
-    if (!taskId && !objective) {
-      throw new RpcError(-32602, "task_id or objective is required when dry_run=false")
+    const launchObjective = objective ?? (taskId ? `Continue Stack cloud promotion task ${taskId}` : undefined)
+    if (!launchObjective) {
+      throw new RpcError(-32602, "objective is required when dry_run=false unless task_id is available to derive one")
     }
     const metadata = optionalJsonObject(args, "metadata") ?? {}
     const result = await createRemoteLaunch(config, {
       ...(optionalString(args, "project_id") ? { project_id: optionalString(args, "project_id") } : {}),
       ...(taskId ? { task_id: taskId } : {}),
-      ...(objective ? { objective } : {}),
+      objective: launchObjective,
       ...(optionalString(args, "runbook") ? { runbook: optionalString(args, "runbook") } : {}),
       metadata: {
         ...metadata,
         source: "stack_mcp",
+        ...(taskId ? { source_task_id: taskId } : {}),
         promotion_packet: packet,
       },
     })
@@ -2468,6 +2470,7 @@ export class StackMcpServer {
       payload: {
         environment: config.environmentName,
         api_base_url: config.environment.apiBaseUrl,
+        objective: launchObjective,
         ok: result.ok,
         status: result.status,
         message: result.message,
@@ -5369,7 +5372,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         environment: environmentProperty(),
         project_id: stringProperty("Optional target Synth project id."),
         task_id: stringProperty("Optional task id for the promotion packet."),
-        objective: stringProperty("Optional cloud launch objective. Required when no task_id is available and dry_run=false."),
+        objective: stringProperty("Optional cloud launch objective. When omitted, task_id is used to derive canonical SMR launch context."),
         runbook: stringProperty("Optional runbook or launch mode hint."),
         metadata: jsonObjectProperty("Optional structured metadata to carry into the launch request."),
         dry_run: { type: "boolean", description: "Defaults to true. When true, returns the launch packet without creating cloud work." },
