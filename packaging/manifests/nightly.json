@@ -2,13 +2,13 @@
   "schema_version": 1,
   "channel": "nightly",
   "version": "0.2.0-dev.20260703.2",
-  "released_at": "2026-07-04T09:06:35.043Z",
+  "released_at": "2026-07-04T09:18:18.062Z",
   "yanked": false,
   "targets": {
     "aarch64-apple-darwin": {
       "url": "https://stack.usesynth.ai/releases/downloads/0.2.0-dev.20260703.2/stack-0.2.0-dev.20260703.2-aarch64-apple-darwin.tar.gz",
-      "sha256": "11a19f852f0fbda78f39fa7dd1566b9716d0673e678363928dea137b01b202f8",
-      "size": 11404962
+      "sha256": "b8a86789405831809683747f85083511e982678c1aadb92d4e3e3fff0c31d526",
+      "size": 11403802
     }
   },
   "notes_url": "https://docs.usesynth.ai/stack/changelog"
