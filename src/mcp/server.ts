@@ -824,6 +824,31 @@ export class StackMcpServer {
     }
   }
 
+  private recordOptionalRunInteractionEffortRef(
+    config: StackConfig,
+    effortRef: string | undefined,
+    runId: string,
+    role: string,
+    projectId?: string,
+  ): Record<string, unknown> | null {
+    if (!effortRef) return null
+    const refs = [
+      { system: "smr", id: runId, lane: "hosted", role },
+      ...(projectId ? [{ system: "project", id: projectId, lane: "hosted", role: "linked" }] : []),
+    ]
+    const effort = updateStackEffortRefs({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      refs,
+    })
+    return {
+      effort_id: effort.manifest.id,
+      slug: effort.manifest.slug,
+      refs,
+    }
+  }
+
   private async ensureMetaThreadEffortRef(
     effortId: string,
     metaThreadId: string,
@@ -2896,20 +2921,30 @@ export class StackMcpServer {
 
   async respondRunQuestion(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const run = remoteRunRef(args)
     const questionId = requiredString(args, "question_id")
     const responseText = requiredString(args, "response_text")
     const result = await respondRemoteRunQuestion(config, run, questionId, responseText)
-    return actionResultWithData(result)
+    const effortRefRecord = result.ok
+      ? this.recordOptionalRunInteractionEffortRef(config, effortRef, run.runId, "question-response", run.projectId)
+      : null
+    return actionResultWithData(result, { effort_ref: effortRefRecord })
   }
 
   async decideRunApproval(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const run = remoteRunRef(args)
     const approvalId = requiredString(args, "approval_id")
     const decision = requiredApprovalDecision(args)
     const result = await decideRemoteRunApproval(config, run, approvalId, decision, optionalString(args, "comment"))
-    return actionResultWithData(result)
+    const effortRefRecord = result.ok
+      ? this.recordOptionalRunInteractionEffortRef(config, effortRef, run.runId, "approval-decision", run.projectId)
+      : null
+    return actionResultWithData(result, { effort_ref: effortRefRecord })
   }
 
   private async buildCloudPromotionPacket(args: JsonObject): Promise<{
@@ -3535,10 +3570,15 @@ export class StackMcpServer {
 
   async messageLiveRun(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const runId = requiredString(args, "run_id")
     const body = requiredString(args, "body")
     const projectId = optionalString(args, "project_id")
     const result = await sendRemoteRunMessage(config, { runId, projectId, state: "unknown" }, body)
+    const effortRefRecord = result.ok
+      ? this.recordOptionalRunInteractionEffortRef(config, effortRef, runId, "message-sent", projectId)
+      : null
     const runtimeEvent = await recordRuntimeLeverEvent({
       event_type: "lever.remote_smr.run.message_sent",
       source: "lever.stack_mcp",
@@ -3553,7 +3593,7 @@ export class StackMcpServer {
         body_preview: body.slice(0, 160),
       },
     })
-    return actionResultWithData(result, { runtime_event: runtimeEvent })
+    return actionResultWithData(result, { runtime_event: runtimeEvent, effort_ref: effortRefRecord })
   }
 
   async messageFactoryProject(args: JsonObject): Promise<JsonValue> {
@@ -3779,6 +3819,8 @@ export class StackMcpServer {
 
   async downloadRunOutput(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const runId = requiredString(args, "run_id")
     const projectId = optionalString(args, "project_id")
     const outputKind = optionalOutputKind(args, "output_kind")
@@ -3806,14 +3848,38 @@ export class StackMcpServer {
     }
 
     const result = await downloadRemoteOutput(config, selection)
+    const selectedId = selectedOutputId(selection)
+    const effortEvidence = result.ok && effortRef
+      ? recordStackEffortRunEvidence({
+        stackDataRoot: config.stackDataRoot,
+        workspaceRoot: config.workspaceRoot,
+        effortRef,
+        runKind: "smr",
+        title: `Downloaded ${selection.kind} from SMR run`,
+        runId,
+        projectId: run.projectId,
+        outputId: selectedId,
+        metric: "downloaded",
+        body: `Downloaded ${selection.kind} ${selectedId} from SMR run ${runId} through Stack MCP.`,
+      })
+      : null
     return {
       ok: result.ok,
       status: result.status,
       message: result.message,
       run_id: runId,
       output_kind: selection.kind,
-      output_id: selectedOutputId(selection),
+      output_id: selectedId,
       output_label: selectedOutputLabel(selection),
+      effort_evidence: effortEvidence ? {
+        effort_id: effortEvidence.effort.manifest.id,
+        slug: effortEvidence.effort.manifest.slug,
+        path: relative(effortEvidence.effort.folder_path, effortEvidence.path),
+        run_kind: effortEvidence.runKind,
+        run_id: effortEvidence.runId ?? null,
+        project_id: effortEvidence.projectId ?? null,
+        output_id: effortEvidence.outputId ?? null,
+      } : null,
       ...(result.data ? { download_result: toJsonValue(result.data) ?? null } : {}),
     }
   }
@@ -5618,6 +5684,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the SMR run ref after a successful response."),
           run_id: stringProperty("SMR run id."),
           project_id: stringProperty("Optional project id for project-scoped interaction routes."),
           question_id: stringProperty("Question id."),
@@ -5633,6 +5700,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the SMR run ref after a successful decision."),
           run_id: stringProperty("SMR run id."),
           project_id: stringProperty("Optional project id for project-scoped interaction routes."),
           approval_id: stringProperty("Approval id."),
@@ -6588,6 +6656,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the SMR run ref after a successful message."),
           run_id: stringProperty("SMR run id."),
           project_id: stringProperty("Optional project id for context payload."),
           body: stringProperty("Operator message body."),
@@ -6701,6 +6770,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records run evidence for the downloaded output."),
           run_id: stringProperty("SMR run id."),
           project_id: stringProperty("Optional project id. Required to discover WorkProducts when the run is not in the recent job list."),
           output_kind: enumProperty(["work-product", "artifact"], "Optional output kind. Defaults to first WorkProduct, then first artifact."),
@@ -6730,6 +6800,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records run evidence for the downloaded WorkProduct."),
           run_id: stringProperty("SMR run id."),
           project_id: stringProperty("Optional project id. Required if the run is not discoverable in recent remote run state."),
           work_product_id: stringProperty("WorkProduct id to download."),
