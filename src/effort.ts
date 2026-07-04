@@ -35,6 +35,7 @@ export const EFFORT_LAUNCH_CAPABILITIES = [
   "smr.hosted",
   "project.hosted",
   "factory.hosted",
+  "training.tinker.hosted",
   "artifact.publish.hosted",
   "container.pool.hosted",
   "container.deploy.hosted",

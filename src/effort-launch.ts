@@ -15,7 +15,7 @@ import { createRemoteLaunch } from "./remote/actions.js"
 import { deployContainerPoolRuntimeImage, executeContainerPoolRollout, type ContainerPoolRuntimeImageReleaseRequest } from "./remote/containers.js"
 import { submitHostedGepaRun } from "./remote/optimizers.js"
 
-export const EFFORT_LAUNCH_KINDS = ["optimizer", "smr", "container", "project", "factory", "artifact"] as const
+export const EFFORT_LAUNCH_KINDS = ["optimizer", "smr", "container", "project", "factory", "training", "artifact"] as const
 export type EffortLaunchKind = (typeof EFFORT_LAUNCH_KINDS)[number]
 
 export const EFFORT_LAUNCH_OPTIMIZERS = ["gepa", "gelo"] as const
@@ -118,6 +118,13 @@ export const EFFORT_LAUNCH_CAPABILITY_METADATA: Partial<Record<StackEffortLaunch
   "factory.hosted": {
     capability: "factory.hosted",
     kind: "factory",
+    lane: "hosted",
+    wired: false,
+    scopeOnly: true,
+  },
+  "training.tinker.hosted": {
+    capability: "training.tinker.hosted",
+    kind: "training",
     lane: "hosted",
     wired: false,
     scopeOnly: true,

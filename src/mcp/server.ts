@@ -6038,7 +6038,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_launch",
-      description: "Launch a run for an Effort through an explicit declared capability. Refuses launches whose capability is outside the Effort's scope.capabilities, then records the launch ref on the Effort manifest and ACTIVITY.jsonl. Kinds: optimizer, smr, container, project, factory, artifact. Project/factory/artifact are scope-only here and should use their standalone Stack cloud tools.",
+      description: "Launch a run for an Effort through an explicit declared capability. Refuses launches whose capability is outside the Effort's scope.capabilities, then records the launch ref on the Effort manifest and ACTIVITY.jsonl. Kinds: optimizer, smr, container, project, factory, training, artifact. Project/factory/training/artifact are scope-only here and should use their standalone Stack cloud tools.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
