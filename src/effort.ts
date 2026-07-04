@@ -2168,7 +2168,7 @@ export function recordEffortOptimizerCandidate(input: RecordEffortOptimizerCandi
     body: input.body,
     sourcePath: input.sourcePath,
     sourceReceipt: input.sourceReceipt,
-    filename: input.filename,
+    filename: input.filename ?? releaseArtifactEvidenceFilename({ version, target, sha256, sourcePath: input.sourcePath }),
   })
   return {
     effort: result.effort,
@@ -2462,6 +2462,17 @@ export function recordEffortReleaseArtifact(input: RecordEffortReleaseArtifactIn
     ...(publishable !== undefined ? { publishable } : {}),
     publishBlockers,
   }
+}
+
+function releaseArtifactEvidenceFilename(input: { version: string; target?: string; sha256: string; sourcePath?: string }): string {
+  const base = input.sourcePath ? basename(resolve(input.sourcePath)) : "release-artifact.md"
+  return [
+    "release-artifact",
+    safeFileSegment(input.version),
+    input.target ? safeFileSegment(input.target) : undefined,
+    input.sha256.slice(0, 8),
+    safeFileSegment(base),
+  ].filter(Boolean).join("-")
 }
 
 export function recordEffortArtifact(input: RecordEffortArtifactInput): RecordEffortArtifactResult {
