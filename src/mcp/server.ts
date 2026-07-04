@@ -53,10 +53,12 @@ import {
   readEffortBlockerTail as readStackEffortBlockerTail,
   readEffortProgressTail as readStackEffortProgressTail,
   recordEffortBlocker as recordStackEffortBlocker,
+  recordEffortCapture as recordStackEffortCapture,
   recordEffortFinding as recordStackEffortFinding,
   recordEffortIdea as recordStackEffortIdea,
   recordEffortNote as recordStackEffortNote,
   recordEffortRepo as recordStackEffortRepo,
+  STACK_EFFORT_CAPTURE_KINDS,
   STACK_EFFORT_FINDING_KINDS,
   STACK_EFFORT_IDEA_ORIGINS,
   STACK_EFFORT_NOTE_KINDS,
@@ -65,6 +67,7 @@ import {
   updateEffortStatus as updateStackEffortStatus,
   writeEffortHandoff as writeStackEffortHandoff,
   type StackEffort,
+  type StackEffortCaptureKind,
   type StackEffortFindingKind,
   type StackEffortFindingSourceReceipt,
   type StackEffortIdeaOrigin,
@@ -1062,6 +1065,69 @@ export class StackMcpServer {
         pulled_at: artifactReceipt.pulled_at,
       } : null,
       receipt: "lever.stack_mcp effort.finding_recorded",
+    })) ?? null
+  }
+
+  async recordEffortCapture(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const rawSourcePath = optionalString(args, "path")
+    const receiptPath = optionalString(args, "receipt_path")
+    if (rawSourcePath && receiptPath) {
+      throw new RpcError(-32602, "provide path or receipt_path, not both")
+    }
+    let artifactReceipt: Awaited<ReturnType<typeof readRoundTripPullReceipt>> | undefined
+    if (receiptPath) {
+      try {
+        artifactReceipt = await readRoundTripPullReceipt(config, receiptPath)
+      } catch (error) {
+        throw new RpcError(-32602, `artifact receipt invalid: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const sourcePath = artifactReceipt
+      ? artifactReceipt.workspace_path
+      : rawSourcePath ? resolveEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined
+    const captureKind = requiredEffortCaptureKind(args, "capture_kind")
+    const kind = optionalEffortFindingKind(args, "kind")
+    const result = recordStackEffortCapture({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef: effort.manifest.id,
+      captureKind,
+      findingKind: kind,
+      title: requiredString(args, "title"),
+      body: optionalString(args, "body"),
+      sourcePath,
+      sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      capture_kind: result.captureKind,
+      kind: result.kind,
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : null,
+      source_receipt: result.sourceReceipt ?? null,
+      artifact_receipt: artifactReceipt ? {
+        receipt_path: artifactReceipt.receipt_path,
+        artifact_kind: artifactReceipt.artifact_kind,
+        source_kind: artifactReceipt.source_kind,
+        environment: artifactReceipt.environment,
+        run_id: artifactReceipt.run_id ?? null,
+        project_id: artifactReceipt.project_id ?? null,
+        artifact_name: artifactReceipt.artifact_name ?? null,
+        output_id: artifactReceipt.output_id ?? null,
+        label: artifactReceipt.label ?? null,
+        workspace_path: artifactReceipt.workspace_path,
+        digest: artifactReceipt.digest,
+        pulled_at: artifactReceipt.pulled_at,
+      } : null,
+      receipt: "lever.stack_mcp effort.capture_recorded",
     })) ?? null
   }
 
@@ -4958,6 +5024,25 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.recordEffortFinding(args),
     },
     {
+      name: "stack_effort_record_capture",
+      description: "Capture terminal/browser/screenshot/video/local/monitor/memory/text/benchmark/optimizer evidence into an Effort finding with capture-oriented source receipt metadata. Use this for ad hoc evidence when no richer adapter exists.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          capture_kind: enumProperty([...STACK_EFFORT_CAPTURE_KINDS], "Capture source kind."),
+          kind: enumProperty([...STACK_EFFORT_FINDING_KINDS], "Optional finding kind. Defaults to proof except benchmark defaults to data."),
+          title: stringProperty("Capture title."),
+          body: stringProperty("Optional markdown body. Useful for terminal/text captures when path is omitted."),
+          path: stringProperty("Optional local path. Relative paths first resolve inside the Effort folder, then from Stack workingDir."),
+          receipt_path: stringProperty("Optional stack_pull_artifact receipt path. Mutually exclusive with path; records the pulled workspace_path and hosted/saved receipt metadata as the capture source."),
+          filename: stringProperty("Optional target filename."),
+        },
+        ["effort_ref", "capture_kind", "title"],
+      ),
+      handler: (args) => server.recordEffortCapture(args),
+    },
+    {
       name: "stack_effort_update_refs",
       description: "Attach durable external refs to an Effort manifest: Factory/Effort/Project ids, optimizer run id, SMR run id, Tinker run id, repo ref, or initiative id. This records ids only; use findings for artifact evidence.",
       inputSchema: objectSchema(
@@ -5728,6 +5813,19 @@ function requiredEffortFindingKind(args: JsonObject, key: string): StackEffortFi
   const value = requiredString(args, key)
   if (STACK_EFFORT_FINDING_KINDS.includes(value as StackEffortFindingKind)) return value as StackEffortFindingKind
   throw new RpcError(-32602, `${key} must be idea, code, data, proof, or result`)
+}
+
+function optionalEffortFindingKind(args: JsonObject, key: string): StackEffortFindingKind | undefined {
+  const value = optionalString(args, key)
+  if (!value) return undefined
+  if (STACK_EFFORT_FINDING_KINDS.includes(value as StackEffortFindingKind)) return value as StackEffortFindingKind
+  throw new RpcError(-32602, `${key} must be idea, code, data, proof, or result`)
+}
+
+function requiredEffortCaptureKind(args: JsonObject, key: string): StackEffortCaptureKind {
+  const value = requiredString(args, key)
+  if (STACK_EFFORT_CAPTURE_KINDS.includes(value as StackEffortCaptureKind)) return value as StackEffortCaptureKind
+  throw new RpcError(-32602, `${key} must be terminal, browser, screenshot, video, local, monitor, memory, text, benchmark, or optimizer`)
 }
 
 function optionalEffortIdeaOrigin(args: JsonObject, key: string): StackEffortIdeaOrigin | undefined {

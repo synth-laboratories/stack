@@ -23,6 +23,7 @@ import {
   readEffortBlockerTail,
   readEffortProgressTail,
   recordEffortBlocker,
+  recordEffortCapture,
   recordEffortFinding,
   recordEffortIdea,
   recordEffortNote,
@@ -35,6 +36,7 @@ import {
   type StackEffortAudit,
   type StackEffortAuditStatus,
   type StackEffortBlockerRecord,
+  type StackEffortCaptureKind,
   type StackEffort,
   type StackEffortFindingKind,
   type StackEffortFindingSourceReceipt,
@@ -331,6 +333,37 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       return 0
     }
 
+    if (action === "capture") {
+      const ref = parsed.args[0]
+      const title = (readFlagString(parsed, "title") ?? parsed.args.slice(1).join(" ").trim()) || "Capture"
+      if (!ref) return usageError("usage: stack effort capture <effort> [title] --capture-kind terminal|browser|screenshot|video|local|monitor|memory|text|benchmark|optimizer [--kind idea|code|data|proof|result] [--path <path>|--receipt-path <path>|--body <text>]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const rawSourcePath = readFlagString(parsed, "path")
+      const receiptPath = readFlagString(parsed, "receipt-path")
+      if (rawSourcePath && receiptPath) return usageError("provide --path or --receipt-path, not both")
+      const captureKind = (readFlagString(parsed, "capture-kind") ?? readFlagString(parsed, "capture") ?? "local") as StackEffortCaptureKind
+      const artifactReceipt = receiptPath ? await readRoundTripPullReceipt(config, receiptPath) : undefined
+      const result = recordEffortCapture({
+        ...config,
+        effortRef: effort.manifest.id,
+        captureKind,
+        findingKind: readFlagString(parsed, "kind") as StackEffortFindingKind | undefined,
+        title,
+        body: readFlagString(parsed, "body"),
+        sourcePath: artifactReceipt
+          ? artifactReceipt.workspace_path
+          : rawSourcePath ? resolveCliEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined,
+        sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+        filename: readFlagString(parsed, "filename"),
+      })
+      await printArtifactResult(config, result.effort, result.path, json, artifactReceipt, result.sourceReceiptPath, result.sourceReceipt, {
+        capture_kind: result.captureKind,
+        kind: result.kind,
+      })
+      return 0
+    }
+
     printEffortUsage()
     return 2
   } catch (error) {
@@ -606,6 +639,7 @@ async function printArtifactResult(
   artifactReceipt?: RoundTripPullReceiptRecord,
   sourceReceiptPath?: string,
   sourceReceipt?: StackEffortFindingSourceReceipt,
+  extra?: Record<string, unknown>,
 ): Promise<void> {
   if (json) {
     const paths = effortPathRefs(effort)
@@ -628,11 +662,13 @@ async function printArtifactResult(
       artifact_receipt: artifactReceipt ?? null,
       source_receipt_path: sourceReceiptPath ?? null,
       source_receipt: sourceReceipt ?? null,
+      ...(extra ?? {}),
     }, null, 2))
     return
   }
   await printEffort(config, effort, false)
   console.log(`artifact: ${path}`)
+  if (typeof extra?.capture_kind === "string") console.log(`capture: ${extra.capture_kind}`)
   if (artifactReceipt) {
     console.log(`artifact receipt: ${artifactReceipt.receipt_path}`)
     console.log(`artifact source: ${artifactReceipt.workspace_path}`)
@@ -806,6 +842,7 @@ function printEffortUsage(): void {
   console.error("  stack effort note <effort> <title> [--kind human|note] [--body <text>]")
   console.error("  stack effort repo <effort> --path <path> [--repo-ref <ref>] [--title <title>] [--filename <name>]")
   console.error("  stack effort finding <effort> [title] --kind idea|code|data|proof|result [--path <path>|--receipt-path <path>] [--body <text>]")
+  console.error("  stack effort capture <effort> [title] --capture-kind terminal|browser|screenshot|video|local|monitor|memory|text|benchmark|optimizer [--kind idea|code|data|proof|result] [--path <path>|--receipt-path <path>|--body <text>]")
   console.error("  stack effort status <effort> <active|paused|done|archived>")
   console.error("  stack effort archive <effort>")
 }

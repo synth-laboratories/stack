@@ -22,6 +22,9 @@ export type StackEffortStatus = (typeof STACK_EFFORT_STATUSES)[number]
 export const STACK_EFFORT_FINDING_KINDS = ["idea", "code", "data", "proof", "result"] as const
 export type StackEffortFindingKind = (typeof STACK_EFFORT_FINDING_KINDS)[number]
 
+export const STACK_EFFORT_CAPTURE_KINDS = ["terminal", "browser", "screenshot", "video", "local", "monitor", "memory", "text", "benchmark", "optimizer"] as const
+export type StackEffortCaptureKind = (typeof STACK_EFFORT_CAPTURE_KINDS)[number]
+
 export const STACK_EFFORT_IDEA_ORIGINS = ["HUMAN", "AGENT", "MIXED"] as const
 export type StackEffortIdeaOrigin = (typeof STACK_EFFORT_IDEA_ORIGINS)[number]
 
@@ -265,6 +268,22 @@ export type RecordEffortFindingResult = {
   path: string
   sourceReceiptPath?: string
   sourceReceipt?: StackEffortFindingSourceReceipt
+}
+
+export type RecordEffortCaptureInput = EffortLookupInput & {
+  effortRef: string
+  captureKind: StackEffortCaptureKind
+  findingKind?: StackEffortFindingKind
+  title: string
+  body?: string
+  sourcePath?: string
+  sourceReceipt?: StackEffortFindingSourceReceipt
+  filename?: string
+}
+
+export type RecordEffortCaptureResult = RecordEffortFindingResult & {
+  captureKind: StackEffortCaptureKind
+  kind: StackEffortFindingKind
 }
 
 export type StackEffortFindingSourceReceipt = {
@@ -1134,6 +1153,43 @@ export function recordEffortFinding(input: RecordEffortFindingInput): RecordEffo
     path,
     sourceReceiptPath,
     ...(sourceReceipt ? { sourceReceipt } : {}),
+  }
+}
+
+export function recordEffortCapture(input: RecordEffortCaptureInput): RecordEffortCaptureResult {
+  assertCaptureKind(input.captureKind)
+  const kind = input.findingKind ?? defaultCaptureFindingKind(input.captureKind)
+  assertFindingKind(kind)
+  const sourceReceipt = input.sourceReceipt
+    ? effortCaptureSourceReceipt(input.sourceReceipt, input.captureKind)
+    : input.sourcePath && existsSync(input.sourcePath)
+      ? effortCaptureSourceReceipt(localEffortFindingSourceReceipt(input.sourcePath), input.captureKind)
+      : undefined
+  const result = recordEffortFinding({
+    stackDataRoot: input.stackDataRoot,
+    workspaceRoot: input.workspaceRoot,
+    effortRef: input.effortRef,
+    kind,
+    title: input.title,
+    body: input.sourcePath ? input.body : effortCaptureBody(input.captureKind, input.body),
+    sourcePath: input.sourcePath,
+    sourceReceipt,
+    filename: input.filename,
+  })
+  appendEffortProgressLine(result.effort.folder_path, `Captured ${input.captureKind} evidence: ${relative(result.effort.folder_path, result.path)}.`)
+  appendEffortActivityLine(result.effort.folder_path, result.effort.manifest, "effort.capture_recorded", `Captured ${input.captureKind} evidence: ${relative(result.effort.folder_path, result.path)}.`, {
+    capture_kind: input.captureKind,
+    kind,
+    title: input.title,
+    path: relative(result.effort.folder_path, result.path),
+    source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : undefined,
+    source_receipt: result.sourceReceipt,
+  })
+  return {
+    ...result,
+    effort: persistEffort(input, result.effort),
+    captureKind: input.captureKind,
+    kind,
   }
 }
 
@@ -2372,6 +2428,24 @@ function normalizeEffortFindingSourceReceipt(value: unknown): StackEffortFinding
   }
 }
 
+function effortCaptureSourceReceipt(receipt: StackEffortFindingSourceReceipt, captureKind: StackEffortCaptureKind): StackEffortFindingSourceReceipt {
+  return {
+    ...receipt,
+    source_kind: `${captureKind}_capture`,
+  }
+}
+
+function defaultCaptureFindingKind(captureKind: StackEffortCaptureKind): StackEffortFindingKind {
+  if (captureKind === "benchmark") return "data"
+  if (captureKind === "optimizer") return "proof"
+  return "proof"
+}
+
+function effortCaptureBody(captureKind: StackEffortCaptureKind, body: string | undefined): string {
+  const trimmed = body?.trim()
+  return [`Capture kind: ${captureKind}`, "", trimmed || "Captured evidence."].join("\n")
+}
+
 function optionalNullableString(value: unknown): string | null | undefined {
   if (value === null) return null
   const string = readString(value)?.trim()
@@ -2485,6 +2559,12 @@ function assertEffortStatus(status: string): asserts status is StackEffortStatus
 function assertFindingKind(kind: string): asserts kind is StackEffortFindingKind {
   if (!STACK_EFFORT_FINDING_KINDS.includes(kind as StackEffortFindingKind)) {
     throw new Error(`unsupported effort finding kind: ${kind}`)
+  }
+}
+
+function assertCaptureKind(kind: string): asserts kind is StackEffortCaptureKind {
+  if (!STACK_EFFORT_CAPTURE_KINDS.includes(kind as StackEffortCaptureKind)) {
+    throw new Error(`unsupported effort capture kind: ${kind}`)
   }
 }
 

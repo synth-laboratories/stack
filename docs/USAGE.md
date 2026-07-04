@@ -156,6 +156,7 @@ stack effort note banking77-top-score "Manual review notes" --kind human --body 
 stack effort repo banking77-top-score --path ../evals/projectbench/factory_projects/banking77_simple_factory --repo-ref evals:banking77-simple
 stack effort finding banking77-top-score "Local GEPA scorecard" --kind proof --path findings/proof/local-gepa
 stack effort finding banking77-top-score "Pulled hosted scorecard" --kind proof --receipt-path .stack/evidence/roundtrip/<receipt>.json
+stack effort capture banking77-top-score "Terminal heldout receipt" --capture-kind terminal --kind proof --path findings/proof/local-gepa/heldout-score.txt
 stack effort refs banking77-top-score --optimizer-run-id <run-id> --smr-run-id <run-id> --tinker-run-id <run-id>
 stack effort status banking77-top-score active
 stack effort archive banking77-top-score
@@ -203,11 +204,21 @@ outputs, MLDP entries, or policy/reflection artifacts. Use a first-class
 artifact adapter when one exists; otherwise attach the local file or folder
 immediately so the Effort preserves source provenance.
 
+`stack effort capture` is the capture-oriented alias for this path. It records
+terminal, browser, screenshot, video, local, monitor, memory, text, benchmark,
+or optimizer evidence into `findings/*` and marks the receipt `source_kind` as
+`<capture-kind>_capture`. Use `--kind` to override the target finding bucket;
+otherwise captures default to proof evidence, except benchmark captures default
+to data. Use `--body` for quick terminal/text excerpts, `--path` for local files
+or folders, and `--receipt-path` for previously pulled hosted/saved artifacts.
+
 For MCP workflows, `stack_effort_record_finding` accepts the same
 `path` or `receipt_path` inputs and returns receipt metadata alongside the usual
 Effort orientation payload, including the Effort-local `source_receipt_path` and
 generic `source_receipt` object. `artifact_receipt` is populated for
 `stack_pull_artifact` receipts as a compatibility alias for hosted/saved pulls.
+`stack_effort_record_capture` is the MCP twin of `stack effort capture` and
+returns the same orientation payload plus `capture_kind`.
 
 For `stack effort repo --path`, relative paths use the same resolution rule.
 File paths are copied under `repos/`; directory paths write a small pointer
