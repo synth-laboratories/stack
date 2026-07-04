@@ -849,6 +849,31 @@ export class StackMcpServer {
     }
   }
 
+  private recordOptionalFactoryActionEffortRef(
+    config: StackConfig,
+    effortRef: string | undefined,
+    factoryId: string,
+    role: string,
+    projectId?: string,
+  ): Record<string, unknown> | null {
+    if (!effortRef) return null
+    const refs = [
+      { system: "factory", id: factoryId, lane: "hosted", role },
+      ...(projectId ? [{ system: "project", id: projectId, lane: "hosted", role: "linked" }] : []),
+    ]
+    const effort = updateStackEffortRefs({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      refs,
+    })
+    return {
+      effort_id: effort.manifest.id,
+      slug: effort.manifest.slug,
+      refs,
+    }
+  }
+
   private async ensureMetaThreadEffortRef(
     effortId: string,
     metaThreadId: string,
@@ -3598,6 +3623,8 @@ export class StackMcpServer {
 
   async messageFactoryProject(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const factoryId = requiredString(args, "factory_id")
     const body = requiredString(args, "body")
     const projectId = optionalString(args, "project_id")
@@ -3611,13 +3638,17 @@ export class StackMcpServer {
       factory = snapshot.factories.find((item) => item.factoryId === factoryId) ?? factory
     }
     const result = await sendRemoteFactoryMessage(config, factory, body)
+    const effectiveProjectId = projectId ?? factory.canonicalProjectId ?? factory.latestProjectId
+    const effortRefRecord = result.ok
+      ? this.recordOptionalFactoryActionEffortRef(config, effortRef, factoryId, "message-sent", effectiveProjectId)
+      : null
     const runtimeEvent = await recordRuntimeLeverEvent({
       event_type: "lever.remote_factory.message_sent",
       source: "lever.stack_mcp",
       subject: { kind: "remote_factory", id: factoryId },
       correlation: {
         factory_id: factoryId,
-        project_id: projectId ?? factory.canonicalProjectId ?? factory.latestProjectId ?? undefined,
+        project_id: effectiveProjectId ?? undefined,
       },
       payload: {
         environment: config.environmentName,
@@ -3628,13 +3659,11 @@ export class StackMcpServer {
         body_preview: body.slice(0, 160),
       },
     })
-    return actionResultWithData(result, { runtime_event: runtimeEvent })
+    return actionResultWithData(result, { runtime_event: runtimeEvent, effort_ref: effortRefRecord })
   }
 
   async wakeFactory(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
-    const factoryId = requiredString(args, "factory_id")
-    const projectId = optionalString(args, "project_id")
     const confirm = optionalBoolean(args, "confirm") ?? false
     if (!confirm) {
       return {
@@ -3643,6 +3672,10 @@ export class StackMcpServer {
         message: "confirm=true is required to wake a Factory",
       }
     }
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
+    const factoryId = requiredString(args, "factory_id")
+    const projectId = optionalString(args, "project_id")
     let factory: RemoteFactorySummary = {
       factoryId,
       name: optionalString(args, "factory_name") ?? factoryId,
@@ -3653,13 +3686,17 @@ export class StackMcpServer {
       factory = snapshot.factories.find((item) => item.factoryId === factoryId) ?? factory
     }
     const result = await wakeRemoteFactoryDue(config, factory)
+    const effectiveProjectId = projectId ?? factory.canonicalProjectId ?? factory.latestProjectId
+    const effortRefRecord = result.ok
+      ? this.recordOptionalFactoryActionEffortRef(config, effortRef, factoryId, "wake-requested", effectiveProjectId)
+      : null
     const runtimeEvent = await recordRuntimeLeverEvent({
       event_type: "lever.remote_factory.wake_requested",
       source: "lever.stack_mcp",
       subject: { kind: "remote_factory", id: factoryId },
       correlation: {
         factory_id: factoryId,
-        project_id: projectId ?? factory.canonicalProjectId ?? factory.latestProjectId ?? undefined,
+        project_id: effectiveProjectId ?? undefined,
       },
       payload: {
         environment: config.environmentName,
@@ -3672,17 +3709,15 @@ export class StackMcpServer {
         factory_name: factory.name,
       },
     })
-    return actionResultWithData(result, { runtime_event: runtimeEvent })
+    return actionResultWithData(result, { runtime_event: runtimeEvent, effort_ref: effortRefRecord })
   }
 
   async controlFactory(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
-    const factoryId = requiredString(args, "factory_id")
     const action = requiredString(args, "action")
     if (action !== "pause-factory" && action !== "resume-factory") {
       throw new RpcError(-32602, "action must be pause-factory or resume-factory")
     }
-    const projectId = optionalString(args, "project_id")
     const confirm = optionalBoolean(args, "confirm") ?? false
     if (!confirm) {
       return {
@@ -3691,6 +3726,10 @@ export class StackMcpServer {
         message: "confirm=true is required to pause or resume a Factory",
       }
     }
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
+    const factoryId = requiredString(args, "factory_id")
+    const projectId = optionalString(args, "project_id")
     let factory: RemoteFactorySummary = {
       factoryId,
       name: optionalString(args, "factory_name") ?? factoryId,
@@ -3701,13 +3740,23 @@ export class StackMcpServer {
       factory = snapshot.factories.find((item) => item.factoryId === factoryId) ?? factory
     }
     const result = await executeRemoteFactoryAction(config, factory, action)
+    const effectiveProjectId = projectId ?? factory.canonicalProjectId ?? factory.latestProjectId
+    const effortRefRecord = result.ok
+      ? this.recordOptionalFactoryActionEffortRef(
+        config,
+        effortRef,
+        factoryId,
+        action === "pause-factory" ? "paused" : "resumed",
+        effectiveProjectId,
+      )
+      : null
     const runtimeEvent = await recordRuntimeLeverEvent({
       event_type: `lever.remote_factory.${action === "pause-factory" ? "paused" : "resumed"}` as `lever.${string}`,
       source: "lever.stack_mcp",
       subject: { kind: "remote_factory", id: factoryId },
       correlation: {
         factory_id: factoryId,
-        project_id: projectId ?? factory.canonicalProjectId ?? factory.latestProjectId ?? undefined,
+        project_id: effectiveProjectId ?? undefined,
       },
       payload: {
         environment: config.environmentName,
@@ -3719,7 +3768,7 @@ export class StackMcpServer {
         factory_name: factory.name,
       },
     })
-    return actionResultWithData(result, { runtime_event: runtimeEvent })
+    return actionResultWithData(result, { runtime_event: runtimeEvent, effort_ref: effortRefRecord })
   }
 
   async controlLiveRun(args: JsonObject): Promise<JsonValue> {
@@ -6671,6 +6720,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the Factory ref after a successful message."),
           factory_id: stringProperty("Factory id."),
           factory_name: stringProperty("Optional display name."),
           project_id: stringProperty("Optional project id for message metadata only. The backend resolves the routable project."),
@@ -6686,6 +6736,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the Factory ref after a successful wake."),
           factory_id: stringProperty("Factory id."),
           factory_name: stringProperty("Optional display name."),
           project_id: stringProperty("Optional project id for receipt correlation."),
@@ -6701,6 +6752,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the Factory ref after a successful pause or resume."),
           factory_id: stringProperty("Factory id."),
           factory_name: stringProperty("Optional display name."),
           project_id: stringProperty("Optional project id for receipt correlation."),
