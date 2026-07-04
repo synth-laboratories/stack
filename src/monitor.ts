@@ -330,7 +330,12 @@ export function loadMonitorConfig(stackRoot: string): StackMonitorConfig {
   const profile = process.env.STACK_MONITOR_PROFILE?.trim() || readStackProfile(stackRoot).active
   const path = join(stackRoot, ".stack", "monitors", `${profile}.toml`)
   const defaultPath = ensureDefaultMonitorConfig(stackRoot)
-  const configPath = profile === "default" ? defaultPath : path
+  const appRootProfilePath = join(stackAppRoot(), ".stack", "monitors", `${profile}.toml`)
+  const configPath = profile === "default"
+    ? defaultPath
+    : existsSync(path)
+      ? path
+      : appRootProfilePath
   if (!existsSync(configPath)) {
     throw new Error(`monitor profile not found: ${profile} (${configPath})`)
   }

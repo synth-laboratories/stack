@@ -81,7 +81,7 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4 = [
   "",
   "Local-only is always valid. Never imply Synth sign-in is required for the local worker, monitor, gardener, local GEPA, or `/goal`. When the operator asks about cloud, hosted ops, remote sync, or Synth inference, explain that sign-in is an optional unlock and point to `stack auth open signin` or the configured environment auth variable.",
   "",
-  "You may read the hosted portfolio through Stack MCP only: use stack_status, stack_runtime_status, stack_list_remote_projects, stack_list_live_smrs, stack_list_factories, stack_list_hosted_optimizer_runs, stack_inference_catalog, and stack_inference_usage to orient the operator. Do not scrape backend databases, Redis, compatibility projections, browser DOM, or raw service state.",
+  "You may read the hosted portfolio through Stack MCP only: use stack_status, stack_runtime_status, stack_list_remote_projects, stack_list_live_smrs, stack_list_factories, stack_list_hosted_optimizer_runs, stack_pull_artifact, stack_inference_catalog, and stack_inference_usage to orient the operator and preserve Effort evidence. Do not scrape backend databases, Redis, compatibility projections, browser DOM, or raw service state.",
   "",
   "The local gardener is not the cloud control plane. For remote sync narration, push/pull receipts, meta-thread to SMR-run binding, remote messages, Factory wake, or Factory pause/resume, hand off to the remote gardener with stack_remote_gardener_handoff or require explicit operator intent and the appropriate owner-route tool. Never claim cloud mutation, billing proof, deployment readiness, or product impact unless the evidence appears in Stack MCP/runtime output.",
   "",
@@ -158,10 +158,57 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3 = LEGACY_GENERATED_DEFAULT_GAR
 
 // B4 — the gardener owns portfolio orientation on screen: it pulls the gardener
 // (and per-worker monitor) side panels forward at review moments via stack_ui_*.
+const GARDENER_THREAD_CREATE_PROMPT =
+  "To create real new work, use Stack owner tools: call stack_worker_thread_create to spawn a durable worker thread that appears in Threads/Lights, with objective when you want a goal assigned immediately. If a Stack session already exists and only needs a durable goal/meta-thread binding, call stack_meta_thread_create with its thread_id. If the meta-thread already exists and only its goal should change, call stack_meta_thread_update_goal. Never claim you created, spawned, or assigned a durable thread/goal unless one of those tools returns thread_id and meta_thread_id."
+
+const GARDENER_PANEL_CONTROL_PROMPT =
+  "You control the operator's side panel through stack_ui_open_panel and stack_ui_close_panel. When portfolio orientation would help the operator SEE the answer — a routing decision, a handoff review, or a 'what is running / where should I look' question — call stack_ui_open_panel with actor_role=\"gardener\", panel=\"gardener\", view=\"portfolio\", and a one-sentence reason. To point the operator at one worker's live progress, open panel=\"monitor\" with that worker's thread_id instead. Open at most once per distinct moment — never for routine replies; the operator's Esc closes the panel and wins until your next open. When the moment has passed, close a panel you opened with stack_ui_close_panel (you may only close panels you opened)."
+
+const GARDENER_LIGHTS_THREAD_VIEW_PROMPT =
+  'For Lights thread orientation ("show this thread in Lights", mark viewed, expand dropdown), use stack_lights_thread_view with actor_role="gardener" and the worker thread_id — not panel="threads" (operator-only). viewed=true opens Lights, marks the thread viewed, and expands its dropdown; viewed=false clears the marker. Alternatively stack_ui_open_panel with panel="lights", view="threads", and the worker thread_id.'
+
+const GARDENER_EFFORT_TOOLS = [
+  "stack_effort_templates",
+  "stack_effort_list",
+  "stack_effort_get",
+  "stack_effort_audit",
+  "stack_effort_activity",
+  "stack_effort_create",
+  "stack_effort_bind_thread",
+  "stack_effort_update_progress",
+  "stack_effort_record_blocker",
+  "stack_effort_record_idea",
+  "stack_effort_record_note",
+  "stack_effort_record_research_log",
+  "stack_effort_record_repo",
+  "stack_effort_record_finding",
+  "stack_effort_write_handoff",
+  "stack_effort_update_refs",
+  "stack_effort_update_status",
+]
+
+const GARDENER_EFFORT_PROMPT =
+  'Efforts are durable workstream containers across threads, runs, ideas, research logs, and proof artifacts. Use stack_effort_templates to choose the right playbook/template, then stack_effort_list, stack_effort_get, stack_effort_audit, and stack_effort_activity to orient the operator around active workstreams, coherence, and timeline. When the operator asks to start or organize a durable workstream, create one with stack_effort_create, bind working meta-threads with stack_effort_bind_thread, attach concrete Factory/Project/optimizer/SMR/Tinker ids with stack_effort_update_refs, record operator-origin ideas with stack_effort_record_idea origin="HUMAN", preserve operator context with stack_effort_record_note kind="human", append research log entries with stack_effort_record_research_log, attach local repo/worktree pointers with stack_effort_record_repo, record evidence with stack_effort_record_finding, using stack_pull_artifact first and passing receipt_path when evidence comes from a hosted/saved/local artifact, and refresh handoff packets with stack_effort_write_handoff. Efforts never use blocked status; record external blockers with stack_effort_record_blocker so blocker, evidence, next owner, and next safe action are preserved while the Effort remains active or paused.'
+
+const GARDENER_EFFORT_TEMPLATE_PROMPT =
+  "Before creating an Effort, use stack_effort_templates to choose the right playbook/template and see whether it seeds a research log or acceptance criteria."
+
+const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V5 = [
+  LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4,
+  "",
+  GARDENER_PANEL_CONTROL_PROMPT,
+].join("\n")
+
 const DEFAULT_GARDENER_BUILTIN_PROMPT = [
   LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4,
   "",
-  "You control the operator's side panel through stack_ui_open_panel and stack_ui_close_panel. When portfolio orientation would help the operator SEE the answer — a routing decision, a handoff review, or a 'what is running / where should I look' question — call stack_ui_open_panel with actor_role=\"gardener\", panel=\"gardener\", view=\"portfolio\", and a one-sentence reason. To point the operator at one worker's live progress, open panel=\"monitor\" with that worker's thread_id instead. Open at most once per distinct moment — never for routine replies; the operator's Esc closes the panel and wins until your next open. When the moment has passed, close a panel you opened with stack_ui_close_panel (you may only close panels you opened).",
+  GARDENER_THREAD_CREATE_PROMPT,
+  "",
+  GARDENER_PANEL_CONTROL_PROMPT,
+  "",
+  GARDENER_LIGHTS_THREAD_VIEW_PROMPT,
+  "",
+  GARDENER_EFFORT_PROMPT,
 ].join("\n")
 
 export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
@@ -189,19 +236,25 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
       "skills.suggest",
       "stack_meta_threads_list",
       "stack_meta_thread_get",
+      "stack_meta_thread_create",
+      "stack_worker_thread_create",
+      "stack_meta_thread_update_goal",
       "stack_meta_thread_set_lifecycle",
       "stack_meta_thread_set_title",
+      ...GARDENER_EFFORT_TOOLS,
       "stack_status",
       "stack_runtime_status",
       "stack_list_remote_projects",
       "stack_list_live_smrs",
       "stack_list_factories",
       "stack_list_hosted_optimizer_runs",
+      "stack_pull_artifact",
       "stack_inference_catalog",
       "stack_inference_usage",
       "stack_remote_gardener_handoff",
       "stack_ui_open_panel",
       "stack_ui_close_panel",
+      "stack_lights_thread_view",
       "jsk.papercut",
       "handoff.force",
       "handoff.seal",
@@ -273,11 +326,30 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V2 = [
 ]
 
 const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
-  (tool) => tool !== "stack_remote_gardener_handoff" && tool !== "stack_ui_close_panel",
+  (tool) =>
+    !GARDENER_EFFORT_TOOLS.includes(tool) &&
+    tool !== "stack_remote_gardener_handoff" &&
+    tool !== "stack_ui_close_panel" &&
+    tool !== "stack_meta_thread_create" &&
+    tool !== "stack_worker_thread_create" &&
+    tool !== "stack_meta_thread_update_goal",
 )
 
 const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
-  (tool) => tool !== "stack_ui_close_panel",
+  (tool) =>
+    !GARDENER_EFFORT_TOOLS.includes(tool) &&
+    tool !== "stack_ui_close_panel" &&
+    tool !== "stack_meta_thread_create" &&
+    tool !== "stack_worker_thread_create" &&
+    tool !== "stack_meta_thread_update_goal",
+)
+
+const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V5 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
+  (tool) =>
+    !GARDENER_EFFORT_TOOLS.includes(tool) &&
+    tool !== "stack_meta_thread_create" &&
+    tool !== "stack_worker_thread_create" &&
+    tool !== "stack_meta_thread_update_goal",
 )
 
 export function ensureDefaultGardenerConfig(stackRoot: string): string {
@@ -305,6 +377,8 @@ export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
   const parsed = readTomlProfile(stackRoot, "gardeners", profile)
   const config = mergeGardenerConfig(DEFAULT_GARDENER_CONFIG, parsed)
   if (profile === "default") backfillGeneratedDefaultGardenerTools(config, parsed)
+  backfillGardenerLightsThreadViewTool(config)
+  backfillGardenerEffortTools(config)
   const enabledOverride = process.env.STACK_GARDENER_ENABLED?.trim()
   if (enabledOverride === "0" || enabledOverride === "false") config.enabled = false
   if (enabledOverride === "1" || enabledOverride === "true") config.enabled = true
@@ -323,11 +397,12 @@ export function gardenerHarnessLabel(config: StackGardenerConfig): string {
 }
 
 export function resolveGardenerSystemPrompt(stackRoot: string, config: StackGardenerConfig): string {
-  const prompt = resolveActorPrompt(stackRoot, config.prompt, DEFAULT_GARDENER_BUILTIN_PROMPT)
+  let prompt = resolveActorPrompt(stackRoot, config.prompt, DEFAULT_GARDENER_BUILTIN_PROMPT)
   if (config.id === "default" && isLegacyGeneratedDefaultGardenerPrompt(prompt)) {
-    return DEFAULT_GARDENER_BUILTIN_PROMPT
+    prompt = DEFAULT_GARDENER_BUILTIN_PROMPT
   }
-  return prompt
+  prompt = ensureGardenerLightsViewPrompt(prompt)
+  return ensureGardenerEffortPrompt(prompt)
 }
 
 export function gardenerToolAllowed(config: StackGardenerConfig, toolId: string): boolean {
@@ -393,12 +468,43 @@ function backfillGeneratedDefaultGardenerTools(config: StackGardenerConfig, pars
   config.tools.allow = [...DEFAULT_GARDENER_CONFIG.tools.allow]
 }
 
+function backfillGardenerLightsThreadViewTool(config: StackGardenerConfig): void {
+  if (!config.tools.allow.includes("stack_ui_open_panel")) return
+  if (config.tools.allow.includes("stack_lights_thread_view")) return
+  config.tools.allow = [...config.tools.allow, "stack_lights_thread_view"]
+}
+
+function backfillGardenerEffortTools(config: StackGardenerConfig): void {
+  if (!config.tools.allow.some((tool) => tool.startsWith("stack_"))) return
+  const missing = GARDENER_EFFORT_TOOLS.filter((tool) => !config.tools.allow.includes(tool))
+  if (missing.length === 0) return
+  config.tools.allow = [...config.tools.allow, ...missing]
+}
+
+function ensureGardenerLightsViewPrompt(prompt: string): string {
+  if (prompt.includes("stack_lights_thread_view")) return prompt
+  if (!prompt.includes("stack_ui_open_panel")) return prompt
+  return `${prompt.trim()}\n\n${GARDENER_LIGHTS_THREAD_VIEW_PROMPT}`
+}
+
+function ensureGardenerEffortPrompt(prompt: string): string {
+  if (prompt.includes("stack_effort_audit")) return prompt
+  if (prompt.includes("stack_effort_record_blocker")) return `${prompt.trim()}\n\n${GARDENER_EFFORT_PROMPT}`
+  if (prompt.includes("stack_effort_activity")) return `${prompt.trim()}\n\n${GARDENER_EFFORT_PROMPT}`
+  if (prompt.includes("stack_effort_templates")) return `${prompt.trim()}\n\n${GARDENER_EFFORT_PROMPT}`
+  if (prompt.includes("stack_effort_write_handoff")) return `${prompt.trim()}\n\n${GARDENER_EFFORT_TEMPLATE_PROMPT}`
+  if (prompt.includes("stack_effort_list")) return `${prompt.trim()}\n\n${GARDENER_EFFORT_PROMPT}`
+  if (!prompt.includes("stack_meta_threads_list")) return prompt
+  return `${prompt.trim()}\n\n${GARDENER_EFFORT_PROMPT}`
+}
+
 function isLegacyGeneratedDefaultGardenerAllow(toolIds: readonly string[]): boolean {
   return (
     sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V1) ||
     sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V2) ||
     sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3) ||
-    sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4)
+    sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4) ||
+    sameStringSet(toolIds, LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V5)
   )
 }
 
@@ -414,7 +520,8 @@ function isLegacyGeneratedDefaultGardenerPrompt(prompt: string): boolean {
     normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V1) ||
     normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V2) ||
     normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3) ||
-    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4)
+    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4) ||
+    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V5)
   )
 }
 
@@ -463,7 +570,7 @@ function defaultGardenerToml(): string {
     'worker = "auto"',
     "",
     "[tools]",
-    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_inference_catalog", "stack_inference_usage", "stack_remote_gardener_handoff", "stack_ui_open_panel", "stack_ui_close_panel", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
+    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_create", "stack_worker_thread_create", "stack_meta_thread_update_goal", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_effort_templates", "stack_effort_list", "stack_effort_get", "stack_effort_activity", "stack_effort_create", "stack_effort_bind_thread", "stack_effort_update_progress", "stack_effort_record_blocker", "stack_effort_record_idea", "stack_effort_record_note", "stack_effort_record_research_log", "stack_effort_record_repo", "stack_effort_record_finding", "stack_effort_write_handoff", "stack_effort_update_refs", "stack_effort_update_status", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_pull_artifact", "stack_inference_catalog", "stack_inference_usage", "stack_remote_gardener_handoff", "stack_ui_open_panel", "stack_ui_close_panel", "stack_lights_thread_view", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
     'deny = ["codex.interrupt"]',
     "",
     "[handoff]",

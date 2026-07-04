@@ -94,7 +94,9 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
   },
   {
     command: "usage",
-    description: "Show account and session usage",
+    args: "[daily|weekly|cumulative]",
+    description: "ChatGPT limits and token activity, plus Synth plan",
+    describe: (ctx) => `Usage · ${ctx.providerName} limits · /usage daily|weekly|cumulative`,
   },
   {
     command: "experimental",
@@ -104,6 +106,10 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     command: "effort",
     description: "Cycle reasoning effort",
     describe: (ctx) => (ctx.effort ? `Cycle reasoning effort (currently ${ctx.effort})` : "Cycle reasoning effort"),
+  },
+  {
+    command: "efforts",
+    description: "Open Efforts panel",
   },
   {
     command: "subagents",
@@ -367,9 +373,10 @@ export type SlashDispatchHooks = {
   setWorkMode: (mode: "eng" | "research") => void
   openModelSwitcher: () => void
   setModel: (name: string) => boolean
-  showUsage: () => void
+  showUsage: (view: UsageSlashView) => void
   openExperimental: () => void
   cycleEffort: () => void
+  openEfforts: () => void
   setSubagents: (enabled: boolean | undefined) => void
   toggleDetails: () => void
   toggleRails: () => void
@@ -383,6 +390,15 @@ export type SlashDispatchHooks = {
   focusAgent: () => void
   toggleAgentView: () => void
   clearInput: () => void
+}
+
+export type UsageSlashView = "default" | "daily" | "weekly" | "cumulative"
+
+export function parseUsageSlashView(args: string): UsageSlashView | undefined {
+  const value = args.trim().toLowerCase()
+  if (!value) return "default"
+  if (value === "daily" || value === "weekly" || value === "cumulative") return value
+  return undefined
 }
 
 export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks): boolean {
@@ -502,14 +518,23 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
         hooks.openModelSwitcher()
       }
       return true
-    case "usage":
-      hooks.showUsage()
+    case "usage": {
+      const view = parseUsageSlashView(args)
+      if (args.trim() && view === undefined) {
+        hooks.feedback("usage · use /usage or /usage daily|weekly|cumulative")
+        return true
+      }
+      hooks.showUsage(view ?? "default")
       return true
+    }
     case "experimental":
       hooks.openExperimental()
       return true
     case "effort":
       hooks.cycleEffort()
+      return true
+    case "efforts":
+      hooks.openEfforts()
       return true
     case "subagents":
       if (args === "on") hooks.setSubagents(true)

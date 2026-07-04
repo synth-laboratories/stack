@@ -47,6 +47,10 @@ for (const path of [
   "tsconfig.json",
 ]) copyIfExists(path)
 
+// The real channel manifest is generated beside the tarball after hashing. Keeping a
+// checked-in nightly manifest inside the payload would make artifact hashes self-referential.
+rmSync(join(appPayload, "packaging", "manifests", "nightly.json"), { force: true })
+
 const legalFiles = ["LICENSE", "NOTICE"].filter((path) => existsSync(join(appRoot, path)))
 for (const path of legalFiles) copyIfExists(path)
 

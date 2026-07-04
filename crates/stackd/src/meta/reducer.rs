@@ -5,9 +5,7 @@
 
 use serde::Serialize;
 use serde_json::Value;
-use stack_core::actor_runtime::{
-    event_id, event_type, latest_next_wake_hints, ActorRole,
-};
+use stack_core::actor_runtime::{event_id, event_type, latest_next_wake_hints, ActorRole};
 
 #[derive(Debug, Clone, Serialize)]
 pub struct MetaThreadSnapshot {
@@ -364,11 +362,31 @@ mod tests {
     #[test]
     fn snapshot_golden() {
         let events = vec![
-            event("e1", "goal.started", "operator", json!({"objective": "ship the .2 release", "status": "active"})),
+            event(
+                "e1",
+                "goal.started",
+                "operator",
+                json!({"objective": "ship the .2 release", "status": "active"}),
+            ),
             event("e2", "agent.turn.completed", "primary_codex", json!({})),
-            event("e3", "monitor.trigger_queued", "monitor_default", json!({"wake_reason": "turn_completed", "trigger_event_ids": ["e2"]})),
-            event("e4", "ui.panel_opened", "monitor_default", json!({"panel": "monitor", "view": "events", "opened_by": "monitor", "reason": "goal review"})),
-            event("e5", "monitor.goal_status", "monitor_default", json!({"status": "advancing", "for_human": true, "headline": "Baseline landed", "note": "baseline 0.087 established"})),
+            event(
+                "e3",
+                "monitor.trigger_queued",
+                "monitor_default",
+                json!({"wake_reason": "turn_completed", "trigger_event_ids": ["e2"]}),
+            ),
+            event(
+                "e4",
+                "ui.panel_opened",
+                "monitor_default",
+                json!({"panel": "monitor", "view": "events", "opened_by": "monitor", "reason": "goal review"}),
+            ),
+            event(
+                "e5",
+                "monitor.goal_status",
+                "monitor_default",
+                json!({"status": "advancing", "for_human": true, "headline": "Baseline landed", "note": "baseline 0.087 established"}),
+            ),
         ];
         let actor_state = json!({
             "schema": "stack/monitor-actor-state/v1",
@@ -376,10 +394,18 @@ mod tests {
             "state": "idle",
             "last_event_id": "e1",
         });
-        let snapshot = reduce_thread("t1", Some("mt1"), &events, &[(ActorRole::Monitor, actor_state)]);
+        let snapshot = reduce_thread(
+            "t1",
+            Some("mt1"),
+            &events,
+            &[(ActorRole::Monitor, actor_state)],
+        );
 
         assert_eq!(snapshot.goal.phase, "active");
-        assert_eq!(snapshot.goal.objective.as_deref(), Some("ship the .2 release"));
+        assert_eq!(
+            snapshot.goal.objective.as_deref(),
+            Some("ship the .2 release")
+        );
         let monitor = &snapshot.actors[0];
         assert_eq!(monitor.actor_id, "monitor_default");
         assert_eq!(monitor.cursor.as_deref(), Some("e1"));
@@ -396,19 +422,53 @@ mod tests {
     fn wake_consumes_triggers_and_esc_closes_panel() {
         let events = vec![
             event("e1", "agent.turn.completed", "primary_codex", json!({})),
-            event("e2", "monitor.trigger_queued", "monitor_default", json!({"trigger_event_ids": ["e1"]})),
-            event("e3", "monitor.wake", "monitor_default", json!({"wake_reason": "turn_completed", "trigger_event_ids": ["e1"]})),
-            event("e4", "ui.panel_opened", "operator", json!({"panel": "gardener", "opened_by": "operator"})),
-            event("e5", "ui.panel_closed", "operator", json!({"panel": "gardener"})),
-            event("e6", "monitor.pause_for_restart", "monitor_default", json!({"next_wake_on": ["worker_event"], "next_wake_at": "2026-07-01T01:00:00Z"})),
+            event(
+                "e2",
+                "monitor.trigger_queued",
+                "monitor_default",
+                json!({"trigger_event_ids": ["e1"]}),
+            ),
+            event(
+                "e3",
+                "monitor.wake",
+                "monitor_default",
+                json!({"wake_reason": "turn_completed", "trigger_event_ids": ["e1"]}),
+            ),
+            event(
+                "e4",
+                "ui.panel_opened",
+                "operator",
+                json!({"panel": "gardener", "opened_by": "operator"}),
+            ),
+            event(
+                "e5",
+                "ui.panel_closed",
+                "operator",
+                json!({"panel": "gardener"}),
+            ),
+            event(
+                "e6",
+                "monitor.pause_for_restart",
+                "monitor_default",
+                json!({"next_wake_on": ["worker_event"], "next_wake_at": "2026-07-01T01:00:00Z"}),
+            ),
         ];
         let actor_state = json!({"monitor_actor_id": "monitor_default", "state": "paused"});
         let snapshot = reduce_thread("t1", None, &events, &[(ActorRole::Monitor, actor_state)]);
         let monitor = &snapshot.actors[0];
-        assert!(monitor.queued_triggers.is_empty(), "wake consumed the trigger");
+        assert!(
+            monitor.queued_triggers.is_empty(),
+            "wake consumed the trigger"
+        );
         assert_eq!(monitor.last_wake_reason.as_deref(), Some("turn_completed"));
-        assert_eq!(monitor.next_wake_on.as_deref(), Some(&["worker_event".to_string()][..]));
-        assert_eq!(monitor.next_wake_at.as_deref(), Some("2026-07-01T01:00:00Z"));
+        assert_eq!(
+            monitor.next_wake_on.as_deref(),
+            Some(&["worker_event".to_string()][..])
+        );
+        assert_eq!(
+            monitor.next_wake_at.as_deref(),
+            Some("2026-07-01T01:00:00Z")
+        );
         assert!(snapshot.ui.side_panel.is_none(), "Esc closed the panel");
         assert_eq!(snapshot.goal.phase, "idle");
     }

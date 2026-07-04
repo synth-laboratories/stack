@@ -10,12 +10,14 @@ export function ensureStackDefaults(stackDataRoot: string, appRoot = stackAppRoo
   const bundledRoot = bundledDefaultsRoot(appRoot)
   if (!existsSync(bundledRoot)) return
 
-  for (const subdir of ["monitors", "gardeners", "remote_gardeners", "guidance"] as const) {
+  for (const subdir of ["monitors", "gardeners", "remote_gardeners", "guidance", "efforts"] as const) {
     const source = join(bundledRoot, subdir)
     if (!existsSync(source)) continue
-    copyTreeIfMissing(source, join(stackDataRoot, ".stack", subdir))
+    const destSubdir = subdir === "efforts" ? "efforts-templates" : subdir
+    copyTreeIfMissing(source, join(stackDataRoot, ".stack", destSubdir))
   }
 
+  mkdirSync(join(stackDataRoot, ".stack", "efforts"), { recursive: true })
   mkdirSync(join(stackDataRoot, ".stack", "meta-threads"), { recursive: true })
   mkdirSync(join(stackDataRoot, ".stack", "sessions"), { recursive: true })
 }

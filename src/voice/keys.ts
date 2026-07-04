@@ -3,6 +3,30 @@ import { homedir } from "node:os"
 import { join } from "node:path"
 import type { StackVoiceConfig } from "../config.js"
 
+/** Shift+V often arrives as a bare "V" before parsed keypress/keyrelease. */
+export function shouldDeferRawSequenceForVoiceHold(sequence: string): boolean {
+  return sequence === "V"
+}
+
+export function isVoiceHoldKeyPress(key: {
+  name?: string
+  shift?: boolean
+  ctrl?: boolean
+  meta?: boolean
+}): boolean {
+  if (key.ctrl || key.meta) return false
+  return (key.shift === true && key.name === "v") || key.name === "V"
+}
+
+export function isVoiceHoldKeyRelease(key: {
+  name?: string
+  ctrl?: boolean
+  meta?: boolean
+}): boolean {
+  if (key.ctrl || key.meta) return false
+  return key.name?.toLowerCase() === "v"
+}
+
 export function loadVoiceApiKeys(config?: Pick<StackVoiceConfig, "envFile">): { groq?: string; openai?: string } {
   return {
     groq: readEnvKey("GROQ_API_KEY", config),

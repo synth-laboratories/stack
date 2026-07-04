@@ -52,6 +52,22 @@ export async function readRequiredRolloutTranscript(
   return parseRolloutTranscript(text, opts.maxItems)
 }
 
+/** Best-effort rollout read with brief retries — rollouts can lag thread creation by a beat. */
+export async function readRolloutTranscriptWithRetry(
+  threadId: string,
+  opts: { maxItems?: number; attempts?: number } = {},
+): Promise<RolloutTranscript | undefined> {
+  const attempts = opts.attempts ?? 6
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const rollout = await readRolloutTranscript(threadId, opts)
+    if (rollout && rollout.blocks.length > 0) return rollout
+    if (attempt < attempts - 1) {
+      await new Promise<void>((resolve) => setTimeout(resolve, attempt === 0 ? 80 : 160))
+    }
+  }
+  return readRolloutTranscript(threadId, opts)
+}
+
 // User-role items that are injected context, not something the operator actually typed.
 const INJECTED_USER_PREFIXES = [
   "# AGENTS.md instructions",

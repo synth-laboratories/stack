@@ -11,6 +11,11 @@ type PacketSummary = {
   missing?: number
 }
 
+type PacketItem = {
+  id?: string
+  status?: string
+}
+
 type ReadinessSummary = {
   pass?: number
   partial?: number
@@ -35,7 +40,7 @@ const branch = gitText(["rev-parse", "--abbrev-ref", "HEAD"])
 const generatedAt = new Date().toISOString()
 const stamp = generatedAt.replace(/[-:.]/g, "").slice(0, 15) + "Z"
 const advertisedChannel = stackChannel(stackRoot) === "dev" ? "nightly" : stackChannel(stackRoot)
-const nightlyPacket = readJson<{ summary?: PacketSummary }>(".stack/evidence/nightly-1/latest.json")
+const nightlyPacket = readJson<{ summary?: PacketSummary; items?: PacketItem[] }>(".stack/evidence/nightly-1/latest.json")
 const launchReadiness = readJson<{ summary?: ReadinessSummary }>(".stack/evidence/launch-readiness/latest.json")
 const proofIssues = candidateIssues()
 const candidateState: CandidateState = select && proofIssues.length === 0 ? "selected" : proofIssues.length > 0 ? "not_ready" : "not_selected"
@@ -84,7 +89,7 @@ function candidateIssues(): string[] {
   if (!headSha) issues.push("git HEAD is unavailable")
   if (!nightlyPacket?.summary) {
     issues.push("missing .stack/evidence/nightly-1/latest.json; run bun run launch:nightly1 -- --write-evidence")
-  } else if ((nightlyPacket.summary.missing ?? 0) > 0) {
+  } else if ((nightlyPacket.summary.missing ?? 0) > 0 && !onlyCandidateSelectionMissing()) {
     issues.push(`nightly packet still has missing=${nightlyPacket.summary.missing}`)
   }
   if (!launchReadiness?.summary) {
@@ -93,6 +98,12 @@ function candidateIssues(): string[] {
     issues.push(`launch readiness still has fail=${launchReadiness.summary.fail}`)
   }
   return issues
+}
+
+function onlyCandidateSelectionMissing(): boolean {
+  if ((nightlyPacket?.summary?.missing ?? 0) !== 1) return false
+  const missingItems = (nightlyPacket?.items ?? []).filter((item) => item.status === "missing")
+  return missingItems.length === 1 && missingItems[0]?.id === "prod-channel"
 }
 
 function nextAction(): string {

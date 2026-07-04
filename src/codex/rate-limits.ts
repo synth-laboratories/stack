@@ -171,6 +171,43 @@ export function formatCodexBudgetSuffix(authPlan: string, limits?: CodexRateLimi
   return parts.length > 0 ? parts.join(" · ") : undefined
 }
 
+export function formatCodexRateLimitBar(remainingPercent: number, width = 10): string {
+  const clamped = Math.max(0, Math.min(100, Math.round(remainingPercent)))
+  const filled = Math.round((clamped / 100) * width)
+  return `${"█".repeat(filled)}${"░".repeat(Math.max(0, width - filled))}`
+}
+
+export function formatCodexRateLimitWindowLine(window: CodexRateLimitWindow): string {
+  const label = windowLabel(window.windowMinutes).padEnd(7, " ")
+  const remainingPercent = Math.max(0, Math.round(100 - window.usedPercent))
+  const bar = formatCodexRateLimitBar(remainingPercent)
+  const status =
+    remainingPercent <= 0
+      ? `${label} ${bar}  depleted`
+      : `${label} ${bar}  ${remainingPercent}% left`
+  if (window.resetsAt === undefined) return status
+  return `${status} · reset ${formatRelativeReset(window.resetsAt)}`
+}
+
+export function formatCodexRateLimitsCardLines(
+  limits: CodexRateLimitsSnapshot | undefined,
+  authPlan: string,
+): string[] {
+  if (!limits || !isChatGptAuthPlan(authPlan)) return []
+  const lines: string[] = []
+  const plan = limits.planType?.trim()
+  if (plan) lines.push(`  plan ${plan}`)
+  if (limits.primary) lines.push(`  ${formatCodexRateLimitWindowLine(limits.primary)}`)
+  if (limits.secondary) lines.push(`  ${formatCodexRateLimitWindowLine(limits.secondary)}`)
+  if (limits.resetCreditsAvailable !== undefined && limits.resetCreditsAvailable > 0) {
+    const noun = limits.resetCreditsAvailable === 1 ? "credit" : "credits"
+    lines.push(`  ${limits.resetCreditsAvailable} reset ${noun} available`)
+  } else if (limits.rateLimitReached) {
+    lines.push(`  limit reached (${limits.rateLimitReached})`)
+  }
+  return lines
+}
+
 function parseRateLimitsFromStdoutRecord(record: unknown): CodexRateLimitsSnapshot | undefined {
   if (!record || typeof record !== "object") return undefined
   const message = record as Record<string, unknown>

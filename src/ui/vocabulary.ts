@@ -5,7 +5,7 @@
 // TUI, the MCP tools, and the smoke all read THIS table; an on-screen label with no
 // registry row is a defect (A6, smoke-ui-vocab).
 
-export type UiPanelId = "monitor" | "gardener" | "ops" | "threads"
+export type UiPanelId = "monitor" | "gardener" | "ops" | "threads" | "lights" | "efforts"
 
 export type UiPanelOpener = "monitor" | "gardener" | "remote_gardener" | "operator"
 
@@ -52,6 +52,22 @@ export const UI_PANELS: Record<UiPanelId, UiPanelSpec> = {
     views: ["list"],
     toolName: "stack_ui_open_panel",
     slash: "/threads",
+    eventTypes: EVENT_TYPES,
+  },
+  lights: {
+    id: "lights",
+    openedBy: ["gardener", "remote_gardener", "operator"],
+    views: ["threads"],
+    toolName: "stack_ui_open_panel",
+    slash: "/lights",
+    eventTypes: EVENT_TYPES,
+  },
+  efforts: {
+    id: "efforts",
+    openedBy: ["gardener", "remote_gardener", "operator"],
+    views: ["list"],
+    toolName: "stack_ui_open_panel",
+    slash: "/efforts",
     eventTypes: EVENT_TYPES,
   },
 }

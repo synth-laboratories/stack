@@ -1,0 +1,8 @@
+[effort_template]
+id = "task-nonverifiable"
+label = "Non-verifiable Task Research Effort"
+research_log = true
+
+[defaults]
+status = "active"
+findings = ["ideas", "code", "data", "proof", "results"]

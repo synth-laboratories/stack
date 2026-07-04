@@ -17,6 +17,158 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+### Added
+
+- **Durable Efforts workstreams.** Stack now has local Effort containers for
+  long-running research and engineering work across threads, optimizer runs,
+  SMR refs, human ideas, research logs, findings, and handoff artifacts.
+  Efforts create visible folders under `efforts/<slug>/`, with
+  `effort.toml`, `PLAYBOOK.md`, `PROGRESS.md`, `ACTIVITY.jsonl`, optional
+  `research_log.md`, origin-tagged `ideas/`, `human/`, `notes/`, `repos/`, and
+  `findings/{ideas,code,data,proof,results}/`.
+- **Effort templates, CLI, MCP, and TUI surface.** Bundled templates now cover
+  research, engineering, system optimizer, task classifier, agentic task,
+  non-verifiable task, and product workstreams. `stack effort ...` and
+  `stack_effort_*` MCP tools share the same storage path, while `/efforts`
+  shows active/archived Efforts, refs, bound thread context, recent progress,
+  recent activity, latest blocker, handoff state, and acceptance summaries. `stack effort
+  list` now works as a compact scan view with grouped status, ref counts,
+  audit status, handoff/acceptance markers, latest progress, latest activity, and latest blocker.
+  `stack_meta_thread_create` and `stack_worker_thread_create` accept `effort_ref`
+  so new or existing worker threads can enter an Effort at creation time. `stack
+  effort audit` and `stack_effort_audit` run a read-only coherence check for
+  scaffold, research-log shape, idea origin tags, promoted idea backlinks,
+  timelines, blockers, findings, handoff, acceptance criteria coverage,
+  task-classifier A0/A1 v1-bar evidence, optional hosted/SMR/Tinker graduation
+  coverage, refs, and meta-thread `effort_ref` back-links, while
+  `stack effort activity` and `stack_effort_activity` print/read a bounded activity
+  timeline from `ACTIVITY.jsonl`. Bundled playbooks include resume/orientation
+  guidance so agents read progress, activity, research logs, human context,
+  ideas, findings, bound meta-threads, and refs before acting.
+- **Typed Effort blocker receipts.** `stack effort blocker` and
+  `stack_effort_record_blocker` record external dependencies with blocker,
+  evidence, next owner, and next safe action while keeping Effort status
+  `active` or `paused`; the mutation writes `PROGRESS.md` and an
+  `effort.blocker_recorded` activity receipt instead of introducing a
+  `blocked` lifecycle state. Generated handoffs now include a dedicated
+  Recorded Blockers section from those receipts plus an embedded audit summary
+  so the packet carries its own coherence status.
+- **Machine-readable Effort artifact inventory.** `stack effort show --json`,
+  `stack_effort_get`, and Effort mutation responses now include an
+  `artifact_inventory` with generated files, ideas, human notes, repo pointers,
+  findings, receipt sidecars, and counts. `stack effort list` and
+  `stack_effort_list` expose compact artifact and receipt-sidecar counts, and
+  `/efforts` shows the same count line so agents and humans can orient around
+  proof material without scraping `HANDOFF.md`.
+- **Pulled artifacts can become Effort findings.** `stack effort finding
+  --receipt-path` and `stack_effort_record_finding` now accept a receipt from
+  `stack_pull_artifact`, record the pulled `workspace_path` as the finding
+  source, write an Effort-local `.receipt.json` sidecar, and return or print
+  provenance receipt metadata with the Effort orientation payload. Effort audit
+  now validates those sidecars when present.
+- **Typed Tinker refs for Efforts.** Effort manifests, `stack effort refs`,
+  `stack_effort_update_refs`, generated handoffs, and the `/efforts` panel can
+  now carry Tinker/training-style run ids separately from optimizer and SMR run
+  ids.
+- **Banking77 acceptance Effort.** The `task-classifier` template seeds the
+  Banking77 A0-A4 acceptance ladder. The current acceptance packet records A0
+  human walkthrough proof and A1 local GEPA artifact-capture proof; hosted
+  GEPA, SMR harness, and SMR/Tinker proofs remain optional graduation evidence.
+  The A2-A4 sections require proof artifacts, configs/recipes, and research-log
+  evidence rather than refs alone.
+
+### Known limitations
+
+- Efforts are local cockpit/workspace records in this release. Hosted
+  Factory/Effort/Project ids can be attached as refs, but Stack does not create
+  or mutate hosted Effort records by default.
+- Banking77 A1 proves local optimizer artifact capture, not a launch-grade
+  Banking77 prompt lift; the heldout score in the recorded packet is flat
+  versus the seed candidate.
+
+### Fixed
+
+- `stack effort handoff` and other Effort CLI commands now preserve repeated
+  list-style flags such as multiple `--risk`, `--metric`, or `--path` values
+  instead of silently keeping only the last value.
+
+## [0.2.0-dev.20260703.2] - 2026-07-03
+
+Monitor Gardener Goal release.
+
+### Added
+
+- **Lights panel for live cockpit status.** `/lights on` opens a dedicated right
+  panel with thread, gardener, actor, cloud, local runtime, and usage status.
+  `/lights off` closes it without changing the active worker or gardener view.
+- **Actionable thread inventory.** The Lights thread section is scrollable,
+  status-filterable, and click/keyboard navigable. It shows live/current/goal
+  status, relative age, token counts when available, goal/title previews, and
+  viewed/unviewed state.
+- **Durable gardener thread tools.** Stack MCP now exposes
+  `stack_worker_thread_create`, `stack_meta_thread_create`, and
+  `stack_meta_thread_update_goal` so the gardener can create a Stack-visible
+  worker thread, bind an existing session to a meta-thread, or assign/update a
+  goal through the stackd owner route instead of claiming an out-of-band spawn.
+- **Lights thread view MCP.** `stack_lights_thread_view` lets approved agents
+  mark threads viewed/unviewed, change thread filters, and request the Lights
+  panel through the same UI vocabulary as other panels.
+- **Expanded slash command surface.** The TUI slash command menu now includes
+  `/help`/`/?`, `/exit`/`/quit`, `/goal`, `/g`/`/gardener`, `/monitor`/`/m`,
+  `/lights`, `/env`, `/provider`/`/harness`, `/profile`,
+  `/work_mode`/`/mode`, `/model`, `/usage`, `/experimental`, `/effort`,
+  `/subagents`, `/config`, `/details`/`/d`, `/rails`/`/b`,
+  `/threads`/`/p`, `/ops`, `/permissions`/`/perm`, `/settings telemetry`,
+  `/actors`, `/agent`, `/agent-view`/`/a`, and `/clear`/`/c`.
+- **Work mode flag.** `/mode eng|research` and `/work_mode eng|research` record
+  the intended mode in TUI state for future routing. The setting is intentionally
+  non-operative in this release.
+- **Persistent UX state.** Stack stores right-panel width, Lights open/collapsed
+  state, threads-only mode, selected thread, and viewed thread ids under
+  `.stack/config/`.
+- **Target-aware voice controls.** Voice input is enabled by default and now
+  reports whether it is targeting the worker, monitor, or gardener lane.
+
+### Changed
+
+- **Gardener opens in the core panel.** `/gardener` now focuses the gardener in
+  the primary workspace instead of forcing it into the side panel, matching the
+  worker chat model.
+- **Goal mode keeps chat usable.** Worker chat remains open in goal mode so
+  operators can keep using slash commands and direct messages while the monitor
+  sidecar is visible.
+- **Monitor chat remains available.** The monitor side panel can show chat,
+  events, and goal context without losing the worker input lane.
+- **Right panel behavior is non-invasive.** Opening, closing, resizing, or
+  clicking the Lights panel no longer steals the active main-panel thread.
+- **Gardener defaults know the new owner tools.** Bundled gardener profiles now
+  include the Lights/thread orientation tool and durable meta-thread creation
+  tools in their allow-list guidance.
+- **Account usage visibility.** The header and Lights usage section read richer
+  account/rate-limit information when available.
+
+### Fixed
+
+- **Blackspace and input placement.** Worker, monitor, gardener, and resumed
+  goal transcripts keep input controls anchored at the bottom and avoid the
+  artificial top/bottom gaps seen during live dogfood sessions.
+- **Blank resumed transcripts.** Rollout transcript reads retry briefly so
+  resumed goal threads do not first-paint as empty while the JSONL projection
+  catches up.
+- **Terminal exit cleanup.** Exiting Stack now restores the terminal alternate
+  screen more reliably after source and packaged launches.
+- **Goal status normalization.** Legacy `blocked` goal states are not rendered
+  as an agent-owned current status; the UI keeps the operator-owned distinction
+  explicit.
+
+### Known limitations
+
+- This is a dev/nightly release packet. Stable promotion still requires the
+  release gate, installer, and published evidence steps in `docs/RELEASE.md`.
+- `/mode` / `/work_mode` records state only; no routing behavior changes yet.
+- Heavily customized gardener profiles may need manual allow-list review if
+  they intentionally diverged from the bundled defaults.
+
 ## [0.2.0-dev.20260702.3] - 2026-07-02
 
 ### Added

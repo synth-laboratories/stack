@@ -62,6 +62,10 @@ try {
     const { runInferenceCli } = await import("./inference-cli.js")
     process.exit(await runInferenceCli(config, process.argv.slice(2)))
   }
+  if (process.argv[2] === "effort") {
+    const { runEffortCli } = await import("./effort-cli.js")
+    process.exit(await runEffortCli(config, process.argv.slice(2)))
+  }
   if (process.argv[2] === "crashes") {
     process.exit(await runCrashReports(config, process.argv.slice(3)))
   }
@@ -234,6 +238,7 @@ function printStackHelp(argv: string[]): void {
   console.log("                                Check local readiness and optional task preflight")
   console.log("  stack auth <command>           Manage optional Synth auth")
   console.log("  stack inference <list|usage> [--json]")
+  console.log("  stack effort <command>          Create, inspect, and update Efforts")
   console.log("  stack telemetry digest [--env dev|staging|prod]")
   console.log("  stack crashes <command>")
   console.log("  stack resume [query]")

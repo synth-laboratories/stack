@@ -51,7 +51,7 @@ export function resolveVoiceStatus(config: StackConfig): VoiceStatusSnapshot {
       provider: config.voice.sttProvider,
       fallback: config.voice.sttFallback,
       providers,
-      message: "enable in stack.config.json or STACK_VOICE_ENABLED=1",
+      message: "set voice.enabled=true in stack.config.json or STACK_VOICE_ENABLED=1",
       checkedAt,
       statusPath,
     }
@@ -165,26 +165,28 @@ export function voiceStatusLine(status: VoiceStatusSnapshot): string {
   return `Voice BLOCKED · ${status.message}`
 }
 
+export type VoiceInputTarget = "worker" | "monitor" | "gardener"
+
 export function voiceInputHintLine(input: {
   status: VoiceStatusSnapshot
   recording?: boolean
   transcribing?: boolean
-  /** When true, voice submits to the active gardener Codex thread instead of the inbox queue. */
-  gardenerChat?: boolean
+  target: VoiceInputTarget
 }): string {
-  const target = input.gardenerChat ? "gardener" : "gardener inbox"
-  if (input.recording) return `Shift+V · recording… · release to transcribe · enter to send`
-  if (input.transcribing) return `Shift+V · transcribing…`
+  const target =
+    input.target === "worker" ? "worker" : input.target === "monitor" ? "monitor" : "gardener"
+  if (input.recording) {
+    return `Shift+V · recording… · release to transcribe → ${target}`
+  }
+  if (input.transcribing) return "Shift+V · transcribing…"
   if (input.status.health === "OFF") {
-    return "Shift+V · voice off · enable in stack.config.json or STACK_VOICE_ENABLED=1"
+    return "Shift+V · voice off · set voice.enabled=true in stack.config.json or STACK_VOICE_ENABLED=1"
   }
   if (input.status.health === "BLOCKED") {
     return `Shift+V · voice blocked · ${input.status.message}`
   }
   const status = voiceStatusLine(input.status)
-  return input.gardenerChat
-    ? `Shift+V hold · release to transcribe · enter to send · ${status}`
-    : `Shift+V hold · release to transcribe → gardener · ${status}`
+  return `Shift+V hold · release to transcribe → ${target} · enter to send · ${status}`
 }
 
 function ensureCheckAudio(path: string): void {

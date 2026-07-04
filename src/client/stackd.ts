@@ -512,6 +512,7 @@ export type StackdMetaThreadManifest = {
   archive_reason?: string
   source?: string
   source_ref?: string
+  effort_ref?: string
   repo_refs: string[]
   worktree_refs: string[]
   created_at: string
@@ -571,6 +572,7 @@ export type StackdMetaThreadCreateRequest = {
   harness: "codex" | "cursor" | string
   source?: string
   source_ref?: string
+  effort_ref?: string
   repo_refs?: string[]
   worktree_refs?: string[]
   gardener_thread_id?: string
@@ -593,6 +595,12 @@ export type StackdUpdateMetaThreadLifecycleRequest = {
 
 export type StackdUpdateMetaThreadTitleRequest = {
   title: string
+  reason?: string
+  actor_id?: string
+}
+
+export type StackdUpdateMetaThreadEffortRefRequest = {
+  effort_ref?: string
   reason?: string
   actor_id?: string
 }
@@ -961,6 +969,18 @@ export async function stackdUpdateMetaThreadTitle(
   return requestJson<StackdUpdateMetaThreadTitleResponse>(
     baseUrl,
     `/meta-threads/${encodeURIComponent(metaThreadId)}/title`,
+    jsonPatch(request),
+  )
+}
+
+export async function stackdUpdateMetaThreadEffortRef(
+  metaThreadId: string,
+  request: StackdUpdateMetaThreadEffortRefRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdMetaThreadManifest> {
+  return requestJson<StackdMetaThreadManifest>(
+    baseUrl,
+    `/meta-threads/${encodeURIComponent(metaThreadId)}/effort-ref`,
     jsonPatch(request),
   )
 }

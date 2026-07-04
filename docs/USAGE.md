@@ -56,6 +56,322 @@
   intended work mode for future routing. It is intentionally a no-op today
   beyond updating the TUI state and status feedback.
 
+### Slash commands
+
+Type `/` in the active input to open the slash menu. The menu supports fuzzy
+matching, aliases, and tab completion.
+
+| Command | Purpose |
+| --- | --- |
+| `/help` / `/?` | Show available commands |
+| `/exit` / `/quit` | Quit Stack |
+| `/goal ...` | Show, set, pause, resume, clear, or edit goal criteria |
+| `/gardener [message]` / `/g` | Focus the gardener in the core panel or send it a message |
+| `/monitor on\|off\|show\|hide\|chat\|stream\|message` / `/m` | Toggle, show, hide, focus, or message the monitor |
+| `/lights on\|off` | Open or close the Lights status panel |
+| `/efforts` | Open the Efforts workstream panel |
+| `/threads` / `/p` | Open thread navigation; `/threads new` starts a new thread |
+| `/mode eng\|research` / `/work_mode` | Record the future work-mode flag |
+| `/env dev\|staging\|prod` | Change the selected Stack environment |
+| `/provider chatgpt\|cursor` | Change the worker provider |
+| `/profile research\|engineering\|product` | Change the Stack profile |
+| `/model [filter]` | Select a worker model |
+| `/effort` | Cycle reasoning effort |
+| `/subagents on\|off` | Toggle subagents |
+| `/experimental` | Toggle experimental controls |
+| `/usage daily\|weekly\|cumulative` | Refresh ChatGPT limits, token activity, and Synth plan usage |
+| `/ops` | Open the ops panel |
+| `/actors` | Toggle actor status |
+| `/agent` | Focus worker chat |
+| `/agent-view` / `/a` | Toggle the full agent event stream |
+| `/permissions` / `/perm` | Review telemetry/privacy choices |
+| `/settings telemetry` | Open telemetry settings |
+| `/config` | Open editable Stack config |
+| `/details` / `/d` | Toggle verbose transcript details |
+| `/rails` / `/b` | Toggle side rails |
+| `/clear` / `/c` | Clear the draft input |
+
+### Lights panel
+
+`/lights on` opens the right-panel cockpit without changing the active core
+panel. The panel summarizes:
+
+- **Threads:** live/current/goal status, relative age, token count when
+  available, title or goal preview, viewed/unviewed state, and latest monitor
+  headline.
+- **Gardeners:** gardener lifecycle, inbox count, target thread, and workspace.
+- **Actors:** active worker/runtime model counts.
+- **Cloud:** selected environment, projects, factories, runs, deployments, and
+  hosted optimizers.
+- **Local:** local optimizer/container runtime status.
+- **Usage:** account/rate-limit state.
+
+Within Lights, the Threads section is independently scrollable and filterable.
+Filters include `all`, `live`, `active`, `goal`, `paused`, `done`, `archived`,
+`gardener`, `worker`, `viewed`, `unviewed`, and free-text title/id matches.
+Selecting a worker thread opens it in the worker/aux lane; selecting a gardener
+thread opens the gardener in the core panel. Viewed/unviewed markers persist
+under `.stack/config/lights-thread-view.json`.
+
+### Efforts
+
+Efforts are durable workstream containers for long-running research and
+engineering work. They give a project a stable home across many threads, runs,
+handoffs, optimizer jobs, SMR runs, human ideas, research logs, and proof
+artifacts. A human can start a serious workstream such as `banking77-top-score`
+or `craftax-reflexion`, bind agents to it over time, preserve the operator's
+thinking, collect local and hosted evidence, and hand off the work with a
+coherent folder, timeline, artifacts, and acceptance packet.
+
+An Effort is a sibling to a meta-thread, not a meta-thread kind. The Effort owns
+the folder and accumulated project context. Meta-threads own agent execution,
+goals, handoffs, and thread lifecycle; they can point at an Effort through
+`effort_ref`.
+
+`/efforts` opens the right-panel Efforts view. It shows active and archived
+Efforts, a compact template starter row, status, bound thread counts,
+local/hosted refs, bound meta-thread goal context with usage/time when
+available, artifact counts, the latest progress line, the latest typed activity
+receipt, and generated handoff packet availability when `HANDOFF.md` exists.
+When an acceptance summary exists at
+`findings/results/acceptance-summary.md`, the panel shows a separate acceptance
+row.
+
+CLI:
+
+```bash
+stack effort create banking77-top-score --template task-classifier
+stack effort templates
+stack effort list
+stack effort show banking77-top-score
+stack effort audit banking77-top-score
+stack effort activity banking77-top-score --limit 20
+stack effort bind banking77-top-score <meta-thread-id>
+stack effort progress banking77-top-score "Baseline and split protocol recorded"
+stack effort blocker banking77-top-score --blocker "Hosted graduation path not selected" --evidence "A0/A1 recorded; A2-A4 are optional graduation proofs" --owner operator --next "Choose hosted GEPA, SMR harness, or Tinker proof if stronger evidence is needed"
+stack effort research-log banking77-top-score "Local GEPA smoke" --work-summary "Ran local optimizer and copied scorecard artifacts" --operator-message "Use Banking77 as the acceptance Effort"
+stack effort handoff banking77-top-score --summary "Banking77 A0/A1 packet is ready for review" --next "Review heldout proof and decide hosted graduation"
+stack effort idea banking77-top-score "Try transfer before full gate" --origin HUMAN
+stack effort note banking77-top-score "Manual review notes" --kind human --body "Operator context to preserve for the next agent"
+stack effort repo banking77-top-score --path ../evals/projectbench/factory_projects/banking77_simple_factory --repo-ref evals:banking77-simple
+stack effort finding banking77-top-score "Local GEPA scorecard" --kind proof --path findings/proof/local-gepa
+stack effort finding banking77-top-score "Pulled hosted scorecard" --kind proof --receipt-path .stack/evidence/roundtrip/<receipt>.json
+stack effort refs banking77-top-score --optimizer-run-id <run-id> --smr-run-id <run-id> --tinker-run-id <run-id>
+stack effort status banking77-top-score active
+stack effort archive banking77-top-score
+```
+
+`stack effort show` prints the same orientation cues as `stack_effort_get`: key
+file paths, acceptance summary when present, bound meta-thread context, latest
+progress, latest activity, latest blocker, and small progress/activity/blocker tails. Use
+`stack effort activity <effort> --limit <n>` for a dedicated human-readable or
+JSON activity timeline from `ACTIVITY.jsonl`.
+
+`stack effort audit <effort>` is the read-only coherence check for handoff and
+acceptance review. It reports `pass`, `warn`, or `fail` checks for scaffold
+files, manifest/registry agreement, research-log shape, progress and activity
+timelines, structured blocker receipts, human context, idea origin tags,
+promoted idea backlinks, promoted findings, generated handoff sections,
+acceptance summary presence, acceptance criteria coverage, task-classifier
+A0/A1 v1-bar evidence, optional hosted/SMR/Tinker graduation coverage,
+thread/repo/run refs, and local meta-thread `effort_ref` back-links.
+
+`stack effort list` is the human scan view. It groups Efforts by status and
+shows the template, bound-thread count, repo/optimizer/SMR/Tinker ref counts
+when present, audit status, handoff and acceptance markers, latest progress,
+latest activity, latest blocker, last update time, and visible folder ref. JSON
+mode includes the same orientation fields for scripts and review packets.
+
+For `stack effort finding --path`, relative paths resolve inside the Effort
+folder first, then from the current shell directory, then from the Stack working
+directory. Existing Effort-local paths are recorded in place; external files or
+directories are copied into the selected `findings/*` folder. `stack effort
+finding --receipt-path` accepts a `stack_pull_artifact` receipt, reads the
+pulled `workspace_path`, records that artifact as the finding source, and
+prints receipt/source metadata. It also writes a `.receipt.json` sidecar next
+to the recorded finding so artifact inventory and activity history retain the
+provenance trail.
+
+For MCP workflows, `stack_effort_record_finding` accepts the same
+`receipt_path` and returns receipt metadata alongside the usual Effort
+orientation payload, including the Effort-local `source_receipt_path`.
+
+For `stack effort repo --path`, relative paths use the same resolution rule.
+File paths are copied under `repos/`; directory paths write a small pointer
+record instead of recursively copying the whole worktree.
+
+Default folder:
+
+```text
+efforts/<slug>/
+  effort.toml
+  PLAYBOOK.md
+  HANDOFF.md             # generated by stack effort handoff
+  PROGRESS.md
+  ACTIVITY.jsonl         # typed append-only activity receipts
+  research_log.md        # research templates only
+  ideas/
+  human/
+  notes/
+  repos/
+  findings/
+    ideas/
+    code/
+    data/
+    proof/
+    results/
+```
+
+`effort.toml` is the manifest and ref authority. `PROGRESS.md` is the terse
+operator/gardener status log. `ACTIVITY.jsonl` is the typed append-only receipt
+trail for Effort mutations, suitable for agents and future cockpit timelines.
+`PLAYBOOK.md` is copied from the selected template
+and tells agents how that Effort type should be worked and resumed. Each bundled
+playbook includes a `Resume / Orientation` section that points agents at
+`PROGRESS.md`, `ACTIVITY.jsonl`, `research_log.md` when present, operator
+context, ideas, findings, bound meta-threads, and refs before taking action.
+Research-derived
+templates also include `research_log.md`, a chronological lab notebook modeled
+after the Craftax Reflexion research log: operator messages stay verbatim, agent
+work is summarized, and metrics, runs, evidence, open threads, key paths, and
+reproduce commands are recorded over time. Use it for actual run examples,
+operator corrections, and research decisions; do not let high-level architecture
+notes substitute for observed behavior with run ids or artifact paths.
+
+Use `human/` for operator context that should survive handoffs, and `repos/` for
+local repo, worktree, and evidence-packet pointers.
+
+Research Efforts are for uncertain, evidence-seeking work: optimization, evals,
+model behavior, Reflexion/MAPO systems, classifier/task-family exploration, or
+rubric-scored research. They advance by hypotheses, experiments, failures,
+metrics, and proof artifacts. Engineering Efforts are for implementation and
+delivery: product features, integrations, refactors, release work, and
+multi-slice bug fixes. They advance by scoped changes, notes, validation status,
+docs/release impact, and rollout risk.
+
+Every Effort has an `ideas/` inbox. Mark idea origin in brackets in filenames and
+headings:
+
+```text
+ideas/[HUMAN]-try-transfer-before-full-gate.md
+ideas/[AGENT]-mine-rare-tier-failures.md
+ideas/[MIXED]-gate-headroom-rule.md
+```
+
+Human phrasing should remain visible when an idea is promoted. Once an idea has
+evidence, a concrete artifact, or a reusable conclusion, record the promoted
+claim under `findings/ideas/` and link back to the original idea file.
+
+Findings are promoted artifacts:
+
+- `findings/ideas/`: promoted hypotheses, design routes, and negative results
+- `findings/code/`: prompts, configs, harness recipes, patches
+- `findings/data/`: seeds, splits, corpora, traces
+- `findings/proof/`: scorecards, receipts, run packets, heldout proof
+- `findings/results/`: summaries, acceptance reports, final writeups
+
+Bundled templates live under `bundled/efforts/`:
+
+| Template | Used for |
+| --- | --- |
+| `research` | general uncertain research and eval exploration |
+| `engineering` | product/system implementation and release work |
+| `system-optimizer` | Reflexion, MAPO, memory, policy/intervention systems |
+| `task-classifier` | Banking77-style classification optimization |
+| `task-agentic` | long-horizon task agents |
+| `task-nonverifiable` | rubric-graded or subjective work |
+| `product` | future product/ops workstream stub |
+
+Built-in template IDs resolve from `bundled/efforts/` so product updates such as
+acceptance criteria are not hidden by stale first-run copies. Custom installed
+template IDs can live under `.stack/efforts-templates/`.
+
+Use `stack effort templates` to list the available playbooks. The output shows
+whether the template is bundled or installed, whether it includes a research log,
+how many findings folders it seeds, and whether it carries acceptance criteria.
+
+Stack MCP exposes the same Effort storage to gardeners and agents:
+
+- `stack_effort_templates`
+- `stack_effort_create`
+- `stack_effort_list`
+- `stack_effort_get`
+- `stack_effort_audit`
+- `stack_effort_activity`
+- `stack_effort_bind_thread`
+- `stack_effort_update_progress`
+- `stack_effort_record_blocker`
+- `stack_effort_record_research_log`
+- `stack_effort_write_handoff`
+- `stack_effort_record_idea`
+- `stack_effort_record_note`
+- `stack_effort_record_repo`
+- `stack_effort_record_finding`
+- `stack_effort_update_refs`
+- `stack_effort_update_status`
+
+Use `stack_pull_artifact` before `stack_effort_record_finding` when evidence
+comes from a hosted optimizer artifact, saved SMR/WorkProduct download, or
+local file that needs a provenance receipt. Pass the returned `receipt_path` to
+`stack_effort_record_finding` instead of unpacking the receipt by hand.
+The CLI equivalent is `stack effort finding --receipt-path <receipt>`.
+Both paths preserve a receipt sidecar under the Effort finding folder.
+
+Thread creation tools can bind directly into an Effort too. Pass `effort_ref` to
+`stack_meta_thread_create` when binding an existing session or to
+`stack_worker_thread_create` when spawning a new worker. Stack writes
+`effort_ref` on the stackd meta-thread manifest and appends the meta-thread id
+to the Effort in the same call, so the new thread appears in `/efforts`,
+`stack_effort_get`, and future handoffs without a separate bind step.
+
+Use `stack_effort_get` as the compact orientation call. It returns the manifest,
+registry record, workspace path refs for `PLAYBOOK.md`, `PROGRESS.md`,
+`ACTIVITY.jsonl`,
+`research_log.md` when present, `ideas/`, `findings/*`, and
+`acceptance_summary` when `findings/results/acceptance-summary.md` exists, plus
+a machine-readable `artifact_inventory` covering generated files, ideas, human
+notes, repo pointers, findings, and receipt sidecars. It also returns the latest progress line,
+latest blocker, small progress/activity/blocker tails, and compact
+`bound_meta_threads` context for each bound meta-thread. Effort MCP mutation
+responses return the same orientation context after applying the change.
+`stack_effort_list` is also an orientation surface: each row includes path refs,
+audit status, latest progress, latest activity, latest blocker,
+repo/optimizer/SMR/Tinker ref counts, artifact counts, and
+handoff/acceptance markers so gardeners can choose the right Effort before
+calling `stack_effort_get`.
+Use `stack_effort_activity` when a gardener or agent needs a bounded timeline
+larger than the compact orientation tail.
+Use `stack_effort_audit` before handoff or review when the question is whether
+the Effort packet is structurally coherent rather than what the latest event was.
+The audit validates receipt sidecars when present, including schema,
+`receipt_path`, `workspace_path`, and the Effort-local finding they document.
+
+Use `active`, `paused`, `done`, or `archived` for Effort status. Do not use
+`blocked`. When progress depends on a decision, credential, hosted capacity, or
+another owner, keep the Effort active or paused and write the exact blocker,
+evidence, next owner, and next safe action in `PROGRESS.md`. Prefer
+`stack effort blocker` or `stack_effort_record_blocker` for this so the same
+entry also appears in `ACTIVITY.jsonl` as `effort.blocker_recorded`.
+
+Banking77 is the acceptance Effort. A0 proves scaffold, CLI/MCP/TUI visibility,
+a bound meta-thread, a `[HUMAN]` idea, and progress capture. A1 proves local
+GEPA artifacts can be attached to the Effort: run id, candidate artifact,
+visible result, heldout scorecard, and research log entry. A2 records hosted
+GEPA graduation when available. A3 records synth-ai SMR harness proof. A4
+records synth-ai SMR/Tinker proof. `stack effort refs` and
+`stack_effort_update_refs` can attach optimizer, SMR, and Tinker run ids. The
+`task-classifier` template seeds these
+criteria into `effort.toml` unless explicit criteria are provided at create time.
+A0 + A1 are the required v1 product bar; A2-A4 are stronger full-stack proofs.
+Refs alone do not satisfy A2-A4: hosted graduation needs proof artifacts under
+`findings/proof/`, configs or recipes under `findings/code/`, and a
+`research_log.md` entry naming the run id, environment, result, and caveats.
+Generated handoffs include dedicated Acceptance Packet, Audit, and Recorded
+Blockers sections, pointing at `findings/results/acceptance-summary.md` when
+present, embedding the latest coherence audit status, and surfacing recent
+`effort.blocker_recorded` receipts from `ACTIVITY.jsonl`. Handoffs also show
+receipt-sidecar counts and a dedicated Receipt Sidecars artifact section.
+
 Stack writes local session logs under `.stack/sessions/`. Current release includes
 read-only remote SMR visibility for jobs, run artifacts, WorkProducts, and
 factories, hosted optimizer job visibility/detail, and local optimizer job

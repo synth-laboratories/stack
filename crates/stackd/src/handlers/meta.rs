@@ -126,10 +126,18 @@ pub async fn post_gardener_pass_complete(
     if let Some(value) = request.inbox_pending {
         actor["inbox_pending"] = json!(value);
     }
-    if let Some(path) = request.workspace_garden_path.as_deref().and_then(non_empty_string) {
+    if let Some(path) = request
+        .workspace_garden_path
+        .as_deref()
+        .and_then(non_empty_string)
+    {
         actor["workspace_garden_path"] = json!(path);
     }
-    if let Some(path) = request.gardener_garden_path.as_deref().and_then(non_empty_string) {
+    if let Some(path) = request
+        .gardener_garden_path
+        .as_deref()
+        .and_then(non_empty_string)
+    {
         actor["gardener_garden_path"] = json!(path);
     }
     if let Some(parent) = actor_path.parent() {

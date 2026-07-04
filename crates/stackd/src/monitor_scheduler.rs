@@ -2,9 +2,11 @@ use crate::server::AppState;
 use crate::victorialogs::append_thread_event_projected;
 use chrono::Utc;
 use serde_json::{json, Value};
-use stack_core::actor_runtime::{events_after_cursor, latest_next_wake_hints, triggered_event_ids, ActorRole};
-use stack_core::events::read_thread_events;
 use stack_core::actor_runtime::thread_actor_dir_path;
+use stack_core::actor_runtime::{
+    events_after_cursor, latest_next_wake_hints, triggered_event_ids, ActorRole,
+};
+use stack_core::events::read_thread_events;
 use stack_core::meta_thread::{manifest_is_archived, read_manifest};
 use stack_core::session::list_summaries;
 use std::collections::HashSet;
@@ -150,9 +152,10 @@ async fn process_thread(
         }
         return Ok(());
     }
-    let triggered: HashSet<String> = triggered_event_ids(&events, ActorRole::Monitor, &config.actor_id)
-        .into_iter()
-        .collect();
+    let triggered: HashSet<String> =
+        triggered_event_ids(&events, ActorRole::Monitor, &config.actor_id)
+            .into_iter()
+            .collect();
     let Some(wake) =
         select_wake_candidate(state, config, actor.as_ref(), &pending, &triggered).await
     else {
@@ -160,7 +163,10 @@ async fn process_thread(
     };
     let hints = latest_next_wake_hints(&events, ActorRole::Monitor, &config.actor_id);
     if let Some(allowed) = &hints.next_wake_on {
-        if !allowed.iter().any(|value| value == wake_class(&wake.reason)) {
+        if !allowed
+            .iter()
+            .any(|value| value == wake_class(&wake.reason))
+        {
             return Ok(());
         }
     }
@@ -561,8 +567,6 @@ async fn read_monitor_config(state: &AppState) -> MonitorRuntimeConfig {
     }
 }
 
-
-
 fn is_trigger_event(config: &MonitorRuntimeConfig, event: &Value) -> bool {
     match event_type(event) {
         Some("agent.tool.failed") => config.on_tool_failed,
@@ -570,7 +574,13 @@ fn is_trigger_event(config: &MonitorRuntimeConfig, event: &Value) -> bool {
         Some("agent.turn.completed") => config.on_turn_completed,
         Some("agent.worker_heartbeat") => true,
         Some("agent.error") => true,
-        Some("meta_thread.goal_updated" | "goal.started" | "goal.paused" | "goal.resumed" | "goal.cleared") => true,
+        Some(
+            "meta_thread.goal_updated"
+            | "goal.started"
+            | "goal.paused"
+            | "goal.resumed"
+            | "goal.cleared",
+        ) => true,
         _ => false,
     }
 }
@@ -648,8 +658,6 @@ fn monitor_wake_budget_exhausted(events: &[Value], max_wakes: u64, reason: &str)
     wake_count >= max_wakes
 }
 
-
-
 fn wake_class(reason: &str) -> &'static str {
     match reason {
         "operator_message" => "operator_message",
@@ -665,9 +673,13 @@ fn wake_reason(event: Option<&Value>) -> &'static str {
         Some("agent.turn.completed") => "turn_completed",
         Some("agent.worker_heartbeat") => "cadence_tick",
         Some("agent.error") => "error",
-        Some("meta_thread.goal_updated" | "goal.started" | "goal.paused" | "goal.resumed" | "goal.cleared") => {
-            "goal_change"
-        }
+        Some(
+            "meta_thread.goal_updated"
+            | "goal.started"
+            | "goal.paused"
+            | "goal.resumed"
+            | "goal.cleared",
+        ) => "goal_change",
         _ => "delta_events",
     }
 }

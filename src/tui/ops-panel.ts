@@ -302,6 +302,20 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
   return lines
 }
 
+export function synthUsageSlashLines(
+  account: RemoteAccountSnapshot,
+  usage: RemoteUsageSnapshot,
+): string[] {
+  if (usage.status === "missing-auth") {
+    return ["Synth · not signed in", "  stack auth open signin"]
+  }
+  if (account.status !== "connected") {
+    const detail = account.message ? ` · ${oneLine(account.message, 44)}` : ""
+    return [`Synth · ${usage.environmentName} · ${account.status}${detail}`]
+  }
+  return [`Synth · ${usage.environmentName} · ${synthUsageHeader(account, usage)}`, ...synthUsageBody(account, usage)]
+}
+
 export function subscriptionPanelLines(
   account: RemoteAccountSnapshot,
   usage: RemoteUsageSnapshot,

@@ -2,9 +2,11 @@
 
 import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
-import { dirname, join, resolve } from "node:path"
+import { dirname, join, relative, resolve } from "node:path"
 import {
   environmentAuthStatus,
+  harnessModel,
+  harnessSessionCommand,
   loadConfig,
   setStackEnvironment,
   type StackConfig,
@@ -33,10 +35,46 @@ import {
   type StackGuidanceImpact,
 } from "../codex/guidance-events.js"
 import { appendThreadMetaEvent, readThreadMetaEvents, stackEventId } from "../thread-events.js"
+import { applyLightsThreadViewUpdate, readLightsThreadViewState } from "../lights-thread-view.js"
+import { readMetaThreadManifest } from "../meta-thread-goal.js"
+import {
+  appendEffortProgress as appendStackEffortProgress,
+  appendEffortResearchLog as appendStackEffortResearchLog,
+  auditEffort as auditStackEffort,
+  bindEffortMetaThread as bindStackEffortMetaThread,
+  createEffort as createStackEffort,
+  effortArtifactInventory as stackEffortArtifactInventory,
+  effortPathRefs as stackEffortPathRefs,
+  listEfforts as listStackEfforts,
+  listEffortTemplates as listStackEffortTemplates,
+  readEffort as readStackEffort,
+  readEffortActivityTail as readStackEffortActivityTail,
+  readEffortBlockerTail as readStackEffortBlockerTail,
+  readEffortProgressTail as readStackEffortProgressTail,
+  recordEffortBlocker as recordStackEffortBlocker,
+  recordEffortFinding as recordStackEffortFinding,
+  recordEffortIdea as recordStackEffortIdea,
+  recordEffortNote as recordStackEffortNote,
+  recordEffortRepo as recordStackEffortRepo,
+  STACK_EFFORT_FINDING_KINDS,
+  STACK_EFFORT_IDEA_ORIGINS,
+  STACK_EFFORT_NOTE_KINDS,
+  STACK_EFFORT_STATUSES,
+  updateEffortRefs as updateStackEffortRefs,
+  updateEffortStatus as updateStackEffortStatus,
+  writeEffortHandoff as writeStackEffortHandoff,
+  type StackEffort,
+  type StackEffortFindingKind,
+  type StackEffortFindingSourceReceipt,
+  type StackEffortIdeaOrigin,
+  type StackEffortNoteKind,
+  type StackEffortStatus,
+} from "../effort.js"
 import { isUiPanelId, panelOpenAllowed, panelViewAllowed, UI_PANEL_IDS, UI_PANELS, type UiPanelOpener } from "../ui/vocabulary.js"
 import {
   stackdExport,
   stackdBindMetaThreadRemoteSmrRun,
+  stackdCreateMetaThread,
   stackdMetaThread,
   stackdMetaThreads,
   stackdRuntimeAppendEvent,
@@ -47,6 +85,8 @@ import {
   stackdThread,
   stackdThreads,
   stackdTrace,
+  stackdUpdateMetaThreadEffortRef,
+  stackdUpdateMetaThreadGoal,
   stackdUpdateMetaThreadLifecycle,
   stackdUpdateMetaThreadTitle,
   type StackdFactorySnapshot,
@@ -54,6 +94,7 @@ import {
   type StackdRuntimeEventAppendRequest,
   type StackdRuntimeFactoryResponse,
 } from "../client/stackd.js"
+import { createSession, writeSessionLog } from "../session.js"
 import { projectLogDocumentToVictoriaLogs, queryStackLogs } from "../observability/victorialogs.js"
 import { readCrashReportsView } from "../crash-reports.js"
 import { launchLocalGepaRun, readOptimizerSnapshot } from "../local/optimizers.js"
@@ -95,6 +136,7 @@ import {
   isRoundTripArtifactKind,
   pullRoundTripArtifact,
   pushRoundTripArtifact,
+  readRoundTripPullReceipt,
   type RoundTripApplyMode,
   type RoundTripSourceKind,
 } from "../roundtrip.js"
@@ -301,11 +343,13 @@ export class StackMcpServer {
   // comes from the vocabulary registry; every open is an audited ui.panel_opened.
   async uiOpenPanel(args: JsonObject): Promise<JsonObject> {
     const config = await this.config(args)
-    const threadId = requiredString(args, "thread_id")
+    const rawThreadId = requiredString(args, "thread_id")
     const panel = requiredString(args, "panel")
     if (!isUiPanelId(panel)) {
       throw new RpcError(-32602, `unknown panel '${panel}' — registered panels: ${UI_PANEL_IDS.join(", ")}`)
     }
+    const threadId =
+      panel === "lights" ? await resolveLightsThreadTargetId(config.stackDataRoot, rawThreadId) : rawThreadId
     const openedBy = (optionalString(args, "actor_role") ?? "operator") as UiPanelOpener
     if (!["monitor", "gardener", "remote_gardener", "operator"].includes(openedBy)) {
       throw new RpcError(-32602, `actor_role must be monitor, gardener, remote_gardener, or operator; got '${openedBy}'`)
@@ -334,6 +378,14 @@ export class StackMcpServer {
       },
     }
     const path = appendThreadMetaEvent(config.stackDataRoot, event)
+    if (panel === "lights") {
+      applyLightsThreadViewUpdate(
+        config.stackDataRoot,
+        readLightsThreadViewState(config.stackDataRoot),
+        [threadId],
+        true,
+      )
+    }
     return { ok: true, event_id: event.event_id, panel, view: view ?? null, thread_id: threadId, path }
   }
 
@@ -381,6 +433,63 @@ export class StackMcpServer {
     }
     const path = appendThreadMetaEvent(config.stackDataRoot, event)
     return { ok: true, event_id: event.event_id, panel, thread_id: threadId, path }
+  }
+
+  async uiLightsThreadView(args: JsonObject): Promise<JsonObject> {
+    const config = await this.config(args)
+    const rawThreadId = requiredString(args, "thread_id")
+    const threadId = await resolveLightsThreadTargetId(config.stackDataRoot, rawThreadId)
+    const viewed = optionalBoolean(args, "viewed") ?? true
+    const openedBy = (optionalString(args, "actor_role") ?? "operator") as UiPanelOpener
+    if (!["monitor", "gardener", "remote_gardener", "operator"].includes(openedBy)) {
+      throw new RpcError(-32602, `actor_role must be monitor, gardener, remote_gardener, or operator; got '${openedBy}'`)
+    }
+    const reason = optionalString(args, "reason") ?? (viewed ? "mark thread viewed in lights" : "mark thread unviewed in lights")
+    const current = readLightsThreadViewState(config.stackDataRoot)
+    const next = applyLightsThreadViewUpdate(config.stackDataRoot, current, [threadId], viewed)
+    const panelEvent = viewed
+      ? {
+          event_id: stackEventId("ui_panel_opened"),
+          type: "ui.panel_opened",
+          thread_id: threadId,
+          observed_at: new Date().toISOString(),
+          actor_id: optionalString(args, "actor_id") ?? openedBy,
+          actor_role: openedBy === "operator" ? ("primary" as const) : openedBy,
+          payload: {
+            panel: "lights",
+            view: "threads",
+            opened_by: openedBy,
+            reason,
+            source: "stack_lights_thread_view",
+          },
+        }
+      : undefined
+    const viewEvent = {
+      event_id: stackEventId("ui_lights_thread_view"),
+      type: "ui.lights_thread_view",
+      thread_id: threadId,
+      observed_at: new Date().toISOString(),
+      actor_id: optionalString(args, "actor_id") ?? openedBy,
+      actor_role: openedBy === "operator" ? ("primary" as const) : openedBy,
+      payload: {
+        target_thread_id: threadId,
+        viewed,
+        reason,
+        source: "stack_lights_thread_view",
+      },
+    }
+    const viewPath = appendThreadMetaEvent(config.stackDataRoot, viewEvent)
+    const panelPath = panelEvent ? appendThreadMetaEvent(config.stackDataRoot, panelEvent) : undefined
+    return {
+      ok: true,
+      thread_id: threadId,
+      ...(rawThreadId !== threadId ? { resolved_from: rawThreadId } : {}),
+      viewed,
+      selected_thread_id: next.selectedThreadId ?? null,
+      viewed_thread_ids: next.viewedThreadIds,
+      view_event_path: viewPath,
+      panel_event_path: panelPath ?? null,
+    }
   }
 
   private async handleMessage(message: ParsedMessage): Promise<JsonObject | undefined> {
@@ -460,6 +569,642 @@ export class StackMcpServer {
     return toJsonValue({
       manifest,
       derived: metaThreadListItem(config.stackDataRoot, manifest),
+    }) ?? null
+  }
+
+  async listEfforts(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const status = optionalEffortStatusOrAll(args, "status") ?? "all"
+    const lookup = {
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }
+    const efforts = listStackEfforts(lookup)
+      .filter((effort) => status === "all" || effort.status === status)
+      .map((summary) => {
+        const effort = readStackEffort(lookup, summary.id)
+        if (!effort) {
+          return {
+            ...summary,
+            paths: null,
+            latest_progress: "",
+            latest_activity: null,
+            latest_blocker: null,
+            audit_status: "fail",
+            audit_counts: {
+              failures: 1,
+              warnings: 0,
+            },
+            ref_counts: {
+              meta_threads: summary.meta_thread_refs.length,
+              repos: 0,
+              optimizer_runs: summary.hosted_refs.optimizer_run_ids.length,
+              smr_runs: summary.hosted_refs.smr_run_ids.length,
+              tinker_runs: summary.hosted_refs.tinker_run_ids.length,
+            },
+            artifact_counts: {
+              total: 0,
+              findings: 0,
+              receipt_sidecars: 0,
+            },
+            has_handoff: false,
+            has_acceptance_summary: false,
+          }
+        }
+        const paths = stackEffortPathRefs(effort)
+        const artifactInventory = stackEffortArtifactInventory(effort)
+        const progressTail = readStackEffortProgressTail(effort, 1)
+        const activityTail = readStackEffortActivityTail(effort, 1)
+        const blockerTail = readStackEffortBlockerTail(effort, 1)
+        const audit = auditStackEffort(effort)
+        return {
+          ...summary,
+          paths,
+          latest_progress: progressTail[progressTail.length - 1] ?? "",
+          latest_activity: activityTail[activityTail.length - 1] ?? null,
+          latest_blocker: blockerTail[blockerTail.length - 1] ?? null,
+          audit_status: audit.status,
+          audit_counts: {
+            failures: audit.checks.filter((check) => check.status === "fail").length,
+            warnings: audit.checks.filter((check) => check.status === "warn").length,
+          },
+          ref_counts: {
+            meta_threads: effort.manifest.links.meta_thread_refs.length,
+            repos: effort.manifest.links.repo_refs.length,
+            optimizer_runs: effort.manifest.hosted.optimizer_run_ids.length,
+            smr_runs: effort.manifest.hosted.smr_run_ids.length,
+            tinker_runs: effort.manifest.hosted.tinker_run_ids.length,
+          },
+          artifact_counts: {
+            total: artifactInventory.counts.total,
+            findings: Object.values(artifactInventory.counts.findings).reduce((sum, count) => sum + count, 0),
+            receipt_sidecars: artifactInventory.counts.receipt_sidecars,
+          },
+          has_handoff: existsSync(join(effort.folder_path, "HANDOFF.md")),
+          has_acceptance_summary: Boolean(paths.acceptance_summary),
+        }
+      })
+    return toJsonValue({
+      status,
+      count: efforts.length,
+      efforts,
+    }) ?? null
+  }
+
+  async listEffortTemplates(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const templates = listStackEffortTemplates({
+      stackDataRoot: config.stackDataRoot,
+      appRoot: config.appRoot,
+    })
+    return toJsonValue({
+      count: templates.length,
+      templates,
+    }) ?? null
+  }
+
+  private async effortPayload(
+    config: StackConfig,
+    effort: StackEffort,
+    extra: Record<string, unknown> = {},
+  ): Promise<Record<string, unknown>> {
+    const progressTail = readStackEffortProgressTail(effort, 5)
+    const activityTail = readStackEffortActivityTail(effort, 5)
+    const blockerTail = readStackEffortBlockerTail(effort, 5)
+    const boundMetaThreads = await Promise.all(
+      effort.manifest.links.meta_thread_refs.map(async (metaThreadId): Promise<JsonObject> => {
+        const manifest = await readMetaThreadManifest(config.stackDataRoot, metaThreadId)
+        if (!manifest) return { id: metaThreadId, missing: true }
+        return metaThreadListItem(config.stackDataRoot, manifest)
+      }),
+    )
+    return {
+      ok: true,
+      effort_id: effort.manifest.id,
+      slug: effort.manifest.slug,
+      status: effort.manifest.status,
+      folder_ref: effort.registry.folder_ref,
+      folder_path: effort.folder_path,
+      paths: stackEffortPathRefs(effort),
+      artifact_inventory: stackEffortArtifactInventory(effort),
+      latest_progress: progressTail[progressTail.length - 1] ?? "",
+      progress_tail: progressTail,
+      latest_activity: activityTail[activityTail.length - 1] ?? null,
+      activity_tail: activityTail,
+      latest_blocker: blockerTail[blockerTail.length - 1] ?? null,
+      blocker_tail: blockerTail,
+      bound_meta_threads: boundMetaThreads,
+      manifest: effort.manifest,
+      registry: effort.registry,
+      ...extra,
+    }
+  }
+
+  private optionalEffort(config: StackConfig, effortRef: string | undefined): StackEffort | undefined {
+    if (!effortRef) return undefined
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    return effort
+  }
+
+  private async bindCreatedThreadToEffort(config: StackConfig, effortRef: string, metaThreadId: string): Promise<Record<string, unknown>> {
+    const effort = bindStackEffortMetaThread({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      metaThreadId,
+    })
+    return this.effortPayload(config, effort, {
+      meta_thread_id: metaThreadId,
+      receipt: "lever.stack_mcp effort.thread_bound",
+    })
+  }
+
+  async getEffort(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    return toJsonValue(await this.effortPayload(config, effort)) ?? null
+  }
+
+  async auditEffort(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    return toJsonValue(auditStackEffort(effort)) ?? null
+  }
+
+  async getEffortActivity(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const limit = optionalInteger(args, "limit") ?? 20
+    if (limit < 1 || limit > 200) throw new RpcError(-32602, "limit must be between 1 and 200")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const activity = readStackEffortActivityTail(effort, limit)
+    return toJsonValue({
+      ok: true,
+      effort_id: effort.manifest.id,
+      slug: effort.manifest.slug,
+      status: effort.manifest.status,
+      folder_ref: effort.registry.folder_ref,
+      paths: stackEffortPathRefs(effort),
+      count: activity.length,
+      activity,
+    }) ?? null
+  }
+
+  async createEffort(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const title = requiredString(args, "title")
+    const effort = createStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      appRoot: config.appRoot,
+      slug: optionalString(args, "slug"),
+      title,
+      template: optionalString(args, "template"),
+      topic: optionalString(args, "topic"),
+      folderRef: optionalString(args, "folder_ref"),
+      acceptanceCriteria: optionalStringArray(args, "acceptance_criteria") ?? [],
+    })
+    return toJsonValue(await this.effortPayload(config, effort, {
+      receipt: "lever.stack_mcp effort.created",
+    })) ?? null
+  }
+
+  async bindEffortThread(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const metaThreadId = requiredString(args, "meta_thread_id")
+    const actorId = optionalString(args, "actor_id") ?? "operator"
+    const reason = optionalString(args, "reason")
+    const current = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!current) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const manifest = await stackdUpdateMetaThreadEffortRef(metaThreadId, {
+      effort_ref: current.manifest.id,
+      reason,
+      actor_id: actorId,
+    })
+    const effort = bindStackEffortMetaThread({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef: current.manifest.id,
+      metaThreadId,
+    })
+    return toJsonValue(await this.effortPayload(config, effort, {
+      meta_thread_id: manifest.id,
+      effort,
+      meta_thread: manifest,
+      receipt: "lever.stack_mcp effort.thread_bound",
+    })) ?? null
+  }
+
+  async updateEffortProgress(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const message = requiredString(args, "message")
+    const effort = appendStackEffortProgress({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      message,
+    })
+    return toJsonValue(await this.effortPayload(config, effort, {
+      receipt: "lever.stack_mcp effort.progress_updated",
+    })) ?? null
+  }
+
+  async recordEffortBlocker(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = recordStackEffortBlocker({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      blocker: requiredString(args, "blocker"),
+      evidence: requiredString(args, "evidence"),
+      owner: requiredString(args, "owner"),
+      next: requiredString(args, "next"),
+    })
+    return toJsonValue(await this.effortPayload(config, effort, {
+      receipt: "lever.stack_mcp effort.blocker_recorded",
+    })) ?? null
+  }
+
+  async recordEffortResearchLog(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const result = appendStackEffortResearchLog({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      title: requiredString(args, "title"),
+      operatorMessage: optionalString(args, "operator_message"),
+      workSummary: requiredString(args, "work_summary"),
+      result: optionalString(args, "result"),
+      metrics: optionalStringArray(args, "metrics"),
+      paths: optionalStringArray(args, "paths"),
+      reproduceCommands: optionalStringArray(args, "reproduce_commands"),
+      next: optionalString(args, "next"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      receipt: "lever.stack_mcp effort.research_log_recorded",
+    })) ?? null
+  }
+
+  async writeEffortHandoff(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const result = writeStackEffortHandoff({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      summary: optionalString(args, "summary"),
+      risks: optionalStringArray(args, "risks"),
+      next: optionalString(args, "next"),
+      owner: optionalString(args, "owner"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      receipt: "lever.stack_mcp effort.handoff_written",
+    })) ?? null
+  }
+
+  async recordEffortIdea(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const origin = optionalEffortIdeaOrigin(args, "origin") ?? "AGENT"
+    const result = recordStackEffortIdea({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      origin,
+      title: requiredString(args, "title"),
+      body: optionalString(args, "body"),
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      origin,
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      receipt: "lever.stack_mcp effort.idea_recorded",
+    })) ?? null
+  }
+
+  async recordEffortNote(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const kind = optionalEffortNoteKind(args, "kind") ?? "note"
+    const result = recordStackEffortNote({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      kind,
+      title: requiredString(args, "title"),
+      body: optionalString(args, "body"),
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      kind,
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      receipt: "lever.stack_mcp effort.note_recorded",
+    })) ?? null
+  }
+
+  async recordEffortRepo(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const rawSourcePath = requiredString(args, "path")
+    const result = recordStackEffortRepo({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef: effort.manifest.id,
+      sourcePath: resolveEffortSourcePath(config, effort.folder_path, rawSourcePath),
+      repoRef: optionalString(args, "repo_ref"),
+      title: optionalString(args, "title"),
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      repo_refs: result.effort.manifest.links.repo_refs,
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      receipt: "lever.stack_mcp effort.repo_recorded",
+    })) ?? null
+  }
+
+  async recordEffortFinding(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const rawSourcePath = optionalString(args, "path")
+    const receiptPath = optionalString(args, "receipt_path")
+    if (rawSourcePath && receiptPath) {
+      throw new RpcError(-32602, "provide path or receipt_path, not both")
+    }
+    let artifactReceipt: Awaited<ReturnType<typeof readRoundTripPullReceipt>> | undefined
+    if (receiptPath) {
+      try {
+        artifactReceipt = await readRoundTripPullReceipt(config, receiptPath)
+      } catch (error) {
+        throw new RpcError(-32602, `artifact receipt invalid: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const sourcePath = artifactReceipt
+      ? artifactReceipt.workspace_path
+      : rawSourcePath ? resolveEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined
+    const kind = requiredEffortFindingKind(args, "kind")
+    const result = recordStackEffortFinding({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef: effort.manifest.id,
+      kind,
+      title: requiredString(args, "title"),
+      body: optionalString(args, "body"),
+      sourcePath,
+      sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      kind,
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : null,
+      artifact_receipt: artifactReceipt ? {
+        receipt_path: artifactReceipt.receipt_path,
+        artifact_kind: artifactReceipt.artifact_kind,
+        source_kind: artifactReceipt.source_kind,
+        environment: artifactReceipt.environment,
+        run_id: artifactReceipt.run_id ?? null,
+        project_id: artifactReceipt.project_id ?? null,
+        artifact_name: artifactReceipt.artifact_name ?? null,
+        output_id: artifactReceipt.output_id ?? null,
+        label: artifactReceipt.label ?? null,
+        workspace_path: artifactReceipt.workspace_path,
+        digest: artifactReceipt.digest,
+        pulled_at: artifactReceipt.pulled_at,
+      } : null,
+      receipt: "lever.stack_mcp effort.finding_recorded",
+    })) ?? null
+  }
+
+  async updateEffortRefs(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = updateStackEffortRefs({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      factoryId: optionalString(args, "factory_id"),
+      hostedEffortId: optionalString(args, "hosted_effort_id"),
+      projectId: optionalString(args, "project_id"),
+      optimizerRunId: optionalString(args, "optimizer_run_id"),
+      smrRunId: optionalString(args, "smr_run_id"),
+      tinkerRunId: optionalString(args, "tinker_run_id"),
+      repoRef: optionalString(args, "repo_ref"),
+      initiativeId: optionalString(args, "initiative_id"),
+    })
+    return toJsonValue(await this.effortPayload(config, effort, {
+      hosted_refs: effort.manifest.hosted,
+      repo_refs: effort.manifest.links.repo_refs,
+      initiative_id: effort.manifest.links.initiative_id,
+      receipt: "lever.stack_mcp effort.refs_updated",
+    })) ?? null
+  }
+
+  async updateEffortStatus(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const status = requiredEffortStatus(args, "status")
+    const confirm = optionalBoolean(args, "confirm") ?? false
+    if (status === "archived" && !confirm) {
+      throw new RpcError(-32602, "confirm=true is required to archive an Effort")
+    }
+    const effort = updateStackEffortStatus({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      status,
+    })
+    return toJsonValue(await this.effortPayload(config, effort, {
+      receipt: "lever.stack_mcp effort.status_updated",
+    })) ?? null
+  }
+
+  async createMetaThread(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const actorRole = optionalString(args, "actor_role") ?? "gardener"
+    if (actorRole !== "gardener" && actorRole !== "operator") {
+      throw new RpcError(-32602, "actor_role must be gardener or operator")
+    }
+    const objective = optionalString(args, "objective")
+    const status = optionalString(args, "status") ?? "active"
+    if (status === "blocked") {
+      throw new RpcError(-32602, "status=blocked is operator-only; keep the goal active and record the blocker separately")
+    }
+    const title = optionalString(args, "title") ?? objective
+    if (!title) throw new RpcError(-32602, "title or objective is required")
+    const threadId = requiredString(args, "thread_id")
+    const effort = this.optionalEffort(config, optionalString(args, "effort_ref"))
+    const manifest = await stackdCreateMetaThread({
+      title,
+      thread_id: threadId,
+      role: optionalString(args, "role") ?? "implement",
+      model: optionalString(args, "model") ?? harnessModel(config),
+      reasoning_effort: optionalString(args, "reasoning_effort") ?? config.codexReasoningEffort,
+      harness: optionalString(args, "harness") ?? config.harness,
+      source: optionalString(args, "source") ?? "gardener",
+      source_ref: optionalString(args, "source_ref"),
+      effort_ref: effort?.manifest.id,
+      repo_refs: optionalStringArray(args, "repo_refs") ?? [],
+      worktree_refs: optionalStringArray(args, "worktree_refs") ?? [config.workspaceRoot],
+      gardener_thread_id: optionalString(args, "gardener_thread_id"),
+      monitor_profile: optionalString(args, "monitor_profile"),
+      active_goal: objective
+        ? {
+            objective,
+            status,
+            acceptance_criteria: optionalStringArray(args, "acceptance_criteria") ?? [],
+            blockers: optionalStringArray(args, "blockers") ?? [],
+          }
+        : undefined,
+    })
+    const effortBinding = effort
+      ? await this.bindCreatedThreadToEffort(config, effort.manifest.id, manifest.id)
+      : null
+    return toJsonValue({
+      ok: true,
+      meta_thread_id: manifest.id,
+      thread_id: manifest.head_thread_id,
+      segment_id: manifest.head_segment_id,
+      lifecycle_status: manifest.lifecycle_status ?? "live",
+      active_goal: manifest.active_goal ?? null,
+      effort_ref: manifest.effort_ref ?? null,
+      effort: effortBinding,
+      manifest,
+      receipt: "lever.stack_mcp meta_thread.created",
+    }) ?? null
+  }
+
+  async createWorkerThread(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const actorRole = optionalString(args, "actor_role") ?? "gardener"
+    if (actorRole !== "gardener" && actorRole !== "operator") {
+      throw new RpcError(-32602, "actor_role must be gardener or operator")
+    }
+    const objective = optionalString(args, "objective")
+    const status = optionalString(args, "status") ?? "active"
+    if (status === "blocked") {
+      throw new RpcError(-32602, "status=blocked is operator-only; keep the goal active and record the blocker separately")
+    }
+    const effort = this.optionalEffort(config, optionalString(args, "effort_ref"))
+    const title = optionalString(args, "title") ?? objective ?? "new worker thread"
+    const session = createSession(optionalString(args, "workspace_root") ?? config.workspaceRoot, harnessSessionCommand(config))
+    session.displayName = title
+    session.harness = config.harness
+    session.harnessModel = harnessModel(config)
+    session.segmentRole = "implement"
+    const sessionPath = await writeSessionLog(session, config.sessionLogDir, {
+      codexModel: harnessModel(config),
+      pricingRows: config.codexPricing,
+    })
+    const manifest = await stackdCreateMetaThread({
+      title,
+      thread_id: session.id,
+      role: optionalString(args, "role") ?? "implement",
+      model: optionalString(args, "model") ?? harnessModel(config),
+      reasoning_effort: optionalString(args, "reasoning_effort") ?? config.codexReasoningEffort,
+      harness: optionalString(args, "harness") ?? config.harness,
+      source: optionalString(args, "source") ?? "gardener",
+      source_ref: optionalString(args, "source_ref"),
+      effort_ref: effort?.manifest.id,
+      repo_refs: optionalStringArray(args, "repo_refs") ?? [],
+      worktree_refs: optionalStringArray(args, "worktree_refs") ?? [session.workspaceRoot],
+      gardener_thread_id: optionalString(args, "gardener_thread_id"),
+      monitor_profile: optionalString(args, "monitor_profile"),
+      active_goal: objective
+        ? {
+            objective,
+            status,
+            acceptance_criteria: optionalStringArray(args, "acceptance_criteria") ?? [],
+            blockers: optionalStringArray(args, "blockers") ?? [],
+          }
+        : undefined,
+    })
+    const effortBinding = effort
+      ? await this.bindCreatedThreadToEffort(config, effort.manifest.id, manifest.id)
+      : null
+    return toJsonValue({
+      ok: true,
+      thread_id: session.id,
+      session_path: sessionPath,
+      meta_thread_id: manifest.id,
+      segment_id: manifest.head_segment_id,
+      lifecycle_status: manifest.lifecycle_status ?? "live",
+      active_goal: manifest.active_goal ?? null,
+      appears_in_threads: true,
+      effort_ref: manifest.effort_ref ?? null,
+      effort: effortBinding,
+      manifest,
+      receipt: "lever.stack_mcp worker_thread.created",
+    }) ?? null
+  }
+
+  async updateMetaThreadGoal(args: JsonObject): Promise<JsonValue> {
+    await this.config(args)
+    const actorRole = optionalString(args, "actor_role") ?? "gardener"
+    if (actorRole !== "gardener" && actorRole !== "operator") {
+      throw new RpcError(-32602, "actor_role must be gardener or operator")
+    }
+    const status = optionalString(args, "status")
+    if (status === "blocked") {
+      throw new RpcError(-32602, "status=blocked is operator-only; keep the goal active and record the blocker separately")
+    }
+    const metaThreadId = requiredString(args, "meta_thread_id")
+    const manifest = await stackdUpdateMetaThreadGoal(metaThreadId, {
+      objective: optionalString(args, "objective"),
+      status,
+      acceptance_criteria: optionalStringArray(args, "acceptance_criteria"),
+      blockers: optionalStringArray(args, "blockers"),
+    })
+    return toJsonValue({
+      ok: true,
+      meta_thread_id: manifest.id,
+      thread_id: manifest.head_thread_id,
+      segment_id: manifest.head_segment_id,
+      active_goal: manifest.active_goal ?? null,
+      manifest,
+      receipt: "lever.stack_mcp meta_thread.goal_updated",
     }) ?? null
   }
 
@@ -3497,13 +4242,13 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     {
       name: "stack_ui_open_panel",
       description:
-        "Open a side panel for human review. The agent panel always stays primary; use this ONLY at review moments (audited goal_met/goal_failed, blocked, a steer you issued, or a risky pending action) and at most once per distinct signature. panel: monitor (sidecar events/thread/tape), gardener (portfolio), ops (local/remote/hosted), threads. Every open emits an audited ui.panel_opened event; the operator's Esc closes it and wins until your next open.",
+        "Open a side panel for human review. The agent panel always stays primary; use this ONLY at review moments (audited goal_met/goal_failed, blocked, a steer you issued, or a risky pending action) and at most once per distinct signature. panel: monitor (sidecar events/thread/tape), gardener (portfolio), ops (local/remote/hosted), lights (threads list with viewed dropdown - gardener may open), efforts (durable workstreams list), threads (operator-only legacy list). Every open emits an audited ui.panel_opened event; the operator's Esc closes it and wins until your next open.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
           thread_id: stringProperty("Worker Stack thread/session id the panel belongs to."),
           panel: { type: "string", enum: [...UI_PANEL_IDS], description: "Registered panel id." },
-          view: stringProperty("Optional view within the panel (monitor: events|thread|tape; gardener: portfolio|chat; ops: local|remote|hosted; threads: list)."),
+          view: stringProperty("Optional view within the panel (monitor: events|thread|tape; gardener: portfolio|chat; ops: local|remote|hosted; lights: threads; efforts: list; threads: list)."),
           reason: stringProperty("One short sentence: why this deserves the operator's eyes now."),
           actor_role: stringProperty("Who is opening: monitor, gardener, remote_gardener, or operator."),
           actor_id: stringProperty("Optional concrete actor id for the audit event."),
@@ -3528,6 +4273,23 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["thread_id", "panel"],
       ),
       handler: (args) => server.uiClosePanel(args),
+    },
+    {
+      name: "stack_lights_thread_view",
+      description:
+        "Mark a worker thread viewed or unviewed in the Lights threads panel. Preferred gardener path for 'show this thread in Lights' — opens the dropdown with thread metadata. Do not use panel=threads (operator-only). Use viewed=true to expand details; viewed=false to clear the viewed marker.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Worker Stack thread/session id (or meta-thread id mt_* — resolves to head worker thread)."),
+          viewed: { type: "boolean", description: "True to mark viewed (default); false to mark unviewed." },
+          reason: stringProperty("One short sentence for the audit trail."),
+          actor_role: stringProperty("Who is acting: monitor, gardener, remote_gardener, or operator."),
+          actor_id: stringProperty("Optional concrete actor id for the audit event."),
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.uiLightsThreadView(args),
     },
     {
       name: "stack_list_remote_projects",
@@ -3924,6 +4686,257 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.liveStatus(args),
     },
     {
+      name: "stack_effort_list",
+      description: "List durable Stack Efforts with orientation fields: paths, latest progress/activity/blocker, ref counts, artifact counts, handoff state, and acceptance-summary state. Efforts are long-lived workspaces for research or engineering work across threads, runs, findings, ideas, and proof artifacts.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        status: enumProperty([...STACK_EFFORT_STATUSES, "all"], "Optional Effort status filter. Defaults to all."),
+      }),
+      handler: (args) => server.listEfforts(args),
+    },
+    {
+      name: "stack_effort_templates",
+      description: "List available Stack Effort templates/playbooks, including bundled research/engineering/task templates, research-log support, finding folders, and seeded acceptance criteria.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+      }),
+      handler: (args) => server.listEffortTemplates(args),
+    },
+    {
+      name: "stack_effort_get",
+      description: "Read one durable Stack Effort by id or slug, including manifest, registry record, workspace path refs, machine-readable artifact_inventory, acceptance_summary when present, latest progress/activity/blocker tails, and bound meta-thread context.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.getEffort(args),
+    },
+    {
+      name: "stack_effort_audit",
+      description: "Run a read-only coherence audit for one Effort: scaffold, manifest/registry agreement, research-log shape, timelines, blockers, human context, idea origin tags, promoted idea backlinks, findings, receipt sidecars, handoff packet, acceptance packet, acceptance criteria coverage, task-classifier A0/A1 v1-bar evidence, optional hosted/SMR/Tinker graduation coverage, refs, and meta-thread effort_ref back-links.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.auditEffort(args),
+    },
+    {
+      name: "stack_effort_activity",
+      description: "Read a bounded Effort activity timeline from ACTIVITY.jsonl. Use this when an agent or gardener needs more timeline context than stack_effort_get's compact activity_tail.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          limit: numberProperty("Maximum activity receipts to return. Defaults to 20, max 200."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.getEffortActivity(args),
+    },
+    {
+      name: "stack_effort_create",
+      description: "Create a durable Stack Effort folder from a bundled template such as research, engineering, task-classifier, or system-optimizer. Built-in templates may seed acceptance criteria.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          title: stringProperty("Human-readable Effort title."),
+          slug: stringProperty("Optional folder/registry slug. Defaults to a slugified title."),
+          template: stringProperty("Optional template id. Defaults to research."),
+          topic: stringProperty("Optional research or engineering topic. Defaults to title."),
+          folder_ref: stringProperty("Optional workspace-relative Effort folder. Defaults to efforts/<slug>."),
+          acceptance_criteria: arrayProperty("Optional acceptance criteria recorded in effort.toml. Overrides template defaults when provided."),
+        },
+        ["title"],
+      ),
+      handler: (args) => server.createEffort(args),
+    },
+    {
+      name: "stack_effort_bind_thread",
+      description: "Bind a durable Stack Effort to a stackd meta-thread. This patches the meta-thread owner route, then updates the Effort reverse index.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          meta_thread_id: stringProperty("Stack meta-thread id."),
+          reason: stringProperty("Optional short bind reason."),
+          actor_id: stringProperty("Optional actor id. Defaults to operator."),
+        },
+        ["effort_ref", "meta_thread_id"],
+      ),
+      handler: (args) => server.bindEffortThread(args),
+    },
+    {
+      name: "stack_effort_update_progress",
+      description: "Append a timestamped progress entry to an Effort's PROGRESS.md.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          message: stringProperty("Progress message to append."),
+        },
+        ["effort_ref", "message"],
+      ),
+      handler: (args) => server.updateEffortProgress(args),
+    },
+    {
+      name: "stack_effort_record_blocker",
+      description: "Record an external blocker on an Effort without changing status to blocked. The progress entry and activity receipt include the blocker, evidence, next owner, and next safe action.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          blocker: stringProperty("Exact blocker or dependency."),
+          evidence: stringProperty("Evidence that proves the blocker exists."),
+          owner: stringProperty("Next owner responsible for clearing or deciding the blocker."),
+          next: stringProperty("Next safe action while the Effort remains active or paused."),
+        },
+        ["effort_ref", "blocker", "evidence", "owner", "next"],
+      ),
+      handler: (args) => server.recordEffortBlocker(args),
+    },
+    {
+      name: "stack_effort_record_research_log",
+      description: "Append a Craftax-style chronological research-log entry to a research Effort's research_log.md, preserving operator message text separately from summarized work. Use this for research Effort timeline continuity.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          title: stringProperty("Research-log session title."),
+          operator_message: stringProperty("Optional verbatim operator message for the **You:** block."),
+          work_summary: stringProperty("Summarized agent work, runs, artifacts, and result."),
+          result: stringProperty("Optional result summary."),
+          metrics: arrayProperty("Optional metric/result bullets."),
+          paths: arrayProperty("Optional key path bullets."),
+          reproduce_commands: arrayProperty("Optional reproduce commands for a text block."),
+          next: stringProperty("Optional next concrete research step."),
+        },
+        ["effort_ref", "title", "work_summary"],
+      ),
+      handler: (args) => server.recordEffortResearchLog(args),
+    },
+    {
+      name: "stack_effort_write_handoff",
+      description: "Write or refresh an Effort HANDOFF.md packet summarizing manifest state, refs, latest progress/activity, recorded blockers, acceptance criteria, acceptance packet pointer, embedded audit status, artifact inventory, risks, owner, and next step.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          summary: stringProperty("Optional handoff summary. Defaults to the Effort topic/title."),
+          risks: arrayProperty("Optional risk/open-thread bullets."),
+          next: stringProperty("Optional next concrete step."),
+          owner: stringProperty("Optional next owner or handoff recipient."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.writeEffortHandoff(args),
+    },
+    {
+      name: "stack_effort_record_idea",
+      description: "Record an idea under an Effort's ideas folder with [HUMAN], [AGENT], or [MIXED] origin tagging.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          origin: enumProperty([...STACK_EFFORT_IDEA_ORIGINS], "Idea origin. Defaults to AGENT for MCP calls."),
+          title: stringProperty("Idea title."),
+          body: stringProperty("Optional idea body."),
+          filename: stringProperty("Optional markdown filename inside the ideas folder."),
+        },
+        ["effort_ref", "title"],
+      ),
+      handler: (args) => server.recordEffortIdea(args),
+    },
+    {
+      name: "stack_effort_record_note",
+      description: "Record human context or working notes under an Effort's human/ or notes/ folder. Use kind=human for operator constraints/original phrasing that must survive handoffs. These are included in generated HANDOFF.md packets.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          kind: enumProperty([...STACK_EFFORT_NOTE_KINDS], "Note kind. human writes to human/; note writes to notes/. Defaults to note."),
+          title: stringProperty("Note title."),
+          body: stringProperty("Optional note body."),
+          filename: stringProperty("Optional markdown filename inside the selected folder."),
+        },
+        ["effort_ref", "title"],
+      ),
+      handler: (args) => server.recordEffortNote(args),
+    },
+    {
+      name: "stack_effort_record_repo",
+      description: "Attach a local repo/worktree path under an Effort's repos/ folder and optionally record a repo ref in effort.toml. Directory paths write pointer records instead of recursive copies. Included in generated HANDOFF.md packets.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          path: stringProperty("Local repo/worktree path. Relative paths first resolve inside the Effort folder, then from Stack workingDir."),
+          repo_ref: stringProperty("Optional durable repo ref to append to effort.toml links.repo_refs."),
+          title: stringProperty("Optional attachment title. Defaults to the source basename."),
+          filename: stringProperty("Optional target filename/folder name inside repos/."),
+        },
+        ["effort_ref", "path"],
+      ),
+      handler: (args) => server.recordEffortRepo(args),
+    },
+    {
+      name: "stack_effort_record_finding",
+      description: "Record an Effort finding under findings/{ideas,code,data,proof,results}, either as markdown body text, by copying/linking a local path, or from a stack_pull_artifact receipt.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          kind: enumProperty([...STACK_EFFORT_FINDING_KINDS], "Finding kind."),
+          title: stringProperty("Finding title."),
+          body: stringProperty("Optional markdown body. Used when path is omitted."),
+          path: stringProperty("Optional local path. Relative paths first resolve inside the Effort folder, then from Stack workingDir."),
+          receipt_path: stringProperty("Optional stack_pull_artifact receipt path. Mutually exclusive with path; records the pulled workspace_path as the finding source."),
+          filename: stringProperty("Optional target filename."),
+        },
+        ["effort_ref", "kind", "title"],
+      ),
+      handler: (args) => server.recordEffortFinding(args),
+    },
+    {
+      name: "stack_effort_update_refs",
+      description: "Attach durable external refs to an Effort manifest: Factory/Effort/Project ids, optimizer run id, SMR run id, Tinker run id, repo ref, or initiative id. This records ids only; use findings for artifact evidence.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          factory_id: stringProperty("Optional Synth Factory id to set or replace."),
+          hosted_effort_id: stringProperty("Optional hosted/backend Effort id to set or replace."),
+          project_id: stringProperty("Optional Synth project id to set or replace."),
+          optimizer_run_id: stringProperty("Optional optimizer run id to append if missing."),
+          smr_run_id: stringProperty("Optional SMR run id to append if missing."),
+          tinker_run_id: stringProperty("Optional Tinker or training-style run id to append if missing."),
+          repo_ref: stringProperty("Optional repo/worktree ref to append if missing."),
+          initiative_id: stringProperty("Optional initiative id to set or replace."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.updateEffortRefs(args),
+    },
+    {
+      name: "stack_effort_update_status",
+      description: "Set an Effort status to active, paused, done, or archived. Efforts never use blocked status; record blockers as progress or findings.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          status: enumProperty([...STACK_EFFORT_STATUSES], "Desired Effort status."),
+          confirm: booleanProperty("Required true when status=archived."),
+        },
+        ["effort_ref", "status"],
+      ),
+      handler: (args) => server.updateEffortStatus(args),
+    },
+    {
       name: "stack_meta_threads_list",
       description: "List Stack meta-threads with lifecycle and goal state. Defaults to lifecycle=live; use all or archived for broader views.",
       inputSchema: objectSchema({
@@ -3944,6 +4957,78 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["meta_thread_id"],
       ),
       handler: (args) => server.getMetaThread(args),
+    },
+    {
+      name: "stack_meta_thread_create",
+      description: "Bind an existing Stack session/thread to a durable Stack meta-thread through stackd. Optionally assigns an active goal and binds the new meta-thread into an Effort at creation time.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Existing Stack session/thread id to bind."),
+          effort_ref: stringProperty("Optional Effort id or slug to bind at creation time. Writes effort_ref on the meta-thread and appends the meta-thread ref to the Effort."),
+          title: stringProperty("Short meta-thread title. Defaults to objective when omitted."),
+          objective: stringProperty("Optional goal objective to assign to the meta-thread."),
+          status: enumProperty(["active", "done", "paused"], "Optional goal status when objective is provided. Defaults to active."),
+          acceptance_criteria: { type: "array", items: { type: "string" }, description: "Optional goal acceptance criteria." },
+          blockers: { type: "array", items: { type: "string" }, description: "Optional blocker notes recorded on the active goal without changing status to blocked." },
+          role: stringProperty("Optional segment role. Defaults to implement."),
+          model: stringProperty("Optional worker model. Defaults to the configured worker model."),
+          reasoning_effort: stringProperty("Optional reasoning effort. Defaults to configured worker effort."),
+          harness: stringProperty("Optional harness name. Defaults to configured harness."),
+          source: stringProperty("Optional provenance source. Defaults to gardener."),
+          source_ref: stringProperty("Optional provenance reference, such as a source meta-thread id."),
+          repo_refs: { type: "array", items: { type: "string" }, description: "Optional repo refs." },
+          worktree_refs: { type: "array", items: { type: "string" }, description: "Optional worktree refs. Defaults to the configured workspace root." },
+          gardener_thread_id: stringProperty("Optional gardener thread id that requested creation."),
+          monitor_profile: stringProperty("Optional monitor profile."),
+          actor_role: enumProperty(["gardener", "operator"], "Actor role. Defaults to gardener."),
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.createMetaThread(args),
+    },
+    {
+      name: "stack_worker_thread_create",
+      description: "Create a new local Stack worker session, then bind it to a durable stackd meta-thread and, optionally, an Effort. Use this when the gardener needs to spawn a real thread that appears in Threads/Lights and belongs to a durable workstream.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        effort_ref: stringProperty("Optional Effort id or slug to bind at creation time. Writes effort_ref on the meta-thread and appends the meta-thread ref to the Effort."),
+        title: stringProperty("Short thread/meta-thread title. Defaults to objective or 'new worker thread'."),
+        objective: stringProperty("Optional goal objective to assign immediately."),
+        status: enumProperty(["active", "done", "paused"], "Optional goal status when objective is provided. Defaults to active."),
+        acceptance_criteria: { type: "array", items: { type: "string" }, description: "Optional goal acceptance criteria." },
+        blockers: { type: "array", items: { type: "string" }, description: "Optional blocker notes recorded on the active goal without changing status to blocked." },
+        workspace_root: stringProperty("Optional workspace root. Defaults to Stack's configured workspace root."),
+        role: stringProperty("Optional segment role. Defaults to implement."),
+        model: stringProperty("Optional worker model. Defaults to the configured worker model."),
+        reasoning_effort: stringProperty("Optional reasoning effort. Defaults to configured worker effort."),
+        harness: stringProperty("Optional harness name. Defaults to configured harness."),
+        source: stringProperty("Optional provenance source. Defaults to gardener."),
+        source_ref: stringProperty("Optional provenance reference, such as the source meta-thread id."),
+        repo_refs: { type: "array", items: { type: "string" }, description: "Optional repo refs." },
+        worktree_refs: { type: "array", items: { type: "string" }, description: "Optional worktree refs. Defaults to the new session workspace root." },
+        gardener_thread_id: stringProperty("Optional gardener thread id that requested creation."),
+        monitor_profile: stringProperty("Optional monitor profile."),
+        actor_role: enumProperty(["gardener", "operator"], "Actor role. Defaults to gardener."),
+      }),
+      handler: (args) => server.createWorkerThread(args),
+    },
+    {
+      name: "stack_meta_thread_update_goal",
+      description: "Assign or update the goal on an existing durable Stack meta-thread through stackd. Use this instead of create when the thread is already bound.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          meta_thread_id: stringProperty("Existing Stack meta-thread id."),
+          objective: stringProperty("Optional new goal objective."),
+          status: enumProperty(["active", "done", "paused"], "Optional goal status. Defaults to existing status or active in stackd."),
+          acceptance_criteria: { type: "array", items: { type: "string" }, description: "Optional replacement goal acceptance criteria." },
+          blockers: { type: "array", items: { type: "string" }, description: "Optional blocker notes recorded on the goal without changing status to blocked." },
+          actor_role: enumProperty(["gardener", "operator"], "Actor role. Defaults to gardener."),
+        },
+        ["meta_thread_id"],
+      ),
+      handler: (args) => server.updateMetaThreadGoal(args),
     },
     {
       name: "stack_meta_thread_set_lifecycle",
@@ -4571,6 +5656,45 @@ function requiredMetaThreadLifecycle(args: JsonObject, key: string): StackdMetaT
   throw new RpcError(-32602, `${key} must be live or archived`)
 }
 
+function optionalEffortStatusOrAll(args: JsonObject, key: string): StackEffortStatus | "all" | undefined {
+  const value = optionalString(args, key)
+  if (!value) return undefined
+  if (value === "all" || STACK_EFFORT_STATUSES.includes(value as StackEffortStatus)) return value as StackEffortStatus | "all"
+  throw new RpcError(-32602, `${key} must be active, paused, done, archived, or all`)
+}
+
+function requiredEffortStatus(args: JsonObject, key: string): StackEffortStatus {
+  const value = requiredString(args, key)
+  if (STACK_EFFORT_STATUSES.includes(value as StackEffortStatus)) return value as StackEffortStatus
+  throw new RpcError(-32602, `${key} must be active, paused, done, or archived`)
+}
+
+function requiredEffortFindingKind(args: JsonObject, key: string): StackEffortFindingKind {
+  const value = requiredString(args, key)
+  if (STACK_EFFORT_FINDING_KINDS.includes(value as StackEffortFindingKind)) return value as StackEffortFindingKind
+  throw new RpcError(-32602, `${key} must be idea, code, data, proof, or result`)
+}
+
+function optionalEffortIdeaOrigin(args: JsonObject, key: string): StackEffortIdeaOrigin | undefined {
+  const value = optionalString(args, key)
+  if (!value) return undefined
+  if (STACK_EFFORT_IDEA_ORIGINS.includes(value as StackEffortIdeaOrigin)) return value as StackEffortIdeaOrigin
+  throw new RpcError(-32602, `${key} must be HUMAN, AGENT, or MIXED`)
+}
+
+function optionalEffortNoteKind(args: JsonObject, key: string): StackEffortNoteKind | undefined {
+  const value = optionalString(args, key)
+  if (!value) return undefined
+  if (STACK_EFFORT_NOTE_KINDS.includes(value as StackEffortNoteKind)) return value as StackEffortNoteKind
+  throw new RpcError(-32602, `${key} must be human or note`)
+}
+
+function resolveEffortSourcePath(config: StackConfig, effortFolderPath: string, rawPath: string): string {
+  const inEffort = resolve(effortFolderPath, rawPath)
+  if (existsSync(inEffort)) return inEffort
+  return resolve(config.workingDir, rawPath)
+}
+
 function metaThreadListItem(stackRoot: string, manifest: {
   id: string
   title: string
@@ -4823,6 +5947,21 @@ function readEnvironmentName(value: string): StackEnvironmentName {
   throw new RpcError(-32602, "environment must be dev, staging, or prod")
 }
 
+async function resolveLightsThreadTargetId(stackDataRoot: string, threadId: string): Promise<string> {
+  const trimmed = threadId.trim()
+  if (!trimmed.startsWith("mt_")) return trimmed
+  try {
+    const manifest = await stackdMetaThread(trimmed)
+    const head = manifest?.head_thread_id?.trim()
+    if (head) return head
+  } catch {
+    // fall through to disk read
+  }
+  const manifest = await readMetaThreadManifest(stackDataRoot, trimmed)
+  const head = manifest?.head_thread_id?.trim()
+  return head || trimmed
+}
+
 function requiredString(args: JsonObject, key: string): string {
   const value = optionalString(args, key)
   if (!value) throw new RpcError(-32602, `${key} is required`)
@@ -4915,6 +6054,25 @@ function optionalRoundTripApplyMode(args: JsonObject, key: string): RoundTripApp
   if (!value) return undefined
   if (value === "toml-string-field" || value === "replace-file") return value
   throw new RpcError(-32602, `${key} must be toml-string-field or replace-file`)
+}
+
+function effortSourceReceiptFromRoundTrip(
+  receipt: Awaited<ReturnType<typeof readRoundTripPullReceipt>>,
+): StackEffortFindingSourceReceipt {
+  return {
+    receipt_path: receipt.receipt_path,
+    artifact_kind: receipt.artifact_kind,
+    source_kind: receipt.source_kind,
+    environment: receipt.environment,
+    run_id: receipt.run_id ?? null,
+    project_id: receipt.project_id ?? null,
+    artifact_name: receipt.artifact_name ?? null,
+    output_id: receipt.output_id ?? null,
+    label: receipt.label ?? null,
+    workspace_path: receipt.workspace_path,
+    digest: receipt.digest,
+    pulled_at: receipt.pulled_at,
+  }
 }
 
 function selectRemoteOutput(

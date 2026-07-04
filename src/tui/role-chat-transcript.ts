@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto"
 import type { StackMonitorSnapshot } from "../monitor.js"
+import type { StackCodexTurn } from "../session.js"
 import type { StackThreadMetaEvent } from "../thread-events.js"
 import { gardenerThreadEvents } from "./gardener-thread.js"
 import { monitorThreadEvents } from "./monitor-thread.js"
@@ -7,6 +8,7 @@ import type { SubagentLog } from "./subagents.js"
 import {
   appendStackBlock,
   appendUserBlock,
+  blocksFromTurnStdout,
   maxTranscriptScrollOffset,
   renderTranscriptStyledView,
   type ToolLog,
@@ -36,6 +38,60 @@ export function blocksFromGardenerChatEvents(events: StackThreadMetaEvent[]): Tr
     appendGardenerChatEvent(blocks, event)
   }
   return blocks
+}
+
+export type GardenerChatTranscript = {
+  blocks: TranscriptBlock[]
+  tools: ToolLog[]
+  subagents: SubagentLog[]
+}
+
+/** Meta chat events for operator/gardener lines; turn stdout for tools/thinking like worker chat. */
+export function buildGardenerChatTranscript(
+  events: StackThreadMetaEvent[],
+  turns: readonly StackCodexTurn[],
+): GardenerChatTranscript {
+  const blocks: TranscriptBlock[] = []
+  const tools: ToolLog[] = []
+  const subagents: SubagentLog[] = []
+  const chatEvents = gardenerThreadEvents(events)
+    .filter((event) => GARDENER_CHAT_EVENT_TYPES.has(event.type))
+    .sort((left, right) => left.observed_at.localeCompare(right.observed_at))
+  let turnIndex = 0
+
+  for (const event of chatEvents) {
+    if (event.type === "gardener.friction") {
+      appendGardenerChatEvent(blocks, event)
+      continue
+    }
+    if (event.type !== "gardener.message") continue
+
+    const role = readString(event.payload.role) ?? "user"
+    if (role === "user") {
+      appendGardenerChatEvent(blocks, event)
+      continue
+    }
+
+    const source = readString(event.payload.source)
+    const turn = turns[turnIndex]
+    const rich = turn ? agentTranscriptFromStdout(turn.stdout) : undefined
+    const hasRichOutput =
+      rich !== undefined &&
+      (rich.tools.length > 0 ||
+        rich.subagents.length > 0 ||
+        rich.blocks.some((block) => block.kind === "thinking" || block.kind === "tool" || block.kind === "tool_group"))
+
+    if (turn && hasRichOutput && source !== "slash") {
+      appendTranscriptBundle(blocks, tools, subagents, rich)
+      turnIndex += 1
+      continue
+    }
+
+    appendGardenerChatEvent(blocks, event)
+    if (turn && source !== "slash") turnIndex += 1
+  }
+
+  return { blocks, tools, subagents }
 }
 
 export function blocksFromMonitorChatEvents(events: StackThreadMetaEvent[]): TranscriptBlock[] {
@@ -68,6 +124,7 @@ export function gardenerTranscriptRenderOptions(
     running,
     liveThinkingText: liveThinking,
     agentSpeakerLabel: "Gardener",
+    showAgentSpeakerLabel: base.showAgentSpeakerLabel,
   }
 }
 
@@ -114,8 +171,7 @@ function appendGardenerChatEvent(blocks: TranscriptBlock[], event: StackThreadMe
         return
       }
       const source = readString(payload.source)
-      const prefix = source === "voice" ? "(voice) " : ""
-      appendUserBlock(blocks, `${prefix}${text}`)
+      appendUserBlock(blocks, text, source === "voice" ? "you · voice" : "you")
       return
     }
     case "gardener.friction":
@@ -170,6 +226,34 @@ function appendMonitorChatEvent(blocks: TranscriptBlock[], event: StackThreadMet
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+function agentTranscriptFromStdout(stdout: string): GardenerChatTranscript {
+  const rendered = blocksFromTurnStdout("", stdout)
+  return {
+    blocks: rendered.blocks.filter((block) => block.kind !== "user"),
+    tools: rendered.tools,
+    subagents: rendered.subagents,
+  }
+}
+
+function appendTranscriptBundle(
+  blocks: TranscriptBlock[],
+  tools: ToolLog[],
+  subagents: SubagentLog[],
+  bundle: GardenerChatTranscript,
+): void {
+  blocks.push(...bundle.blocks)
+  for (const tool of bundle.tools) upsertNamedLog(tools, tool, (left, right) => left.id === right.id)
+  for (const subagent of bundle.subagents) {
+    upsertNamedLog(subagents, subagent, (left, right) => left.id === right.id)
+  }
+}
+
+function upsertNamedLog<T>(target: T[], incoming: T, same: (left: T, right: T) => boolean): void {
+  const index = target.findIndex((entry) => same(entry, incoming))
+  if (index >= 0) target[index] = incoming
+  else target.push(incoming)
 }
 
 function asRecord(value: unknown): Record<string, unknown> | undefined {

@@ -175,6 +175,10 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/meta-threads/:id", get(meta_threads::get_meta_thread))
         .route("/meta-threads/:id/title", patch(meta_threads::update_title))
         .route(
+            "/meta-threads/:id/effort-ref",
+            patch(meta_threads::update_effort_ref),
+        )
+        .route(
             "/meta-threads/:id/remote-smr-run",
             patch(meta_threads::bind_remote_smr_run),
         )

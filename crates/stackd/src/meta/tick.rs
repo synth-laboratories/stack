@@ -246,7 +246,11 @@ async fn ensure_gardener_actor_state(
         "wake_counts": 0,
         "queue_counts": 0,
     });
-    fs::write(&path, format!("{}\n", serde_json::to_string_pretty(&actor)?)).await?;
+    fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(&actor)?),
+    )
+    .await?;
     Ok(())
 }
 
@@ -254,7 +258,11 @@ async fn write_status_projection(state: &AppState, status: &MetaStatus) -> anyho
     let dir = state.paths.stack_dir.join("meta");
     fs::create_dir_all(&dir).await?;
     let path = dir.join("status.json");
-    fs::write(&path, format!("{}\n", serde_json::to_string_pretty(status)?)).await?;
+    fs::write(
+        &path,
+        format!("{}\n", serde_json::to_string_pretty(status)?),
+    )
+    .await?;
     Ok(())
 }
 

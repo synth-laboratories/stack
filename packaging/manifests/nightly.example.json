@@ -1,17 +1,17 @@
 {
   "schema_version": 1,
   "channel": "nightly",
-  "version": "0.2.0-dev.20260629.1",
-  "released_at": "2026-06-29T00:00:00Z",
+  "version": "0.2.0-dev.20260703.2",
+  "released_at": "2026-07-03T23:22:35Z",
   "yanked": false,
   "targets": {
     "aarch64-apple-darwin": {
-      "url": "https://github.com/synth-laboratories/stack/releases/download/v0.2.0-dev.20260629.1/stack-0.2.0-dev.20260629.1-aarch64-apple-darwin.tar.gz",
+      "url": "https://stack.usesynth.ai/releases/downloads/0.2.0-dev.20260703.2/stack-0.2.0-dev.20260703.2-aarch64-apple-darwin.tar.gz",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size": 12345678
     },
     "x86_64-unknown-linux-musl": {
-      "url": "https://github.com/synth-laboratories/stack/releases/download/v0.2.0-dev.20260629.1/stack-0.2.0-dev.20260629.1-x86_64-unknown-linux-musl.tar.gz",
+      "url": "https://stack.usesynth.ai/releases/downloads/0.2.0-dev.20260703.2/stack-0.2.0-dev.20260703.2-x86_64-unknown-linux-musl.tar.gz",
       "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
       "size": 12345678
     }

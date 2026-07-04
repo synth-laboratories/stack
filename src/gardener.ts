@@ -307,10 +307,12 @@ function parseGardenerDispatchKind(message: string): { kind: "route" | "steer" |
 export type GardenerSubmitIntent =
   | { mode: "chat"; body: string }
   | { mode: "route" | "steer" | "queue"; body: string }
+  | { mode: "archive" | "revive"; body: string }
+  | { mode: "viewed" | "unviewed"; body: string }
   | { mode: "skill_register"; body: string }
   | { mode: "skill_suggest"; body: string }
 
-/** Normal messages chat with the gardener agent; route/steer/queue/worker dispatch workers; skill register/suggest always allowed via stackd. */
+/** Normal messages chat with the gardener agent; route/steer/queue/worker dispatch workers; archive/revive park meta-threads; skill register/suggest always allowed via stackd. */
 export function gardenerSubmitIntent(message: string): GardenerSubmitIntent {
   const trimmed = message.trim()
   if (trimmed.toLowerCase().startsWith("skill register ")) {
@@ -318,6 +320,37 @@ export function gardenerSubmitIntent(message: string): GardenerSubmitIntent {
   }
   if (trimmed.toLowerCase().startsWith("skill suggest ")) {
     return { mode: "skill_suggest", body: trimmed }
+  }
+  if (trimmed.startsWith("archive ") || trimmed.startsWith("park ")) {
+    const body = trimmed.startsWith("archive ") ? trimmed.slice("archive ".length).trim() : trimmed.slice("park ".length).trim()
+    return { mode: "archive", body: body || "target" }
+  }
+  if (trimmed === "archive" || trimmed === "park") {
+    return { mode: "archive", body: "target" }
+  }
+  if (trimmed.startsWith("revive ") || trimmed.startsWith("unarchive ")) {
+    const body = trimmed.startsWith("revive ")
+      ? trimmed.slice("revive ".length).trim()
+      : trimmed.slice("unarchive ".length).trim()
+    return { mode: "revive", body: body || "target" }
+  }
+  if (trimmed === "revive" || trimmed === "unarchive") {
+    return { mode: "revive", body: "target" }
+  }
+  if (trimmed.startsWith("viewed ")) {
+    return { mode: "viewed", body: trimmed.slice("viewed ".length).trim() || "target" }
+  }
+  if (trimmed === "viewed") {
+    return { mode: "viewed", body: "target" }
+  }
+  if (trimmed.startsWith("unviewed ") || trimmed.startsWith("unview ")) {
+    const body = trimmed.startsWith("unviewed ")
+      ? trimmed.slice("unviewed ".length).trim()
+      : trimmed.slice("unview ".length).trim()
+    return { mode: "unviewed", body: body || "target" }
+  }
+  if (trimmed === "unviewed" || trimmed === "unview") {
+    return { mode: "unviewed", body: "target" }
   }
   if (trimmed.startsWith("steer ")) return { mode: "steer", body: trimmed.slice("steer ".length).trim() }
   if (trimmed.startsWith("queue ")) return { mode: "queue", body: trimmed.slice("queue ".length).trim() }
@@ -603,7 +636,7 @@ export function gardenerPanelLines(input: {
       lines.push(` ${marker} ${truncateOneLine(item.message, 46)}`)
     }
   }
-  lines.push("", "enter route · a route all · w target · d dismiss · j/k select")
+  lines.push("", "enter route · archive <id|target|filter> · revive <id> · w target · d dismiss · j/k select")
   return lines
 }
 

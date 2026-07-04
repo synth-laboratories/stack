@@ -128,7 +128,9 @@ pub async fn save_thread_checkpoint(
     Json(checkpoint): Json<StackResumeCheckpoint>,
 ) -> Result<Json<SaveCheckpointResponse>, ApiError> {
     if checkpoint.session_id != id {
-        return Err(ApiError::bad_request("checkpoint.session_id must match thread id"));
+        return Err(ApiError::bad_request(
+            "checkpoint.session_id must match thread id",
+        ));
     }
     save_checkpoint(State(state), Json(checkpoint)).await
 }

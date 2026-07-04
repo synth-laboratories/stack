@@ -55,6 +55,28 @@ export function stackEventId(prefix: string): string {
   return `${prefix}_${randomUUID()}`
 }
 
+export type ForHumanMonitorHeadline = {
+  headline: string
+  note?: string
+  status?: string
+}
+
+export function latestForHumanMonitorHeadline(
+  events: readonly StackThreadMetaEvent[],
+): ForHumanMonitorHeadline | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (!event || event.type !== "monitor.goal_status") continue
+    if (event.payload.for_human !== true) continue
+    const headline = typeof event.payload.headline === "string" ? event.payload.headline.trim() : ""
+    if (!headline) continue
+    const note = typeof event.payload.note === "string" ? event.payload.note.trim() : undefined
+    const status = typeof event.payload.status === "string" ? event.payload.status.trim() : undefined
+    return { headline, note, status }
+  }
+  return undefined
+}
+
 function safeThreadId(threadId: string): string {
   const safe = threadId.trim().replace(/[^A-Za-z0-9_.-]/g, "_")
   if (!safe || safe === "." || safe === "..") throw new Error(`invalid thread id: ${threadId}`)

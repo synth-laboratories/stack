@@ -19,9 +19,12 @@ use stack_core::session::{
     StackLocalSession, StackSessionUsageSummary, StackSessionUsageTotals,
 };
 use std::path::{Path as FsPath, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
+
+static UNIQUE_COUNTER: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Deserialize)]
 pub struct CreateMetaThreadRequest {
@@ -33,6 +36,7 @@ pub struct CreateMetaThreadRequest {
     pub harness: String,
     pub source: Option<String>,
     pub source_ref: Option<String>,
+    pub effort_ref: Option<String>,
     #[serde(default)]
     pub repo_refs: Vec<String>,
     #[serde(default)]
@@ -94,6 +98,13 @@ pub struct UpdateLifecycleRequest {
 #[derive(Debug, Deserialize)]
 pub struct UpdateTitleRequest {
     pub title: String,
+    pub reason: Option<String>,
+    pub actor_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+pub struct UpdateEffortRefRequest {
+    pub effort_ref: Option<String>,
     pub reason: Option<String>,
     pub actor_id: Option<String>,
 }
@@ -299,6 +310,51 @@ pub async fn update_title(
     }))
 }
 
+pub async fn update_effort_ref(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateEffortRefRequest>,
+) -> Result<Json<MetaThreadManifest>, ApiError> {
+    let effort_ref = normalize_optional_string(request.effort_ref.as_deref());
+    let mut manifest = read_manifest(&state.paths.stack_dir, &id)
+        .await
+        .map_err(ApiError::from)?;
+    let previous = manifest.effort_ref.clone();
+    if previous == effort_ref {
+        return Ok(Json(manifest));
+    }
+
+    let actor_id = request
+        .actor_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("operator")
+        .to_string();
+    let reason = normalize_optional_string(request.reason.as_deref());
+    manifest.effort_ref = effort_ref.clone();
+    manifest.updated_at = now();
+    write_manifest(&state.paths.stack_dir, &manifest)
+        .await
+        .map_err(ApiError::from)?;
+    append_meta_event(
+        &state,
+        &manifest.id,
+        "meta_thread.effort_ref_updated",
+        &manifest.head_thread_id,
+        Some(&manifest.head_segment_id),
+        None,
+        json!({
+            "previous_effort_ref": previous,
+            "effort_ref": effort_ref,
+            "reason": reason,
+            "actor_id": actor_id,
+        }),
+    )
+    .await?;
+    Ok(Json(manifest))
+}
+
 pub async fn bind_remote_smr_run(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -382,7 +438,9 @@ fn normalized_title(raw: &str) -> Result<String, ApiError> {
         return Err(ApiError::bad_request("title is required"));
     }
     if title.chars().count() > 48 {
-        return Err(ApiError::bad_request("title must be 48 characters or fewer"));
+        return Err(ApiError::bad_request(
+            "title must be 48 characters or fewer",
+        ));
     }
     Ok(title.to_string())
 }
@@ -481,6 +539,7 @@ pub async fn create_meta_thread(
         archive_reason: None,
         source: request.source,
         source_ref: request.source_ref,
+        effort_ref: normalize_optional_string(request.effort_ref.as_deref()),
         repo_refs: request.repo_refs,
         worktree_refs: if request.worktree_refs.is_empty() {
             vec![session.workspace_root.clone()]
@@ -1106,7 +1165,8 @@ fn lifecycle_matches(manifest: &MetaThreadManifest, filter: Option<&str>) -> boo
 }
 
 async fn enrich_monitor_headline(state: &AppState, manifest: &mut MetaThreadManifest) {
-    let Ok(events) = read_thread_events(&state.paths.stack_dir, &manifest.head_thread_id).await else {
+    let Ok(events) = read_thread_events(&state.paths.stack_dir, &manifest.head_thread_id).await
+    else {
         return;
     };
     for event in events.iter().rev() {
@@ -1382,8 +1442,9 @@ fn merge_payload(
 
 fn unique_suffix() -> String {
     format!(
-        "{}_{}",
+        "{}_{}_{}",
         Utc::now().timestamp_nanos_opt().unwrap_or_default(),
+        UNIQUE_COUNTER.fetch_add(1, Ordering::Relaxed),
         std::process::id()
     )
 }

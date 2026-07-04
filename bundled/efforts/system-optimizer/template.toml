@@ -1,0 +1,8 @@
+[effort_template]
+id = "system-optimizer"
+label = "System Optimizer Research Effort"
+research_log = true
+
+[defaults]
+status = "active"
+findings = ["ideas", "code", "data", "proof", "results"]

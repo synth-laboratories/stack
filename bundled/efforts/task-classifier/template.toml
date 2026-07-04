@@ -1,0 +1,21 @@
+[effort_template]
+id = "task-classifier"
+label = "Task Classifier Research Effort"
+research_log = true
+
+[defaults]
+status = "active"
+findings = ["ideas", "code", "data", "proof", "results"]
+
+[acceptance]
+criteria = [
+  "A0 scaffold: Effort exists with task-classifier playbook, research_log.md, PROGRESS.md, ACTIVITY.jsonl, ideas/, human/, notes/, repos/, and findings/{ideas,code,data,proof,results}.",
+  "A0 visibility: Effort is visible through CLI, stack_effort_get, and the /efforts panel.",
+  "A0 thread binding: at least one meta-thread is bound to the Effort and appears in the Effort orientation payload.",
+  "A0 human thinking: at least one [HUMAN] idea or human note is preserved under ideas/ or human/.",
+  "A1 local optimizer proof: local GEPA run id, candidate artifact, visible result, heldout scorecard, and research log entry are attached under findings/ and research_log.md.",
+  "A2 hosted optimizer graduation: hosted GEPA run id and artifact refs are recorded when available.",
+  "A3 synth-ai SMR harness proof: SMR run id, harness receipt, and scorecard are recorded when available.",
+  "A4 synth-ai SMR/Tinker proof: Tinker run id or equivalent SMR proof refs are recorded when available.",
+  "Handoff: HANDOFF.md summarizes status, bound threads, refs, progress, latest activity, recorded blockers, acceptance criteria, artifacts, risks, and next action.",
+]

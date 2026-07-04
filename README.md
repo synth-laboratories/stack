@@ -53,14 +53,15 @@ install, update, and rollback proofs.
 
 </details>
 
-## What's new — sidecar monitor (dev)
+## What's new — Monitor Gardener Goal release (dev)
 
-Long Codex goal runs produce a lot of output. Stack's **monitor sidecar** is a
-separate agent paired with your worker: it writes **Sidecar events** — short
-headlines and milestones — so you can skim progress without reading every tool call.
+Stack `0.2.0-dev.20260703.2` sharpens the live cockpit: `/lights on` opens a
+right-panel status view with scrollable/filterable threads, gardener/actor/cloud
+status, local runtime, and usage. `/gardener` opens in the core panel, goal mode
+keeps worker chat and slash commands available, and Stack MCP now gives the
+gardener owner-route tools for creating durable worker/meta threads.
 
-In `/goal` mode, Sidecar events is the default view (`e`). Press `t` for the
-monitor thread, `a` for the raw worker tape. See [Usage § Stack Monitor](docs/USAGE.md).
+See [CHANGELOG.md](CHANGELOG.md) and [Usage § Slash commands](docs/USAGE.md#slash-commands).
 
 ## Docs
 

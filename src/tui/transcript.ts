@@ -133,9 +133,11 @@ export function applyCodexLine(
     turnStartedAt.current = new Date().toISOString()
     liveToolGroupId.current = undefined
     liveSubagentGroupId.current = undefined
-    const id = randomUUID()
-    liveThinkingId.current = id
-    blocks.push({ id, kind: "thinking", text: "…", live: true, startedAt: turnStartedAt.current })
+    if (!liveThinkingId.current) {
+      const id = randomUUID()
+      liveThinkingId.current = id
+      blocks.push({ id, kind: "thinking", text: "…", live: true, startedAt: turnStartedAt.current })
+    }
   }
 
   if (rendered.thinking !== undefined) {
@@ -379,7 +381,12 @@ function blocksToAnnotatedLines(
     })
   }
   for (const block of visibleBlocks) {
-    if (block.kind === "thinking") continue
+    if (block.kind === "thinking") {
+      if (block.live && options.running) {
+        lines.push(...blockToAnnotatedLines(block, toolLogs, subagentLogs, columns, options))
+      }
+      continue
+    }
     lines.push(...blockToAnnotatedLines(block, toolLogs, subagentLogs, columns, options))
     if (lines.length > TRANSCRIPT_RENDER_LINE_BUDGET) {
       return capAnnotatedLines([
@@ -511,7 +518,7 @@ function blockToLines(
       // labels who it actually came from: "› runtime  <message>".
       return sectionLines(block.origin ? `› ${block.origin}` : "›", ` ${block.text}`, columns, true)
     case "thinking":
-      return []
+      return renderThinkingBlock(block, columns, expanded, options)
     case "tool": {
       const tool = toolLogs.find((entry) => entry.id === block.toolId)
       if (!tool) return sectionLines("tool", "…", columns)
@@ -542,6 +549,17 @@ function blockToLines(
   }
 }
 
+const LIVE_THINKING_ELAPSED_THRESHOLD_SEC = 15
+
+function liveThinkingElapsedSuffix(block: Extract<TranscriptBlock, { kind: "thinking" }>): string {
+  if (!block.live || !block.startedAt) return ""
+  const startedMs = Date.parse(block.startedAt)
+  if (!Number.isFinite(startedMs)) return ""
+  const elapsedSec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000))
+  if (elapsedSec <= LIVE_THINKING_ELAPSED_THRESHOLD_SEC) return ""
+  return ` · ${elapsedSec}s…`
+}
+
 function renderThinkingBlock(
   block: Extract<TranscriptBlock, { kind: "thinking" }>,
   columns: number,
@@ -549,13 +567,15 @@ function renderThinkingBlock(
   options: TranscriptRenderOptions,
 ): string[] {
   const duration = thinkingDurationLabel(block)
+  const liveElapsed = block.live && options.running ? liveThinkingElapsedSuffix(block) : ""
   const label = block.live && options.running
-    ? `◆ Thinking ${spinner(options.spinnerFrame)}`
+    ? `◆ Thinking ${spinner(options.spinnerFrame)}${liveElapsed}`
     : `◆ Thought${duration}${expanded ? " ▾" : ""}`
   const text = cleanThinkingText(block.text)
   const placeholder = !text || text === "…"
   if (!expanded || placeholder) {
-    const summary = placeholder ? "" : ` ${truncateInline(text, 96)}`
+    let summary = placeholder ? "" : ` ${truncateInline(text, 96)}`
+    if (liveElapsed && /^working · \d+s$/.test(text)) summary = ""
     return sectionLines(label.trim(), summary.trim(), columns, true)
   }
   return sectionLines(label, indent(text), columns)

@@ -26,6 +26,7 @@ type Report = {
 }
 
 const stackRoot = join(import.meta.dir, "..")
+const testingStackRoot = resolveTestingStackRoot()
 const args = new Set(process.argv.slice(2))
 const writeEvidence = args.has("--write-evidence") || process.env.STACK_LAUNCH_READINESS_WRITE === "1"
 const strict = args.has("--strict")
@@ -345,15 +346,20 @@ function latestBombadilB0Proof(): { status: Status; evidence: string } {
   if (!scriptExists("smoke:bombadil:b0")) {
     return { status: "not_started", evidence: "smoke:bombadil:b0 missing" }
   }
-  const evidenceRoot = join(stackRoot, ".stack", "evidence", "bombadil-b0")
-  if (!existsSync(evidenceRoot)) {
+  const roots = evidenceRoots("bombadil-b0")
+  if (roots.length === 0) {
     return { status: "partial", evidence: "smoke:bombadil:b0 exists; no .stack/evidence/bombadil-b0 proof yet" }
   }
-  const proofPaths = readdirSync(evidenceRoot)
+  const proofPaths = roots
+    .flatMap((evidenceRoot) =>
+      readdirSync(evidenceRoot)
+        .sort()
+        .reverse()
+        .map((entry) => join(evidenceRoot, entry, "proof.json"))
+        .filter((path) => existsSync(path)),
+    )
     .sort()
     .reverse()
-    .map((entry) => join(evidenceRoot, entry, "proof.json"))
-    .filter((path) => existsSync(path))
   for (const proofPath of proofPaths) {
     try {
       const proof = JSON.parse(readFileSync(proofPath, "utf8")) as { status?: unknown; check_id?: unknown }
@@ -365,6 +371,20 @@ function latestBombadilB0Proof(): { status: Status; evidence: string } {
     }
   }
   return { status: "partial", evidence: proofPaths[0] ?? "smoke:bombadil:b0 exists; no proof.json found" }
+}
+
+function evidenceRoots(area: string): string[] {
+  return [join(stackRoot, ".stack", "evidence", area), join(testingStackRoot, ".stack", "evidence", area)]
+    .filter((path, index, paths) => existsSync(path) && paths.indexOf(path) === index)
+}
+
+function resolveTestingStackRoot(): string {
+  const configured = process.env.STACK_TESTING_REPO_ROOT?.trim()
+  if (configured) {
+    if (existsSync(join(configured, "stack", "smoke"))) return join(configured, "stack")
+    return configured
+  }
+  return join(stackRoot, "..", "testing", "stack")
 }
 
 function docsAlignmentStatus(): Status {

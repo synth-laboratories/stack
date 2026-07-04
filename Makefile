@@ -9,7 +9,7 @@ RSYNC_EXCLUDES := \
 	--exclude .git \
 	--exclude .DS_Store
 
-.PHONY: install uninstall install-brew uninstall-brew deps check install-skills version sync-version bump-dev release-promote release-check release-guard-b0 launch-readiness launch-nightly1 launch-nightly1-essentials launch-candidate launch-cut-plan homebrew-formulas smoke-tui smoke-tui-all smoke-tui-gepa smoke-tui-resilience smoke-stackd smoke-bombadil-b0 smoke-installer-contract smoke-installer-apply-rollback smoke-release-artifact-local smoke-release-site-contract smoke-artifact-security smoke-first-run-local smoke-launch-docs-alignment smoke-telemetry-contract smoke-telemetry-approval smoke-stackd-telemetry smoke-stackd-crash-report smoke-crash-ingestion smoke-usage-ingestion smoke-growth-ingestion stackeval-banking77-local-gepa quality-static quality-dev quality-local quality-release
+.PHONY: install uninstall install-brew uninstall-brew deps check install-skills version sync-version bump-dev release-promote release-check release-guard-b0 launch-readiness launch-nightly1 launch-nightly1-essentials launch-candidate launch-cut-plan homebrew-formulas smoke-tui smoke-tui-all smoke-tui-gepa smoke-tui-resilience smoke-stackd smoke-bombadil-b0 smoke-installer-contract smoke-installer-apply-rollback smoke-release-artifact-local smoke-release-site-contract smoke-artifact-security smoke-first-run-local smoke-launch-docs-alignment smoke-meta-threads-contract smoke-meta-threads-concurrency smoke-telemetry-contract smoke-telemetry-approval smoke-stackd-telemetry smoke-stackd-crash-report smoke-crash-ingestion smoke-usage-ingestion smoke-growth-ingestion stackeval-banking77-local-gepa quality-static quality-dev quality-local quality-release
 
 deps:
 	cd "$(STACK_ROOT)" && bun install
@@ -55,6 +55,12 @@ smoke-first-run-local:
 
 smoke-launch-docs-alignment:
 	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:launch-docs-alignment
+
+smoke-meta-threads-contract:
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:meta-threads:contract
+
+smoke-meta-threads-concurrency:
+	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:meta-threads:concurrency
 
 smoke-telemetry-contract:
 	cd "$(STACK_ROOT)" && STACK_TESTING_REPO_ROOT="$(TESTING_REPO_ROOT)" bun run smoke:telemetry:contract

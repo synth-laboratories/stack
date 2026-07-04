@@ -2,7 +2,7 @@
   "workingDir": "..",
   "defaultEnvironment": "dev",
   "voice": {
-    "enabled": false,
+    "enabled": true,
     "stt_provider": "groq",
     "stt_fallback": "openai",
     "stt_model_groq": "whisper-large-v3-turbo",

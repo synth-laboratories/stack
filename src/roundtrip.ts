@@ -86,7 +86,7 @@ type SourceSelection = {
   downloadedAt?: string
 }
 
-type RoundTripPullReceipt = {
+export type RoundTripPullReceipt = {
   schema_version: "stack.roundtrip.receipt.v1"
   action: "pull"
   artifact_kind: RoundTripArtifactKind
@@ -104,6 +104,10 @@ type RoundTripPullReceipt = {
   digest: FileFingerprint
   git_sha_at_pull?: string
   pulled_at: string
+}
+
+export type RoundTripPullReceiptRecord = RoundTripPullReceipt & {
+  receipt_path: string
 }
 
 const DEFAULT_PROMPT_FIELD = "seed_candidate.stage2_system"
@@ -316,6 +320,17 @@ export async function pushRoundTripArtifact(
       digest,
       upload_result: result.data ?? null,
     },
+  }
+}
+
+export async function readRoundTripPullReceipt(
+  config: StackConfig,
+  receiptPath: string,
+): Promise<RoundTripPullReceiptRecord> {
+  const receipt = await readPullReceipt(config, receiptPath)
+  return {
+    ...receipt,
+    receipt_path: resolveWorkspaceReadPath(config, receiptPath),
   }
 }
 

@@ -209,6 +209,8 @@ pub struct MetaThreadManifest {
     pub source: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source_ref: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub effort_ref: Option<String>,
     #[serde(default)]
     pub repo_refs: Vec<String>,
     #[serde(default)]

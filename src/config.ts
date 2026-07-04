@@ -16,6 +16,7 @@ const DEFAULT_OPTIMIZER_BIND = "127.0.0.1:8879"
 const DEFAULT_OPTIMIZER_WORKERS = 4
 const DEFAULT_ENVIRONMENT = "dev"
 const DEFAULT_SYNTH_WORKER_INFERENCE_MODEL = "baseten/zai-org/GLM-5.2"
+const DEFAULT_VOICE_ENABLED = true
 const DEFAULT_VOICE_STT_PROVIDER = "groq"
 const DEFAULT_VOICE_STT_FALLBACK = "openai"
 const DEFAULT_VOICE_STT_MODEL_GROQ = "whisper-large-v3-turbo"
@@ -324,7 +325,7 @@ function readVoiceConfig(appRoot: string, fileConfig: StackConfigFile): StackVoi
       ? true
       : enabledOverride === "0" || enabledOverride === "false"
         ? false
-        : configured.enabled !== false
+        : configured.enabled ?? DEFAULT_VOICE_ENABLED
   const envFile = process.env.STACK_VOICE_ENV_FILE ?? configured.env_file
   return {
     enabled,

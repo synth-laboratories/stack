@@ -28,6 +28,7 @@ type CutPlanProof = {
 }
 
 const stackRoot = join(import.meta.dir, "..")
+const testingStackRoot = resolveTestingStackRoot()
 const args = new Set(process.argv.slice(2))
 const writeEvidence = args.has("--write-evidence")
 const generatedAt = new Date().toISOString()
@@ -219,12 +220,15 @@ function latestLiveGrowthProof(): string | undefined {
 }
 
 function latestBombadilProof(): string | undefined {
-  const evidenceRoot = join(stackRoot, ".stack", "evidence", "bombadil-b0")
-  if (!existsSync(evidenceRoot)) return undefined
-  const proofPaths = Array.from(new Bun.Glob("*/proof.json").scanSync(evidenceRoot))
+  const proofPaths = evidenceRoots("bombadil-b0")
+    .flatMap((evidenceRoot) =>
+      Array.from(new Bun.Glob("*/proof.json").scanSync(evidenceRoot))
+        .sort()
+        .reverse()
+        .map((path) => join(evidenceRoot, path)),
+    )
     .sort()
     .reverse()
-    .map((path) => join(evidenceRoot, path))
   for (const proofPath of proofPaths) {
     try {
       const proof = JSON.parse(readFileSync(proofPath, "utf8")) as { status?: unknown }
@@ -234,6 +238,20 @@ function latestBombadilProof(): string | undefined {
     }
   }
   return undefined
+}
+
+function evidenceRoots(area: string): string[] {
+  return [join(stackRoot, ".stack", "evidence", area), join(testingStackRoot, ".stack", "evidence", area)]
+    .filter((path, index, paths) => existsSync(path) && paths.indexOf(path) === index)
+}
+
+function resolveTestingStackRoot(): string {
+  const configured = process.env.STACK_TESTING_REPO_ROOT?.trim()
+  if (configured) {
+    if (existsSync(join(configured, "stack", "smoke"))) return join(configured, "stack")
+    return configured
+  }
+  return join(stackRoot, "..", "testing", "stack")
 }
 
 function readJson<T>(relativePath: string): T | undefined {

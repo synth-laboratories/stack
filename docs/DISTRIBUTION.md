@@ -137,8 +137,8 @@ exists for that platform.
 {
   "schema_version": 1,
   "channel": "nightly",
-  "version": "0.2.0-dev.20260629.1",
-  "released_at": "2026-06-29T00:00:00Z",
+  "version": "0.2.0-dev.20260703.2",
+  "released_at": "2026-07-03T23:22:35Z",
   "yanked": false,
   "targets": {
     "aarch64-apple-darwin": {
@@ -153,18 +153,16 @@ exists for that platform.
 
 Stable manifests add signature and provenance URLs before public promotion.
 
-Current local artifact proof:
+Current local artifact proof is recorded in the release checklist and Jstack
+ship packet for the selected candidate. The generated release-site manifest,
+not the packaged docs or checked-in example manifest, carries the artifact
+SHA256 and size so the archive hash does not become self-referential.
 
-```text
-.stack/evidence/release-artifact/20260629T231537Z-0a63dcb2/
-.stack/evidence/release-artifact/20260629T233313Z-4c9fe3e4/
-.stack/evidence/release-site-contract/20260629T233313Z/
-```
-
-The latest proof reports `publishable: true` for the local nightly artifact and
-installed activation path. Do not advertise a public hosted installer until
-signature/provenance automation or the Nightly 1 waiver, immutable hosting, and
-download telemetry are in place.
+The release-site contract smoke must install the generated nightly manifest,
+prove `stack --version`, `stack doctor --json`, local demo receipt creation, and
+non-mutating `stack update --check --json`. Do not advertise a public hosted
+installer until immutable hosting and download telemetry are proved for the
+selected artifact.
 
 ## Update check contract
 

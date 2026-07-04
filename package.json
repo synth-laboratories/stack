@@ -1,6 +1,6 @@
 {
   "name": "@synth-laboratories/stack",
-  "version": "0.2.0-dev.20260702.4",
+  "version": "0.2.0-dev.20260703.2",
   "description": "Synth operator cockpit — OpenTUI, Codex agent pane, and Stack MCP for local and hosted research ops.",
   "license": "MIT",
   "private": true,
@@ -37,6 +37,8 @@
     "smoke:artifact-security": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_artifact_security.ts\"",
     "smoke:first-run:local": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_first_run_local.ts\"",
     "smoke:launch-docs-alignment": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_launch_docs_alignment.ts\"",
+    "smoke:meta-threads:contract": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_meta_thread_lifecycle.ts\"",
+    "smoke:meta-threads:concurrency": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_meta_threads_concurrency.ts\"",
     "quality:static": "bun run check && bun run release-check",
     "quality:dev": "bun run quality:static && bun run smoke:tui:blackspace && STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_voice_tui.ts\" && STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_gardener_v1.ts\" && STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_guidance_l2.ts\" && STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_monitor_style_steer.ts\" && bun run smoke:bombadil:b0",
     "quality:local": "STACK_REPO_ROOT=\"$PWD\" sh -c 'cd \"${STACK_TESTING_REPO_ROOT:-../testing}\" && make stack-ship-stable'",

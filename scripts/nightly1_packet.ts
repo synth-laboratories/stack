@@ -21,6 +21,7 @@ type CandidateProof = {
 }
 
 const stackRoot = join(import.meta.dir, "..")
+const testingStackRoot = resolveTestingStackRoot()
 const args = new Set(process.argv.slice(2))
 const writeEvidence = args.has("--write-evidence")
 const bombadilB0 = latestPassingProof("bombadil-b0", "AT-STACK-BOMBADIL-B0")
@@ -137,13 +138,16 @@ function exists(relativePath: string): boolean {
 }
 
 function latestPassingProof(area: string, checkId: string): string | undefined {
-  const evidenceRoot = join(stackRoot, ".stack", "evidence", area)
-  if (!existsSync(evidenceRoot)) return undefined
-  const proofPaths = readdirSync(evidenceRoot)
+  const proofPaths = evidenceRoots(area)
+    .flatMap((evidenceRoot) =>
+      readdirSync(evidenceRoot)
+        .sort()
+        .reverse()
+        .map((entry) => join(evidenceRoot, entry, "proof.json"))
+        .filter((path) => existsSync(path)),
+    )
     .sort()
     .reverse()
-    .map((entry) => join(evidenceRoot, entry, "proof.json"))
-    .filter((path) => existsSync(path))
   for (const proofPath of proofPaths) {
     try {
       const proof = JSON.parse(readFileSync(proofPath, "utf8")) as { check_id?: unknown; status?: unknown }
@@ -153,6 +157,20 @@ function latestPassingProof(area: string, checkId: string): string | undefined {
     }
   }
   return undefined
+}
+
+function evidenceRoots(area: string): string[] {
+  return [join(stackRoot, ".stack", "evidence", area), join(testingStackRoot, ".stack", "evidence", area)]
+    .filter((path, index, paths) => existsSync(path) && paths.indexOf(path) === index)
+}
+
+function resolveTestingStackRoot(): string {
+  const configured = process.env.STACK_TESTING_REPO_ROOT?.trim()
+  if (configured) {
+    if (existsSync(join(configured, "stack", "smoke"))) return join(configured, "stack")
+    return configured
+  }
+  return join(stackRoot, "..", "testing", "stack")
 }
 
 function latestLaunchDocsAlignmentProof(): string | undefined {
