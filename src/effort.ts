@@ -1981,7 +1981,7 @@ function effortHandoffMarkdown(
   const acceptancePacket = findingFiles.results.find((path) => path.endsWith("/findings/results/acceptance-summary.md"))
   const parsedAcceptance = readEffortAcceptancePacket(effort)
   const remainingWork = readEffortRemainingWork(effort)
-  const risks = cleanStringList(input.risks)
+  const riskLines = effortHandoffRiskLines(input.risks, remainingWork)
   const lines = [
     `# ${effort.manifest.title} - handoff`,
     "",
@@ -2096,7 +2096,7 @@ function effortHandoffMarkdown(
   lines.push(
     "## Risks And Open Threads",
     "",
-    ...(risks.length > 0 ? risks.map((risk) => `- ${risk}`) : ["- No risks recorded in this handoff packet."]),
+    ...riskLines,
     "",
     "## Next",
     "",
@@ -2226,6 +2226,21 @@ function effortHandoffRemainingWorkLines(remaining: StackEffortRemainingWork): s
     lines.push(...remaining.next_actions.map((action) => `- Next: ${action}`))
   }
   return lines
+}
+
+function effortHandoffRiskLines(inputRisks: string[] | undefined, remaining: StackEffortRemainingWork): string[] {
+  const risks = cleanStringList(inputRisks)
+  const openAcceptance = remaining.open_acceptance.map((level) => `${level.label} ${level.title} (${level.status})`)
+  if (openAcceptance.length > 0) {
+    risks.push(`Open acceptance remains: ${openAcceptance.join("; ")}.`)
+  }
+  if (remaining.latest_blocker) {
+    risks.push(`Latest blocker: ${remaining.latest_blocker.blocker}. Owner: ${remaining.latest_blocker.owner}. Next safe action: ${remaining.latest_blocker.next}.`)
+  }
+  const uniqueRisks = uniqueStrings(risks)
+  return uniqueRisks.length > 0
+    ? uniqueRisks.map((risk) => `- ${risk}`)
+    : ["- No risks recorded in this handoff packet."]
 }
 
 function effortBlockerRecords(effort: StackEffort, pending: StackEffortActivityRecord[], limit: number): StackEffortBlockerRecord[] {
