@@ -202,6 +202,20 @@ export type StackEffortArtifactReceiptSource = {
   receipt: StackEffortFindingSourceReceipt
 }
 
+export type StackEffortOptimizerCandidateSummary = {
+  activity_id: string
+  observed_at: string
+  optimizer_run_id: string
+  candidate_id: string
+  score: string
+  score_label?: string
+  split: string
+  path: string
+  source_receipt_path?: string
+  source_kind?: string
+  digest_sha256?: string
+}
+
 export type StackEffortAcceptanceLevelState = "recorded" | "not_recorded" | "pending" | "missing" | "unknown"
 
 export type StackEffortAcceptanceLevel = {
@@ -735,6 +749,42 @@ export function readEffortProgressTail(effort: StackEffort, limit = 5): string[]
 export function readEffortActivityTail(effort: StackEffort, limit = 10): StackEffortActivityRecord[] {
   const records = readEffortActivityRecords(effort)
   return records.slice(Math.max(0, records.length - limit))
+}
+
+export function readEffortOptimizerCandidateSummaries(effort: StackEffort, limit = 5): StackEffortOptimizerCandidateSummary[] {
+  const boundedLimit = Math.max(1, Math.min(50, Math.floor(limit)))
+  const summaries = readEffortActivityRecords(effort)
+    .filter((record) => record.type === "effort.optimizer_candidate_recorded")
+    .map((record): StackEffortOptimizerCandidateSummary | undefined => {
+      const payload = asRecord(record.payload)
+      const optimizerRunId = readString(payload.optimizer_run_id)?.trim()
+      const candidateId = readString(payload.candidate_id)?.trim()
+      const score = readString(payload.score)?.trim()
+      const scoreLabel = readString(payload.score_label)?.trim()
+      const split = readString(payload.split)?.trim()
+      const path = readString(payload.path)?.trim()
+      const sourceReceiptPath = readString(payload.source_receipt_path)?.trim()
+      const sourceReceipt = asRecord(payload.source_receipt)
+      const sourceKind = readString(sourceReceipt.source_kind)?.trim()
+      const digest = asRecord(sourceReceipt.digest)
+      const digestSha256 = readString(digest.sha256)?.trim()
+      if (!optimizerRunId || !candidateId || !score || !split || !path) return undefined
+      return {
+        activity_id: record.activity_id,
+        observed_at: record.observed_at,
+        optimizer_run_id: optimizerRunId,
+        candidate_id: candidateId,
+        score,
+        ...(scoreLabel ? { score_label: scoreLabel } : {}),
+        split,
+        path,
+        ...(sourceReceiptPath ? { source_receipt_path: sourceReceiptPath } : {}),
+        ...(sourceKind ? { source_kind: sourceKind } : {}),
+        ...(digestSha256 ? { digest_sha256: digestSha256 } : {}),
+      }
+    })
+    .filter((summary): summary is StackEffortOptimizerCandidateSummary => Boolean(summary))
+  return summaries.slice(Math.max(0, summaries.length - boundedLimit))
 }
 
 export function readEffortBlockerTail(effort: StackEffort, limit = 5): StackEffortBlockerRecord[] {
