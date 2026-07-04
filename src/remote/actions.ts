@@ -173,7 +173,31 @@ export async function getRemoteLaunch(
   config: StackConfig,
   runId: string,
 ): Promise<RemoteActionResult> {
-  return getRemote(config, `/smr/v1/launches/${encodeURIComponent(runId)}`)
+  const encodedRunId = encodeURIComponent(runId)
+  const launch = await getRemote(config, `/smr/v1/launches/${encodedRunId}`)
+  if (launch.ok || launch.status !== 404) {
+    return launch
+  }
+  const run = await getRemote(config, `/smr/runs/${encodedRunId}`)
+  if (!run.ok) {
+    return {
+      ...run,
+      message: `launch not found and project run lookup failed: ${run.message}`,
+      ...(run.data ? { data: { launch, projectRun: run.data } } : { data: { launch } }),
+    }
+  }
+  return {
+    ok: true,
+    status: run.status,
+    message: "project run found via canonical SMR run surface",
+    data: {
+      source: "project_run",
+      run_id: runId,
+      state: readString(run.data?.public_state) ?? readString(run.data?.state) ?? "unknown",
+      project_run: run.data ?? {},
+      launch,
+    },
+  }
 }
 
 export async function terminateRemoteLaunch(
@@ -181,7 +205,31 @@ export async function terminateRemoteLaunch(
   runId: string,
   request: RemoteLaunchTerminateRequest = {},
 ): Promise<RemoteActionResult> {
-  return postRemote(config, `/smr/v1/launches/${encodeURIComponent(runId)}/terminate`, request)
+  const encodedRunId = encodeURIComponent(runId)
+  const launch = await postRemote(config, `/smr/v1/launches/${encodedRunId}/terminate`, request)
+  if (launch.ok || launch.status !== 404) {
+    return launch
+  }
+  const stopped = await postRemote(config, `/smr/runs/${encodedRunId}/stop`, {
+    ...(request.reason ? { reason: request.reason } : {}),
+  })
+  if (!stopped.ok) {
+    return {
+      ...stopped,
+      message: `launch terminate failed and project run stop failed: ${stopped.message}`,
+      ...(stopped.data ? { data: { launch, projectRunStop: stopped.data } } : { data: { launch } }),
+    }
+  }
+  return {
+    ...stopped,
+    message: "project run stopped via canonical SMR run surface",
+    data: {
+      source: "project_run",
+      run_id: runId,
+      project_run_stop: stopped.data ?? {},
+      launch,
+    },
+  }
 }
 
 export async function listRemoteRunQuestions(
