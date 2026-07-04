@@ -376,6 +376,7 @@ Stack MCP exposes the same Effort storage to gardeners and agents:
 - `stack_effort_bind_thread`
 - `stack_effort_update_progress`
 - `stack_effort_record_blocker`
+- `stack_effort_record_acceptance`
 - `stack_effort_record_research_log`
 - `stack_effort_write_handoff`
 - `stack_effort_record_idea`
@@ -466,6 +467,9 @@ evidence, and SMR/Tinker proof for training-style model/data/run artifacts.
 Refs alone do not satisfy A2-A4: hosted graduation needs proof artifacts under
 `findings/proof/`, configs or recipes under `findings/code/`, and a
 `research_log.md` entry naming the run id, environment, result, and caveats.
+After those proof artifacts exist, use `stack effort acceptance <effort> <A#>`
+or `stack_effort_record_acceptance` to update the matching acceptance section
+and append a typed `effort.acceptance_recorded` activity receipt.
 Generated handoffs include dedicated Acceptance Packet, Audit, and Recorded
 Blockers sections, plus a Remaining Work section that summarizes open acceptance
 levels and the latest blocker next action. The packet points at

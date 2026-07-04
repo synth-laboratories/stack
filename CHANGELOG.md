@@ -66,6 +66,10 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   typed blocker next action; `stack effort show`, `stack effort list`, generated
   handoffs, `stack_effort_get`, `stack_effort_list`, and `/efforts` surface that
   summary so resume agents can see what remains without parsing markdown.
+  `stack effort acceptance` and `stack_effort_record_acceptance` now update a
+  single A-level section in `findings/results/acceptance-summary.md` and append a
+  typed acceptance activity receipt, so A2/A3/A4 graduation evidence can be
+  recorded through Stack after proof artifacts exist.
 - **Typed Effort blocker receipts.** `stack effort blocker` and
   `stack_effort_record_blocker` record external dependencies with blocker,
   evidence, next owner, and next safe action while keeping Effort status
