@@ -5192,6 +5192,108 @@ function openEffortsPanel(
   refresh()
 }
 
+function handleEffortsSlash(
+  args: string,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  const trimmed = args.trim()
+  if (!trimmed) {
+    openEffortsPanel(options, state, refresh, "slash")
+    return
+  }
+  const parsed = parseEffortsSlashArgs(trimmed)
+  if (!parsed) {
+    appendStackBlock(state.blocks, effortsSlashUsage())
+    refresh()
+    return
+  }
+  try {
+    if (parsed.action === "new") {
+      const effort = createEffort({
+        stackDataRoot: options.config.stackDataRoot,
+        workspaceRoot: options.config.workspaceRoot,
+        appRoot: options.config.appRoot,
+        slug: parsed.ref,
+        title: effortTitleFromSlug(parsed.ref),
+        template: parsed.template,
+      })
+      selectEffortPanelId(options, state, effort.manifest.id)
+      appendStackBlock(state.blocks, `effort created: ${effort.manifest.slug} - ${effort.registry.folder_ref}`)
+      openEffortsPanel(options, state, refresh, "slash:new")
+      return
+    }
+    const status = parsed.action === "archive" ? "archived" : "active"
+    const effort = updateEffortStatus({
+      stackDataRoot: options.config.stackDataRoot,
+      workspaceRoot: options.config.workspaceRoot,
+      effortRef: parsed.ref,
+      status,
+    })
+    selectEffortPanelId(options, state, effort.manifest.id)
+    appendStackBlock(state.blocks, `effort ${status}: ${effort.manifest.slug}`)
+    openEffortsPanel(options, state, refresh, `slash:${parsed.action}`)
+  } catch (error) {
+    appendStackBlock(state.blocks, `efforts ${parsed.action} failed: ${errorMessage(error)}`)
+    refresh()
+  }
+}
+
+type EffortsSlashAction = "new" | "archive" | "activate"
+
+function parseEffortsSlashArgs(args: string): { action: EffortsSlashAction; ref: string; template?: string } | undefined {
+  const tokens = args.split(/\s+/).map((token) => token.trim()).filter(Boolean)
+  const action = tokens[0]?.toLowerCase()
+  if (action !== "new" && action !== "create" && action !== "archive" && action !== "activate" && action !== "active" && action !== "resume") {
+    return undefined
+  }
+  const ref = tokens[1]
+  if (!ref) return undefined
+  if (action === "new" || action === "create") {
+    return {
+      action: "new",
+      ref,
+      template: effortsSlashTemplate(tokens.slice(2)) ?? "research",
+    }
+  }
+  return {
+    action: action === "archive" ? "archive" : "activate",
+    ref,
+  }
+}
+
+function effortsSlashTemplate(tokens: string[]): string | undefined {
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index]
+    if (token === "--template" || token === "-t") return tokens[index + 1]
+    if (token?.startsWith("--template=")) return token.slice("--template=".length)
+  }
+  return tokens.find((token) => !token.startsWith("-"))
+}
+
+function effortsSlashUsage(): string {
+  return "efforts - use /efforts, /efforts new <slug> [--template <id>], /efforts archive <effort>, or /efforts activate <effort>"
+}
+
+function effortTitleFromSlug(slug: string): string {
+  const words = slug
+    .split(/[-_]+/)
+    .map((word) => word.trim())
+    .filter(Boolean)
+  if (words.length === 0) return "Untitled Effort"
+  return words.map((word) => `${word.slice(0, 1).toUpperCase()}${word.slice(1)}`).join(" ")
+}
+
+function selectEffortPanelId(options: StackAppOptions, state: AppState, effortId: string): void {
+  try {
+    const index = readEffortsPanelSummaries(options).findIndex((effort) => effort.id === effortId)
+    if (index >= 0) state.selectedEffortIndex = index
+  } catch {
+    state.selectedEffortIndex = 0
+  }
+}
+
 async function submitGardenerInputValue(
   prompt: string,
   options: StackAppOptions,
@@ -9101,6 +9203,16 @@ async function handleEffortsKey(
     refreshSelectedEffortHandoff(options, state, refresh)
     return
   }
+  if (key.name === "a") {
+    toggleSelectedEffortArchive(options, state, refresh)
+    return
+  }
+  if (key.name === "n") {
+    state.inputBuffer = "/efforts new "
+    state.focusMode = "agent"
+    refresh()
+    return
+  }
   if (key.name === "b") {
     await bindSelectedEffortToCurrentThread(options, state, refresh)
   }
@@ -9158,6 +9270,33 @@ function refreshSelectedEffortHandoff(
     appendStackBlock(state.blocks, `effort handoff refreshed: ${selected.slug} - ${relative(options.config.workspaceRoot, result.path)}`)
   } catch (error) {
     appendStackBlock(state.blocks, `effort handoff failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+function toggleSelectedEffortArchive(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  const selected = selectedEffortPanelSummary(options, state)
+  if (!selected) {
+    appendStackBlock(state.blocks, "efforts archive: no Effort selected")
+    refresh()
+    return
+  }
+  const nextStatus = selected.status === "archived" ? "active" : "archived"
+  try {
+    const effort = updateEffortStatus({
+      stackDataRoot: options.config.stackDataRoot,
+      workspaceRoot: options.config.workspaceRoot,
+      effortRef: selected.id,
+      status: nextStatus,
+    })
+    selectEffortPanelId(options, state, effort.manifest.id)
+    appendStackBlock(state.blocks, `effort ${nextStatus}: ${effort.manifest.slug}`)
+  } catch (error) {
+    appendStackBlock(state.blocks, `efforts archive failed: ${errorMessage(error)}`)
   }
   refresh()
 }
@@ -10592,14 +10731,16 @@ function renderEffortsPanelStyled(options: StackAppOptions, state: AppState, col
     })
   }
   lines.push({
-    text: oneLine("new - stack effort create <slug> --template <id>", columns),
+    text: oneLine("new - /efforts new <slug> --template <id>", columns),
     color: theme.fgMuted,
   })
   if (selected) {
     const metaThreadId = options.session.metaThreadId ?? state.metaThreadManifest?.id
     const actions = [
       "j/k select",
+      "n new",
       "h handoff",
+      selected.status === "archived" ? "a activate" : "a archive",
       metaThreadId ? "b bind thread" : "",
       "r refresh",
     ].filter(Boolean).join(" - ")
@@ -10739,6 +10880,13 @@ function pushEffortSectionLines(
     if (acceptance) {
       lines.push({
         text: oneLine(`  acceptance - ${acceptance}`, columns),
+        color: theme.fgSecondary,
+      })
+    }
+    const engineering = effortEngineeringPacketLine(effort, workspaceRoot)
+    if (engineering) {
+      lines.push({
+        text: oneLine(`  engineering - ${engineering}`, columns),
         color: theme.fgSecondary,
       })
     }
@@ -10958,6 +11106,55 @@ function effortAcceptanceLine(effort: StackEffortSummary, workspaceRoot: string,
   } catch {
     return "acceptance-summary.md"
   }
+}
+
+function effortEngineeringPacketLine(effort: StackEffortSummary, workspaceRoot: string): string {
+  const root = resolve(workspaceRoot)
+  const folder = resolve(root, effort.folder_ref)
+  const rel = relative(root, folder)
+  if (!rel || /^\.\.(?:[\\/]|$)/.test(rel)) return ""
+  const packetPath = join(folder, "findings", "results", "engineering-change-summary.md")
+  if (!existsSync(packetPath)) return ""
+  try {
+    const text = readFileSync(packetPath, "utf8")
+    const changedFiles = markdownListCount(markdownSection(text, "Changed Files"))
+    const validations = markdownListCount(markdownSection(text, "Validation"))
+    const skippedGates = markdownListCount(markdownSection(text, "Skipped Gates"))
+    const risks = markdownListCount(markdownSection(text, "Risks"))
+    const stat = statSync(packetPath)
+    const parts = [
+      changedFiles > 0 ? `${changedFiles} file${changedFiles === 1 ? "" : "s"}` : "files unrecorded",
+      validations > 0 ? `${validations} validation${validations === 1 ? "" : "s"}` : "validation unrecorded",
+    ]
+    if (skippedGates > 0) parts.push(`${skippedGates} skipped`)
+    if (risks > 0) parts.push(`${risks} risk${risks === 1 ? "" : "s"}`)
+    parts.push(`updated ${lightsThreadRelativeAge(stat.mtime.toISOString())} ago`)
+    return parts.join(" - ")
+  } catch {
+    return "engineering-change-summary.md"
+  }
+}
+
+function markdownSection(text: string, heading: string): string {
+  const pattern = new RegExp(`^##\\s+${escapeRegExp(heading)}\\s*$`, "im")
+  const match = pattern.exec(text)
+  if (!match) return ""
+  const start = (match.index ?? 0) + match[0].length
+  const rest = text.slice(start)
+  const next = /^##\s+/m.exec(rest)
+  return next ? rest.slice(0, next.index) : rest
+}
+
+function markdownListCount(section: string): number {
+  return section
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.startsWith("- ") && !line.includes("No ") && !line.includes("unrecorded"))
+    .length
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
 }
 
 function recentSkillRailLine(state: AppState): string {

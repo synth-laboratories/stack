@@ -31,12 +31,14 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   non-verifiable task, and product workstreams. `stack effort ...` and
   `stack_effort_*` MCP tools share the same storage path, while `/efforts`
   shows active/archived Efforts, refs, bound thread context, recent progress,
-  recent activity, latest blocker, handoff state, and acceptance summaries. `stack effort
-  list` now works as a compact scan view with grouped status, ref counts,
-  audit status, handoff/acceptance markers, latest progress, latest activity, and latest blocker.
-  The `/efforts` panel is now selectable: `j`/`k` move the selected Effort, `h`
-  refreshes its generated handoff packet, and `b` binds the current meta-thread
-  via stackd before updating the Effort reverse index.
+  recent activity, latest blocker, handoff state, acceptance summaries, and
+  engineering change-packet summaries. `stack effort list` now works as a compact
+  scan view with grouped status, ref counts, audit status, handoff/acceptance
+  markers, latest progress, latest activity, and latest blocker.
+  The `/efforts` panel is now selectable: `j`/`k` move the selected Effort, `n`
+  starts `/efforts new`, `h` refreshes its generated handoff packet, `a`
+  archives or reactivates it, and `b` binds the current meta-thread via stackd
+  before updating the Effort reverse index.
   `stack_meta_thread_create` and `stack_worker_thread_create` accept `effort_ref`
   so new or existing worker threads can enter an Effort at creation time. `stack
   effort audit` and `stack_effort_audit` run a read-only coherence check for
@@ -101,11 +103,15 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   `findings/results/engineering-change-summary.md` with changed files, git diff
   stat when a repo path is supplied, validation, skipped gates, risks, and next
   action. This gives engineering Efforts a stable answer to "what changed?"
-  before handoff or release review.
+  before handoff or release review. `/efforts` now surfaces that packet as a
+  compact engineering row with changed-file, validation, skipped-gate, risk, and
+  update-age signals.
 - **Interactive `/efforts` panel controls.** The TUI Efforts panel now supports
-  `j/k` selection, `h` handoff refresh, `b` binding of the current meta-thread
-  to the selected Effort through stackd, and `r` refresh, so operators can keep
-  Effort state current without leaving the cockpit.
+  `j/k` selection, `n` new-Effort command drafting, `h` handoff refresh, `a`
+  archive/reactivate, `b` binding of the current meta-thread to the selected
+  Effort through stackd, and `r` refresh. `/efforts new <slug> [--template
+  <id>]`, `/efforts archive <effort>`, and `/efforts activate <effort>` provide
+  direct slash-command lifecycle actions from the cockpit.
 - **Typed Tinker refs for Efforts.** Effort manifests, `stack effort refs`,
   `stack_effort_update_refs`, generated handoffs, and the `/efforts` panel can
   now carry Tinker/training-style run ids separately from optimizer and SMR run

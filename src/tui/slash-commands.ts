@@ -109,7 +109,8 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
   },
   {
     command: "efforts",
-    description: "Open Efforts panel",
+    args: "[new <slug> [--template <id>]|archive <effort>|activate <effort>]",
+    description: "Open or update Efforts",
   },
   {
     command: "subagents",
@@ -376,7 +377,7 @@ export type SlashDispatchHooks = {
   showUsage: (view: UsageSlashView) => void
   openExperimental: () => void
   cycleEffort: () => void
-  openEfforts: () => void
+  openEfforts: (args?: string) => void
   setSubagents: (enabled: boolean | undefined) => void
   toggleDetails: () => void
   toggleRails: () => void
@@ -534,7 +535,7 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
       hooks.cycleEffort()
       return true
     case "efforts":
-      hooks.openEfforts()
+      hooks.openEfforts(args)
       return true
     case "subagents":
       if (args === "on") hooks.setSubagents(true)

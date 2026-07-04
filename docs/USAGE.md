@@ -135,10 +135,16 @@ available, artifact counts, the latest progress line, the latest typed activity
 receipt, and generated handoff packet availability when `HANDOFF.md` exists.
 When an acceptance summary exists at
 `findings/results/acceptance-summary.md`, the panel shows a separate acceptance
-row with parsed v1 and graduation status. With the panel focused, `j`/`k`
-select an Effort, `h` refreshes that Effort's `HANDOFF.md`, and `b` binds the
-current meta-thread to the selected Effort through stackd before updating the
-Effort reverse index.
+row with parsed v1 and graduation status. When an engineering change packet
+exists at `findings/results/engineering-change-summary.md`, the panel shows a
+separate engineering row with changed-file, validation, skipped-gate, risk, and
+update-age signals. With the panel focused, `j`/`k` select an Effort, `n` starts
+a new Effort command, `h` refreshes that Effort's `HANDOFF.md`, `a` archives or
+reactivates the selected Effort, and `b` binds the current meta-thread to the
+selected Effort through stackd before updating the Effort reverse index.
+`/efforts new <slug> [--template <id>]`,
+`/efforts archive <effort>`, and `/efforts activate <effort>` provide the same
+create/archive lifecycle path from the slash command line.
 
 CLI:
 
@@ -387,9 +393,11 @@ calling `stack_effort_get`.
 The `/efforts` TUI panel keeps the same scan lightweight but also surfaces
 preserved idea and human-context counts, and annotates receipt counts with
 parsed source-kind counts when available, such as local path or hosted artifact
-provenance. It also keeps a selected Effort row so an operator can refresh the
-selected handoff packet or bind the current meta-thread without leaving the
-cockpit.
+provenance. Engineering Efforts with `engineering-change-summary.md` show a
+compact changed-file/validation row. The panel also keeps a selected Effort row
+so an operator can refresh the selected handoff packet, create a new Effort,
+archive/reactivate an Effort, or bind the current meta-thread without leaving
+the cockpit.
 Use `stack_effort_activity` when a gardener or agent needs a bounded timeline
 larger than the compact orientation tail.
 Use `stack_effort_audit` before handoff or review when the question is whether
