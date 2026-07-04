@@ -795,6 +795,35 @@ export class StackMcpServer {
     return effort
   }
 
+  private recordOptionalCloudActionEffortRef(
+    config: StackConfig,
+    effortRef: string | undefined,
+    ref: { system: string; id?: string | null; lane?: string; role?: string },
+  ): Record<string, unknown> | null {
+    if (!effortRef || !ref.id) return null
+    const effort = updateStackEffortRefs({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      refs: [{
+        system: ref.system,
+        id: ref.id,
+        lane: ref.lane ?? "hosted",
+        role: ref.role ?? "cloud-action",
+      }],
+    })
+    return {
+      effort_id: effort.manifest.id,
+      slug: effort.manifest.slug,
+      ref: {
+        system: ref.system,
+        id: ref.id,
+        lane: ref.lane ?? "hosted",
+        role: ref.role ?? "cloud-action",
+      },
+    }
+  }
+
   private async ensureMetaThreadEffortRef(
     effortId: string,
     metaThreadId: string,
@@ -2306,12 +2335,17 @@ export class StackMcpServer {
     const config = await this.config(args)
     void emitFeatureUsed("hosted_ops")
     void emitFeatureUsed("remote_sync")
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const request = optionalJsonObject(args, "request")
     if (!request) {
       throw new RpcError(-32602, "request is required and must match SmrRunnableProjectCreateRequest")
     }
     const result = await createRemoteRunnableProject(config, request as RemoteProjectCreateRequest)
     const projectId = remoteActionEntityId(result, ["project_id", "projectId", "id"])
+    const effortRefRecord = result.ok
+      ? this.recordOptionalCloudActionEffortRef(config, effortRef, { system: "project", id: projectId, role: "created" })
+      : null
     const runtimeEvent = await recordRuntimeLeverEvent({
       event_type: "lever.remote_project.created",
       source: "lever.stack_mcp",
@@ -2333,6 +2367,7 @@ export class StackMcpServer {
       environment: config.environmentName,
       api_base_url: config.environment.apiBaseUrl,
       project_id: projectId ?? null,
+      effort_ref: effortRefRecord,
       runtime_event: runtimeEvent,
       ...(result.data ? { response: result.data } : {}),
       receipt: result.ok ? "lever.remote_project.created" : null,
@@ -2343,6 +2378,8 @@ export class StackMcpServer {
     const config = await this.config(args)
     void emitFeatureUsed("hosted_ops")
     void emitFeatureUsed("remote_sync")
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const request: RemoteFactoryCreateRequest = {
       ...(optionalJsonObject(args, "request") ?? {}),
     } as RemoteFactoryCreateRequest
@@ -2371,6 +2408,9 @@ export class StackMcpServer {
     }
     const result = await createRemoteFactory(config, request)
     const factoryId = remoteActionEntityId(result, ["factory_id", "factoryId", "id"])
+    const effortRefRecord = result.ok
+      ? this.recordOptionalCloudActionEffortRef(config, effortRef, { system: "factory", id: factoryId, role: "created" })
+      : null
     const runtimeEvent = await recordRuntimeLeverEvent({
       event_type: "lever.remote_factory.created",
       source: "lever.stack_mcp",
@@ -2392,6 +2432,7 @@ export class StackMcpServer {
       environment: config.environmentName,
       api_base_url: config.environment.apiBaseUrl,
       factory_id: factoryId ?? null,
+      effort_ref: effortRefRecord,
       runtime_event: runtimeEvent,
       ...(result.data ? { response: result.data } : {}),
       receipt: result.ok ? "lever.remote_factory.created" : null,
@@ -3036,6 +3077,8 @@ export class StackMcpServer {
   async deployContainerPoolRuntime(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     void emitFeatureUsed("hosted_ops")
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const poolId = requiredString(args, "pool_id")
     const taskId = optionalString(args, "task_id")
     const result = await deployContainerPoolRuntimeImage(config, {
@@ -3043,6 +3086,13 @@ export class StackMcpServer {
       ...(taskId ? { taskId } : {}),
       body: containerPoolRuntimeReleaseRequest(args),
     })
+    const effortRefRecord = result.ok
+      ? this.recordOptionalCloudActionEffortRef(config, effortRef, {
+        system: "container-pool",
+        id: result.releaseId ?? poolId,
+        role: result.releaseId ? "runtime-release" : "runtime-deploy",
+      })
+      : null
     const runtimeEvent = await recordRuntimeLeverEvent({
       event_type: "lever.container_pool.runtime_deployed",
       source: "lever.stack_mcp",
@@ -3069,6 +3119,7 @@ export class StackMcpServer {
       pool_id: poolId,
       task_id: taskId ?? null,
       release_id: result.releaseId ?? null,
+      effort_ref: effortRefRecord,
       message: result.message,
       release: result.release ?? null,
       binding: result.binding ?? null,
@@ -5346,6 +5397,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the created project as a hosted Effort ref."),
           request: jsonObjectProperty("SmrRunnableProjectCreateRequest payload for /smr/projects:runnable."),
         },
         ["request"],
@@ -5358,6 +5410,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the created factory as a hosted Effort ref."),
           name: stringProperty("Factory name. Required unless supplied in request."),
           description: stringProperty("Optional Factory description."),
           kind: stringProperty("Optional Factory kind. Defaults to backend default."),
@@ -5711,6 +5764,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the created runtime release as a hosted Effort ref."),
           pool_id: stringProperty("Synth container pool id."),
           task_id: stringProperty("Optional pool task id for task-scoped release bind."),
           runtime_kind: stringProperty("Runtime release kind. Defaults to image_ref, or service_url when service_url is supplied."),
