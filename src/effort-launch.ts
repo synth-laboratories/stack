@@ -11,7 +11,7 @@ import {
   type StackEffortRefLane,
 } from "./effort.js"
 import { launchLocalGepaRun } from "./local/optimizers.js"
-import { createRemoteFactory, createRemoteLaunch, createRemoteRunnableProject, type RemoteFactoryCreateRequest, type RemoteProjectCreateRequest } from "./remote/actions.js"
+import { createRemoteFactory, createRemoteLaunch, createRemoteRunnableProject, type RemoteFactoryCreateRequest, type RemoteLaunchRequest, type RemoteProjectCreateRequest } from "./remote/actions.js"
 import { deployContainerPoolRuntimeImage, executeContainerPoolRollout, type ContainerPoolRuntimeImageReleaseRequest } from "./remote/containers.js"
 import { submitHostedGepaRun } from "./remote/optimizers.js"
 
@@ -252,12 +252,19 @@ async function executeEffortLaunch(
     }
   }
   if (capability === "smr.hosted") {
-    const goal = input.goal?.trim()
-    if (!goal) throw new Error(`config error: launch capability "${capability}" requires --goal <text>`)
+    const rawRequest = (input.request ?? {}) as RemoteLaunchRequest
+    const goal = input.goal?.trim() || readLaunchString(rawRequest.objective)
+    if (!goal) throw new Error(`config error: launch capability "${capability}" requires --goal <text> or --request-json with objective`)
+    const requestMetadata = isLaunchRecord(rawRequest.metadata) ? rawRequest.metadata : undefined
     const result = await createRemoteLaunch(config, {
+      ...rawRequest,
       objective: goal,
       ...(input.projectId ? { project_id: input.projectId } : {}),
-      metadata: { source: "stack_effort_launch", effort_id: effortId },
+      metadata: {
+        ...(requestMetadata ?? {}),
+        source: "stack_effort_launch",
+        effort_id: effortId,
+      },
     })
     const id = remoteLaunchId(result.data)
     return {
@@ -436,4 +443,12 @@ function remoteEntityId(data: Record<string, unknown> | undefined, keys: string[
     if (typeof value === "string" && value.trim()) return value
   }
   return undefined
+}
+
+function readLaunchString(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+function isLaunchRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value)
 }
