@@ -151,6 +151,7 @@ stack effort progress banking77-top-score "Baseline and split protocol recorded"
 stack effort blocker banking77-top-score --blocker "Hosted graduation path not selected" --evidence "A0/A1 recorded; A2-A4 are optional graduation proofs" --owner operator --next "Choose hosted GEPA, SMR harness, or Tinker proof if stronger evidence is needed"
 stack effort research-log banking77-top-score "Local GEPA smoke" --work-summary "Ran local optimizer and copied scorecard artifacts" --operator-message "Use Banking77 as the acceptance Effort"
 stack effort handoff banking77-top-score --summary "Banking77 A0/A1 packet is ready for review" --next "Review heldout proof and decide hosted graduation"
+stack effort engineering-packet stack-efforts --repo ../stack --summary "Efforts capture surface implemented" --validation "bunx tsc --noEmit --pretty false passed" --next "Review changed files and release notes"
 stack effort idea banking77-top-score "Try transfer before full gate" --origin HUMAN
 stack effort note banking77-top-score "Manual review notes" --kind human --body "Operator context to preserve for the next agent"
 stack effort repo banking77-top-score --path ../evals/projectbench/factory_projects/banking77_simple_factory --repo-ref evals:banking77-simple
@@ -186,6 +187,14 @@ when present, audit status, handoff and acceptance markers, latest progress,
 latest activity, latest blocker, last update time, and visible folder ref. JSON
 mode includes the same orientation fields for scripts and review packets.
 
+`stack effort engineering-packet <effort>` writes or refreshes
+`findings/results/engineering-change-summary.md`. It is the Engineering Effort
+answer to "what changed?": changed files, optional git diff stat, validation,
+skipped gates, risks, and next action in one stable review packet. Pass
+`--repo <path>` to read a local git worktree, `--base <ref>` to diff against a
+base ref, or use repeated `--file`, `--validation`, `--skipped-gate`, and
+`--risk` flags for a manual packet.
+
 For `stack effort finding --path`, relative paths resolve inside the Effort
 folder first, then from the current shell directory, then from the Stack working
 directory. Existing Effort-local paths are recorded in place; external files or
@@ -219,6 +228,8 @@ generic `source_receipt` object. `artifact_receipt` is populated for
 `stack_pull_artifact` receipts as a compatibility alias for hosted/saved pulls.
 `stack_effort_record_capture` is the MCP twin of `stack effort capture` and
 returns the same orientation payload plus `capture_kind`.
+`stack_effort_write_engineering_packet` is the MCP twin of
+`stack effort engineering-packet`.
 
 For `stack effort repo --path`, relative paths use the same resolution rule.
 File paths are copied under `repos/`; directory paths write a small pointer

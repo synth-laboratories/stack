@@ -356,6 +356,31 @@ export type WriteEffortHandoffInput = EffortLookupInput & {
   owner?: string
 }
 
+export type WriteEffortEngineeringPacketInput = EffortLookupInput & {
+  effortRef: string
+  summary?: string
+  repoPath?: string
+  baseRef?: string
+  files?: string[]
+  diffStat?: string
+  validations?: string[]
+  skippedGates?: string[]
+  risks?: string[]
+  next?: string
+  filename?: string
+}
+
+export type WriteEffortEngineeringPacketResult = {
+  effort: StackEffort
+  path: string
+  changedFiles: string[]
+  diffStat: string
+  gitStatus: {
+    ok: boolean
+    message: string
+  }
+}
+
 export type UpdateEffortRefsInput = EffortLookupInput & {
   effortRef: string
   factoryId?: string
@@ -1055,6 +1080,39 @@ export function writeEffortHandoff(input: WriteEffortHandoffInput): { effort: St
   const audit = auditEffort(current)
   writeFileSync(path, effortHandoffMarkdown(current, input, {}, audit), "utf8")
   return { effort: current, path }
+}
+
+export function writeEffortEngineeringPacket(input: WriteEffortEngineeringPacketInput): WriteEffortEngineeringPacketResult {
+  const effort = requireEffort(input, input.effortRef)
+  const dir = join(effort.folder_path, "findings", "results")
+  mkdirSync(dir, { recursive: true })
+  const gitSnapshot = input.repoPath ? readEngineeringGitSnapshot(input.repoPath, input.baseRef) : emptyEngineeringGitSnapshot()
+  const changedFiles = uniqueStrings([...(input.files ?? []), ...gitSnapshot.changedFiles].map((file) => file.trim()).filter(Boolean))
+  const diffStat = (input.diffStat?.trim() || gitSnapshot.diffStat.trim()).trim()
+  const filename = input.filename?.trim() || "engineering-change-summary.md"
+  const path = join(dir, filename)
+  writeFileSync(path, engineeringPacketMarkdown(effort, input, {
+    changedFiles,
+    diffStat,
+    gitStatus: gitSnapshot.status,
+  }), "utf8")
+  appendEffortProgressLine(effort.folder_path, `Wrote engineering change packet: ${relative(effort.folder_path, path)}.`)
+  appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.engineering_packet_written", `Wrote engineering change packet: ${relative(effort.folder_path, path)}.`, {
+    path: relative(effort.folder_path, path),
+    changed_files: changedFiles,
+    repo_path: input.repoPath ?? "",
+    base_ref: input.baseRef ?? "",
+    validations: cleanStringList(input.validations),
+    skipped_gates: cleanStringList(input.skippedGates),
+    risks: cleanStringList(input.risks),
+  })
+  return {
+    effort: persistEffort(input, effort),
+    path,
+    changedFiles,
+    diffStat,
+    gitStatus: gitSnapshot.status,
+  }
 }
 
 export function updateEffortRefs(input: UpdateEffortRefsInput): StackEffort {
@@ -1815,6 +1873,64 @@ function effortHandoffAuditLines(audit: StackEffortAudit | undefined): string[] 
   return lines
 }
 
+function engineeringPacketMarkdown(
+  effort: StackEffort,
+  input: WriteEffortEngineeringPacketInput,
+  snapshot: {
+    changedFiles: string[]
+    diffStat: string
+    gitStatus: { ok: boolean; message: string }
+  },
+): string {
+  const validations = cleanStringList(input.validations)
+  const skippedGates = cleanStringList(input.skippedGates)
+  const risks = cleanStringList(input.risks)
+  const next = input.next?.trim()
+  const lines = [
+    `# ${effort.manifest.title} - engineering change packet`,
+    "",
+    `Generated: ${new Date().toISOString()}`,
+    `Effort: ${effort.manifest.slug}`,
+    `Status: ${effort.manifest.status}`,
+    `Template: ${effort.manifest.template}`,
+    ...(input.repoPath ? [`Repo path: ${input.repoPath}`] : []),
+    ...(input.baseRef ? [`Base ref: ${input.baseRef}`] : []),
+    `Git snapshot: ${snapshot.gitStatus.ok ? "ok" : "unavailable"} - ${snapshot.gitStatus.message}`,
+    "",
+    "## Summary",
+    "",
+    input.summary?.trim() || effort.manifest.topic || effort.manifest.title,
+    "",
+    "## Changed Files",
+    "",
+    ...(snapshot.changedFiles.length > 0 ? snapshot.changedFiles.map((file) => `- ${file}`) : ["- No changed files recorded."]),
+    "",
+    "## Diff Stat",
+    "",
+    "```text",
+    snapshot.diffStat || "No diff stat recorded.",
+    "```",
+    "",
+    "## Validation",
+    "",
+    ...(validations.length > 0 ? validations.map((entry) => `- ${entry}`) : ["- No validation recorded."]),
+    "",
+    "## Skipped Gates",
+    "",
+    ...(skippedGates.length > 0 ? skippedGates.map((entry) => `- ${entry}`) : ["- No skipped gates recorded."]),
+    "",
+    "## Risks",
+    "",
+    ...(risks.length > 0 ? risks.map((entry) => `- ${entry}`) : ["- No risks recorded."]),
+    "",
+    "## Next Action",
+    "",
+    next || "Review changed files, diff stat, validation, skipped gates, and risks before handoff or release.",
+    "",
+  ]
+  return lines.join("\n")
+}
+
 function effortHandoffAcceptanceLines(
   acceptancePacket: string | undefined,
   parsed: StackEffortAcceptancePacket | undefined,
@@ -2444,6 +2560,85 @@ function defaultCaptureFindingKind(captureKind: StackEffortCaptureKind): StackEf
 function effortCaptureBody(captureKind: StackEffortCaptureKind, body: string | undefined): string {
   const trimmed = body?.trim()
   return [`Capture kind: ${captureKind}`, "", trimmed || "Captured evidence."].join("\n")
+}
+
+function readEngineeringGitSnapshot(repoPath: string, baseRef: string | undefined): {
+  changedFiles: string[]
+  diffStat: string
+  status: { ok: boolean; message: string }
+} {
+  const repo = resolve(repoPath)
+  if (!existsSync(repo) || !statSync(repo).isDirectory()) {
+    return {
+      changedFiles: [],
+      diffStat: "",
+      status: { ok: false, message: `repo path is not a directory: ${repoPath}` },
+    }
+  }
+  const statusResult = runGit(repo, ["status", "--short"])
+  const base = baseRef?.trim()
+  const diffResult = runGit(repo, base ? ["diff", "--stat", base, "--"] : ["diff", "--stat", "HEAD", "--"])
+  const changedFiles = base
+    ? parseGitNameStatus(runGit(repo, ["diff", "--name-status", base, "--"]).stdout)
+    : parseGitStatusFiles(statusResult.stdout)
+  const ok = statusResult.ok && diffResult.ok
+  return {
+    changedFiles,
+    diffStat: diffResult.stdout,
+    status: {
+      ok,
+      message: ok ? "git diff captured" : [statusResult.stderr, diffResult.stderr].filter(Boolean).join("; ") || "git diff unavailable",
+    },
+  }
+}
+
+function emptyEngineeringGitSnapshot(): {
+  changedFiles: string[]
+  diffStat: string
+  status: { ok: boolean; message: string }
+} {
+  return {
+    changedFiles: [],
+    diffStat: "",
+    status: { ok: true, message: "manual packet" },
+  }
+}
+
+function runGit(repoPath: string, args: string[]): { ok: boolean; stdout: string; stderr: string } {
+  const result = Bun.spawnSync(["git", "-C", repoPath, ...args], {
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  return {
+    ok: result.success,
+    stdout: decodeProcessOutput(result.stdout),
+    stderr: decodeProcessOutput(result.stderr).trim(),
+  }
+}
+
+function decodeProcessOutput(output: Uint8Array | string | null | undefined): string {
+  if (!output) return ""
+  if (typeof output === "string") return output
+  return new TextDecoder().decode(output)
+}
+
+function parseGitStatusFiles(output: string): string[] {
+  return uniqueStrings(output
+    .split(/\r?\n/)
+    .map((line) => line.trimEnd())
+    .filter(Boolean)
+    .map((line) => line.length > 3 ? line.slice(3).trim() : "")
+    .filter(Boolean)
+    .map((file) => file.includes(" -> ") ? file.split(" -> ").pop()?.trim() ?? file : file))
+}
+
+function parseGitNameStatus(output: string): string[] {
+  return uniqueStrings(output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => line.split(/\t+/).filter(Boolean).pop()?.trim() ?? "")
+    .filter(Boolean))
 }
 
 function optionalNullableString(value: unknown): string | null | undefined {

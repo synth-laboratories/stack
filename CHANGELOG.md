@@ -86,6 +86,19 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   metadata with the Effort orientation payload. Mutation responses include a
   generic `source_receipt` for both local and pulled evidence. Effort audit now
   validates those sidecars when present.
+- **Capture-oriented Effort evidence.** `stack effort capture` and
+  `stack_effort_record_capture` wrap the same receipt-backed finding path with
+  explicit capture provenance for terminal, browser, screenshot, video, local,
+  monitor, memory, text, benchmark, and optimizer evidence. Captures land under
+  `findings/*`, default to proof evidence except benchmark captures default to
+  data, and mark source receipts as `<capture-kind>_capture` so ad hoc evidence
+  stays distinguishable from ordinary local path attachments.
+- **Engineering Effort change packets.** `stack effort engineering-packet` and
+  `stack_effort_write_engineering_packet` refresh
+  `findings/results/engineering-change-summary.md` with changed files, git diff
+  stat when a repo path is supplied, validation, skipped gates, risks, and next
+  action. This gives engineering Efforts a stable answer to "what changed?"
+  before handoff or release review.
 - **Typed Tinker refs for Efforts.** Effort manifests, `stack effort refs`,
   `stack_effort_update_refs`, generated handoffs, and the `/efforts` panel can
   now carry Tinker/training-style run ids separately from optimizer and SMR run

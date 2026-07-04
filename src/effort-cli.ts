@@ -30,6 +30,7 @@ import {
   recordEffortRepo,
   updateEffortRefs,
   updateEffortStatus,
+  writeEffortEngineeringPacket,
   writeEffortHandoff,
   type StackEffortActivityRecord,
   type StackEffortAcceptancePacket,
@@ -216,6 +217,34 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
         owner: readFlagString(parsed, "owner"),
       })
       await printArtifactResult(config, result.effort, result.path, json)
+      return 0
+    }
+
+    if (action === "engineering-packet" || action === "change-packet" || action === "diff") {
+      const ref = parsed.args[0]
+      if (!ref) return usageError("usage: stack effort engineering-packet <effort> [--repo <path>] [--base <ref>] [--summary <text>] [--file <path>] [--validation <text>] [--skipped-gate <text>] [--risk <text>] [--next <text>]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const repo = readFlagString(parsed, "repo")
+      const result = writeEffortEngineeringPacket({
+        ...config,
+        effortRef: effort.manifest.id,
+        summary: readFlagString(parsed, "summary"),
+        repoPath: repo ? resolveCliEffortSourcePath(config, effort.folder_path, repo) : undefined,
+        baseRef: readFlagString(parsed, "base"),
+        files: readFlagList(parsed, "file"),
+        diffStat: readFlagString(parsed, "diff-stat"),
+        validations: readFlagList(parsed, "validation"),
+        skippedGates: readFlagList(parsed, "skipped-gate"),
+        risks: readFlagList(parsed, "risk"),
+        next: readFlagString(parsed, "next"),
+        filename: readFlagString(parsed, "filename"),
+      })
+      await printArtifactResult(config, result.effort, result.path, json, undefined, undefined, undefined, {
+        changed_files: result.changedFiles,
+        diff_stat: result.diffStat,
+        git_status: result.gitStatus,
+      })
       return 0
     }
 
@@ -837,6 +866,7 @@ function printEffortUsage(): void {
   console.error("  stack effort blocker <effort> --blocker <text> --evidence <text> --owner <owner> --next <text>")
   console.error("  stack effort research-log <effort> <title> --work-summary <text> [--operator-message <text>] [--result <text>] [--metric <text>] [--path <path>] [--command <command>] [--next <text>]")
   console.error("  stack effort handoff <effort> [--summary <text>] [--risk <text>] [--next <text>] [--owner <text>]")
+  console.error("  stack effort engineering-packet <effort> [--repo <path>] [--base <ref>] [--summary <text>] [--file <path>] [--validation <text>] [--skipped-gate <text>] [--risk <text>] [--next <text>]")
   console.error("  stack effort refs <effort> [--factory-id <id>] [--hosted-effort-id <id>] [--project-id <id>] [--optimizer-run-id <id>] [--smr-run-id <id>] [--tinker-run-id <id>] [--repo-ref <ref>] [--initiative-id <id>]")
   console.error("  stack effort idea <effort> <title> [--origin HUMAN|AGENT|MIXED] [--body <text>]")
   console.error("  stack effort note <effort> <title> [--kind human|note] [--body <text>]")

@@ -48,6 +48,9 @@ A shipped engineering claim needs:
 - Put patches, recipes, config snippets, or migration notes in `findings/code/`.
 - Put validation output, release evidence, screenshots, and receipts in `findings/proof/`.
 - Put handoff summaries and acceptance reports in `findings/results/`.
+- Use `stack effort engineering-packet` or `stack_effort_write_engineering_packet`
+  to refresh `findings/results/engineering-change-summary.md` before handoff or
+  review, especially when the operator asks what files changed.
 
 ## Status Discipline
 

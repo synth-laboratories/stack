@@ -65,6 +65,7 @@ import {
   STACK_EFFORT_STATUSES,
   updateEffortRefs as updateStackEffortRefs,
   updateEffortStatus as updateStackEffortStatus,
+  writeEffortEngineeringPacket as writeStackEffortEngineeringPacket,
   writeEffortHandoff as writeStackEffortHandoff,
   type StackEffort,
   type StackEffortCaptureKind,
@@ -937,6 +938,40 @@ export class StackMcpServer {
       path: result.path,
       relative_path: relative(result.effort.folder_path, result.path),
       receipt: "lever.stack_mcp effort.handoff_written",
+    })) ?? null
+  }
+
+  async writeEffortEngineeringPacket(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const repoPath = optionalString(args, "repo_path")
+    const result = writeStackEffortEngineeringPacket({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef: effort.manifest.id,
+      summary: optionalString(args, "summary"),
+      repoPath: repoPath ? resolveEffortSourcePath(config, effort.folder_path, repoPath) : undefined,
+      baseRef: optionalString(args, "base_ref"),
+      files: optionalStringArray(args, "files"),
+      diffStat: optionalString(args, "diff_stat"),
+      validations: optionalStringArray(args, "validations"),
+      skippedGates: optionalStringArray(args, "skipped_gates"),
+      risks: optionalStringArray(args, "risks"),
+      next: optionalString(args, "next"),
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      changed_files: result.changedFiles,
+      diff_stat: result.diffStat,
+      git_status: result.gitStatus,
+      receipt: "lever.stack_mcp effort.engineering_packet_written",
     })) ?? null
   }
 
@@ -4956,6 +4991,28 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["effort_ref"],
       ),
       handler: (args) => server.writeEffortHandoff(args),
+    },
+    {
+      name: "stack_effort_write_engineering_packet",
+      description: "Write or refresh an Engineering Effort change packet under findings/results with changed files, diff stat, validation, skipped gates, risks, and next action. Use this when the operator asks what changed or before engineering handoff/release review.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          summary: stringProperty("Optional engineering summary."),
+          repo_path: stringProperty("Optional local git repo/worktree path. Relative paths first resolve inside the Effort folder, then from Stack workingDir."),
+          base_ref: stringProperty("Optional git base ref for diff/stat. Defaults to HEAD for working-tree changes."),
+          files: arrayProperty("Optional changed file list for manual packets."),
+          diff_stat: stringProperty("Optional manual diff stat text. Overrides git-derived diff stat when provided."),
+          validations: arrayProperty("Validation commands/results to record."),
+          skipped_gates: arrayProperty("Skipped gates with reason and risk."),
+          risks: arrayProperty("Risk/open-thread bullets."),
+          next: stringProperty("Next concrete action."),
+          filename: stringProperty("Optional target filename under findings/results/. Defaults to engineering-change-summary.md."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.writeEffortEngineeringPacket(args),
     },
     {
       name: "stack_effort_record_idea",
