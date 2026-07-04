@@ -2417,7 +2417,7 @@ export class StackMcpServer {
       environment: config.environmentName,
       api_base_url: config.environment.apiBaseUrl,
       project_id: projectId ?? null,
-      effort_ref: effortRefRecord,
+      effort_ref: toJsonValue(effortRefRecord) ?? null,
       runtime_event: runtimeEvent,
       ...(result.data ? { response: result.data } : {}),
       receipt: result.ok ? "lever.remote_project.created" : null,
@@ -2482,7 +2482,7 @@ export class StackMcpServer {
       environment: config.environmentName,
       api_base_url: config.environment.apiBaseUrl,
       factory_id: factoryId ?? null,
-      effort_ref: effortRefRecord,
+      effort_ref: toJsonValue(effortRefRecord) ?? null,
       runtime_event: runtimeEvent,
       ...(result.data ? { response: result.data } : {}),
       receipt: result.ok ? "lever.remote_factory.created" : null,
@@ -3508,6 +3508,8 @@ export class StackMcpServer {
 
   async submitHostedOptimizer(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const rawConfigPath = requiredString(args, "config_path")
     const configPath = resolve(config.workingDir, rawConfigPath)
     if (!existsSync(configPath)) {
@@ -3551,6 +3553,9 @@ export class StackMcpServer {
       timeoutSeconds,
     })
     const projectId = optionalString(args, "project_id")
+    const effortRefRecord = result.ok && result.runId
+      ? this.recordOptionalCloudActionEffortRef(config, effortRef, { system: "optimizer", id: result.runId, role: "hosted-gepa" })
+      : null
     const runtimeEvent = await recordRuntimeLeverEvent({
       event_type: "lever.hosted_gepa.submit_requested",
       source: "lever.stack_mcp",
@@ -3589,6 +3594,7 @@ export class StackMcpServer {
       stderr_tail: result.stderr,
       submitted_at: result.submittedAt,
       finished_at: result.finishedAt,
+      effort_ref: toJsonValue(effortRefRecord) ?? null,
       runtime_event: toJsonValue(runtimeEvent) ?? null,
     }
   }
@@ -3849,6 +3855,8 @@ export class StackMcpServer {
 
   async downloadHostedOptimizerArtifact(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const effortRef = optionalString(args, "effort_ref")
+    this.optionalEffort(config, effortRef)
     const runId = requiredString(args, "run_id")
     const artifactName = requiredString(args, "artifact_name")
     const result = await downloadHostedOptimizerArtifact(
@@ -3856,12 +3864,33 @@ export class StackMcpServer {
       { runId, algorithm: "unknown", status: "unknown" },
       artifactName,
     )
+    const effortEvidence = result.ok && effortRef
+      ? recordStackEffortRunEvidence({
+        stackDataRoot: config.stackDataRoot,
+        workspaceRoot: config.workspaceRoot,
+        effortRef,
+        runKind: "optimizer",
+        title: "Downloaded hosted optimizer artifact",
+        runId,
+        artifactName,
+        metric: "downloaded",
+        body: `Downloaded hosted optimizer artifact ${artifactName} from run ${runId} through Stack MCP.`,
+      })
+      : null
     return {
       ok: result.ok,
       status: result.status,
       message: result.message,
       run_id: runId,
       artifact_name: artifactName,
+      effort_evidence: effortEvidence ? {
+        effort_id: effortEvidence.effort.manifest.id,
+        slug: effortEvidence.effort.manifest.slug,
+        path: relative(effortEvidence.effort.folder_path, effortEvidence.path),
+        run_kind: effortEvidence.runKind,
+        run_id: effortEvidence.runId ?? null,
+        artifact_name: effortEvidence.artifactName ?? null,
+      } : null,
       ...(result.data ? { download_result: toJsonValue(result.data) ?? null } : {}),
     }
   }
@@ -6041,6 +6070,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the hosted optimizer run ref after successful submit."),
           config_path: stringProperty("Path to a hosted GEPA TOML config, relative to Stack workingDir or absolute."),
           run_id: stringProperty("Optional hosted optimizer run id."),
           idempotency_key: stringProperty("Optional idempotency key for submit retries."),
@@ -6809,6 +6839,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
+          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records run evidence for the downloaded optimizer artifact."),
           run_id: stringProperty("Hosted optimizer run id."),
           artifact_name: stringProperty("Hosted optimizer artifact name."),
         },
