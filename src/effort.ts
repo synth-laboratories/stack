@@ -2168,7 +2168,7 @@ export function recordEffortOptimizerCandidate(input: RecordEffortOptimizerCandi
     body: input.body,
     sourcePath: input.sourcePath,
     sourceReceipt: input.sourceReceipt,
-    filename: input.filename ?? releaseArtifactEvidenceFilename({ version, target, sha256, sourcePath: input.sourcePath }),
+    filename: input.filename,
   })
   return {
     effort: result.effort,
@@ -2444,7 +2444,7 @@ export function recordEffortReleaseArtifact(input: RecordEffortReleaseArtifactIn
     body: input.body,
     sourcePath: input.sourcePath,
     sourceReceipt: input.sourceReceipt,
-    filename: input.filename,
+    filename: input.filename ?? releaseArtifactEvidenceFilename({ version, target, sha256, sourcePath: input.sourcePath }),
   })
   return {
     effort: result.effort,
