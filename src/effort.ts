@@ -800,7 +800,8 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
     ],
   )
   const progressTail = readEffortProgressTail(effort, 200)
-  const activityTail = readEffortActivityTail(effort, 200)
+  const activityRecords = readEffortActivityRecords(effort)
+  const activityTail = activityRecords.slice(Math.max(0, activityRecords.length - 200))
   const blockerTail = readEffortBlockerTail(effort, 20)
   check(
     "timeline",
@@ -916,6 +917,13 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
       coverage.evidence,
     )
     if (effort.manifest.template === "task-classifier") {
+      const optimizerCandidate = taskClassifierOptimizerCandidateAudit(effort, artifactInventory, activityRecords)
+      check(
+        "task_classifier_optimizer_candidate",
+        optimizerCandidate.ok ? "pass" : "fail",
+        optimizerCandidate.ok ? "Task-classifier optimizer candidate proof is typed and receipt-backed." : "Task-classifier optimizer candidate proof is missing typed candidate receipt evidence.",
+        optimizerCandidate.evidence,
+      )
       const v1Bar = taskClassifierV1BarAudit(effort, acceptanceSummaryText, findingFiles, researchLogPath)
       check(
         "task_classifier_v1_bar",
@@ -2278,6 +2286,59 @@ function taskClassifierV1BarAudit(
       `A1_mentions_heldout=${/heldout/i.test(a1)}`,
       `A1_mentions_research_log=${/research log/i.test(a1)}`,
       `research_log_shape=${researchLog.ok ? "pass" : "missing_or_weak"}`,
+    ],
+  }
+}
+
+function taskClassifierOptimizerCandidateAudit(
+  effort: StackEffort,
+  artifactInventory: StackEffortArtifactInventory,
+  activityRecords: StackEffortActivityRecord[],
+): { ok: boolean; evidence: string[] } {
+  const candidateSources = artifactInventory.receipt_sources.filter((source) => source.receipt.source_kind === "optimizer_candidate")
+  const candidateActivities = activityRecords.filter((record) => record.type === "effort.optimizer_candidate_recorded")
+  const validActivities: string[] = []
+  const invalidActivities: string[] = []
+  for (const record of candidateActivities) {
+    const payload = asRecord(record.payload)
+    const pathRef = readString(payload.path)?.trim()
+    const sourceReceiptPath = readString(payload.source_receipt_path)?.trim()
+    const sourceReceipt = asRecord(payload.source_receipt)
+    const problems: string[] = []
+    if (!readString(payload.optimizer_run_id)?.trim()) problems.push("missing optimizer_run_id")
+    if (!readString(payload.candidate_id)?.trim()) problems.push("missing candidate_id")
+    if (!readString(payload.score)?.trim()) problems.push("missing score")
+    if (!readString(payload.split)?.trim()) problems.push("missing split")
+    if (!pathRef) problems.push("missing path")
+    else {
+      const path = join(effort.folder_path, ...pathRef.split("/").filter(Boolean))
+      if (!isPathInside(effort.folder_path, path) || !existsSync(path)) problems.push("missing candidate artifact")
+    }
+    if (!sourceReceiptPath) problems.push("missing source_receipt_path")
+    if (readString(sourceReceipt.source_kind) !== "optimizer_candidate") problems.push("source_kind is not optimizer_candidate")
+    if (problems.length > 0) {
+      invalidActivities.push(`${record.observed_at}: ${problems.join(", ")}`)
+    } else {
+      validActivities.push(`${record.observed_at}: ${pathRef}`)
+    }
+  }
+  const missingSourceArtifacts = candidateSources.flatMap((source) => {
+    const path = join(effort.folder_path, ...source.finding_path.split("/").filter(Boolean))
+    return !isPathInside(effort.folder_path, path) || !existsSync(path)
+      ? [`missing candidate source artifact: ${source.finding_path}`]
+      : []
+  })
+  return {
+    ok: candidateSources.length > 0 && validActivities.length > 0 && invalidActivities.length === 0 && missingSourceArtifacts.length === 0,
+    evidence: [
+      `optimizer_candidate_receipts=${candidateSources.length}`,
+      `optimizer_candidate_activities=${candidateActivities.length}`,
+      `valid_optimizer_candidate_activities=${validActivities.length}`,
+      `invalid_optimizer_candidate_activities=${invalidActivities.length}`,
+      ...missingSourceArtifacts.slice(0, 10),
+      ...invalidActivities.slice(0, 10),
+      ...candidateSources.slice(0, 10).map((source) => `receipt: ${source.sidecar_path} -> ${source.finding_path}`),
+      ...validActivities.slice(0, 10).map((activity) => `activity: ${activity}`),
     ],
   }
 }

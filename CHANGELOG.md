@@ -104,6 +104,8 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   score label, split, optional candidate notes, and source artifact receipts.
   Source sidecars are marked `optimizer_candidate` so Banking77-style acceptance
   packets can distinguish a scored candidate from a generic optimizer capture.
+  `stack effort audit` now verifies task-classifier optimizer candidates through
+  this typed activity receipt plus receipt sidecar.
 - **Engineering Effort change packets.** `stack effort engineering-packet` and
   `stack_effort_write_engineering_packet` refresh
   `findings/results/engineering-change-summary.md` with changed files, git diff
@@ -124,7 +126,8 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   ids.
 - **Banking77 acceptance Effort.** The `task-classifier` template seeds the
   Banking77 A0-A4 acceptance ladder. The current acceptance packet records A0
-  human walkthrough proof and A1 local GEPA artifact-capture proof; hosted
+  human walkthrough proof and A1 local GEPA artifact-capture proof, including a
+  typed `optimizer_candidate` receipt for the accepted smoke candidate; hosted
   GEPA, SMR harness, and SMR/Tinker proofs remain optional graduation evidence.
   The A2-A4 sections require proof artifacts, configs/recipes, and research-log
   evidence rather than refs alone. The documented route is local GEPA first,

@@ -237,6 +237,8 @@ optimizer candidate proof. It records into `findings/proof/`, preserves
 activity receipt and MCP response, and marks any source sidecar as
 `source_kind=optimizer_candidate`. Use `--path` for local GEPA candidate files or
 `--receipt-path` after `stack_pull_artifact` for hosted optimizer artifacts.
+For `task-classifier` Efforts, `stack effort audit` requires this typed
+optimizer-candidate receipt before the optimizer-candidate check passes.
 
 For MCP workflows, `stack_effort_record_finding` accepts the same
 `path` or `receipt_path` inputs and returns receipt metadata alongside the usual
