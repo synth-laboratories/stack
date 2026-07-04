@@ -163,9 +163,10 @@ stack effort archive banking77-top-score
 
 `stack effort show` prints the same orientation cues as `stack_effort_get`: key
 file paths, acceptance summary when present, bound meta-thread context, latest
-progress, latest activity, latest blocker, and small progress/activity/blocker tails. Use
-`stack effort activity <effort> --limit <n>` for a dedicated human-readable or
-JSON activity timeline from `ACTIVITY.jsonl`.
+progress, latest activity, latest blocker, receipt-source provenance when
+present, and small progress/activity/blocker tails. Use `stack effort activity
+<effort> --limit <n>` for a dedicated human-readable or JSON activity timeline
+from `ACTIVITY.jsonl`.
 
 `stack effort audit <effort>` is the read-only coherence check for handoff and
 acceptance review. It reports `pass`, `warn`, or `fail` checks for scaffold

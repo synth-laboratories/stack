@@ -468,6 +468,17 @@ function clipCli(value: string, maxLength: number): string {
   return `${cleaned.slice(0, Math.max(0, maxLength - 1))}...`
 }
 
+function formatEffortReceiptSourceLine(source: ReturnType<typeof effortArtifactInventory>["receipt_sources"][number]): string {
+  const receipt = source.receipt
+  const labels = [
+    receipt.source_kind ?? "source",
+    receipt.artifact_kind ?? "",
+    receipt.environment ? `env ${receipt.environment}` : "",
+  ].filter(Boolean).join(", ")
+  const digest = receipt.digest?.sha256 ? ` - sha256 ${receipt.digest.sha256}` : ""
+  return `${source.sidecar_path} -> ${source.finding_path} (${labels}) - source ${clipCli(receipt.workspace_path, 140)}${digest}`
+}
+
 async function printEffort(config: StackConfig, effort: StackEffort, json: boolean): Promise<void> {
   const paths = effortPathRefs(effort)
   const artifactInventory = effortArtifactInventory(effort)
@@ -529,6 +540,15 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   console.log(`  ideas: ${paths.ideas}`)
   console.log(`  findings: ${Object.values(paths.findings).join(", ")}`)
   console.log(`artifacts: ${artifactInventory.counts.total} total - findings ${Object.values(artifactInventory.counts.findings).reduce((sum, count) => sum + count, 0)} - receipts ${artifactInventory.counts.receipt_sidecars} - generated ${artifactInventory.counts.generated}`)
+  if (artifactInventory.receipt_sources.length > 0) {
+    console.log("receipt sources:")
+    for (const source of artifactInventory.receipt_sources.slice(0, 5)) {
+      console.log(`  ${formatEffortReceiptSourceLine(source)}`)
+    }
+    if (artifactInventory.receipt_sources.length > 5) {
+      console.log(`  ... ${artifactInventory.receipt_sources.length - 5} more`)
+    }
+  }
   if (progressTail.length > 0) {
     console.log("recent progress:")
     for (const line of progressTail) console.log(`  ${line}`)
