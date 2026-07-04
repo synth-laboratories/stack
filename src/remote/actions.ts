@@ -85,8 +85,24 @@ export type RemoteLaunchRequest = {
   task_id?: string
   objective?: string
   runbook?: string
+  runbook_preset?: string
   metadata?: Record<string, unknown>
   [key: string]: unknown
+}
+
+export type RemoteProjectCreateRequest = Record<string, unknown>
+
+export type RemoteFactoryCreateRequest = {
+  name: string
+  description?: string
+  kind?: string
+  status?: string
+  budget_policy?: Record<string, unknown>
+  cap_policy?: Record<string, unknown>
+  homeostasis_policy?: Record<string, unknown>
+  publication_policy?: Record<string, unknown>
+  authorization_policy?: Record<string, unknown>
+  metadata?: Record<string, unknown>
 }
 
 export type RemoteLaunchTerminateRequest = {
@@ -98,14 +114,114 @@ export async function createRemoteLaunch(
   config: StackConfig,
   request: RemoteLaunchRequest,
 ): Promise<RemoteActionResult> {
-  return postRemote(config, "/smr/v1/launches", request)
+  const projectId = readString(request.project_id)?.trim()
+  const body = remoteTriggerBody(request)
+  const preflightPath = projectId
+    ? `/smr/projects/${encodeURIComponent(projectId)}/launch-preflight`
+    : "/smr/runs:one-off/launch-preflight"
+  const preflight = await postRemote(config, preflightPath, body)
+  if (!preflight.ok) {
+    return {
+      ...preflight,
+      message: launchFailureMessage("launch_preflight_failed", preflight),
+    }
+  }
+  if (preflight.data && preflight.data.clear_to_trigger === false) {
+    const promoStatus = hasLaunchPromoBlocker(preflight.data)
+      ? await getRemoteLaunchPromoStatus(config)
+      : undefined
+    return {
+      ok: false,
+      status: launchBlockerStatus(preflight.data) ?? preflight.status,
+      message: launchFailureMessage("launch_preflight_blocked", preflight),
+      data: {
+        preflight: preflight.data,
+        ...(promoStatus ? { launch_promo_status: remoteActionPayload(promoStatus) } : {}),
+      },
+    }
+  }
+
+  const launchPath = projectId
+    ? `/smr/projects/${encodeURIComponent(projectId)}/trigger`
+    : "/smr/runs:one-off"
+  const launch = await postRemote(config, launchPath, body)
+  if (!launch.ok) {
+    return {
+      ...launch,
+      message: launchFailureMessage("launch_trigger_failed", launch),
+      ...(launch.data ? { data: { preflight: preflight.data, response: launch.data } } : {}),
+    }
+  }
+  return {
+    ...launch,
+    data: {
+      ...(launch.data ?? {}),
+      preflight: preflight.data,
+    },
+  }
+}
+
+export async function getRemoteLaunchPromoStatus(config: StackConfig): Promise<RemoteActionResult> {
+  return getRemote(config, "/smr/launch-promo/status")
+}
+
+export async function claimRemoteLaunchPromo(config: StackConfig): Promise<RemoteActionResult> {
+  return postRemote(config, "/smr/launch-promo/claim")
+}
+
+export async function createRemoteRunnableProject(
+  config: StackConfig,
+  request: RemoteProjectCreateRequest,
+): Promise<RemoteActionResult> {
+  return postRemote(config, "/smr/projects:runnable", request)
+}
+
+export async function createRemoteFactory(
+  config: StackConfig,
+  request: RemoteFactoryCreateRequest,
+): Promise<RemoteActionResult> {
+  return postRemote(config, "/smr/factories", request)
 }
 
 export async function getRemoteLaunch(
   config: StackConfig,
   runId: string,
 ): Promise<RemoteActionResult> {
-  return getRemote(config, `/smr/v1/launches/${encodeURIComponent(runId)}`)
+  const encodedRunId = encodeURIComponent(runId)
+  const run = await getRemote(config, `/smr/runs/${encodedRunId}`)
+  if (run.ok) {
+    return {
+      ok: true,
+      status: run.status,
+      message: "project run found via canonical SMR run surface",
+      data: {
+        source: "project_run",
+        run_id: runId,
+        state: readString(run.data?.public_state) ?? readString(run.data?.state) ?? "unknown",
+        project_run: run.data ?? {},
+      },
+    }
+  }
+  if (run.status !== 404) {
+    return run
+  }
+  const launch = await getRemote(config, `/smr/v1/launches/${encodedRunId}`)
+  if (!launch.ok) {
+    return {
+      ...launch,
+      message: `project run not found and legacy launch lookup failed: ${launch.message}`,
+      ...(launch.data ? { data: { projectRun: run, launch: launch.data } } : { data: { projectRun: run } }),
+    }
+  }
+  return {
+    ...launch,
+    message: "legacy launch found after canonical SMR run lookup returned 404",
+    data: {
+      ...(launch.data ?? {}),
+      source: "legacy_launch",
+      project_run_lookup: run,
+    },
+  }
 }
 
 export async function terminateRemoteLaunch(
@@ -113,7 +229,41 @@ export async function terminateRemoteLaunch(
   runId: string,
   request: RemoteLaunchTerminateRequest = {},
 ): Promise<RemoteActionResult> {
-  return postRemote(config, `/smr/v1/launches/${encodeURIComponent(runId)}/terminate`, request)
+  const encodedRunId = encodeURIComponent(runId)
+  const stopped = await postRemote(config, `/smr/runs/${encodedRunId}/stop`, {
+    ...(request.reason ? { reason: request.reason } : {}),
+  })
+  if (stopped.ok) {
+    return {
+      ...stopped,
+      message: "project run stopped via canonical SMR run surface",
+      data: {
+        source: "project_run",
+        run_id: runId,
+        project_run_stop: stopped.data ?? {},
+      },
+    }
+  }
+  if (stopped.status !== 404) {
+    return stopped
+  }
+  const launch = await postRemote(config, `/smr/v1/launches/${encodedRunId}/terminate`, request)
+  if (!launch.ok) {
+    return {
+      ...launch,
+      message: `project run stop failed and legacy launch terminate failed: ${launch.message}`,
+      ...(launch.data ? { data: { projectRunStop: stopped, launch: launch.data } } : { data: { projectRunStop: stopped } }),
+    }
+  }
+  return {
+    ...launch,
+    message: "legacy launch terminated after canonical SMR run stop returned 404",
+    data: {
+      ...(launch.data ?? {}),
+      source: "legacy_launch",
+      project_run_stop: stopped,
+    },
+  }
 }
 
 export async function listRemoteRunQuestions(
@@ -725,6 +875,94 @@ function readDownloadKind(value: unknown): RemoteDownloadRecord["kind"] | undefi
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" ? value : undefined
+}
+
+function remoteTriggerBody(request: RemoteLaunchRequest): Record<string, unknown> {
+  const {
+    project_id: _projectId,
+    task_id,
+    objective,
+    runbook,
+    runbook_preset,
+    metadata,
+    ...rest
+  } = request
+  const launchMetadata = task_id
+    ? {
+        ...(metadata ?? {}),
+        source_task_id: task_id,
+      }
+    : metadata
+  return dropUndefined({
+    ...rest,
+    objective,
+    runbook,
+    runbook_preset: runbook_preset ?? runbook,
+    metadata: launchMetadata,
+  })
+}
+
+function dropUndefined(value: Record<string, unknown>): Record<string, unknown> {
+  const cleaned: Record<string, unknown> = {}
+  for (const [key, entry] of Object.entries(value)) {
+    if (entry !== undefined) cleaned[key] = entry
+  }
+  return cleaned
+}
+
+function launchFailureMessage(prefix: string, result: RemoteActionResult): string {
+  const codes = launchErrorCodes(result.data)
+  const status = launchBlockerStatus(result.data) ?? result.status
+  const className = launchFailureClass(status, codes)
+  const codeText = codes.length > 0 ? ` ${codes.join(",")}` : ""
+  return `${prefix}: ${className}${status ? ` HTTP ${status}` : ""}${codeText}; ${result.message}`
+}
+
+function launchFailureClass(status: number, codes: string[]): string {
+  if (status === 402 || codes.some((code) => code.includes("billing") || code.includes("entitlement") || code.includes("quota"))) return "quota"
+  if (status === 429 || codes.some((code) => code.includes("concurrent") || code.includes("capacity") || code.includes("backpressure"))) return "capacity"
+  if (status === 401 || status === 403) return "auth"
+  if (status >= 500 || status === 0) return "transient"
+  return "config"
+}
+
+function launchBlockerStatus(data: Record<string, unknown> | undefined): number | undefined {
+  for (const blocker of launchBlockers(data)) {
+    const status = blocker.http_status
+    if (typeof status === "number" && Number.isFinite(status)) return status
+  }
+  return undefined
+}
+
+function launchErrorCodes(data: Record<string, unknown> | undefined): string[] {
+  return launchBlockers(data)
+    .map((blocker) => readString(blocker.error_code) ?? readString(blocker.code))
+    .filter((code): code is string => Boolean(code))
+}
+
+function hasLaunchPromoBlocker(data: Record<string, unknown> | undefined): boolean {
+  return launchErrorCodes(data).some((code) => code.startsWith("smr_launch_promo_"))
+}
+
+function launchBlockers(data: Record<string, unknown> | undefined): Record<string, unknown>[] {
+  if (!data) return []
+  const preflight = data.preflight && typeof data.preflight === "object" && !Array.isArray(data.preflight)
+    ? data.preflight as Record<string, unknown>
+    : data
+  const blockers = Array.isArray(preflight.blockers) ? preflight.blockers : []
+  const checks = Array.isArray(preflight.checks) ? preflight.checks : []
+  return [...blockers, ...checks]
+    .filter((entry): entry is Record<string, unknown> => entry !== null && typeof entry === "object" && !Array.isArray(entry))
+    .filter((entry) => entry.status === "blocked" || entry.error_code || entry.http_status)
+}
+
+function remoteActionPayload(result: RemoteActionResult): Record<string, unknown> {
+  return {
+    ok: result.ok,
+    status: result.status,
+    message: result.message,
+    data: result.data ?? null,
+  }
 }
 
 function readNumber(value: unknown): number | undefined {

@@ -13,6 +13,7 @@ pub const PREINSTALLED_SKILL_IDS: &[&str] = &[
     "synth-ai",
     "containers",
     "containers-coding",
+    "artifact-authoring",
 ];
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

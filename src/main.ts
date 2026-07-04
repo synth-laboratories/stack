@@ -66,6 +66,10 @@ try {
     const { runEffortCli } = await import("./effort-cli.js")
     process.exit(await runEffortCli(config, process.argv.slice(2)))
   }
+  if (process.argv[2] === "artifacts") {
+    const { runArtifactsCli } = await import("./artifacts-cli.js")
+    process.exit(await runArtifactsCli(config, process.argv.slice(2)))
+  }
   if (process.argv[2] === "watch") {
     const { runWatchCli } = await import("./watch-cli.js")
     process.exit(await runWatchCli(config, process.argv.slice(2)))
@@ -243,6 +247,7 @@ function printStackHelp(argv: string[]): void {
   console.log("  stack auth <command>           Manage optional Synth auth")
   console.log("  stack inference <list|usage> [--json]")
   console.log("  stack effort <command>          Create, inspect, and update Efforts")
+  console.log("  stack artifacts <command>       Create and serve local Artifact Sites")
   console.log("  stack watch <run-id> [--once|--replay] [--json]")
   console.log("  stack telemetry digest [--env dev|staging|prod]")
   console.log("  stack crashes <command>")

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Artifact Authoring"
+  short_description: "Create Stack Artifact Site pages"
+  default_prompt: "Create a local Stack artifact page from evidence and return the localhost URL."
