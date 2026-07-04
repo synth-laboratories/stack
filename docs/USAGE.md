@@ -335,10 +335,12 @@ registry record, workspace path refs for `PLAYBOOK.md`, `PROGRESS.md`,
 `research_log.md` when present, `ideas/`, `findings/*`, and
 `acceptance_summary` when `findings/results/acceptance-summary.md` exists, plus
 a machine-readable `artifact_inventory` covering generated files, ideas, human
-notes, repo pointers, findings, and receipt sidecars. It also returns the latest progress line,
-latest blocker, small progress/activity/blocker tails, and compact
-`bound_meta_threads` context for each bound meta-thread. Effort MCP mutation
-responses return the same orientation context after applying the change.
+notes, repo pointers, findings, receipt sidecar paths, and parsed
+`receipt_sources` provenance with source kind, workspace path, finding path,
+and digest when available. It also returns the latest progress line, latest
+blocker, small progress/activity/blocker tails, and compact `bound_meta_threads`
+context for each bound meta-thread. Effort MCP mutation responses return the
+same orientation context after applying the change.
 `stack_effort_list` is also an orientation surface: each row includes path refs,
 audit status, latest progress, latest activity, latest blocker,
 repo/optimizer/SMR/Tinker ref counts, artifact counts, and

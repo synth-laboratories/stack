@@ -56,11 +56,13 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 - **Machine-readable Effort artifact inventory.** `stack effort show --json`,
   `stack_effort_get`, and Effort mutation responses now include an
   `artifact_inventory` with generated files, ideas, human notes, repo pointers,
-  findings, receipt sidecars, and counts. `stack effort list` and
-  `stack_effort_list` expose compact artifact and receipt-sidecar counts, and
-  `stack effort audit --json` exposes receipt sidecars in structured audit
-  counts. `/efforts` shows the same count line so agents and humans can orient
-  around proof material without scraping `HANDOFF.md`.
+  findings, receipt sidecars, parsed `receipt_sources` provenance, and counts.
+  `stack effort list` and `stack_effort_list` expose compact artifact and
+  receipt-sidecar counts, and `stack effort audit --json` exposes receipt
+  sidecars in structured audit counts. Generated handoffs now list receipt
+  source kind, finding path, workspace path, and digest when available, while
+  `/efforts` shows the same count line so agents and humans can orient around
+  proof material without scraping `HANDOFF.md`.
 - **Pulled and local artifacts can become Effort findings.** `stack effort
   finding --path` now writes an Effort-local source receipt sidecar for
   local/ad-hoc evidence, while `--receipt-path` and
