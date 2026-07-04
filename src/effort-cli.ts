@@ -13,6 +13,7 @@ import {
   effortPathRefs,
   listEfforts,
   listEffortTemplates,
+  readEffortAcceptancePacket,
   readEffort,
   readEffortActivityTail,
   readEffortBlockerTail,
@@ -26,6 +27,7 @@ import {
   updateEffortStatus,
   writeEffortHandoff,
   type StackEffortActivityRecord,
+  type StackEffortAcceptancePacket,
   type StackEffortAudit,
   type StackEffortAuditStatus,
   type StackEffortBlockerRecord,
@@ -348,6 +350,7 @@ type EffortCliListItem = StackEffortSummary & {
   }
   has_handoff: boolean
   has_acceptance_summary: boolean
+  acceptance_packet: StackEffortAcceptancePacket | null
 }
 
 function readEffortListItems(config: StackConfig): EffortCliListItem[] {
@@ -378,6 +381,7 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
         },
         has_handoff: false,
         has_acceptance_summary: false,
+        acceptance_packet: null,
       }
     }
     const progressTail = readEffortProgressTail(effort, 1)
@@ -386,6 +390,7 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
     const audit = auditEffort(effort)
     const paths = effortPathRefs(effort)
     const artifactInventory = effortArtifactInventory(effort)
+    const acceptancePacket = readEffortAcceptancePacket(effort) ?? null
     return {
       ...summary,
       latest_progress: progressTail[0] ?? "",
@@ -410,6 +415,7 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
       },
       has_handoff: existsSync(resolve(effort.folder_path, "HANDOFF.md")),
       has_acceptance_summary: Boolean(paths.acceptance_summary),
+      acceptance_packet: acceptancePacket,
     }
   })
 }
@@ -458,8 +464,16 @@ function formatEffortListRefs(effort: EffortCliListItem): string[] {
   if (effort.ref_counts.smr_runs > 0) refs.push(`smr ${effort.ref_counts.smr_runs}`)
   if (effort.ref_counts.tinker_runs > 0) refs.push(`tinker ${effort.ref_counts.tinker_runs}`)
   if (effort.has_handoff) refs.push("handoff")
-  if (effort.has_acceptance_summary) refs.push("acceptance")
+  if (effort.acceptance_packet) refs.push(`acceptance ${formatAcceptancePacketCompact(effort.acceptance_packet)}`)
+  else if (effort.has_acceptance_summary) refs.push("acceptance")
   return refs
+}
+
+function formatAcceptancePacketCompact(packet: StackEffortAcceptancePacket): string {
+  if (packet.v1_status === "not_applicable") return packet.summary
+  const openGraduation = packet.open_levels.filter((level) => ["A2", "A3", "A4"].includes(level))
+  const graduation = openGraduation.length > 0 ? `grad open ${openGraduation.join("/")}` : `grad ${packet.graduation_status}`
+  return `v1 ${packet.v1_status} ${graduation}`
 }
 
 function clipCli(value: string, maxLength: number): string {
@@ -485,6 +499,7 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   const progressTail = readEffortProgressTail(effort, 5)
   const activityTail = readEffortActivityTail(effort, 5)
   const blockerTail = readEffortBlockerTail(effort, 5)
+  const acceptancePacket = readEffortAcceptancePacket(effort) ?? null
   const boundMetaThreads = await readBoundMetaThreadSummaries(config, effort)
   if (json) {
     console.log(JSON.stringify({
@@ -497,6 +512,7 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
       activity_tail: activityTail,
       latest_blocker: blockerTail[blockerTail.length - 1] ?? null,
       blocker_tail: blockerTail,
+      acceptance_packet: acceptancePacket,
       bound_meta_threads: boundMetaThreads,
     }, null, 2))
     return
@@ -540,6 +556,13 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   console.log(`  ideas: ${paths.ideas}`)
   console.log(`  findings: ${Object.values(paths.findings).join(", ")}`)
   console.log(`artifacts: ${artifactInventory.counts.total} total - findings ${Object.values(artifactInventory.counts.findings).reduce((sum, count) => sum + count, 0)} - receipts ${artifactInventory.counts.receipt_sidecars} - generated ${artifactInventory.counts.generated}`)
+  if (acceptancePacket) {
+    console.log(`acceptance: ${acceptancePacket.summary}`)
+    for (const level of acceptancePacket.levels) {
+      const required = level.required_for_v1 ? " required-v1" : ""
+      console.log(`  ${level.label}: ${level.state}${required} - ${level.title} - ${level.status}`)
+    }
+  }
   if (artifactInventory.receipt_sources.length > 0) {
     console.log("receipt sources:")
     for (const source of artifactInventory.receipt_sources.slice(0, 5)) {

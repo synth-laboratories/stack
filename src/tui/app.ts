@@ -97,7 +97,7 @@ import {
   readMetaThreadManifest,
   reconcileMetaThreadGoalFromCodex,
 } from "../meta-thread-goal.js"
-import { auditEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, type StackEffortSummary } from "../effort.js"
+import { auditEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, type StackEffortSummary } from "../effort.js"
 import type { StackdMetaSidePanel, StackdMetaStatus, StackdMetaThreadManifest } from "../client/stackd.js"
 import {
   formatCodexBudgetSuffix,
@@ -10574,7 +10574,7 @@ function pushEffortSectionLines(
         color: theme.fgSecondary,
       })
     }
-    const acceptance = effortAcceptanceLine(effort, workspaceRoot)
+    const acceptance = effortAcceptanceLine(effort, workspaceRoot, stackDataRoot)
     if (acceptance) {
       lines.push({
         text: oneLine(`  acceptance - ${acceptance}`, columns),
@@ -10778,7 +10778,7 @@ function effortHandoffLine(effort: StackEffortSummary, workspaceRoot: string): s
   }
 }
 
-function effortAcceptanceLine(effort: StackEffortSummary, workspaceRoot: string): string {
+function effortAcceptanceLine(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string {
   const root = resolve(workspaceRoot)
   const folder = resolve(root, effort.folder_ref)
   const rel = relative(root, folder)
@@ -10786,8 +10786,14 @@ function effortAcceptanceLine(effort: StackEffortSummary, workspaceRoot: string)
   const acceptancePath = join(folder, "findings", "results", "acceptance-summary.md")
   if (!existsSync(acceptancePath)) return ""
   try {
+    const current = readEffort({ workspaceRoot, stackDataRoot }, effort.id)
+    const packet = current ? readEffortAcceptancePacket(current) : undefined
     const stat = statSync(acceptancePath)
-    return `acceptance-summary.md - updated ${lightsThreadRelativeAge(stat.mtime.toISOString())} ago`
+    const openGraduation = packet?.open_levels.filter((level) => ["A2", "A3", "A4"].includes(level)) ?? []
+    const status = packet
+      ? `${packet.v1_status}${packet.graduation_status !== "not_applicable" ? ` - grad ${packet.graduation_status}${openGraduation.length > 0 ? ` ${openGraduation.join("/")}` : ""}` : ""}`
+      : "acceptance-summary.md"
+    return `${status} - updated ${lightsThreadRelativeAge(stat.mtime.toISOString())} ago`
   } catch {
     return "acceptance-summary.md"
   }

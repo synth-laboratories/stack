@@ -135,7 +135,7 @@ available, artifact counts, the latest progress line, the latest typed activity
 receipt, and generated handoff packet availability when `HANDOFF.md` exists.
 When an acceptance summary exists at
 `findings/results/acceptance-summary.md`, the panel shows a separate acceptance
-row.
+row with parsed v1 and graduation status.
 
 CLI:
 
@@ -163,7 +163,8 @@ stack effort archive banking77-top-score
 
 `stack effort show` prints the same orientation cues as `stack_effort_get`: key
 file paths, acceptance summary when present, bound meta-thread context, latest
-progress, latest activity, latest blocker, receipt-source provenance when
+progress, latest activity, latest blocker, parsed acceptance packet state,
+receipt-source provenance when
 present, and small progress/activity/blocker tails. Use `stack effort activity
 <effort> --limit <n>` for a dedicated human-readable or JSON activity timeline
 from `ACTIVITY.jsonl`.
@@ -194,6 +195,13 @@ where available. `stack effort finding --receipt-path` accepts a
 `stack_pull_artifact` receipt, reads the pulled `workspace_path`, records that
 artifact as the finding source, and preserves the hosted/saved artifact receipt
 metadata in the same sidecar shape.
+
+Local/ad-hoc evidence can be terminal output, CLI receipts, JSONL traces,
+scorecards, prompts, configs, candidate files, local folders, browser captures,
+screenshots, screencaps, video links, copied notes, memory updates, monitor
+outputs, MLDP entries, or policy/reflection artifacts. Use a first-class
+artifact adapter when one exists; otherwise attach the local file or folder
+immediately so the Effort preserves source provenance.
 
 For MCP workflows, `stack_effort_record_finding` accepts the same
 `path` or `receipt_path` inputs and returns receipt metadata alongside the usual
@@ -272,7 +280,9 @@ Findings are promoted artifacts:
 - `findings/ideas/`: promoted hypotheses, design routes, and negative results
 - `findings/code/`: prompts, configs, harness recipes, patches
 - `findings/data/`: seeds, splits, corpora, traces
-- `findings/proof/`: scorecards, receipts, run packets, heldout proof
+- `findings/proof/`: scorecards, receipts, run packets, heldout proof,
+  screenshots, screencaps, browser captures, video links, terminal receipts,
+  monitor outputs, and proof packets
 - `findings/results/`: summaries, acceptance reports, final writeups
 
 Bundled templates live under `bundled/efforts/`:
@@ -335,7 +345,9 @@ registry record, workspace path refs for `PLAYBOOK.md`, `PROGRESS.md`,
 `ACTIVITY.jsonl`,
 `research_log.md` when present, `ideas/`, `findings/*`, and
 `acceptance_summary` when `findings/results/acceptance-summary.md` exists, plus
-a machine-readable `artifact_inventory` covering generated files, ideas, human
+a parsed `acceptance_packet` with A0-A4 level states, v1 status, graduation
+status, recorded levels, and open levels. It also returns a machine-readable
+`artifact_inventory` covering generated files, ideas, human
 notes, repo pointers, findings, receipt sidecar paths, and parsed
 `receipt_sources` provenance with source kind, workspace path, finding path,
 and digest when available. It also returns the latest progress line, latest
@@ -375,6 +387,9 @@ records synth-ai SMR/Tinker proof. `stack effort refs` and
 `task-classifier` template seeds these
 criteria into `effort.toml` unless explicit criteria are provided at create time.
 A0 + A1 are the required v1 product bar; A2-A4 are stronger full-stack proofs.
+The default route is local GEPA first, Synth hosted GEPA after local proof when
+auth/capacity/cost allow it, synth-ai SMR harness proof for direct execution
+evidence, and SMR/Tinker proof for training-style model/data/run artifacts.
 Refs alone do not satisfy A2-A4: hosted graduation needs proof artifacts under
 `findings/proof/`, configs or recipes under `findings/code/`, and a
 `research_log.md` entry naming the run id, environment, result, and caveats.

@@ -199,6 +199,26 @@ export type StackEffortArtifactReceiptSource = {
   receipt: StackEffortFindingSourceReceipt
 }
 
+export type StackEffortAcceptanceLevelState = "recorded" | "not_recorded" | "pending" | "missing" | "unknown"
+
+export type StackEffortAcceptanceLevel = {
+  label: string
+  title: string
+  status: string
+  state: StackEffortAcceptanceLevelState
+  required_for_v1: boolean
+}
+
+export type StackEffortAcceptancePacket = {
+  path: string
+  v1_status: "pass" | "missing" | "not_applicable"
+  graduation_status: "complete" | "partial" | "open" | "not_applicable"
+  levels: StackEffortAcceptanceLevel[]
+  recorded_levels: string[]
+  open_levels: string[]
+  summary: string
+}
+
 export type StackEffortTemplateSummary = {
   id: string
   label: string
@@ -555,6 +575,57 @@ export function effortArtifactInventory(effort: StackEffort): StackEffortArtifac
       receipt_sidecars: receiptSidecars.length,
       total: all.length,
     },
+  }
+}
+
+export function readEffortAcceptancePacket(effort: StackEffort): StackEffortAcceptancePacket | undefined {
+  const paths = effortPathRefs(effort)
+  if (!paths.acceptance_summary) return undefined
+  const path = join(effort.folder_path, "findings", "results", "acceptance-summary.md")
+  if (!existsSync(path)) return undefined
+  const text = safeReadText(path)
+  const labels = effort.manifest.template === "task-classifier"
+    ? ["A0", "A1", "A2", "A3", "A4"]
+    : acceptanceLevelLabels(text)
+  const levels = labels.map((label): StackEffortAcceptanceLevel => {
+    const section = acceptanceSection(text, label)
+    const heading = acceptanceSectionHeading(section, label)
+    const status = acceptanceSectionStatus(section)
+    return {
+      label,
+      title: heading,
+      status: status.text,
+      state: status.state,
+      required_for_v1: effort.manifest.template === "task-classifier" && (label === "A0" || label === "A1"),
+    }
+  })
+  const recordedLevels = levels.filter((level) => level.state === "recorded").map((level) => level.label)
+  const openLevels = levels
+    .filter((level) => level.state !== "recorded")
+    .map((level) => level.label)
+  const v1Status = effort.manifest.template === "task-classifier"
+    ? levels.filter((level) => level.required_for_v1).every((level) => level.state === "recorded") ? "pass" : "missing"
+    : "not_applicable"
+  const graduationLevels = effort.manifest.template === "task-classifier"
+    ? levels.filter((level) => ["A2", "A3", "A4"].includes(level.label))
+    : []
+  const graduationRecorded = graduationLevels.filter((level) => level.state === "recorded").length
+  const graduationStatus = effort.manifest.template !== "task-classifier"
+    ? "not_applicable"
+    : graduationRecorded === graduationLevels.length
+      ? "complete"
+      : graduationRecorded > 0
+        ? "partial"
+        : "open"
+  const summary = acceptancePacketSummary(v1Status, graduationStatus, levels)
+  return {
+    path: paths.acceptance_summary,
+    v1_status: v1Status,
+    graduation_status: graduationStatus,
+    levels,
+    recorded_levels: recordedLevels,
+    open_levels: openLevels,
+    summary,
   }
 }
 
@@ -1537,6 +1608,7 @@ function effortHandoffMarkdown(
   const artifactInventory = effortArtifactInventory(effort)
   const findingFiles = artifactInventory.findings
   const acceptancePacket = findingFiles.results.find((path) => path.endsWith("/findings/results/acceptance-summary.md"))
+  const parsedAcceptance = readEffortAcceptancePacket(effort)
   const risks = cleanStringList(input.risks)
   const lines = [
     `# ${effort.manifest.title} - handoff`,
@@ -1600,9 +1672,7 @@ function effortHandoffMarkdown(
     "",
     "## Acceptance Packet",
     "",
-    acceptancePacket
-      ? `- Summary: ${acceptancePacket}`
-      : "- No acceptance summary recorded at findings/results/acceptance-summary.md.",
+    ...effortHandoffAcceptanceLines(acceptancePacket, parsedAcceptance),
     "",
     "## Audit",
     "",
@@ -1685,6 +1755,21 @@ function effortHandoffAuditLines(audit: StackEffortAudit | undefined): string[] 
   }
   for (const check of audit.checks) {
     lines.push(`- ${check.status} ${check.id}: ${check.summary}`)
+  }
+  return lines
+}
+
+function effortHandoffAcceptanceLines(
+  acceptancePacket: string | undefined,
+  parsed: StackEffortAcceptancePacket | undefined,
+): string[] {
+  if (!acceptancePacket) return ["- No acceptance summary recorded at findings/results/acceptance-summary.md."]
+  const lines = [`- Summary: ${acceptancePacket}`]
+  if (!parsed) return lines
+  lines.push(`- Status: ${parsed.summary}`)
+  for (const level of parsed.levels) {
+    const required = level.required_for_v1 ? " required-v1" : ""
+    lines.push(`- ${level.label}: ${acceptanceLevelStateLabel(level.state)}${required} - ${level.title} - ${level.status}`)
   }
   return lines
 }
@@ -1983,6 +2068,50 @@ function taskClassifierGraduationAudit(effort: StackEffort, summaryText: string)
   return { ok, evidence }
 }
 
+function acceptanceLevelLabels(summaryText: string): string[] {
+  const labels = new Set<string>()
+  const matches = summaryText.matchAll(/^##\s+(A\d+)\b/gm)
+  for (const match of matches) {
+    if (match[1]) labels.add(match[1])
+  }
+  return Array.from(labels).sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)))
+}
+
+function acceptanceSectionHeading(section: string, label: string): string {
+  const firstLine = section.split(/\r?\n/).find((line) => line.trim())?.trim() ?? ""
+  const match = new RegExp(`^##\\s+${escapeRegExp(label)}\\s*-\\s*(.+)$`, "i").exec(firstLine)
+  return match?.[1]?.trim() || label
+}
+
+function acceptanceSectionStatus(section: string): { text: string; state: StackEffortAcceptanceLevelState } {
+  if (!section.trim()) return { text: "missing", state: "missing" }
+  const status = /^Status:\s*(.+)$/im.exec(section)?.[1]?.trim() || "unknown"
+  const normalized = normalizeForSearch(status)
+  if (/\bnot recorded\b/.test(normalized)) return { text: status, state: "not_recorded" }
+  if (/\bpending\b/.test(normalized)) return { text: status, state: "pending" }
+  if (/\brecorded\b/.test(normalized)) return { text: status, state: "recorded" }
+  return { text: status, state: "unknown" }
+}
+
+function acceptancePacketSummary(
+  v1Status: StackEffortAcceptancePacket["v1_status"],
+  graduationStatus: StackEffortAcceptancePacket["graduation_status"],
+  levels: StackEffortAcceptanceLevel[],
+): string {
+  const levelSummary = levels
+    .map((level) => `${level.label} ${acceptanceLevelStateLabel(level.state)}`)
+    .join(", ")
+  const parts = [`v1 ${v1Status}`]
+  if (graduationStatus !== "not_applicable") parts.push(`graduation ${graduationStatus}`)
+  if (levelSummary) parts.push(levelSummary)
+  return parts.join(" - ")
+}
+
+function acceptanceLevelStateLabel(state: StackEffortAcceptanceLevelState): string {
+  if (state === "not_recorded") return "not recorded"
+  return state.replace(/_/g, " ")
+}
+
 function acceptanceSection(summaryText: string, label: string): string {
   const heading = new RegExp(`^##\\s+${escapeRegExp(label)}\\b`, "i")
   const lines = summaryText.split(/\r?\n/)
@@ -1993,7 +2122,7 @@ function acceptanceSection(summaryText: string, label: string): string {
 }
 
 function acceptanceSectionIsRecorded(section: string): boolean {
-  return section.trim().length > 0 && !/^Status:\s*not recorded\b/im.test(section)
+  return acceptanceSectionStatus(section).state === "recorded"
 }
 
 function sectionState(section: string): "missing" | "not_recorded" | "recorded" {

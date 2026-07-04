@@ -44,7 +44,19 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   `stack effort activity` and `stack_effort_activity` print/read a bounded activity
   timeline from `ACTIVITY.jsonl`. Bundled playbooks include resume/orientation
   guidance so agents read progress, activity, research logs, human context,
-  ideas, findings, bound meta-threads, and refs before acting.
+  ideas, findings, bound meta-threads, and refs before acting. Research
+  playbooks explicitly route terminal receipts, browser captures, screenshots,
+  screencaps, video links, monitor outputs, and ad hoc local artifacts into
+  receipt-backed findings when no first-class adapter exists; system-optimizer
+  playbooks cover Reflexion/MAPO configs, memory updates, policy events, monitor
+  profiles, and MLDP lessons.
+- **Parsed Effort acceptance packets.** `stack effort show --json`,
+  `stack_effort_get`, and `stack_effort_list` now expose an `acceptance_packet`
+  object when `findings/results/acceptance-summary.md` exists, including A0-A4
+  level states, v1 status, graduation status, recorded levels, and open levels.
+  `stack effort show`, `stack effort list`, generated handoffs, and `/efforts`
+  display the same compact acceptance status so Banking77-style packets can be
+  reviewed without opening the markdown file.
 - **Typed Effort blocker receipts.** `stack effort blocker` and
   `stack_effort_record_blocker` record external dependencies with blocker,
   evidence, next owner, and next safe action while keeping Effort status
@@ -83,7 +95,9 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   human walkthrough proof and A1 local GEPA artifact-capture proof; hosted
   GEPA, SMR harness, and SMR/Tinker proofs remain optional graduation evidence.
   The A2-A4 sections require proof artifacts, configs/recipes, and research-log
-  evidence rather than refs alone.
+  evidence rather than refs alone. The documented route is local GEPA first,
+  hosted GEPA after local proof when available, SMR harness proof for direct
+  execution evidence, and SMR/Tinker proof for training-style artifacts.
 
 ### Known limitations
 
