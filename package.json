@@ -1,6 +1,6 @@
 {
   "name": "@synth-laboratories/stack",
-  "version": "0.2.0-dev.20260704.1",
+  "version": "0.2.0-dev.20260704.2",
   "description": "Synth operator cockpit — OpenTUI, Codex agent pane, and Stack MCP for local and hosted research ops.",
   "license": "MIT",
   "private": true,
@@ -56,7 +56,7 @@
     "bump-dev": "bun run scripts/bump_dev.ts"
   },
   "dependencies": {
-    "@opentui/core": "^0.4.1"
+    "@opentui/core": "0.4.1"
   },
   "devDependencies": {
     "@termless/core": "^0.7.0",

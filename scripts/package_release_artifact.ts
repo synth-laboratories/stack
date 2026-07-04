@@ -174,6 +174,7 @@ const requiredEntries = [
   "./bin/stackd",
   "./bin/stack-mcp",
   "./share/stack/VERSION",
+  "./share/stack/app/bun.lock",
   "./share/stack/app/package.json",
   "./share/stack/app/src/main.ts",
   "./share/stack/app/bundled/monitors/default.toml",

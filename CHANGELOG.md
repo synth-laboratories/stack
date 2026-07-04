@@ -17,6 +17,17 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260704.2] - 2026-07-04
+
+Install runtime hotfix for the Efforts nightly.
+
+### Fixed
+
+- **Pinned TUI runtime dependency in release artifacts.** The nightly package
+  now pins `@opentui/core` exactly and verifies `bun.lock` is present in the
+  tarball, preventing installed builds from auto-resolving a newer OpenTUI
+  minor that has incompatible remount cleanup behavior.
+
 ## [0.2.0-dev.20260704.1] - 2026-07-04
 
 Efforts acceptance hardening release.
