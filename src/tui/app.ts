@@ -6992,7 +6992,25 @@ function handleEvalFeedbackKey(
     refresh()
     return true
   }
+  if (key.name === "backspace" || key.name === "delete" || key.name === "BSpace") {
+    state.evalModalBuffer = state.evalModalBuffer.slice(0, -1)
+    state.evalModalNotice = undefined
+    refresh()
+    return true
+  }
+  if (key.name === "space") {
+    state.evalModalBuffer += " "
+    state.evalModalNotice = undefined
+    refresh()
+    return true
+  }
   if (typeof key.name === "string" && /^[1-6]$/.test(key.name) && setEvalFeedbackKindByIndex(state, key.name)) {
+    refresh()
+    return true
+  }
+  if (typeof key.name === "string" && key.name.length === 1 && !key.ctrl) {
+    state.evalModalBuffer += key.name
+    state.evalModalNotice = undefined
     refresh()
     return true
   }
