@@ -174,7 +174,8 @@ timelines, structured blocker receipts, human context, idea origin tags,
 promoted idea backlinks, promoted findings, generated handoff sections,
 acceptance summary presence, acceptance criteria coverage, task-classifier
 A0/A1 v1-bar evidence, optional hosted/SMR/Tinker graduation coverage,
-thread/repo/run refs, and local meta-thread `effort_ref` back-links.
+thread/repo/run refs, receipt-sidecar counts, and local meta-thread
+`effort_ref` back-links.
 
 `stack effort list` is the human scan view. It groups Efforts by status and
 shows the template, bound-thread count, repo/optimizer/SMR/Tinker ref counts
@@ -195,7 +196,9 @@ metadata in the same sidecar shape.
 
 For MCP workflows, `stack_effort_record_finding` accepts the same
 `path` or `receipt_path` inputs and returns receipt metadata alongside the usual
-Effort orientation payload, including the Effort-local `source_receipt_path`.
+Effort orientation payload, including the Effort-local `source_receipt_path` and
+generic `source_receipt` object. `artifact_receipt` is populated for
+`stack_pull_artifact` receipts as a compatibility alias for hosted/saved pulls.
 
 For `stack effort repo --path`, relative paths use the same resolution rule.
 File paths are copied under `repos/`; directory paths write a small pointer

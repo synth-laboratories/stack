@@ -1000,6 +1000,7 @@ export class StackMcpServer {
       path: result.path,
       relative_path: relative(result.effort.folder_path, result.path),
       source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : null,
+      source_receipt: result.sourceReceipt ?? null,
       artifact_receipt: artifactReceipt ? {
         receipt_path: artifactReceipt.receipt_path,
         artifact_kind: artifactReceipt.artifact_kind,
@@ -4886,7 +4887,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_record_finding",
-      description: "Record an Effort finding under findings/{ideas,code,data,proof,results}, either as markdown body text, by copying/linking a local path with an Effort-local source receipt, or from a stack_pull_artifact receipt.",
+      description: "Record an Effort finding under findings/{ideas,code,data,proof,results}, either as markdown body text, by copying/linking a local path with an Effort-local source receipt, or from a stack_pull_artifact receipt. Returns source_receipt for both local and pulled evidence.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),

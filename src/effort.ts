@@ -131,6 +131,7 @@ export type StackEffortAudit = {
     optimizer_runs: number
     smr_runs: number
     tinker_runs: number
+    receipt_sidecars: number
     findings: Record<"ideas" | "code" | "data" | "proof" | "results", number>
   }
   latest_blocker: StackEffortBlockerRecord | null
@@ -229,6 +230,13 @@ export type RecordEffortFindingInput = EffortLookupInput & {
   sourcePath?: string
   sourceReceipt?: StackEffortFindingSourceReceipt
   filename?: string
+}
+
+export type RecordEffortFindingResult = {
+  effort: StackEffort
+  path: string
+  sourceReceiptPath?: string
+  sourceReceipt?: StackEffortFindingSourceReceipt
 }
 
 export type StackEffortFindingSourceReceipt = {
@@ -801,6 +809,7 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
       optimizer_runs: effort.manifest.hosted.optimizer_run_ids.length,
       smr_runs: effort.manifest.hosted.smr_run_ids.length,
       tinker_runs: effort.manifest.hosted.tinker_run_ids.length,
+      receipt_sidecars: artifactInventory.counts.receipt_sidecars,
       findings: {
         ideas: findingFiles.ideas.length,
         code: findingFiles.code.length,
@@ -981,7 +990,7 @@ export function updateEffortRefs(input: UpdateEffortRefsInput): StackEffort {
   return persistEffort(input, effort)
 }
 
-export function recordEffortFinding(input: RecordEffortFindingInput): { effort: StackEffort; path: string; sourceReceiptPath?: string } {
+export function recordEffortFinding(input: RecordEffortFindingInput): RecordEffortFindingResult {
   assertFindingKind(input.kind)
   const effort = requireEffort(input, input.effortRef)
   const dir = join(effort.folder_path, "findings", findingDirName(input.kind))
@@ -998,7 +1007,7 @@ export function recordEffortFinding(input: RecordEffortFindingInput): { effort: 
       source_receipt_path: sourceReceiptPath ? relative(effort.folder_path, sourceReceiptPath) : undefined,
       source_receipt: sourceReceipt,
     })
-    return { effort: persistEffort(input, effort), path: linkedPath, sourceReceiptPath }
+    return { effort: persistEffort(input, effort), path: linkedPath, sourceReceiptPath, sourceReceipt }
   }
   const path = writeEffortArtifact({
     dir,
@@ -1017,7 +1026,12 @@ export function recordEffortFinding(input: RecordEffortFindingInput): { effort: 
     source_receipt_path: sourceReceiptPath ? relative(effort.folder_path, sourceReceiptPath) : undefined,
     source_receipt: sourceReceipt,
   })
-  return { effort: persistEffort(input, effort), path, sourceReceiptPath }
+  return {
+    effort: persistEffort(input, effort),
+    path,
+    sourceReceiptPath,
+    ...(sourceReceipt ? { sourceReceipt } : {}),
+  }
 }
 
 export function recordEffortIdea(input: RecordEffortIdeaInput): { effort: StackEffort; path: string } {

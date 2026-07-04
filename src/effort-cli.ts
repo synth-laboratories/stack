@@ -313,7 +313,7 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
         sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
         filename: readFlagString(parsed, "filename"),
       })
-      await printArtifactResult(config, result.effort, result.path, json, artifactReceipt, result.sourceReceiptPath)
+      await printArtifactResult(config, result.effort, result.path, json, artifactReceipt, result.sourceReceiptPath, result.sourceReceipt)
       return 0
     }
 
@@ -550,6 +550,7 @@ async function printArtifactResult(
   json: boolean,
   artifactReceipt?: RoundTripPullReceiptRecord,
   sourceReceiptPath?: string,
+  sourceReceipt?: StackEffortFindingSourceReceipt,
 ): Promise<void> {
   if (json) {
     const paths = effortPathRefs(effort)
@@ -571,6 +572,7 @@ async function printArtifactResult(
       bound_meta_threads: await readBoundMetaThreadSummaries(config, effort),
       artifact_receipt: artifactReceipt ?? null,
       source_receipt_path: sourceReceiptPath ?? null,
+      source_receipt: sourceReceipt ?? null,
     }, null, 2))
     return
   }
@@ -580,6 +582,7 @@ async function printArtifactResult(
     console.log(`artifact receipt: ${artifactReceipt.receipt_path}`)
     console.log(`artifact source: ${artifactReceipt.workspace_path}`)
   }
+  if (!artifactReceipt && sourceReceipt?.workspace_path) console.log(`artifact source: ${sourceReceipt.workspace_path}`)
   if (sourceReceiptPath) console.log(`artifact receipt record: ${sourceReceiptPath}`)
 }
 
@@ -614,7 +617,7 @@ function printEffortAudit(audit: StackEffortAudit, json: boolean): void {
     return
   }
   console.log(`${audit.slug} audit - ${audit.status} - ${audit.folder_ref}`)
-  console.log(`counts: progress ${audit.counts.progress_entries} - activity ${audit.counts.activity_receipts} - blockers ${audit.counts.blockers} - findings ${Object.values(audit.counts.findings).reduce((sum, count) => sum + count, 0)}`)
+  console.log(`counts: progress ${audit.counts.progress_entries} - activity ${audit.counts.activity_receipts} - blockers ${audit.counts.blockers} - findings ${Object.values(audit.counts.findings).reduce((sum, count) => sum + count, 0)} - receipts ${audit.counts.receipt_sidecars}`)
   if (audit.latest_blocker) {
     console.log(`latest blocker: ${audit.latest_blocker.blocker} - owner ${audit.latest_blocker.owner} - next ${audit.latest_blocker.next}`)
   }
