@@ -17,6 +17,36 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260704.4] - 2026-07-04
+
+Effort launch scope hardening release (merge of PR #16 residuals).
+
+### Added
+
+- **Tinker launch scope.** `tinker` is a first-class Effort launch capability:
+  scope it, preflight its routes, and launch through the Tinker client with
+  typed evidence receipts.
+- **Remote project and factory tools.** `stack_effort_project_create` and
+  `stack_effort_factory_create` create hosted projects and factories inside an
+  Effort scope, wiring the resulting ids back as Effort refs.
+- **Container pool runtime deploy tool.** Effort-scoped container pool rollout
+  can deploy a runtime image with a structured rollout policy instead of an
+  opaque payload.
+- **Launch promo owner routes.** Cloud promotion launch intent is preserved and
+  exposed through owner routes so promoted launches stay attributable.
+- **SMR launch objectives.** Effort SMR launch requests accept explicit
+  objectives, which are threaded through to the hosted launch payload.
+
+### Changed
+
+- Effort evidence receipts now cover hosted optimizer tools, factory steering,
+  and SMR interactions — cloud tool actions attach to the owning Effort as
+  refs, so launch activity is auditable from the Effort record.
+- Artifact evidence filenames are scoped by environment, and release artifact
+  evidence filenames no longer collide across environments.
+- Effort SMR launches stay on the SMR surface (no silent fallback to canonical
+  run actions unless the SMR surface is absent).
+
 ## [0.2.0-dev.20260704.3] - 2026-07-04
 
 Effort launch and Artifact Site cockpit release.
