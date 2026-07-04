@@ -97,7 +97,7 @@ import {
   readMetaThreadManifest,
   reconcileMetaThreadGoalFromCodex,
 } from "../meta-thread-goal.js"
-import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, updateEffortStatus, writeEffortHandoff, type StackEffortSummary } from "../effort.js"
+import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, readEffortOptimizerCandidateSummaries, readEffortRemainingWork, updateEffortStatus, writeEffortHandoff, type StackEffortSummary } from "../effort.js"
 import { stackdUpdateMetaThreadEffortRef, type StackdMetaSidePanel, type StackdMetaStatus, type StackdMetaThreadManifest } from "../client/stackd.js"
 import {
   formatCodexBudgetSuffix,
@@ -10883,6 +10883,20 @@ function pushEffortSectionLines(
         color: theme.fgSecondary,
       })
     }
+    const candidate = effortOptimizerCandidateLine(effort, workspaceRoot, stackDataRoot)
+    if (candidate) {
+      lines.push({
+        text: oneLine(`  candidate - ${candidate}`, columns),
+        color: theme.fgSecondary,
+      })
+    }
+    const remaining = effortRemainingWorkLine(effort, workspaceRoot, stackDataRoot)
+    if (remaining) {
+      lines.push({
+        text: oneLine(`  remaining - ${remaining}`, columns),
+        color: theme.synth.amber,
+      })
+    }
     const engineering = effortEngineeringPacketLine(effort, workspaceRoot)
     if (engineering) {
       lines.push({
@@ -11105,6 +11119,33 @@ function effortAcceptanceLine(effort: StackEffortSummary, workspaceRoot: string,
     return `${status} - updated ${lightsThreadRelativeAge(stat.mtime.toISOString())} ago`
   } catch {
     return "acceptance-summary.md"
+  }
+}
+
+function effortOptimizerCandidateLine(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string {
+  try {
+    const current = readEffort({ workspaceRoot, stackDataRoot }, effort.id)
+    if (!current) return ""
+    const candidates = readEffortOptimizerCandidateSummaries(current, 1)
+    const candidate = candidates[candidates.length - 1]
+    if (!candidate) return ""
+    const score = `${candidate.score_label || "score"} ${candidate.score}`
+    return `${candidate.candidate_id} - ${score} - ${candidate.split} - run ${candidate.optimizer_run_id} - updated ${lightsThreadRelativeAge(candidate.observed_at)} ago`
+  } catch {
+    return ""
+  }
+}
+
+function effortRemainingWorkLine(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string {
+  try {
+    const current = readEffort({ workspaceRoot, stackDataRoot }, effort.id)
+    if (!current) return ""
+    const remaining = readEffortRemainingWork(current)
+    if (remaining.state !== "open") return ""
+    const next = remaining.next_actions[0] ? ` - next ${remaining.next_actions[0]}` : ""
+    return `${remaining.summary}${next}`
+  } catch {
+    return ""
   }
 }
 

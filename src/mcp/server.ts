@@ -51,7 +51,9 @@ import {
   readEffortAcceptancePacket as readStackEffortAcceptancePacket,
   readEffortActivityTail as readStackEffortActivityTail,
   readEffortBlockerTail as readStackEffortBlockerTail,
+  readEffortOptimizerCandidateSummaries as readStackEffortOptimizerCandidateSummaries,
   readEffortProgressTail as readStackEffortProgressTail,
+  readEffortRemainingWork as readStackEffortRemainingWork,
   recordEffortBlocker as recordStackEffortBlocker,
   recordEffortCapture as recordStackEffortCapture,
   recordEffortFinding as recordStackEffortFinding,
@@ -618,6 +620,14 @@ export class StackMcpServer {
             },
             has_handoff: false,
             has_acceptance_summary: false,
+            latest_optimizer_candidate: null,
+            remaining_work: {
+              state: "untracked",
+              summary: "effort folder or manifest missing",
+              open_acceptance: [],
+              latest_blocker: null,
+              next_actions: [],
+            },
           }
         }
         const paths = stackEffortPathRefs(effort)
@@ -626,6 +636,8 @@ export class StackMcpServer {
         const progressTail = readStackEffortProgressTail(effort, 1)
         const activityTail = readStackEffortActivityTail(effort, 1)
         const blockerTail = readStackEffortBlockerTail(effort, 1)
+        const optimizerCandidates = readStackEffortOptimizerCandidateSummaries(effort, 1)
+        const remainingWork = readStackEffortRemainingWork(effort)
         const audit = auditStackEffort(effort)
         return {
           ...summary,
@@ -653,6 +665,8 @@ export class StackMcpServer {
           has_handoff: existsSync(join(effort.folder_path, "HANDOFF.md")),
           has_acceptance_summary: Boolean(paths.acceptance_summary),
           acceptance_packet: acceptancePacket,
+          latest_optimizer_candidate: optimizerCandidates[optimizerCandidates.length - 1] ?? null,
+          remaining_work: remainingWork,
         }
       })
     return toJsonValue({
@@ -682,6 +696,8 @@ export class StackMcpServer {
     const progressTail = readStackEffortProgressTail(effort, 5)
     const activityTail = readStackEffortActivityTail(effort, 5)
     const blockerTail = readStackEffortBlockerTail(effort, 5)
+    const optimizerCandidates = readStackEffortOptimizerCandidateSummaries(effort, 5)
+    const remainingWork = readStackEffortRemainingWork(effort)
     const boundMetaThreads = await Promise.all(
       effort.manifest.links.meta_thread_refs.map(async (metaThreadId): Promise<JsonObject> => {
         const manifest = await readMetaThreadManifest(config.stackDataRoot, metaThreadId)
@@ -699,6 +715,8 @@ export class StackMcpServer {
       paths: stackEffortPathRefs(effort),
       artifact_inventory: stackEffortArtifactInventory(effort),
       acceptance_packet: readStackEffortAcceptancePacket(effort) ?? null,
+      optimizer_candidates: optimizerCandidates,
+      remaining_work: remainingWork,
       latest_progress: progressTail[progressTail.length - 1] ?? "",
       progress_tail: progressTail,
       latest_activity: activityTail[activityTail.length - 1] ?? null,
@@ -4912,7 +4930,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_list",
-      description: "List durable Stack Efforts with orientation fields: paths, latest progress/activity/blocker, ref counts, artifact counts, handoff state, and parsed acceptance packet state. Efforts are long-lived workspaces for research or engineering work across threads, runs, findings, ideas, and proof artifacts.",
+      description: "List durable Stack Efforts with orientation fields: paths, latest progress/activity/blocker, latest typed optimizer candidate, remaining_work, ref counts, artifact counts, handoff state, and parsed acceptance packet state. Efforts are long-lived workspaces for research or engineering work across threads, runs, findings, ideas, and proof artifacts.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         status: enumProperty([...STACK_EFFORT_STATUSES, "all"], "Optional Effort status filter. Defaults to all."),
@@ -4929,7 +4947,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_get",
-      description: "Read one durable Stack Effort by id or slug, including manifest, registry record, workspace path refs, machine-readable artifact_inventory, parsed acceptance_packet when present, latest progress/activity/blocker tails, and bound meta-thread context.",
+      description: "Read one durable Stack Effort by id or slug, including manifest, registry record, workspace path refs, machine-readable artifact_inventory, parsed acceptance_packet when present, typed optimizer_candidates, remaining_work, latest progress/activity/blocker tails, and bound meta-thread context.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),

@@ -21,7 +21,9 @@ import {
   readEffort,
   readEffortActivityTail,
   readEffortBlockerTail,
+  readEffortOptimizerCandidateSummaries,
   readEffortProgressTail,
+  readEffortRemainingWork,
   recordEffortBlocker,
   recordEffortCapture,
   recordEffortFinding,
@@ -44,6 +46,8 @@ import {
   type StackEffortFindingSourceReceipt,
   type StackEffortIdeaOrigin,
   type StackEffortNoteKind,
+  type StackEffortOptimizerCandidateSummary,
+  type StackEffortRemainingWork,
   type StackEffortSummary,
   type StackEffortStatus,
   type StackEffortTemplateSummary,
@@ -462,6 +466,8 @@ type EffortCliListItem = StackEffortSummary & {
   has_handoff: boolean
   has_acceptance_summary: boolean
   acceptance_packet: StackEffortAcceptancePacket | null
+  latest_optimizer_candidate: StackEffortOptimizerCandidateSummary | null
+  remaining_work: StackEffortRemainingWork
 }
 
 function readEffortListItems(config: StackConfig): EffortCliListItem[] {
@@ -493,6 +499,8 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
         has_handoff: false,
         has_acceptance_summary: false,
         acceptance_packet: null,
+        latest_optimizer_candidate: null,
+        remaining_work: missingEffortRemainingWork(),
       }
     }
     const progressTail = readEffortProgressTail(effort, 1)
@@ -502,6 +510,8 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
     const paths = effortPathRefs(effort)
     const artifactInventory = effortArtifactInventory(effort)
     const acceptancePacket = readEffortAcceptancePacket(effort) ?? null
+    const optimizerCandidates = readEffortOptimizerCandidateSummaries(effort, 1)
+    const remainingWork = readEffortRemainingWork(effort)
     return {
       ...summary,
       latest_progress: progressTail[0] ?? "",
@@ -527,6 +537,8 @@ function readEffortListItems(config: StackConfig): EffortCliListItem[] {
       has_handoff: existsSync(resolve(effort.folder_path, "HANDOFF.md")),
       has_acceptance_summary: Boolean(paths.acceptance_summary),
       acceptance_packet: acceptancePacket,
+      latest_optimizer_candidate: optimizerCandidates[optimizerCandidates.length - 1] ?? null,
+      remaining_work: remainingWork,
     }
   })
 }
@@ -552,6 +564,12 @@ function printEffortList(efforts: EffortCliListItem[]): void {
       if (effort.latest_progress) console.log(`    progress: ${clipCli(effort.latest_progress, 150)}`)
       if (effort.latest_activity) {
         console.log(`    activity: ${effort.latest_activity.observed_at} - ${effort.latest_activity.type} - ${clipCli(effort.latest_activity.summary, 120)}`)
+      }
+      if (effort.latest_optimizer_candidate) {
+        console.log(`    candidate: ${formatOptimizerCandidateCompact(effort.latest_optimizer_candidate)}`)
+      }
+      if (effort.remaining_work.state === "open") {
+        console.log(`    remaining: ${clipCli(effort.remaining_work.summary, 150)}`)
       }
       if (effort.latest_blocker) {
         console.log(`    blocker: ${clipCli(effort.latest_blocker.blocker, 100)} - owner ${clipCli(effort.latest_blocker.owner, 40)} - next ${clipCli(effort.latest_blocker.next, 100)}`)
@@ -587,6 +605,26 @@ function formatAcceptancePacketCompact(packet: StackEffortAcceptancePacket): str
   return `v1 ${packet.v1_status} ${graduation}`
 }
 
+function formatOptimizerCandidateCompact(candidate: StackEffortOptimizerCandidateSummary): string {
+  const score = `${candidate.score_label || "score"} ${candidate.score}`
+  return `${candidate.candidate_id} - ${score} - ${candidate.split} - run ${candidate.optimizer_run_id} - ${candidate.path}`
+}
+
+function formatRemainingWorkLine(remaining: StackEffortRemainingWork): string {
+  const next = remaining.next_actions[0] ? ` - next ${remaining.next_actions[0]}` : ""
+  return `${remaining.summary}${next}`
+}
+
+function missingEffortRemainingWork(): StackEffortRemainingWork {
+  return {
+    state: "untracked",
+    summary: "effort folder or manifest missing",
+    open_acceptance: [],
+    latest_blocker: null,
+    next_actions: [],
+  }
+}
+
 function clipCli(value: string, maxLength: number): string {
   const cleaned = value.replace(/\s+/g, " ").trim()
   if (cleaned.length <= maxLength) return cleaned
@@ -611,6 +649,8 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   const activityTail = readEffortActivityTail(effort, 5)
   const blockerTail = readEffortBlockerTail(effort, 5)
   const acceptancePacket = readEffortAcceptancePacket(effort) ?? null
+  const optimizerCandidates = readEffortOptimizerCandidateSummaries(effort, 5)
+  const remainingWork = readEffortRemainingWork(effort)
   const boundMetaThreads = await readBoundMetaThreadSummaries(config, effort)
   if (json) {
     console.log(JSON.stringify({
@@ -624,6 +664,8 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
       latest_blocker: blockerTail[blockerTail.length - 1] ?? null,
       blocker_tail: blockerTail,
       acceptance_packet: acceptancePacket,
+      optimizer_candidates: optimizerCandidates,
+      remaining_work: remainingWork,
       bound_meta_threads: boundMetaThreads,
     }, null, 2))
     return
@@ -672,6 +714,20 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
     for (const level of acceptancePacket.levels) {
       const required = level.required_for_v1 ? " required-v1" : ""
       console.log(`  ${level.label}: ${formatAcceptanceLevelState(level.state)}${required} - ${level.title} - ${level.status}`)
+    }
+  }
+  if (optimizerCandidates.length > 0) {
+    console.log("optimizer candidates:")
+    for (const candidate of optimizerCandidates) {
+      const receipt = candidate.source_receipt_path ? ` - receipt ${candidate.source_receipt_path}` : ""
+      console.log(`  ${formatOptimizerCandidateCompact(candidate)}${receipt}`)
+    }
+  }
+  if (remainingWork.state !== "untracked") {
+    console.log(`remaining: ${formatRemainingWorkLine(remainingWork)}`)
+    for (const level of remainingWork.open_acceptance) {
+      const required = level.required_for_v1 ? " required-v1" : ""
+      console.log(`  ${level.label}: ${level.title} - ${level.status}${required}`)
     }
   }
   if (artifactInventory.receipt_sources.length > 0) {

@@ -194,8 +194,9 @@ thread/repo/run refs, receipt-sidecar counts, and local meta-thread
 `stack effort list` is the human scan view. It groups Efforts by status and
 shows the template, bound-thread count, repo/optimizer/SMR/Tinker ref counts
 when present, audit status, handoff and acceptance markers, latest progress,
-latest activity, latest blocker, last update time, and visible folder ref. JSON
-mode includes the same orientation fields for scripts and review packets.
+latest activity, latest typed optimizer candidate, latest blocker, last update
+time, and visible folder ref. JSON mode includes the same orientation fields for
+scripts and review packets.
 
 `stack effort engineering-packet <effort>` writes or refreshes
 `findings/results/engineering-change-summary.md`. It is the Engineering Effort
@@ -239,6 +240,8 @@ activity receipt and MCP response, and marks any source sidecar as
 `--receipt-path` after `stack_pull_artifact` for hosted optimizer artifacts.
 For `task-classifier` Efforts, `stack effort audit` requires this typed
 optimizer-candidate receipt before the optimizer-candidate check passes.
+`stack effort show` prints recent typed candidates, and `stack effort list`
+prints the latest candidate line for quick Banking77-style scans.
 
 For MCP workflows, `stack_effort_record_finding` accepts the same
 `path` or `receipt_path` inputs and returns receipt metadata alongside the usual
@@ -250,6 +253,8 @@ returns the same orientation payload plus `capture_kind`.
 `stack_effort_record_optimizer_candidate` is the MCP twin of
 `stack effort optimizer-candidate` and returns the same orientation payload plus
 candidate id, optimizer run id, score, score label, split, and receipt metadata.
+`stack_effort_get` includes an `optimizer_candidates` tail, and
+`stack_effort_list` includes `latest_optimizer_candidate`.
 `stack_effort_write_engineering_packet` is the MCP twin of
 `stack effort engineering-packet`.
 
@@ -399,23 +404,27 @@ status, recorded levels, and open levels. It also returns a machine-readable
 `artifact_inventory` covering generated files, ideas, human
 notes, repo pointers, findings, receipt sidecar paths, and parsed
 `receipt_sources` provenance with source kind, workspace path, finding path,
-and digest when available. It also returns the latest progress line, latest
-blocker, small progress/activity/blocker tails, and compact `bound_meta_threads`
-context for each bound meta-thread. Effort MCP mutation responses return the
-same orientation context after applying the change.
+and digest when available. It also returns typed optimizer candidates, the
+latest progress line, latest blocker, `remaining_work`, small
+progress/activity/blocker tails, and compact `bound_meta_threads` context for
+each bound meta-thread. `remaining_work` combines open acceptance levels with the
+latest typed blocker next action. Effort MCP mutation responses return the same
+orientation context after applying the change.
 `stack_effort_list` is also an orientation surface: each row includes path refs,
 audit status, latest progress, latest activity, latest blocker,
-repo/optimizer/SMR/Tinker ref counts, artifact counts, and
-handoff/acceptance markers so gardeners can choose the right Effort before
-calling `stack_effort_get`.
+latest typed optimizer candidate, repo/optimizer/SMR/Tinker ref counts, artifact
+counts, `remaining_work`, and handoff/acceptance markers so gardeners can choose
+the right Effort before calling `stack_effort_get`.
 The `/efforts` TUI panel keeps the same scan lightweight but also surfaces
 preserved idea and human-context counts, and annotates receipt counts with
 parsed source-kind counts when available, such as local path or hosted artifact
-provenance. Engineering Efforts with `engineering-change-summary.md` show a
+provenance. Efforts with typed optimizer candidates show a compact candidate row,
+and Efforts with open acceptance or blocker next-action work show a compact
+remaining row. Engineering Efforts with `engineering-change-summary.md` show a
 compact changed-file/validation row. The panel also keeps a selected Effort row
 so an operator can refresh the selected handoff packet, create a new Effort,
-archive/reactivate an Effort, or bind the current meta-thread without leaving
-the cockpit.
+archive/reactivate an Effort, or bind the current meta-thread without leaving the
+cockpit.
 Use `stack_effort_activity` when a gardener or agent needs a bounded timeline
 larger than the compact orientation tail.
 Use `stack_effort_audit` before handoff or review when the question is whether
@@ -447,10 +456,12 @@ Refs alone do not satisfy A2-A4: hosted graduation needs proof artifacts under
 `findings/proof/`, configs or recipes under `findings/code/`, and a
 `research_log.md` entry naming the run id, environment, result, and caveats.
 Generated handoffs include dedicated Acceptance Packet, Audit, and Recorded
-Blockers sections, pointing at `findings/results/acceptance-summary.md` when
-present, embedding the latest coherence audit status, and surfacing recent
-`effort.blocker_recorded` receipts from `ACTIVITY.jsonl`. Handoffs also show
-receipt-sidecar counts and a dedicated Receipt Sidecars artifact section.
+Blockers sections, plus a Remaining Work section that summarizes open acceptance
+levels and the latest blocker next action. The packet points at
+`findings/results/acceptance-summary.md` when present, embeds the latest
+coherence audit status, and surfaces recent `effort.blocker_recorded` receipts
+from `ACTIVITY.jsonl`. Handoffs also show receipt-sidecar counts and a dedicated
+Receipt Sidecars artifact section.
 
 Stack writes local session logs under `.stack/sessions/`. Current release includes
 read-only remote SMR visibility for jobs, run artifacts, WorkProducts, and

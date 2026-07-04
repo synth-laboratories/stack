@@ -236,6 +236,21 @@ export type StackEffortAcceptancePacket = {
   summary: string
 }
 
+export type StackEffortRemainingAcceptance = {
+  label: string
+  title: string
+  status: string
+  required_for_v1: boolean
+}
+
+export type StackEffortRemainingWork = {
+  state: "open" | "clear" | "untracked"
+  summary: string
+  open_acceptance: StackEffortRemainingAcceptance[]
+  latest_blocker: StackEffortBlockerRecord | null
+  next_actions: string[]
+}
+
 export type StackEffortTemplateSummary = {
   id: string
   label: string
@@ -706,6 +721,48 @@ export function readEffortAcceptancePacket(effort: StackEffort): StackEffortAcce
     recorded_levels: recordedLevels,
     open_levels: openLevels,
     summary,
+  }
+}
+
+export function readEffortRemainingWork(effort: StackEffort): StackEffortRemainingWork {
+  const acceptance = readEffortAcceptancePacket(effort)
+  const openAcceptance = acceptance?.levels
+    .filter((level) => level.state !== "recorded")
+    .map((level): StackEffortRemainingAcceptance => ({
+      label: level.label,
+      title: level.title,
+      status: level.status,
+      required_for_v1: level.required_for_v1,
+    })) ?? []
+  const blockers = readEffortBlockerTail(effort, 1)
+  const latestBlocker = blockers[blockers.length - 1] ?? null
+  const nextActions = uniqueStrings([
+    latestBlocker?.next ?? "",
+    ...openAcceptance.map((level) => `Record ${level.label}: ${level.title}${level.status ? ` (${level.status})` : ""}.`),
+  ])
+  const state: StackEffortRemainingWork["state"] = openAcceptance.length > 0 || latestBlocker
+    ? "open"
+    : acceptance
+      ? "clear"
+      : "untracked"
+  const summaryParts: string[] = []
+  if (openAcceptance.length > 0) {
+    summaryParts.push(`open acceptance ${openAcceptance.map((level) => level.label).join("/")}`)
+  }
+  if (latestBlocker) {
+    summaryParts.push(`latest blocker owner ${latestBlocker.owner || "unassigned"}`)
+  }
+  const summary = summaryParts.length > 0
+    ? summaryParts.join(" - ")
+    : state === "clear"
+      ? "no structured remaining work"
+      : "no structured remaining work recorded"
+  return {
+    state,
+    summary,
+    open_acceptance: openAcceptance,
+    latest_blocker: latestBlocker,
+    next_actions: nextActions,
   }
 }
 
@@ -1858,6 +1915,7 @@ function effortHandoffMarkdown(
   const findingFiles = artifactInventory.findings
   const acceptancePacket = findingFiles.results.find((path) => path.endsWith("/findings/results/acceptance-summary.md"))
   const parsedAcceptance = readEffortAcceptancePacket(effort)
+  const remainingWork = readEffortRemainingWork(effort)
   const risks = cleanStringList(input.risks)
   const lines = [
     `# ${effort.manifest.title} - handoff`,
@@ -1922,6 +1980,10 @@ function effortHandoffMarkdown(
     "## Acceptance Packet",
     "",
     ...effortHandoffAcceptanceLines(acceptancePacket, parsedAcceptance),
+    "",
+    "## Remaining Work",
+    "",
+    ...effortHandoffRemainingWorkLines(remainingWork),
     "",
     "## Audit",
     "",
@@ -2077,6 +2139,26 @@ function effortHandoffAcceptanceLines(
   for (const level of parsed.levels) {
     const required = level.required_for_v1 ? " required-v1" : ""
     lines.push(`- ${level.label}: ${acceptanceLevelStateLabel(level.state)}${required} - ${level.title} - ${level.status}`)
+  }
+  return lines
+}
+
+function effortHandoffRemainingWorkLines(remaining: StackEffortRemainingWork): string[] {
+  const lines = [
+    `- State: ${remaining.state}`,
+    `- Summary: ${remaining.summary}`,
+  ]
+  for (const level of remaining.open_acceptance) {
+    const required = level.required_for_v1 ? " required-v1" : ""
+    lines.push(`- Acceptance ${level.label}:${required} ${level.title} - ${level.status}`)
+  }
+  if (remaining.latest_blocker) {
+    lines.push(`- Latest blocker: ${remaining.latest_blocker.blocker}`)
+    lines.push(`- Blocker owner: ${remaining.latest_blocker.owner}`)
+    lines.push(`- Next safe action: ${remaining.latest_blocker.next}`)
+  }
+  if (remaining.next_actions.length > 0) {
+    lines.push(...remaining.next_actions.map((action) => `- Next: ${action}`))
   }
   return lines
 }

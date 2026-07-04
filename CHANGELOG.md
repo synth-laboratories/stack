@@ -61,7 +61,11 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   level states, v1 status, graduation status, recorded levels, and open levels.
   `stack effort show`, `stack effort list`, generated handoffs, and `/efforts`
   display the same compact acceptance status so Banking77-style packets can be
-  reviewed without opening the markdown file.
+  reviewed without opening the markdown file. Effort orientation payloads now
+  include `remaining_work`, which combines open acceptance levels with the latest
+  typed blocker next action; `stack effort show`, `stack effort list`, generated
+  handoffs, `stack_effort_get`, `stack_effort_list`, and `/efforts` surface that
+  summary so resume agents can see what remains without parsing markdown.
 - **Typed Effort blocker receipts.** `stack effort blocker` and
   `stack_effort_record_blocker` record external dependencies with blocker,
   evidence, next owner, and next safe action while keeping Effort status
@@ -105,7 +109,10 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   Source sidecars are marked `optimizer_candidate` so Banking77-style acceptance
   packets can distinguish a scored candidate from a generic optimizer capture.
   `stack effort audit` now verifies task-classifier optimizer candidates through
-  this typed activity receipt plus receipt sidecar.
+  this typed activity receipt plus receipt sidecar. `stack effort show`,
+  `stack effort list`, `stack_effort_get`, `stack_effort_list`, and `/efforts`
+  surface the latest typed candidate id, run id, score, split, artifact path,
+  and receipt ref during normal orientation.
 - **Engineering Effort change packets.** `stack effort engineering-packet` and
   `stack_effort_write_engineering_packet` refresh
   `findings/results/engineering-change-summary.md` with changed files, git diff
