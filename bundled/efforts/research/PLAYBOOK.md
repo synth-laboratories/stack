@@ -49,8 +49,12 @@ A research claim needs:
 - Mark operator ideas with `[HUMAN]` in the filename and heading.
 - Put seeds, splits, traces, and corpora in `findings/data/`.
 - Put prompts, configs, harness recipes, and policies in `findings/code/`.
-- Put scorecards, receipts, heldout runs, and proof packets in `findings/proof/`.
+- Put scorecards, receipts, heldout runs, screenshots, screencaps, video links,
+  browser captures, terminal receipts, monitor outputs, and proof packets in
+  `findings/proof/`.
 - Put interim reports and final summaries in `findings/results/`.
+- Prefer typed artifact adapters when they exist, but preserve ad hoc local
+  artifacts with receipt sidecars instead of waiting for adapter work.
 
 ## Status Discipline
 

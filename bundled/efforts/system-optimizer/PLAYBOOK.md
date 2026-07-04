@@ -45,8 +45,10 @@ A mechanism claim needs:
 ## Artifact Routing
 
 - Keep raw mechanism ideas in `ideas/`; mark operator ideas with `[HUMAN]`.
-- Put optimizer configs, prompts, policies, memory formats, and harness patches in `findings/code/`.
-- Put traces, rollouts, failure stores, and labeled corpora in `findings/data/`.
+- Put optimizer configs, prompts, policies, monitor profiles, memory formats,
+  Reflexion/MAPO loop configs, and harness patches in `findings/code/`.
+- Put traces, rollouts, failure stores, memory updates, policy events, monitor
+  outputs, MLDP lessons, and labeled corpora in `findings/data/`.
 - Put attribution receipts, scorecards, and heldout/transfer evidence in `findings/proof/`.
 - Put mechanism reports and acceptance summaries in `findings/results/`.
 

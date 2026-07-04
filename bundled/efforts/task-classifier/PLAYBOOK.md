@@ -48,6 +48,13 @@ For the Banking77 Efforts acceptance run, fill `findings/results/acceptance-summ
 The task-classifier template seeds the A0-A4 criteria into `effort.toml`; keep
 that list current as evidence is attached.
 
+Recommended route:
+
+1. Use local GEPA first for the required v1 artifact-capture proof.
+2. Graduate to Synth hosted GEPA after local proof when auth, capacity, and cost allow it.
+3. Attach synth-ai SMR harness evidence to prove the same Effort handles direct execution proof.
+4. Attach synth-ai SMR/Tinker or training-style evidence when model/data/run artifacts exist.
+
 - A0 proves scaffold, CLI/MCP/TUI visibility, a bound meta-thread, one `[HUMAN]` idea, and a progress entry.
 - A1 proves local optimizer evidence: run id, candidate artifact, visible result, heldout scorecard, and research log entry.
 - A2 proves hosted GEPA graduation when available.
