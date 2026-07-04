@@ -72,6 +72,7 @@ matching, aliases, and tab completion.
 | `/efforts` | Open the Efforts workstream panel |
 | `/threads` / `/p` | Open thread navigation; `/threads new` starts a new thread |
 | `/mode eng\|research` / `/work_mode` | Record the future work-mode flag |
+| `/feedback [kind] [text]` / `/eval-feedback` | In eval mode, open or prefill the human feedback modal |
 | `/env dev\|staging\|prod` | Change the selected Stack environment |
 | `/provider chatgpt\|cursor` | Change the worker provider |
 | `/profile research\|engineering\|product` | Change the Stack profile |

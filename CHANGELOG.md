@@ -118,6 +118,10 @@ Efforts acceptance hardening release.
   `findings/data/`. Effort list/show, MCP get/list, `/efforts`, generated
   handoffs, audit, playbooks, and gardener profiles now surface benchmark
   adoption as first-class metadata instead of a generic capture.
+- **Eval feedback input.** Eval mode feedback now supports `/feedback`,
+  `/eval`, and `/eval-feedback` slash entry, editable keyboard text in the
+  feedback modal, and safer voice-hold restart suppression so accidental repeat
+  key events do not immediately restart recording.
 
 ## [0.2.0-dev.20260703.2] - 2026-07-03
 

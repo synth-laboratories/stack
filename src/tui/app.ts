@@ -709,6 +709,8 @@ type AppState = {
   voiceTranscribing: boolean
   voiceFinishInFlight: boolean
   voiceRecordingTarget?: VoiceInputTarget
+  voiceLastCandidatePressAtMs?: number
+  voiceSuppressStartUntilMs?: number
   evalModeEnabled: boolean
   evalUiHandleEnabled: boolean
   evalVoiceInputEnabled: boolean
@@ -1383,6 +1385,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     if (!prompt) return false
     key?.preventDefault?.()
     key?.stopPropagation?.()
+    if (handleEvalFeedbackSlash(prompt, state, remount)) {
+      state.inputBuffer = ""
+      state.slashMenuIndex = 0
+      return true
+    }
     if (
       submitGoalSlashIfNeeded(
         prompt,
@@ -6876,15 +6883,44 @@ function evalFeedbackEnabled(state: AppState): boolean {
   return state.evalModeEnabled && state.evalUiHandleEnabled
 }
 
-function openEvalFeedbackModal(state: AppState, refresh: () => void): void {
+function handleEvalFeedbackSlash(prompt: string, state: AppState, refresh: () => void): boolean {
+  const parsed = parseSlashCommand(prompt)
+  if (!parsed) return false
+  if (parsed.name !== "feedback" && parsed.name !== "eval" && parsed.name !== "eval-feedback") return false
+  if (!evalFeedbackEnabled(state)) {
+    appendStackBlock(state.blocks, "eval feedback is only available in eval mode")
+    refresh()
+    return true
+  }
+  const { kind, body } = parseEvalFeedbackSlashArgs(parsed.args)
+  if (kind) state.evalModalKind = kind
+  openEvalFeedbackModal(state, refresh, body)
+  return true
+}
+
+function parseEvalFeedbackSlashArgs(args: string): { kind?: EvalFeedbackKind; body?: string } {
+  const trimmed = args.trim()
+  if (!trimmed) return {}
+  const [first = "", ...rest] = trimmed.split(/\s+/)
+  if (EVAL_FEEDBACK_KINDS.includes(first as EvalFeedbackKind)) {
+    return { kind: first as EvalFeedbackKind, body: rest.join(" ") }
+  }
+  return { body: trimmed }
+}
+
+function openEvalFeedbackModal(state: AppState, refresh: () => void, initialText?: string): void {
   if (!evalFeedbackEnabled(state)) return
   state.evalModalOpen = true
+  state.evalModalBuffer = initialText ?? ""
+  state.evalModalVoiceUsed = false
   state.evalModalNotice = undefined
   refresh()
 }
 
 function closeEvalFeedbackModal(state: AppState, refresh: () => void): void {
   state.evalModalOpen = false
+  state.evalModalBuffer = ""
+  state.evalModalVoiceUsed = false
   state.evalModalNotice = undefined
   refresh()
 }
@@ -6975,14 +7011,19 @@ function handleEvalFeedbackKey(
   refresh: () => void,
 ): boolean {
   if (!evalFeedbackEnabled(state)) return false
-  if (!state.evalModalOpen) {
-    if (key.ctrl && key.name === "e") {
+  if (key.ctrl && key.name === "e") {
+    if (state.evalModalOpen) {
+      closeEvalFeedbackModal(state, refresh)
+    } else {
       openEvalFeedbackModal(state, refresh)
-      return true
     }
+    return true
+  }
+  if (isVoiceKeyCandidate(key) || isVoiceKeyRelease(key)) return false
+  if (!state.evalModalOpen) {
     return false
   }
-  if (key.name === "escape") {
+  if (key.name?.toLowerCase() === "escape") {
     closeEvalFeedbackModal(state, refresh)
     return true
   }
@@ -7024,11 +7065,16 @@ function handleRawEvalFeedbackInput(
   refresh: () => void,
 ): boolean {
   if (!evalFeedbackEnabled(state)) return false
-  if (!state.evalModalOpen) {
-    if (sequence === "\x05") {
+  if (sequence === "\x05") {
+    if (state.evalModalOpen) {
+      closeEvalFeedbackModal(state, refresh)
+    } else {
       openEvalFeedbackModal(state, refresh)
-      return true
     }
+    return true
+  }
+  if (shouldDeferRawSequenceForVoiceHold(sequence)) return false
+  if (!state.evalModalOpen) {
     return false
   }
   if (sequence === "\x1b") {
@@ -7171,6 +7217,9 @@ type VoiceKeyContext = {
   refreshMetaEvents: () => void
 }
 
+const VOICE_RESTART_SUPPRESSION_MS = 900
+const VOICE_TOGGLE_REPEAT_GAP_MS = 900
+
 function handleVoiceKey(key: StackKeyEvent, kind: "press" | "release", ctx: VoiceKeyContext): boolean {
   const target = ctx.state.voiceRecordingTarget ?? resolveVoiceInputTarget(ctx.state)
   if (!target) return false
@@ -7195,7 +7244,22 @@ function handleVoiceKey(key: StackKeyEvent, kind: "press" | "release", ctx: Voic
   key.preventDefault?.()
   key.stopPropagation?.()
 
-  if (ctx.state.voiceRecording || ctx.state.voiceTranscribing || ctx.state.voiceFinishInFlight) {
+  const now = Date.now()
+  const sinceLastVoicePress = now - (ctx.state.voiceLastCandidatePressAtMs ?? 0)
+  ctx.state.voiceLastCandidatePressAtMs = now
+
+  if (ctx.state.voiceRecording) {
+    const heldMs = voiceHoldElapsedMs(ctx.state.voiceRecordingStartedAt)
+    if (heldMs < MIN_VOICE_HOLD_MS || sinceLastVoicePress < VOICE_TOGGLE_REPEAT_GAP_MS) {
+      return true
+    }
+    void (target === "gardener" ? finishVoiceHoldToGardener(ctx) : finishVoiceHold(ctx))
+    return true
+  }
+  if (ctx.state.voiceTranscribing || ctx.state.voiceFinishInFlight) {
+    return true
+  }
+  if ((ctx.state.voiceSuppressStartUntilMs ?? 0) > Date.now()) {
     return true
   }
   if (target === "gardener") {
@@ -7232,6 +7296,8 @@ async function cancelVoiceRecording(state: AppState, refresh: () => void, messag
   state.voiceRecording = undefined
   state.voiceRecordingStartedAt = undefined
   state.voiceRecordingTarget = undefined
+  state.voiceLastCandidatePressAtMs = undefined
+  state.voiceSuppressStartUntilMs = Date.now() + VOICE_RESTART_SUPPRESSION_MS
   if (recording) {
     await recording.stop().catch(() => undefined)
   }
@@ -7401,6 +7467,8 @@ async function finishVoiceHold(ctx: VoiceKeyContext): Promise<void> {
     state.voiceTranscribing = false
     state.voiceFinishInFlight = false
     state.voiceRecordingTarget = undefined
+    state.voiceLastCandidatePressAtMs = undefined
+    state.voiceSuppressStartUntilMs = Date.now() + VOICE_RESTART_SUPPRESSION_MS
     refresh()
   }
 }
