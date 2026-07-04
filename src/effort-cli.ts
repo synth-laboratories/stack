@@ -405,7 +405,7 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
 
     if (action === "launch") {
       const ref = parsed.args[0]
-      const usage = `usage: stack effort launch <effort> --kind ${EFFORT_LAUNCH_KINDS.join("|")} --capability <${EFFORT_LAUNCH_CAPABILITIES.join("|")}> [--config <gepa toml path>] [--tunnel-url <url>] [--container-pool <id>] [--goal <text>] [--project-id <id>] [--factory-id <id>] [--pool <id>] [--task-id <id>] [--split <name>] [--seed <n>] [--image-ref <ref>|--service-url <url>] [--runtime-kind <kind>] [--release-name <name>] [--provider <name>] [--json]`
+      const usage = `usage: stack effort launch <effort> --kind ${EFFORT_LAUNCH_KINDS.join("|")} --capability <${EFFORT_LAUNCH_CAPABILITIES.join("|")}> [--config <gepa toml path>] [--tunnel-url <url>] [--container-pool <id>] [--goal <text>] [--project-id <id>] [--factory-id <id>] [--pool <id>] [--task-id <id>] [--split <name>] [--seed <n>] [--policy-name <name>] [--policy-config-json <json>] [--image-ref <ref>|--service-url <url>] [--runtime-kind <kind>] [--release-name <name>] [--provider <name>] [--json]`
       if (!ref) return usageError(usage)
       const kind = readFlagString(parsed, "kind")
       if (!kind || !(EFFORT_LAUNCH_KINDS as readonly string[]).includes(kind)) return usageError(usage)
@@ -425,6 +425,8 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
         taskId: readFlagString(parsed, "task-id"),
         split: readFlagString(parsed, "split"),
         seed: readFlagInteger(parsed, "seed"),
+        policyName: readFlagString(parsed, "policy-name"),
+        policyConfig: readFlagJsonObject(parsed, "policy-config-json"),
         imageRef: readFlagString(parsed, "image-ref"),
         serviceUrl: readFlagString(parsed, "service-url"),
         runtimeKind: readFlagString(parsed, "runtime-kind"),
@@ -1433,7 +1435,7 @@ function printEffortUsage(): void {
   console.error("  stack effort engineering-packet <effort> [--repo <path>] [--base <ref>] [--summary <text>] [--file <path>] [--validation <text>] [--skipped-gate <text>] [--risk <text>] [--next <text>]")
   console.error("  stack effort refs <effort> [--factory-id <id>] [--hosted-effort-id <id>] [--project-id <id>] [--optimizer-run-id <id>] [--smr-run-id <id>] [--tinker-run-id <id>] [--repo-ref <ref>] [--initiative-id <id>]")
   console.error("  stack effort scope <effort> [--capabilities <a,b,c>] [--json]")
-  console.error(`  stack effort launch <effort> --kind ${EFFORT_LAUNCH_KINDS.join("|")} --capability <${EFFORT_LAUNCH_CAPABILITIES.join("|")}> [--config <gepa toml path>] [--tunnel-url <url>] [--container-pool <id>] [--goal <text>] [--project-id <id>] [--factory-id <id>] [--pool <id>] [--task-id <id>] [--split <name>] [--seed <n>] [--image-ref <ref>|--service-url <url>] [--runtime-kind <kind>] [--release-name <name>] [--provider <name>] [--json]`)
+  console.error(`  stack effort launch <effort> --kind ${EFFORT_LAUNCH_KINDS.join("|")} --capability <${EFFORT_LAUNCH_CAPABILITIES.join("|")}> [--config <gepa toml path>] [--tunnel-url <url>] [--container-pool <id>] [--goal <text>] [--project-id <id>] [--factory-id <id>] [--pool <id>] [--task-id <id>] [--split <name>] [--seed <n>] [--policy-name <name>] [--policy-config-json <json>] [--image-ref <ref>|--service-url <url>] [--runtime-kind <kind>] [--release-name <name>] [--provider <name>] [--json]`)
   console.error("  stack effort idea <effort> <title> [--origin HUMAN|AGENT|MIXED] [--body <text>]")
   console.error("  stack effort note <effort> <title> [--kind human|note] [--body <text>]")
   console.error("  stack effort repo <effort> --path <path> [--repo-ref <ref>] [--title <title>] [--filename <name>]")
@@ -1529,6 +1531,21 @@ function readFlagList(parsed: ParsedFlags, name: string): string[] | undefined {
   const value = readFlagString(parsed, name)
   if (!value) return undefined
   return value.split(/;|\n/).map((entry) => entry.trim()).filter(Boolean)
+}
+
+function readFlagJsonObject(parsed: ParsedFlags, name: string): Record<string, unknown> | undefined {
+  const value = readFlagString(parsed, name)
+  if (!value) return undefined
+  let parsedJson: unknown
+  try {
+    parsedJson = JSON.parse(value)
+  } catch (error) {
+    throw new Error(`${name} must be a JSON object: ${error instanceof Error ? error.message : String(error)}`)
+  }
+  if (!parsedJson || typeof parsedJson !== "object" || Array.isArray(parsedJson)) {
+    throw new Error(`${name} must be a JSON object`)
+  }
+  return parsedJson as Record<string, unknown>
 }
 
 function readFlagInteger(parsed: ParsedFlags, name: string): number | undefined {

@@ -328,8 +328,12 @@ is declared in the Effort scope. Wired launch clients cover local GEPA
 (`--kind optimizer --capability optimizer.gepa.local --config <toml>`), hosted
 GEPA (`optimizer.gepa.hosted` with optional `--tunnel-url` and
 `--container-pool`), hosted SMR (`--kind smr --capability smr.hosted --goal
-<text>` with optional project/factory ids), and hosted container-pool rollout
-(`--kind container --capability container.pool.hosted --pool <id>`). A
+<text>` with optional project/factory ids), container runtime release+bind
+(`--kind container --capability container.deploy.hosted --pool <id>
+--image-ref <ref>` or `--service-url <url>`), and hosted container-pool rollout
+(`--kind container --capability container.pool.hosted --pool <id>` with optional
+`--task-id`, `--split`, `--seed`, `--policy-name`, and
+`--policy-config-json`). A
 successful launch records a lane-explicit launch ref and activity receipt on the
 Effort before returning the launch id.
 

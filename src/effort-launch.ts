@@ -35,7 +35,8 @@ export type EffortLaunchInput = {
   taskId?: string
   split?: string
   seed?: number
-  policy?: Record<string, unknown>
+  policyName?: string
+  policyConfig?: Record<string, unknown>
   imageRef?: string
   serviceUrl?: string
   runtimeKind?: string
@@ -316,6 +317,7 @@ async function executeEffortLaunch(
 }
 
 function containerRolloutBody(input: EffortLaunchInput, effortId: string): Record<string, unknown> {
+  const policyName = input.policyName?.trim() || "stack_effort_launch"
   return {
     trace_correlation_id: `stack-effort-${effortId}`,
     env: {
@@ -325,7 +327,10 @@ function containerRolloutBody(input: EffortLaunchInput, effortId: string): Recor
       },
       seed: input.seed ?? 7,
     },
-    policy: input.policy ?? {},
+    policy: {
+      policy_name: policyName,
+      config: input.policyConfig ?? {},
+    },
   }
 }
 
