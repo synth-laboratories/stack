@@ -62,12 +62,13 @@ Record hosted optimizer, SMR, Factory, Project, or Tinker refs through
 Refs alone do not satisfy A2-A4. A hosted graduation claim also needs artifact
 evidence under `findings/proof/`, the config or recipe under `findings/code/`,
 and a research-log entry that names the run id, environment, result, and caveats.
-When evidence starts as a hosted optimizer artifact, saved SMR/WorkProduct
-download, or local file that should keep provenance, pull it with
-`stack_pull_artifact` and attach the returned receipt with `stack effort finding
---receipt-path <receipt>` or `stack_effort_record_finding receipt_path=<receipt>`.
-The recorded finding should include the pulled artifact and its adjacent
-`.receipt.json` sidecar.
+When evidence starts as a hosted optimizer artifact or saved SMR/WorkProduct
+download, pull it with `stack_pull_artifact` and attach the returned receipt
+with `stack effort finding --receipt-path <receipt>` or
+`stack_effort_record_finding receipt_path=<receipt>`. For local/ad-hoc
+evidence, use `stack effort finding --path <file-or-directory>` or
+`stack_effort_record_finding path=<file-or-directory>`; Stack writes the
+Effort-local source receipt sidecar directly.
 
 ## Artifact Routing
 

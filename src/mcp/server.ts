@@ -4886,7 +4886,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_effort_record_finding",
-      description: "Record an Effort finding under findings/{ideas,code,data,proof,results}, either as markdown body text, by copying/linking a local path, or from a stack_pull_artifact receipt.",
+      description: "Record an Effort finding under findings/{ideas,code,data,proof,results}, either as markdown body text, by copying/linking a local path with an Effort-local source receipt, or from a stack_pull_artifact receipt.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
@@ -4895,7 +4895,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           title: stringProperty("Finding title."),
           body: stringProperty("Optional markdown body. Used when path is omitted."),
           path: stringProperty("Optional local path. Relative paths first resolve inside the Effort folder, then from Stack workingDir."),
-          receipt_path: stringProperty("Optional stack_pull_artifact receipt path. Mutually exclusive with path; records the pulled workspace_path as the finding source."),
+          receipt_path: stringProperty("Optional stack_pull_artifact receipt path. Mutually exclusive with path; records the pulled workspace_path and hosted/saved receipt metadata as the finding source."),
           filename: stringProperty("Optional target filename."),
         },
         ["effort_ref", "kind", "title"],

@@ -579,8 +579,8 @@ async function printArtifactResult(
   if (artifactReceipt) {
     console.log(`artifact receipt: ${artifactReceipt.receipt_path}`)
     console.log(`artifact source: ${artifactReceipt.workspace_path}`)
-    if (sourceReceiptPath) console.log(`artifact receipt record: ${sourceReceiptPath}`)
   }
+  if (sourceReceiptPath) console.log(`artifact receipt record: ${sourceReceiptPath}`)
 }
 
 function printEffortActivity(effort: StackEffort, limit: number, json: boolean): void {

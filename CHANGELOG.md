@@ -60,12 +60,14 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   `stack_effort_list` expose compact artifact and receipt-sidecar counts, and
   `/efforts` shows the same count line so agents and humans can orient around
   proof material without scraping `HANDOFF.md`.
-- **Pulled artifacts can become Effort findings.** `stack effort finding
-  --receipt-path` and `stack_effort_record_finding` now accept a receipt from
-  `stack_pull_artifact`, record the pulled `workspace_path` as the finding
-  source, write an Effort-local `.receipt.json` sidecar, and return or print
-  provenance receipt metadata with the Effort orientation payload. Effort audit
-  now validates those sidecars when present.
+- **Pulled and local artifacts can become Effort findings.** `stack effort
+  finding --path` now writes an Effort-local source receipt sidecar for
+  local/ad-hoc evidence, while `--receipt-path` and
+  `stack_effort_record_finding` accept receipts from `stack_pull_artifact`,
+  record the pulled `workspace_path` as the finding source, write the same
+  Effort-local `.receipt.json` sidecar, and return or print provenance receipt
+  metadata with the Effort orientation payload. Effort audit now validates
+  those sidecars when present.
 - **Typed Tinker refs for Efforts.** Effort manifests, `stack effort refs`,
   `stack_effort_update_refs`, generated handoffs, and the `/efforts` panel can
   now carry Tinker/training-style run ids separately from optimizer and SMR run

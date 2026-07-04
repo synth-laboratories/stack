@@ -185,16 +185,17 @@ mode includes the same orientation fields for scripts and review packets.
 For `stack effort finding --path`, relative paths resolve inside the Effort
 folder first, then from the current shell directory, then from the Stack working
 directory. Existing Effort-local paths are recorded in place; external files or
-directories are copied into the selected `findings/*` folder. `stack effort
-finding --receipt-path` accepts a `stack_pull_artifact` receipt, reads the
-pulled `workspace_path`, records that artifact as the finding source, and
-prints receipt/source metadata. It also writes a `.receipt.json` sidecar next
-to the recorded finding so artifact inventory and activity history retain the
-provenance trail.
+directories are copied into the selected `findings/*` folder. Path-based
+findings write a local-source `.receipt.json` sidecar next to the recorded
+finding, including source kind, workspace path, and a file or directory digest
+where available. `stack effort finding --receipt-path` accepts a
+`stack_pull_artifact` receipt, reads the pulled `workspace_path`, records that
+artifact as the finding source, and preserves the hosted/saved artifact receipt
+metadata in the same sidecar shape.
 
 For MCP workflows, `stack_effort_record_finding` accepts the same
-`receipt_path` and returns receipt metadata alongside the usual Effort
-orientation payload, including the Effort-local `source_receipt_path`.
+`path` or `receipt_path` inputs and returns receipt metadata alongside the usual
+Effort orientation payload, including the Effort-local `source_receipt_path`.
 
 For `stack effort repo --path`, relative paths use the same resolution rule.
 File paths are copied under `repos/`; directory paths write a small pointer
@@ -311,11 +312,12 @@ Stack MCP exposes the same Effort storage to gardeners and agents:
 - `stack_effort_update_status`
 
 Use `stack_pull_artifact` before `stack_effort_record_finding` when evidence
-comes from a hosted optimizer artifact, saved SMR/WorkProduct download, or
-local file that needs a provenance receipt. Pass the returned `receipt_path` to
-`stack_effort_record_finding` instead of unpacking the receipt by hand.
-The CLI equivalent is `stack effort finding --receipt-path <receipt>`.
-Both paths preserve a receipt sidecar under the Effort finding folder.
+comes from a hosted optimizer artifact or saved SMR/WorkProduct download. Pass
+the returned `receipt_path` to `stack_effort_record_finding` instead of
+unpacking the receipt by hand. For local/ad-hoc evidence, pass `path`; Stack
+writes the Effort-local source receipt sidecar directly. The CLI equivalents
+are `stack effort finding --receipt-path <receipt>` and
+`stack effort finding --path <file-or-directory>`.
 
 Thread creation tools can bind directly into an Effort too. Pass `effort_ref` to
 `stack_meta_thread_create` when binding an existing session or to

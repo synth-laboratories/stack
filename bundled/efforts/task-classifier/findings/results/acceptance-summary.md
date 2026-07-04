@@ -104,8 +104,10 @@ Refs in `effort.toml` are navigation only. A2-A4 require proof artifacts under
 `findings/proof/`, recipes/configs under `findings/code/`, and a
 `research_log.md` entry naming the run id, environment, result, and caveats.
 When evidence comes from `stack_pull_artifact`, record the returned receipt with
-`stack effort finding --receipt-path` or `stack_effort_record_finding`; cite
-the generated Effort-local `.receipt.json` sidecar in the section above.
+`stack effort finding --receipt-path` or `stack_effort_record_finding`. When
+evidence is local/ad-hoc, record it with `stack effort finding --path` or
+`stack_effort_record_finding path=<file-or-directory>`. Cite the generated
+Effort-local `.receipt.json` sidecar in the section above.
 
 ## Decision
 

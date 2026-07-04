@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import {
   appendFileSync,
   cpSync,
@@ -988,14 +988,15 @@ export function recordEffortFinding(input: RecordEffortFindingInput): { effort: 
   mkdirSync(dir, { recursive: true })
   const linkedPath = input.sourcePath ? resolveExistingEffortPath(effort.folder_path, input.sourcePath) : undefined
   if (linkedPath && isPathInside(effort.folder_path, linkedPath)) {
-    const sourceReceiptPath = writeEffortFindingSourceReceipt(effort.folder_path, linkedPath, input.sourceReceipt)
+    const sourceReceipt = input.sourceReceipt ?? localEffortFindingSourceReceipt(linkedPath)
+    const sourceReceiptPath = writeEffortFindingSourceReceipt(effort.folder_path, linkedPath, sourceReceipt)
     appendEffortProgressLine(effort.folder_path, `Recorded ${input.kind} finding: ${relative(effort.folder_path, linkedPath)}.`)
     appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.finding_recorded", `Recorded ${input.kind} finding: ${relative(effort.folder_path, linkedPath)}.`, {
       kind: input.kind,
       title: input.title,
       path: relative(effort.folder_path, linkedPath),
       source_receipt_path: sourceReceiptPath ? relative(effort.folder_path, sourceReceiptPath) : undefined,
-      source_receipt: input.sourceReceipt,
+      source_receipt: sourceReceipt,
     })
     return { effort: persistEffort(input, effort), path: linkedPath, sourceReceiptPath }
   }
@@ -1006,14 +1007,15 @@ export function recordEffortFinding(input: RecordEffortFindingInput): { effort: 
     body: input.body,
     sourcePath: input.sourcePath,
   })
-  const sourceReceiptPath = writeEffortFindingSourceReceipt(effort.folder_path, path, input.sourceReceipt)
+  const sourceReceipt = input.sourceReceipt ?? (input.sourcePath && existsSync(input.sourcePath) ? localEffortFindingSourceReceipt(input.sourcePath) : undefined)
+  const sourceReceiptPath = writeEffortFindingSourceReceipt(effort.folder_path, path, sourceReceipt)
   appendEffortProgressLine(effort.folder_path, `Recorded ${input.kind} finding: ${relative(effort.folder_path, path)}.`)
   appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.finding_recorded", `Recorded ${input.kind} finding: ${relative(effort.folder_path, path)}.`, {
     kind: input.kind,
     title: input.title,
     path: relative(effort.folder_path, path),
     source_receipt_path: sourceReceiptPath ? relative(effort.folder_path, sourceReceiptPath) : undefined,
-    source_receipt: input.sourceReceipt,
+    source_receipt: sourceReceipt,
   })
   return { effort: persistEffort(input, effort), path, sourceReceiptPath }
 }
@@ -2078,6 +2080,48 @@ function writeEffortFindingSourceReceipt(
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
   return path
+}
+
+function localEffortFindingSourceReceipt(sourcePath: string): StackEffortFindingSourceReceipt {
+  const stat = statSync(sourcePath)
+  const digest = localPathDigest(sourcePath)
+  return {
+    receipt_path: `local:${sourcePath}`,
+    artifact_kind: stat.isDirectory() ? "local_directory" : "local_file",
+    source_kind: "local_path",
+    environment: "local",
+    label: basename(sourcePath),
+    workspace_path: sourcePath,
+    ...(digest ? { digest } : {}),
+  }
+}
+
+function localPathDigest(sourcePath: string): { sha256: string; bytes: number } | undefined {
+  const stat = statSync(sourcePath)
+  if (stat.isFile()) return fileDigestSync(sourcePath)
+  if (!stat.isDirectory()) return undefined
+  const files: string[] = []
+  collectRelativeFiles(sourcePath, sourcePath, files)
+  const hash = createHash("sha256")
+  let bytes = 0
+  for (const rel of files.filter((entry) => !isFindingReceiptSidecarRef(entry)).sort()) {
+    const path = join(sourcePath, rel)
+    const buffer = readFileSync(path)
+    bytes += buffer.length
+    hash.update(rel)
+    hash.update("\0")
+    hash.update(buffer)
+    hash.update("\0")
+  }
+  return { sha256: hash.digest("hex"), bytes }
+}
+
+function fileDigestSync(path: string): { sha256: string; bytes: number } {
+  const buffer = readFileSync(path)
+  return {
+    sha256: createHash("sha256").update(buffer).digest("hex"),
+    bytes: buffer.length,
+  }
 }
 
 function readEffortFindingSourceReceipt(path: string): {
