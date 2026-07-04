@@ -97,8 +97,8 @@ import {
   readMetaThreadManifest,
   reconcileMetaThreadGoalFromCodex,
 } from "../meta-thread-goal.js"
-import { auditEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, type StackEffortSummary } from "../effort.js"
-import type { StackdMetaSidePanel, StackdMetaStatus, StackdMetaThreadManifest } from "../client/stackd.js"
+import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, updateEffortStatus, writeEffortHandoff, type StackEffortSummary } from "../effort.js"
+import { stackdUpdateMetaThreadEffortRef, type StackdMetaSidePanel, type StackdMetaStatus, type StackdMetaThreadManifest } from "../client/stackd.js"
 import {
   formatCodexBudgetSuffix,
   formatCodexRateLimitsCardLines,
@@ -625,6 +625,7 @@ type AppState = {
   optimizerCliAvailable: boolean
   localBootstrapSnapshot: LocalBootstrapSnapshot
   opsScrollOffset: number
+  selectedEffortIndex: number
   lightsThreadScrollOffset: number
   lightsThreadFilter: string
   lightsSelectedThreadId?: string
@@ -1020,6 +1021,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     gardenerEventScrollOffset: 0,
     gardenerEventScrollPinned: true,
     opsScrollOffset: 0,
+    selectedEffortIndex: 0,
     lightsThreadScrollOffset: 0,
     lightsThreadFilter: "",
     lightsSelectedThreadId: lightsViewState.selectedThreadId,
@@ -2078,6 +2080,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     if (state.focusMode === "ops") {
       if (state.rightPanelContent === "lights") {
         handleLightsKey(key, options, state, buildOpsPanelInput(options, state), rightPanelThreadRows(renderer), remount)
+      } else if (state.rightPanelContent === "efforts") {
+        void handleEffortsKey(key, options, state, remount)
       } else {
         handleOpsKey(key, state, renderer, options, buildOpsPanelInput(options, state), opsVisibleRows(renderer, state), remount, refreshRemoteOpsPanel, refreshOptimizers)
       }
@@ -2835,7 +2839,7 @@ function createView(
                         padding: stackTuiLayout.panelPadding,
                       },
                       Text({
-                        content: renderEffortsPanelStyled(options, rightColumns, projectsRows),
+                        content: renderEffortsPanelStyled(options, state, rightColumns, projectsRows),
                         fg: theme.fgPrimary,
                       }),
                     ),
@@ -5182,6 +5186,8 @@ function openEffortsPanel(
   state.rightPanelOpen = true
   state.rightPanelContent = "efforts"
   state.rightPanelOpsVisible = false
+  state.focusMode = "ops"
+  state.opsScrollOffset = 0
   appendUiPanelOpened(options, state, "efforts", "list", "operator", reason)
   refresh()
 }
@@ -6393,8 +6399,8 @@ function buildSlashDispatchHooks(
     toggleThreads: () => {
       openThreadsPanel(options, state, refresh, "slash")
     },
-    openEfforts: () => {
-      openEffortsPanel(options, state, refresh, "slash")
+    openEfforts: (args) => {
+      handleEffortsSlash(args ?? "", options, state, refresh)
     },
     startNewThread: () => {
       void startNewThread(options, state, codexSessionHandle, refresh, refreshHistory, refreshMetaEvents)
@@ -7521,17 +7527,23 @@ function handleRawInputInner(
   }
 
   if (state.focusMode === "ops") {
-    handleOpsKey(
-      { name: keyName },
-      state,
-      renderer,
-      options,
-      buildOpsPanelInput(options, state),
-      opsVisibleRows(renderer, state),
-      refresh,
-      refreshRemoteOpsPanel,
-      refreshOptimizers,
-    )
+    if (state.rightPanelContent === "lights") {
+      handleLightsKey({ name: keyName }, options, state, buildOpsPanelInput(options, state), rightPanelThreadRows(renderer), refresh)
+    } else if (state.rightPanelContent === "efforts") {
+      void handleEffortsKey({ name: keyName }, options, state, refresh)
+    } else {
+      handleOpsKey(
+        { name: keyName },
+        state,
+        renderer,
+        options,
+        buildOpsPanelInput(options, state),
+        opsVisibleRows(renderer, state),
+        refresh,
+        refreshRemoteOpsPanel,
+        refreshOptimizers,
+      )
+    }
     return true
   }
 
@@ -9064,6 +9076,141 @@ function handleLightsKey(
   }
 }
 
+async function handleEffortsKey(
+  key: { name?: string },
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  if (key.name === "j" || key.name === "down") {
+    navigateEffortsPanelSelection(options, state, 1)
+    refresh()
+    return
+  }
+  if (key.name === "k" || key.name === "up") {
+    navigateEffortsPanelSelection(options, state, -1)
+    refresh()
+    return
+  }
+  if (key.name === "r") {
+    appendStackBlock(state.blocks, "efforts refresh uses current Stack workspace state")
+    refresh()
+    return
+  }
+  if (key.name === "h") {
+    refreshSelectedEffortHandoff(options, state, refresh)
+    return
+  }
+  if (key.name === "b") {
+    await bindSelectedEffortToCurrentThread(options, state, refresh)
+  }
+}
+
+function navigateEffortsPanelSelection(options: StackAppOptions, state: AppState, direction: number): void {
+  try {
+    const efforts = readEffortsPanelSummaries(options)
+    state.selectedEffortIndex = clampIndex(state.selectedEffortIndex + direction, efforts.length)
+  } catch {
+    state.selectedEffortIndex = 0
+  }
+}
+
+function selectedEffortPanelSummary(options: StackAppOptions, state: AppState): StackEffortSummary | undefined {
+  try {
+    const efforts = readEffortsPanelSummaries(options)
+    state.selectedEffortIndex = clampIndex(state.selectedEffortIndex, efforts.length)
+    return efforts[state.selectedEffortIndex]
+  } catch {
+    return undefined
+  }
+}
+
+function readEffortsPanelSummaries(options: StackAppOptions): StackEffortSummary[] {
+  return orderedEffortsForPanel(listEfforts({
+    stackDataRoot: options.config.stackDataRoot,
+    workspaceRoot: options.config.workspaceRoot,
+  }))
+}
+
+function orderedEffortsForPanel(efforts: StackEffortSummary[]): StackEffortSummary[] {
+  const active = efforts.filter((effort) => effort.status !== "archived")
+  const archived = efforts.filter((effort) => effort.status === "archived")
+  return [...active, ...archived]
+}
+
+function refreshSelectedEffortHandoff(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  const selected = selectedEffortPanelSummary(options, state)
+  if (!selected) {
+    appendStackBlock(state.blocks, "efforts handoff: no Effort selected")
+    refresh()
+    return
+  }
+  try {
+    const result = writeEffortHandoff({
+      stackDataRoot: options.config.stackDataRoot,
+      workspaceRoot: options.config.workspaceRoot,
+      effortRef: selected.id,
+    })
+    appendStackBlock(state.blocks, `effort handoff refreshed: ${selected.slug} - ${relative(options.config.workspaceRoot, result.path)}`)
+  } catch (error) {
+    appendStackBlock(state.blocks, `effort handoff failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+async function bindSelectedEffortToCurrentThread(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  const selected = selectedEffortPanelSummary(options, state)
+  if (!selected) {
+    appendStackBlock(state.blocks, "efforts bind: no Effort selected")
+    refresh()
+    return
+  }
+  const metaThreadId = options.session.metaThreadId ?? state.metaThreadManifest?.id
+  if (!metaThreadId) {
+    appendStackBlock(state.blocks, "efforts bind: current session has no meta-thread id")
+    refresh()
+    return
+  }
+  const effort = readEffort({
+    stackDataRoot: options.config.stackDataRoot,
+    workspaceRoot: options.config.workspaceRoot,
+  }, selected.id)
+  if (!effort) {
+    appendStackBlock(state.blocks, `efforts bind: Effort not found: ${selected.slug}`)
+    refresh()
+    return
+  }
+  try {
+    const manifest = await stackdUpdateMetaThreadEffortRef(metaThreadId, {
+      effort_ref: effort.manifest.id,
+      actor_id: "operator",
+      reason: "tui /efforts bind",
+    })
+    bindEffortMetaThread({
+      stackDataRoot: options.config.stackDataRoot,
+      workspaceRoot: options.config.workspaceRoot,
+      effortRef: effort.manifest.id,
+      metaThreadId: manifest.id,
+    })
+    if (state.metaThreadManifest?.id === manifest.id || options.session.metaThreadId === manifest.id) {
+      state.metaThreadManifest = manifest
+      options.session.metaThreadId = manifest.id
+    }
+    appendStackBlock(state.blocks, `bound current meta-thread ${manifest.id.slice(0, 8)} to effort ${effort.manifest.slug}`)
+  } catch (error) {
+    appendStackBlock(state.blocks, `efforts bind failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
 function lightsSectionExpanded(state: AppState, sectionId: LightsPanelSectionId): boolean {
   return !state.lightsCollapsedSections.has(sectionId)
 }
@@ -10415,14 +10562,12 @@ function renderMonitorRailStyled(snapshot: StackMonitorSnapshot, columns: number
   return new StyledText(chunks)
 }
 
-function renderEffortsPanelStyled(options: StackAppOptions, columns: number, visibleRows: number): StyledText {
+function renderEffortsPanelStyled(options: StackAppOptions, state: AppState, columns: number, visibleRows: number): StyledText {
   const chunks: TextChunk[] = []
   let efforts: StackEffortSummary[]
   try {
-    efforts = listEfforts({
-      stackDataRoot: options.config.stackDataRoot,
-      workspaceRoot: options.config.workspaceRoot,
-    })
+    efforts = readEffortsPanelSummaries(options)
+    state.selectedEffortIndex = clampIndex(state.selectedEffortIndex, efforts.length)
   } catch (error) {
     return new StyledText([
       fg(theme.synth.red)("Efforts could not be read"),
@@ -10431,6 +10576,7 @@ function renderEffortsPanelStyled(options: StackAppOptions, columns: number, vis
     ])
   }
 
+  const selected = efforts[state.selectedEffortIndex]
   const active = efforts.filter((effort) => effort.status !== "archived")
   const archived = efforts.filter((effort) => effort.status === "archived")
   const lines: Array<{ text: string; color: string }> = []
@@ -10449,13 +10595,26 @@ function renderEffortsPanelStyled(options: StackAppOptions, columns: number, vis
     text: oneLine("new - stack effort create <slug> --template <id>", columns),
     color: theme.fgMuted,
   })
+  if (selected) {
+    const metaThreadId = options.session.metaThreadId ?? state.metaThreadManifest?.id
+    const actions = [
+      "j/k select",
+      "h handoff",
+      metaThreadId ? "b bind thread" : "",
+      "r refresh",
+    ].filter(Boolean).join(" - ")
+    lines.push({
+      text: oneLine(`selected - ${selected.slug} - ${actions}`, columns),
+      color: theme.fgSecondary,
+    })
+  }
   lines.push({ text: "", color: theme.fgPrimary })
 
   if (efforts.length === 0) {
     lines.push({ text: "No Efforts yet.", color: theme.fgMuted })
   } else {
-    pushEffortSectionLines(lines, "Active", active, columns, options.config.workspaceRoot, options.config.stackDataRoot)
-    pushEffortSectionLines(lines, "Archived", archived, columns, options.config.workspaceRoot, options.config.stackDataRoot)
+    pushEffortSectionLines(lines, "Active", active, columns, options.config.workspaceRoot, options.config.stackDataRoot, selected?.id)
+    pushEffortSectionLines(lines, "Archived", archived, columns, options.config.workspaceRoot, options.config.stackDataRoot, selected?.id)
   }
 
   const rendered = lines.slice(0, Math.max(1, visibleRows))
@@ -10503,14 +10662,16 @@ function pushEffortSectionLines(
   columns: number,
   workspaceRoot: string,
   stackDataRoot: string,
+  selectedEffortId?: string,
 ): void {
   if (efforts.length === 0) return
   if (lines.length > 2) lines.push({ text: "", color: theme.fgPrimary })
   lines.push({ text: `${title} (${efforts.length})`, color: theme.fgSecondary })
   for (const effort of efforts) {
+    const selected = effort.id === selectedEffortId
     lines.push({
-      text: oneLine(`> ${effort.title || effort.slug}`, columns),
-      color: theme.fgPrimary,
+      text: oneLine(`${selected ? ">" : " "} ${effort.title || effort.slug}`, columns),
+      color: selected ? theme.synth.amber : theme.fgPrimary,
     })
     const metaCount = effort.meta_thread_refs.length
     const metaLabel = `${metaCount} thread${metaCount === 1 ? "" : "s"}`

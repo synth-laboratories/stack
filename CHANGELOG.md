@@ -34,6 +34,9 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   recent activity, latest blocker, handoff state, and acceptance summaries. `stack effort
   list` now works as a compact scan view with grouped status, ref counts,
   audit status, handoff/acceptance markers, latest progress, latest activity, and latest blocker.
+  The `/efforts` panel is now selectable: `j`/`k` move the selected Effort, `h`
+  refreshes its generated handoff packet, and `b` binds the current meta-thread
+  via stackd before updating the Effort reverse index.
   `stack_meta_thread_create` and `stack_worker_thread_create` accept `effort_ref`
   so new or existing worker threads can enter an Effort at creation time. `stack
   effort audit` and `stack_effort_audit` run a read-only coherence check for
@@ -99,6 +102,10 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   stat when a repo path is supplied, validation, skipped gates, risks, and next
   action. This gives engineering Efforts a stable answer to "what changed?"
   before handoff or release review.
+- **Interactive `/efforts` panel controls.** The TUI Efforts panel now supports
+  `j/k` selection, `h` handoff refresh, `b` binding of the current meta-thread
+  to the selected Effort through stackd, and `r` refresh, so operators can keep
+  Effort state current without leaving the cockpit.
 - **Typed Tinker refs for Efforts.** Effort manifests, `stack effort refs`,
   `stack_effort_update_refs`, generated handoffs, and the `/efforts` panel can
   now carry Tinker/training-style run ids separately from optimizer and SMR run
