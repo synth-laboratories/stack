@@ -27,6 +27,7 @@ import {
   recordEffortFinding,
   recordEffortIdea,
   recordEffortNote,
+  recordEffortOptimizerCandidate,
   recordEffortRepo,
   updateEffortRefs,
   updateEffortStatus,
@@ -389,6 +390,42 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       await printArtifactResult(config, result.effort, result.path, json, artifactReceipt, result.sourceReceiptPath, result.sourceReceipt, {
         capture_kind: result.captureKind,
         kind: result.kind,
+      })
+      return 0
+    }
+
+    if (action === "optimizer-candidate" || action === "candidate") {
+      const ref = parsed.args[0]
+      const title = readFlagString(parsed, "title") ?? parsed.args.slice(1).join(" ").trim()
+      if (!ref) return usageError("usage: stack effort optimizer-candidate <effort> [title] [--optimizer-run-id <id>] [--candidate-id <id>] [--score <value>] [--score-label <name>] [--split <name>] [--path <path>|--receipt-path <path>] [--body <text>]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const rawSourcePath = readFlagString(parsed, "path")
+      const receiptPath = readFlagString(parsed, "receipt-path")
+      if (rawSourcePath && receiptPath) return usageError("provide --path or --receipt-path, not both")
+      const artifactReceipt = receiptPath ? await readRoundTripPullReceipt(config, receiptPath) : undefined
+      const result = recordEffortOptimizerCandidate({
+        ...config,
+        effortRef: effort.manifest.id,
+        title,
+        optimizerRunId: readFlagString(parsed, "optimizer-run-id"),
+        candidateId: readFlagString(parsed, "candidate-id"),
+        score: readFlagString(parsed, "score"),
+        scoreLabel: readFlagString(parsed, "score-label"),
+        split: readFlagString(parsed, "split"),
+        body: readFlagString(parsed, "body"),
+        sourcePath: artifactReceipt
+          ? artifactReceipt.workspace_path
+          : rawSourcePath ? resolveCliEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined,
+        sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+        filename: readFlagString(parsed, "filename"),
+      })
+      await printArtifactResult(config, result.effort, result.path, json, artifactReceipt, result.sourceReceiptPath, result.sourceReceipt, {
+        optimizer_run_id: result.optimizerRunId,
+        candidate_id: result.candidateId,
+        score: result.score,
+        score_label: result.scoreLabel,
+        split: result.split,
       })
       return 0
     }
@@ -873,6 +910,7 @@ function printEffortUsage(): void {
   console.error("  stack effort repo <effort> --path <path> [--repo-ref <ref>] [--title <title>] [--filename <name>]")
   console.error("  stack effort finding <effort> [title] --kind idea|code|data|proof|result [--path <path>|--receipt-path <path>] [--body <text>]")
   console.error("  stack effort capture <effort> [title] --capture-kind terminal|browser|screenshot|video|local|monitor|memory|text|benchmark|optimizer [--kind idea|code|data|proof|result] [--path <path>|--receipt-path <path>|--body <text>]")
+  console.error("  stack effort optimizer-candidate <effort> [title] [--optimizer-run-id <id>] [--candidate-id <id>] [--score <value>] [--score-label <name>] [--split <name>] [--path <path>|--receipt-path <path>] [--body <text>]")
   console.error("  stack effort status <effort> <active|paused|done|archived>")
   console.error("  stack effort archive <effort>")
 }

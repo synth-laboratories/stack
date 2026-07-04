@@ -167,6 +167,7 @@ stack effort repo banking77-top-score --path ../evals/projectbench/factory_proje
 stack effort finding banking77-top-score "Local GEPA scorecard" --kind proof --path findings/proof/local-gepa
 stack effort finding banking77-top-score "Pulled hosted scorecard" --kind proof --receipt-path .stack/evidence/roundtrip/<receipt>.json
 stack effort capture banking77-top-score "Terminal heldout receipt" --capture-kind terminal --kind proof --path findings/proof/local-gepa/heldout-score.txt
+stack effort optimizer-candidate banking77-top-score --optimizer-run-id <run-id> --candidate-id <candidate-id> --score <score> --score-label "heldout accuracy" --split heldout --path findings/proof/local-gepa/<candidate-file>
 stack effort refs banking77-top-score --optimizer-run-id <run-id> --smr-run-id <run-id> --tinker-run-id <run-id>
 stack effort status banking77-top-score active
 stack effort archive banking77-top-score
@@ -230,6 +231,13 @@ otherwise captures default to proof evidence, except benchmark captures default
 to data. Use `--body` for quick terminal/text excerpts, `--path` for local files
 or folders, and `--receipt-path` for previously pulled hosted/saved artifacts.
 
+`stack effort optimizer-candidate` is the first-class adapter for GEPA and hosted
+optimizer candidate proof. It records into `findings/proof/`, preserves
+`optimizer_run_id`, `candidate_id`, `score`, `score_label`, and `split` in the
+activity receipt and MCP response, and marks any source sidecar as
+`source_kind=optimizer_candidate`. Use `--path` for local GEPA candidate files or
+`--receipt-path` after `stack_pull_artifact` for hosted optimizer artifacts.
+
 For MCP workflows, `stack_effort_record_finding` accepts the same
 `path` or `receipt_path` inputs and returns receipt metadata alongside the usual
 Effort orientation payload, including the Effort-local `source_receipt_path` and
@@ -237,6 +245,9 @@ generic `source_receipt` object. `artifact_receipt` is populated for
 `stack_pull_artifact` receipts as a compatibility alias for hosted/saved pulls.
 `stack_effort_record_capture` is the MCP twin of `stack effort capture` and
 returns the same orientation payload plus `capture_kind`.
+`stack_effort_record_optimizer_candidate` is the MCP twin of
+`stack effort optimizer-candidate` and returns the same orientation payload plus
+candidate id, optimizer run id, score, score label, split, and receipt metadata.
 `stack_effort_write_engineering_packet` is the MCP twin of
 `stack effort engineering-packet`.
 
@@ -353,16 +364,21 @@ Stack MCP exposes the same Effort storage to gardeners and agents:
 - `stack_effort_record_note`
 - `stack_effort_record_repo`
 - `stack_effort_record_finding`
+- `stack_effort_record_capture`
+- `stack_effort_record_optimizer_candidate`
+- `stack_effort_write_engineering_packet`
 - `stack_effort_update_refs`
 - `stack_effort_update_status`
 
-Use `stack_pull_artifact` before `stack_effort_record_finding` when evidence
-comes from a hosted optimizer artifact or saved SMR/WorkProduct download. Pass
-the returned `receipt_path` to `stack_effort_record_finding` instead of
-unpacking the receipt by hand. For local/ad-hoc evidence, pass `path`; Stack
-writes the Effort-local source receipt sidecar directly. The CLI equivalents
-are `stack effort finding --receipt-path <receipt>` and
-`stack effort finding --path <file-or-directory>`.
+Use `stack_pull_artifact` before `stack_effort_record_finding`,
+`stack_effort_record_capture`, or `stack_effort_record_optimizer_candidate` when
+evidence comes from a hosted optimizer artifact or saved SMR/WorkProduct
+download. Pass the returned `receipt_path` instead of unpacking the receipt by
+hand. For local/ad-hoc evidence, pass `path`; Stack writes the Effort-local
+source receipt sidecar directly. The CLI equivalents are `stack effort finding
+--receipt-path <receipt>`, `stack effort capture --receipt-path <receipt>`,
+`stack effort optimizer-candidate --receipt-path <receipt>`, and their `--path`
+variants.
 
 Thread creation tools can bind directly into an Effort too. Pass `effort_ref` to
 `stack_meta_thread_create` when binding an existing session or to

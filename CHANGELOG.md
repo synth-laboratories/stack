@@ -98,6 +98,12 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   `findings/*`, default to proof evidence except benchmark captures default to
   data, and mark source receipts as `<capture-kind>_capture` so ad hoc evidence
   stays distinguishable from ordinary local path attachments.
+- **Typed optimizer candidate evidence.** `stack effort optimizer-candidate` and
+  `stack_effort_record_optimizer_candidate` record GEPA or hosted optimizer
+  candidates under `findings/proof/` with optimizer run id, candidate id, score,
+  score label, split, optional candidate notes, and source artifact receipts.
+  Source sidecars are marked `optimizer_candidate` so Banking77-style acceptance
+  packets can distinguish a scored candidate from a generic optimizer capture.
 - **Engineering Effort change packets.** `stack effort engineering-packet` and
   `stack_effort_write_engineering_packet` refresh
   `findings/results/engineering-change-summary.md` with changed files, git diff

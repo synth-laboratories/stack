@@ -57,6 +57,7 @@ import {
   recordEffortFinding as recordStackEffortFinding,
   recordEffortIdea as recordStackEffortIdea,
   recordEffortNote as recordStackEffortNote,
+  recordEffortOptimizerCandidate as recordStackEffortOptimizerCandidate,
   recordEffortRepo as recordStackEffortRepo,
   STACK_EFFORT_CAPTURE_KINDS,
   STACK_EFFORT_FINDING_KINDS,
@@ -1163,6 +1164,74 @@ export class StackMcpServer {
         pulled_at: artifactReceipt.pulled_at,
       } : null,
       receipt: "lever.stack_mcp effort.capture_recorded",
+    })) ?? null
+  }
+
+  async recordEffortOptimizerCandidate(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const effort = readStackEffort({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+    }, effortRef)
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    const rawSourcePath = optionalString(args, "path")
+    const receiptPath = optionalString(args, "receipt_path")
+    if (rawSourcePath && receiptPath) {
+      throw new RpcError(-32602, "provide path or receipt_path, not both")
+    }
+    let artifactReceipt: Awaited<ReturnType<typeof readRoundTripPullReceipt>> | undefined
+    if (receiptPath) {
+      try {
+        artifactReceipt = await readRoundTripPullReceipt(config, receiptPath)
+      } catch (error) {
+        throw new RpcError(-32602, `artifact receipt invalid: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
+    const sourcePath = artifactReceipt
+      ? artifactReceipt.workspace_path
+      : rawSourcePath ? resolveEffortSourcePath(config, effort.folder_path, rawSourcePath) : undefined
+    const result = recordStackEffortOptimizerCandidate({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef: effort.manifest.id,
+      title: optionalString(args, "title"),
+      optimizerRunId: optionalString(args, "optimizer_run_id"),
+      candidateId: optionalString(args, "candidate_id"),
+      score: optionalString(args, "score"),
+      scoreLabel: optionalString(args, "score_label"),
+      split: optionalString(args, "split"),
+      body: optionalString(args, "body"),
+      sourcePath,
+      sourceReceipt: artifactReceipt ? effortSourceReceiptFromRoundTrip(artifactReceipt) : undefined,
+      filename: optionalString(args, "filename"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      optimizer_run_id: result.optimizerRunId ?? null,
+      candidate_id: result.candidateId ?? null,
+      score: result.score ?? null,
+      score_label: result.scoreLabel ?? null,
+      split: result.split ?? null,
+      kind: "proof",
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : null,
+      source_receipt: result.sourceReceipt ?? null,
+      artifact_receipt: artifactReceipt ? {
+        receipt_path: artifactReceipt.receipt_path,
+        artifact_kind: artifactReceipt.artifact_kind,
+        source_kind: artifactReceipt.source_kind,
+        environment: artifactReceipt.environment,
+        run_id: artifactReceipt.run_id ?? null,
+        project_id: artifactReceipt.project_id ?? null,
+        artifact_name: artifactReceipt.artifact_name ?? null,
+        output_id: artifactReceipt.output_id ?? null,
+        label: artifactReceipt.label ?? null,
+        workspace_path: artifactReceipt.workspace_path,
+        digest: artifactReceipt.digest,
+        pulled_at: artifactReceipt.pulled_at,
+      } : null,
+      receipt: "lever.stack_mcp effort.optimizer_candidate_recorded",
     })) ?? null
   }
 
@@ -5098,6 +5167,28 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["effort_ref", "capture_kind", "title"],
       ),
       handler: (args) => server.recordEffortCapture(args),
+    },
+    {
+      name: "stack_effort_record_optimizer_candidate",
+      description: "Record a typed optimizer candidate/score artifact under an Effort's findings/proof folder. Use this for GEPA or hosted optimizer candidates when candidate id, score, split, and source artifact provenance matter more than a generic optimizer capture.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          title: stringProperty("Optional candidate title. Defaults from candidate id and score."),
+          optimizer_run_id: stringProperty("Optional optimizer or hosted optimizer run id."),
+          candidate_id: stringProperty("Optional candidate id/name."),
+          score: stringProperty("Optional score or metric value."),
+          score_label: stringProperty("Optional score label, such as heldout accuracy or validation reward."),
+          split: stringProperty("Optional eval split, such as visible, heldout, or smoke."),
+          body: stringProperty("Optional markdown notes about the candidate."),
+          path: stringProperty("Optional local candidate artifact path. Relative paths first resolve inside the Effort folder, then from Stack workingDir."),
+          receipt_path: stringProperty("Optional stack_pull_artifact receipt path. Mutually exclusive with path; records pulled workspace_path and hosted/saved receipt metadata."),
+          filename: stringProperty("Optional target filename."),
+        },
+        ["effort_ref"],
+      ),
+      handler: (args) => server.recordEffortOptimizerCandidate(args),
     },
     {
       name: "stack_effort_update_refs",

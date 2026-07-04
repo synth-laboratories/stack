@@ -286,6 +286,28 @@ export type RecordEffortCaptureResult = RecordEffortFindingResult & {
   kind: StackEffortFindingKind
 }
 
+export type RecordEffortOptimizerCandidateInput = EffortLookupInput & {
+  effortRef: string
+  title?: string
+  optimizerRunId?: string
+  candidateId?: string
+  score?: string
+  scoreLabel?: string
+  split?: string
+  body?: string
+  sourcePath?: string
+  sourceReceipt?: StackEffortFindingSourceReceipt
+  filename?: string
+}
+
+export type RecordEffortOptimizerCandidateResult = RecordEffortFindingResult & {
+  optimizerRunId?: string
+  candidateId?: string
+  score?: string
+  scoreLabel?: string
+  split?: string
+}
+
 export type StackEffortFindingSourceReceipt = {
   receipt_path: string
   artifact_kind?: string
@@ -1248,6 +1270,61 @@ export function recordEffortCapture(input: RecordEffortCaptureInput): RecordEffo
     effort: persistEffort(input, result.effort),
     captureKind: input.captureKind,
     kind,
+  }
+}
+
+export function recordEffortOptimizerCandidate(input: RecordEffortOptimizerCandidateInput): RecordEffortOptimizerCandidateResult {
+  const optimizerRunId = input.optimizerRunId?.trim()
+  const candidateId = input.candidateId?.trim()
+  const score = input.score?.trim()
+  const scoreLabel = input.scoreLabel?.trim()
+  const split = input.split?.trim()
+  const title = input.title?.trim() || [
+    candidateId ? `Candidate ${candidateId}` : "Optimizer candidate",
+    score ? `${scoreLabel || "score"} ${score}` : "",
+  ].filter(Boolean).join(" - ")
+  const sourceReceipt = input.sourceReceipt
+    ? optimizerCandidateSourceReceipt(input.sourceReceipt)
+    : input.sourcePath && existsSync(input.sourcePath)
+      ? optimizerCandidateSourceReceipt(localEffortFindingSourceReceipt(input.sourcePath))
+      : undefined
+  const result = recordEffortFinding({
+    stackDataRoot: input.stackDataRoot,
+    workspaceRoot: input.workspaceRoot,
+    effortRef: input.effortRef,
+    kind: "proof",
+    title,
+    body: optimizerCandidateBody({
+      optimizerRunId,
+      candidateId,
+      score,
+      scoreLabel,
+      split,
+      body: input.body,
+    }),
+    sourcePath: input.sourcePath,
+    sourceReceipt,
+    filename: input.filename,
+  })
+  appendEffortProgressLine(result.effort.folder_path, `Recorded optimizer candidate: ${relative(result.effort.folder_path, result.path)}.`)
+  appendEffortActivityLine(result.effort.folder_path, result.effort.manifest, "effort.optimizer_candidate_recorded", `Recorded optimizer candidate: ${relative(result.effort.folder_path, result.path)}.`, {
+    optimizer_run_id: optimizerRunId,
+    candidate_id: candidateId,
+    score,
+    score_label: scoreLabel,
+    split,
+    path: relative(result.effort.folder_path, result.path),
+    source_receipt_path: result.sourceReceiptPath ? relative(result.effort.folder_path, result.sourceReceiptPath) : undefined,
+    source_receipt: result.sourceReceipt,
+  })
+  return {
+    ...result,
+    effort: persistEffort(input, result.effort),
+    ...(optimizerRunId ? { optimizerRunId } : {}),
+    ...(candidateId ? { candidateId } : {}),
+    ...(score ? { score } : {}),
+    ...(scoreLabel ? { scoreLabel } : {}),
+    ...(split ? { split } : {}),
   }
 }
 
@@ -2551,6 +2628,13 @@ function effortCaptureSourceReceipt(receipt: StackEffortFindingSourceReceipt, ca
   }
 }
 
+function optimizerCandidateSourceReceipt(receipt: StackEffortFindingSourceReceipt): StackEffortFindingSourceReceipt {
+  return {
+    ...receipt,
+    source_kind: "optimizer_candidate",
+  }
+}
+
 function defaultCaptureFindingKind(captureKind: StackEffortCaptureKind): StackEffortFindingKind {
   if (captureKind === "benchmark") return "data"
   if (captureKind === "optimizer") return "proof"
@@ -2560,6 +2644,26 @@ function defaultCaptureFindingKind(captureKind: StackEffortCaptureKind): StackEf
 function effortCaptureBody(captureKind: StackEffortCaptureKind, body: string | undefined): string {
   const trimmed = body?.trim()
   return [`Capture kind: ${captureKind}`, "", trimmed || "Captured evidence."].join("\n")
+}
+
+function optimizerCandidateBody(input: {
+  optimizerRunId?: string
+  candidateId?: string
+  score?: string
+  scoreLabel?: string
+  split?: string
+  body?: string
+}): string {
+  const lines = [
+    "Evidence kind: optimizer candidate",
+    ...(input.optimizerRunId ? [`Optimizer run: ${input.optimizerRunId}`] : []),
+    ...(input.candidateId ? [`Candidate: ${input.candidateId}`] : []),
+    ...(input.score ? [`Score: ${input.scoreLabel ? `${input.scoreLabel} ` : ""}${input.score}`] : []),
+    ...(input.split ? [`Split: ${input.split}`] : []),
+    "",
+    input.body?.trim() || "Optimizer candidate evidence.",
+  ]
+  return lines.join("\n")
 }
 
 function readEngineeringGitSnapshot(repoPath: string, baseRef: string | undefined): {
