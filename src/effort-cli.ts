@@ -560,7 +560,7 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
     console.log(`acceptance: ${acceptancePacket.summary}`)
     for (const level of acceptancePacket.levels) {
       const required = level.required_for_v1 ? " required-v1" : ""
-      console.log(`  ${level.label}: ${level.state}${required} - ${level.title} - ${level.status}`)
+      console.log(`  ${level.label}: ${formatAcceptanceLevelState(level.state)}${required} - ${level.title} - ${level.status}`)
     }
   }
   if (artifactInventory.receipt_sources.length > 0) {
@@ -652,6 +652,11 @@ function printEffortActivity(effort: StackEffort, limit: number, json: boolean):
   for (const entry of activity) {
     console.log(`${entry.observed_at} - ${entry.type} - ${entry.summary}`)
   }
+}
+
+function formatAcceptanceLevelState(state: StackEffortAcceptancePacket["levels"][number]["state"]): string {
+  if (state === "not_recorded") return "not recorded"
+  return state.replace(/_/g, " ")
 }
 
 function printEffortAudit(audit: StackEffortAudit, json: boolean): void {
