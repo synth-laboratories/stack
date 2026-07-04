@@ -5,7 +5,7 @@ import { stackdListCrashReports, stackdTelemetryStatus } from "./client/stackd.j
 import { readRemoteInferenceCatalog, type RemoteInferenceCatalogSnapshot } from "./remote/inference.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
 import { readStackProfile } from "./operator-profile.js"
-import { runTaskDoctor, type TaskDoctorReport } from "./task-doctor.js"
+import { runTaskPreflight, type TaskPreflightFailureClass } from "./doctor-task.js"
 import { stackChannel, stackReleaseVersion, stackVersion } from "./version.js"
 
 export type DoctorLevel = "pass" | "warn" | "fail"
@@ -15,7 +15,7 @@ export type DoctorCheck = {
   level: DoctorLevel
   summary: string
   detail?: string
-  class?: "auth" | "quota" | "config" | "transient"
+  failure_class?: TaskPreflightFailureClass
 }
 
 type DoctorReport = {
@@ -26,14 +26,12 @@ type DoctorReport = {
   local_ready: boolean
   synth_sign_in_optional: boolean
   checks: DoctorCheck[]
-  task?: TaskDoctorReport
 }
 
 export async function runDoctor(config: StackConfig, argv: string[]): Promise<number> {
   ensureStackDefaults(config.stackDataRoot, config.appRoot)
   const json = argv.includes("--json")
-  const taskPath = taskArg(argv)
-  const missingTaskPath = argv.includes("--task") && !taskPath
+  const taskArg = readTaskArg(argv)
   const auth = environmentAuthStatus(config.environment)
   const checks: DoctorCheck[] = [
     check("version", "pass", `Stack ${stackVersion(config.appRoot)} (${stackChannel(config.appRoot)})`),
@@ -53,11 +51,22 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
     fileCheck("telemetry-doc", join(config.appRoot, "docs", "TELEMETRY.md"), "telemetry/privacy doc exists"),
     fileCheck("distribution-doc", join(config.appRoot, "docs", "DISTRIBUTION.md"), "distribution/download doc exists"),
   ]
-  if (missingTaskPath) {
-    checks.push(check("task.arg", "fail", "--task requires a TOML path", undefined, "config"))
+  if (taskArg !== undefined) {
+    if (!taskArg) {
+      checks.push(check("task", "fail", "--task needs a StackEval task TOML path", "usage: stack doctor --task <toml>"))
+    } else {
+      const rows = await runTaskPreflight(config, taskArg)
+      checks.push(
+        ...rows.map((row) => ({
+          id: row.id,
+          level: row.level,
+          summary: row.summary,
+          detail: row.detail,
+          ...(row.failureClass ? { failure_class: row.failureClass } : {}),
+        })),
+      )
+    }
   }
-  const task = taskPath ? await runTaskDoctor(config, taskPath) : undefined
-  if (task) checks.push(...task.checks)
 
   const report: DoctorReport = {
     generated_at: new Date().toISOString(),
@@ -67,7 +76,6 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
     local_ready: !checks.some((item) => item.level === "fail"),
     synth_sign_in_optional: true,
     checks,
-    task,
   }
 
   if (json) {
@@ -79,10 +87,11 @@ export async function runDoctor(config: StackConfig, argv: string[]): Promise<nu
   return report.local_ready ? 0 : 1
 }
 
-function taskArg(argv: string[]): string | undefined {
+function readTaskArg(argv: string[]): string | undefined {
   const index = argv.indexOf("--task")
-  if (index < 0) return undefined
-  return argv[index + 1]
+  if (index === -1) return undefined
+  const value = argv[index + 1]
+  return value && !value.startsWith("--") ? value : ""
 }
 
 function profileCheck(config: StackConfig): DoctorCheck {
@@ -109,9 +118,8 @@ function check(
   level: DoctorLevel,
   summary: string,
   detail?: string,
-  klass?: DoctorCheck["class"],
 ): DoctorCheck {
-  return { id, level, summary, detail, class: klass }
+  return { id, level, summary, detail }
 }
 
 function fileCheck(id: string, path: string, summary: string): DoctorCheck {
@@ -300,14 +308,9 @@ async function fetchWithTimeout(url: string, timeoutMs: number): Promise<Respons
 function printDoctor(report: DoctorReport): void {
   console.log(`Stack doctor · ${report.stack_version} · ${report.channel}`)
   console.log("Local ready · Synth sign-in optional")
-  if (report.task) {
-    const label = report.task.task_id ?? report.task.title ?? report.task.task_path
-    console.log(`Task preflight · ${label}`)
-  }
   for (const item of report.checks) {
     const label = item.level.toUpperCase().padEnd(4)
-    const klass = item.class ? ` [${item.class}]` : ""
-    console.log(`${label} ${item.id}${klass}: ${item.summary}`)
+    console.log(`${label} ${item.id}: ${item.summary}`)
     if (item.detail) console.log(`     ${item.detail}`)
   }
 }

@@ -1781,10 +1781,16 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       remount()
       return
     }
+    if (key.ctrl && key.name === "f") {
+      void capturePapercutFromUi(options, state, remount)
+      return
+    }
     if (key.eventType === "release") {
       if (handleVoiceKeyEvent(key, "release")) return
     } else if (key.eventType !== "repeat") {
       if (handleVoiceKeyEvent(key, "press")) return
+    } else {
+      return
     }
     if (handlePermissionsKey(key, options, state, remount)) return
     if (
@@ -6423,6 +6429,9 @@ function buildSlashDispatchHooks(
     cycleProfile: (direction) => {
       const current = readStackProfile(options.config.stackDataRoot).active
       applyStackProfile(nextStackProfile(current, direction), options, state, refresh)
+    },
+    capturePapercut: (note) => {
+      capturePapercutFromUi(options, state, refresh, note || undefined)
     },
     setProfile: (name) => {
       const profile = normalizeStackProfileName(name)
@@ -13379,11 +13388,15 @@ async function capturePapercutFromUi(
   options: StackAppOptions,
   state: AppState,
   refresh: () => void,
+  note?: string,
 ): Promise<void> {
   try {
     const result = await captureStackPapercut(
       options.config.stackDataRoot,
-      papercutContextFromUi(options, state),
+      {
+        ...papercutContextFromUi(options, state),
+        ...(note?.trim() ? { summary: note.trim() } : {}),
+      },
     )
     appendStackBlock(
       state.blocks,

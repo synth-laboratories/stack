@@ -17,6 +17,10 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260703.2] - 2026-07-03
+
+Monitor Gardener Goal release.
+
 ### Added
 
 - **Durable Efforts workstreams.** Stack now has local Effort containers for
@@ -173,10 +177,6 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   list-style flags such as multiple `--risk`, `--metric`, or `--path` values
   instead of silently keeping only the last value.
 
-## [0.2.0-dev.20260703.2] - 2026-07-03
-
-Monitor Gardener Goal release.
-
 ### Added
 
 - **Lights panel for live cockpit status.** `/lights on` opens a dedicated right
@@ -249,6 +249,38 @@ Monitor Gardener Goal release.
 - `/mode` / `/work_mode` records state only; no routing behavior changes yet.
 - Heavily customized gardener profiles may need manual allow-list review if
   they intentionally diverged from the bundled defaults.
+
+## [0.2.0-dev.20260703.1] - 2026-07-03
+
+### Added
+
+- **Artifact round-trip verbs.** `stack pull`, `stack apply`, and `stack push`
+  move optimizer artifacts between hosted runs and the local workspace with
+  typed receipts (sha256 digest, git SHA, backend target) recorded for every
+  transfer, plus a `stack_list_hosted_artifacts` MCP tool for enumerating what
+  a hosted run produced.
+- **Hosted run watch.** `stack watch` follows a hosted optimizer run from the
+  CLI, and the TUI gains a hosted-watch panel; both support `--once` snapshots
+  and `--replay` over a finished run.
+- **Per-task doctor.** `stack doctor --task <task.toml>` preflights a single
+  task pack and reports failures classified as auth, quota, config, or
+  transient, so a broken lane is diagnosable before launching a run.
+- **One-keystroke papercut capture.** `ctrl+f` (or `/papercut`) records a
+  papercut into the existing ledger without leaving the session.
+
+### Fixed
+
+- `/profile` now cycles through all four seeded profiles (the `default`
+  profile was previously unreachable from the cycle).
+
+## [0.2.0-dev.20260702.4] - 2026-07-02
+
+### Fixed
+
+- **Hosted optimizer artifact names.** Artifact name projection for hosted
+  optimizer runs no longer mangles names, so downloaded artifacts match what
+  the backend reports. (Hotfix nightly; no other changes over
+  0.2.0-dev.20260702.3.)
 
 ## [0.2.0-dev.20260702.3] - 2026-07-02
 

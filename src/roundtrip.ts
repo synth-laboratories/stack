@@ -12,6 +12,7 @@ import {
 } from "./remote/actions.js"
 import {
   downloadHostedOptimizerArtifact,
+  readHostedOptimizerRunWatchFrame,
   readHostedOptimizerSnapshot,
 } from "./remote/optimizers.js"
 
@@ -399,9 +400,17 @@ async function selectHostedArtifactName(
   artifactKind: RoundTripArtifactKind,
 ): Promise<string> {
   const preferred = preferredArtifactNames(artifactKind)
-  const snapshot = await readHostedOptimizerSnapshot(config)
-  const detail = snapshot.runDetails[runId]
-  const names = detail?.artifactNames ?? []
+  let names: string[] = []
+  try {
+    const frame = await readHostedOptimizerRunWatchFrame(config, runId)
+    names = frame.detail.artifactNames
+  } catch {
+    // fall back to the recent-run snapshot window below
+  }
+  if (names.length === 0) {
+    const snapshot = await readHostedOptimizerSnapshot(config)
+    names = snapshot.runDetails[runId]?.artifactNames ?? []
+  }
   for (const candidate of preferred) {
     const exact = names.find((name) => name === candidate)
     if (exact) return exact
@@ -409,6 +418,11 @@ async function selectHostedArtifactName(
   for (const candidate of preferred) {
     const fuzzy = names.find((name) => name.toLowerCase().includes(candidate.toLowerCase()))
     if (fuzzy) return fuzzy
+  }
+  if (names.length > 0) {
+    throw new Error(
+      `run ${runId} has no artifact matching kind ${artifactKind}; available artifacts: ${names.join(", ")} — pass artifact_name explicitly`,
+    )
   }
   return preferred[0]
 }
@@ -422,7 +436,7 @@ function preferredArtifactNames(artifactKind: RoundTripArtifactKind): string[] {
     case "dataset":
       return ["dataset", "data", "train_dataset", "eval_dataset"]
     case "eval_table":
-      return ["eval_table", "metrics", "score_table", "score_chart", "events"]
+      return ["eval_table", "frontier", "metrics", "score_table", "score_chart", "events"]
   }
 }
 
