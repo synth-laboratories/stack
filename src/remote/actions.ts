@@ -127,11 +127,17 @@ export async function createRemoteLaunch(
     }
   }
   if (preflight.data && preflight.data.clear_to_trigger === false) {
+    const promoStatus = hasLaunchPromoBlocker(preflight.data)
+      ? await getRemoteLaunchPromoStatus(config)
+      : undefined
     return {
       ok: false,
       status: launchBlockerStatus(preflight.data) ?? preflight.status,
       message: launchFailureMessage("launch_preflight_blocked", preflight),
-      data: { preflight: preflight.data },
+      data: {
+        preflight: preflight.data,
+        ...(promoStatus ? { launch_promo_status: remoteActionPayload(promoStatus) } : {}),
+      },
     }
   }
 
@@ -153,6 +159,14 @@ export async function createRemoteLaunch(
       preflight: preflight.data,
     },
   }
+}
+
+export async function getRemoteLaunchPromoStatus(config: StackConfig): Promise<RemoteActionResult> {
+  return getRemote(config, "/smr/launch-promo/status")
+}
+
+export async function claimRemoteLaunchPromo(config: StackConfig): Promise<RemoteActionResult> {
+  return postRemote(config, "/smr/launch-promo/claim")
 }
 
 export async function createRemoteRunnableProject(
@@ -926,6 +940,10 @@ function launchErrorCodes(data: Record<string, unknown> | undefined): string[] {
     .filter((code): code is string => Boolean(code))
 }
 
+function hasLaunchPromoBlocker(data: Record<string, unknown> | undefined): boolean {
+  return launchErrorCodes(data).some((code) => code.startsWith("smr_launch_promo_"))
+}
+
 function launchBlockers(data: Record<string, unknown> | undefined): Record<string, unknown>[] {
   if (!data) return []
   const preflight = data.preflight && typeof data.preflight === "object" && !Array.isArray(data.preflight)
@@ -936,6 +954,15 @@ function launchBlockers(data: Record<string, unknown> | undefined): Record<strin
   return [...blockers, ...checks]
     .filter((entry): entry is Record<string, unknown> => entry !== null && typeof entry === "object" && !Array.isArray(entry))
     .filter((entry) => entry.status === "blocked" || entry.error_code || entry.http_status)
+}
+
+function remoteActionPayload(result: RemoteActionResult): Record<string, unknown> {
+  return {
+    ok: result.ok,
+    status: result.status,
+    message: result.message,
+    data: result.data ?? null,
+  }
 }
 
 function readNumber(value: unknown): number | undefined {

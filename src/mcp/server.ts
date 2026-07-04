@@ -140,6 +140,7 @@ import { readCrashReportsView } from "../crash-reports.js"
 import { launchLocalGepaRun, readOptimizerSnapshot } from "../local/optimizers.js"
 import { loadGardenerConfig } from "../gardener-config.js"
 import {
+  claimRemoteLaunchPromo,
   createRemoteFactory,
   createRemoteLaunch,
   createRemoteRunnableProject,
@@ -148,6 +149,7 @@ import {
   executeRemoteFactoryAction,
   executeRemoteRunAction,
   getRemoteLaunch,
+  getRemoteLaunchPromoStatus,
   listRemoteRunApprovals,
   listRemoteRunQuestions,
   openUrlInSystemBrowser,
@@ -2798,6 +2800,26 @@ export class StackMcpServer {
     return toJsonValue(await readRemoteInferenceUsage(config)) ?? null
   }
 
+  async launchPromoStatus(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    void emitFeatureUsed("cloud_launch_promo")
+    return actionResultWithData(await getRemoteLaunchPromoStatus(config))
+  }
+
+  async claimLaunchPromo(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    void emitFeatureUsed("cloud_launch_promo")
+    if (args.confirm !== true) {
+      return {
+        ok: false,
+        status: 0,
+        message: "confirm=true is required to claim launch promo entitlement",
+        data: null,
+      }
+    }
+    return actionResultWithData(await claimRemoteLaunchPromo(config))
+  }
+
   async getCloudLaunch(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const runId = requiredString(args, "run_id")
@@ -5379,6 +5401,23 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         confirm: { type: "boolean", description: "Required as true when dry_run=false." },
       }),
       handler: (args) => server.launchCloudPromotion(args),
+    },
+    {
+      name: "stack_launch_promo_status",
+      description: "Read Managed Research launch promo entitlement status through the Stack cloud owner route. Does not mutate cloud state.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+      }),
+      handler: (args) => server.launchPromoStatus(args),
+    },
+    {
+      name: "stack_claim_launch_promo",
+      description: "Claim Managed Research launch promo entitlement through the Stack cloud owner route. Requires confirm=true.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        confirm: { type: "boolean", description: "Required as true to claim the launch promo entitlement." },
+      }),
+      handler: (args) => server.claimLaunchPromo(args),
     },
     {
       name: "stack_remote_sync_request",
