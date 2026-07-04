@@ -24,6 +24,7 @@ import {
   readEffortOptimizerCandidateSummaries,
   readEffortProgressTail,
   readEffortRemainingWork,
+  recordEffortAcceptance,
   recordEffortBlocker,
   recordEffortCapture,
   recordEffortFinding,
@@ -37,6 +38,7 @@ import {
   writeEffortHandoff,
   type StackEffortActivityRecord,
   type StackEffortAcceptancePacket,
+  type StackEffortAcceptanceUpdateState,
   type StackEffortAudit,
   type StackEffortAuditStatus,
   type StackEffortBlockerRecord,
@@ -185,6 +187,30 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
         next: readFlagString(parsed, "next") ?? "",
       })
       await printEffort(config, effort, json)
+      return 0
+    }
+
+    if (action === "acceptance") {
+      const ref = parsed.args[0]
+      const level = readFlagString(parsed, "level") ?? parsed.args[1]
+      if (!ref || !level) return usageError("usage: stack effort acceptance <effort> <A0|A1|A2...> [--state recorded|pending|not_recorded] [--status <text>] [--evidence <text>] [--path <path>] [--result <text>] [--decision <text>] [--next <text>]")
+      const result = recordEffortAcceptance({
+        ...config,
+        effortRef: ref,
+        level,
+        state: (readFlagString(parsed, "state") ?? "recorded") as StackEffortAcceptanceUpdateState,
+        status: readFlagString(parsed, "status"),
+        evidence: readFlagList(parsed, "evidence"),
+        paths: readFlagList(parsed, "path"),
+        result: readFlagString(parsed, "result"),
+        decision: readFlagString(parsed, "decision"),
+        next: readFlagString(parsed, "next"),
+      })
+      await printArtifactResult(config, result.effort, result.path, json, undefined, undefined, undefined, {
+        acceptance_level: result.level,
+        acceptance_state: result.state,
+        acceptance_status: result.status,
+      })
       return 0
     }
 
@@ -957,6 +983,7 @@ function printEffortUsage(): void {
   console.error("  stack effort bind <effort> <meta-thread-id>")
   console.error("  stack effort progress <effort> <message>")
   console.error("  stack effort blocker <effort> --blocker <text> --evidence <text> --owner <owner> --next <text>")
+  console.error("  stack effort acceptance <effort> <A0|A1|A2...> [--state recorded|pending|not_recorded] [--status <text>] [--evidence <text>] [--path <path>] [--result <text>] [--decision <text>] [--next <text>]")
   console.error("  stack effort research-log <effort> <title> --work-summary <text> [--operator-message <text>] [--result <text>] [--metric <text>] [--path <path>] [--command <command>] [--next <text>]")
   console.error("  stack effort handoff <effort> [--summary <text>] [--risk <text>] [--next <text>] [--owner <text>]")
   console.error("  stack effort engineering-packet <effort> [--repo <path>] [--base <ref>] [--summary <text>] [--file <path>] [--validation <text>] [--skipped-gate <text>] [--risk <text>] [--next <text>]")

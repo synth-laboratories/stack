@@ -158,6 +158,7 @@ stack effort activity banking77-top-score --limit 20
 stack effort bind banking77-top-score <meta-thread-id>
 stack effort progress banking77-top-score "Baseline and split protocol recorded"
 stack effort blocker banking77-top-score --blocker "Hosted graduation path not selected" --evidence "A0/A1 recorded; A2-A4 are optional graduation proofs" --owner operator --next "Choose hosted GEPA, SMR harness, or Tinker proof if stronger evidence is needed"
+stack effort acceptance banking77-top-score A1 --state recorded --status "heldout proof recorded" --evidence "scorecard receipt <path>" --path findings/proof/local-gepa/heldout-score.txt --result "candidate beat baseline" --next "Review graduation path"
 stack effort research-log banking77-top-score "Local GEPA smoke" --work-summary "Ran local optimizer and copied scorecard artifacts" --operator-message "Use Banking77 as the acceptance Effort"
 stack effort handoff banking77-top-score --summary "Banking77 A0/A1 packet is ready for review" --next "Review heldout proof and decide hosted graduation"
 stack effort engineering-packet stack-efforts --repo ../stack --summary "Efforts capture surface implemented" --validation "bunx tsc --noEmit --pretty false passed" --next "Review changed files and release notes"
@@ -190,6 +191,13 @@ acceptance summary presence, acceptance criteria coverage, task-classifier
 A0/A1 v1-bar evidence, optional hosted/SMR/Tinker graduation coverage,
 thread/repo/run refs, receipt-sidecar counts, and local meta-thread
 `effort_ref` back-links.
+
+`stack effort acceptance <effort> <A0|A1|A2...>` records or updates one
+acceptance level in `findings/results/acceptance-summary.md`. Use `--state
+recorded|pending|not_recorded`, `--status`, repeated `--evidence`, repeated
+`--path`, `--result`, `--decision`, and `--next` to preserve the proof and next
+action. Stack also appends a typed `effort.acceptance_recorded` activity record,
+so acceptance updates show up in orientation payloads and generated handoffs.
 
 `stack effort list` is the human scan view. It groups Efforts by status and
 shows the template, bound-thread count, repo/optimizer/SMR/Tinker ref counts
@@ -255,6 +263,9 @@ returns the same orientation payload plus `capture_kind`.
 candidate id, optimizer run id, score, score label, split, and receipt metadata.
 `stack_effort_get` includes an `optimizer_candidates` tail, and
 `stack_effort_list` includes `latest_optimizer_candidate`.
+`stack_effort_record_acceptance` is the MCP twin of `stack effort acceptance`;
+it updates `acceptance-summary.md`, appends a typed acceptance activity receipt,
+and returns the current Effort orientation payload.
 `stack_effort_write_engineering_packet` is the MCP twin of
 `stack effort engineering-packet`.
 

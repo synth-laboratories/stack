@@ -121,6 +121,11 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   before handoff or release review. `/efforts` now surfaces that packet as a
   compact engineering row with changed-file, validation, skipped-gate, risk, and
   update-age signals.
+- **Effort acceptance receipts.** `stack effort acceptance` and
+  `stack_effort_record_acceptance` update
+  `findings/results/acceptance-summary.md` for A0/A1/A2-style evidence, append a
+  typed `effort.acceptance_recorded` activity receipt, and return the same
+  orientation payload used by Effort list/show/handoff surfaces.
 - **Interactive `/efforts` panel controls.** The TUI Efforts panel now supports
   `j/k` selection, `n` new-Effort command drafting, `h` handoff refresh, `a`
   archive/reactivate, `b` binding of the current meta-thread to the selected

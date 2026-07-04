@@ -31,6 +31,9 @@ export type StackEffortIdeaOrigin = (typeof STACK_EFFORT_IDEA_ORIGINS)[number]
 export const STACK_EFFORT_NOTE_KINDS = ["human", "note"] as const
 export type StackEffortNoteKind = (typeof STACK_EFFORT_NOTE_KINDS)[number]
 
+export const STACK_EFFORT_ACCEPTANCE_UPDATE_STATES = ["recorded", "pending", "not_recorded"] as const
+export type StackEffortAcceptanceUpdateState = (typeof STACK_EFFORT_ACCEPTANCE_UPDATE_STATES)[number]
+
 export type StackEffortLinks = {
   meta_thread_refs: string[]
   repo_refs: string[]
@@ -335,6 +338,26 @@ export type RecordEffortOptimizerCandidateResult = RecordEffortFindingResult & {
   score?: string
   scoreLabel?: string
   split?: string
+}
+
+export type RecordEffortAcceptanceInput = EffortLookupInput & {
+  effortRef: string
+  level: string
+  state?: StackEffortAcceptanceUpdateState
+  status?: string
+  evidence?: string[]
+  paths?: string[]
+  result?: string
+  decision?: string
+  next?: string
+}
+
+export type RecordEffortAcceptanceResult = {
+  effort: StackEffort
+  path: string
+  level: string
+  state: StackEffortAcceptanceUpdateState
+  status: string
 }
 
 export type StackEffortFindingSourceReceipt = {
@@ -1217,6 +1240,48 @@ export function writeEffortHandoff(input: WriteEffortHandoffInput): { effort: St
   const audit = auditEffort(current)
   writeFileSync(path, effortHandoffMarkdown(current, input, {}, audit), "utf8")
   return { effort: current, path }
+}
+
+export function recordEffortAcceptance(input: RecordEffortAcceptanceInput): RecordEffortAcceptanceResult {
+  const effort = requireEffort(input, input.effortRef)
+  const level = normalizeAcceptanceLevel(input.level)
+  const state = input.state ?? "recorded"
+  assertAcceptanceUpdateState(state)
+  const status = acceptanceUpdateStatus(input.status, state)
+  const path = join(effort.folder_path, "findings", "results", "acceptance-summary.md")
+  mkdirSync(dirname(path), { recursive: true })
+  const previous = existsSync(path) ? safeReadText(path) : "# Acceptance summary\n"
+  const observedAt = new Date().toISOString()
+  writeFileSync(path, updateAcceptanceSummaryText(previous, {
+    level,
+    state,
+    status,
+    evidence: cleanStringList(input.evidence),
+    paths: cleanStringList(input.paths),
+    result: input.result?.trim(),
+    decision: input.decision?.trim(),
+    next: input.next?.trim(),
+    observedAt,
+  }), "utf8")
+  appendEffortProgressLine(effort.folder_path, `Recorded acceptance ${level}: ${status}.`)
+  appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.acceptance_recorded", `Recorded acceptance ${level}: ${status}.`, {
+    level,
+    state,
+    status,
+    evidence: cleanStringList(input.evidence),
+    paths: cleanStringList(input.paths),
+    result: input.result?.trim() || "",
+    decision: input.decision?.trim() || "",
+    next: input.next?.trim() || "",
+    path: relative(effort.folder_path, path),
+  })
+  return {
+    effort: persistEffort(input, effort),
+    path,
+    level,
+    state,
+    status,
+  }
 }
 
 export function writeEffortEngineeringPacket(input: WriteEffortEngineeringPacketInput): WriteEffortEngineeringPacketResult {
@@ -2517,6 +2582,92 @@ function acceptanceLevelLabels(summaryText: string): string[] {
     if (match[1]) labels.add(match[1])
   }
   return Array.from(labels).sort((left, right) => Number(left.slice(1)) - Number(right.slice(1)))
+}
+
+function normalizeAcceptanceLevel(level: string): string {
+  const normalized = level.trim().toUpperCase()
+  if (!/^A\d+$/.test(normalized)) throw new Error("acceptance level must look like A0, A1, A2, ...")
+  return normalized
+}
+
+function assertAcceptanceUpdateState(state: string): asserts state is StackEffortAcceptanceUpdateState {
+  if ((STACK_EFFORT_ACCEPTANCE_UPDATE_STATES as readonly string[]).includes(state)) return
+  throw new Error(`acceptance state must be one of ${STACK_EFFORT_ACCEPTANCE_UPDATE_STATES.join(", ")}`)
+}
+
+function acceptanceUpdateStatus(status: string | undefined, state: StackEffortAcceptanceUpdateState): string {
+  const cleaned = status?.trim()
+  if (cleaned) return cleaned
+  if (state === "not_recorded") return "not recorded"
+  return state
+}
+
+function updateAcceptanceSummaryText(
+  text: string,
+  input: {
+    level: string
+    state: StackEffortAcceptanceUpdateState
+    status: string
+    evidence: string[]
+    paths: string[]
+    result?: string
+    decision?: string
+    next?: string
+    observedAt: string
+  },
+): string {
+  const lines = text.replace(/\s+$/g, "").split(/\r?\n/)
+  const heading = new RegExp(`^##\\s+${escapeRegExp(input.level)}\\b`, "i")
+  let start = lines.findIndex((line) => heading.test(line))
+  if (start < 0) {
+    if (lines.length === 1 && !lines[0]) lines.length = 0
+    if (lines.length === 0) lines.push("# Acceptance summary")
+    if (lines[lines.length - 1]?.trim()) lines.push("")
+    lines.push(`## ${input.level} - ${input.level}`, "")
+    start = lines.length - 2
+  }
+  const end = lines.findIndex((line, index) => index > start && /^##\s+/.test(line))
+  const before = lines.slice(0, start)
+  const section = lines.slice(start, end < 0 ? lines.length : end)
+  const after = end < 0 ? [] : lines.slice(end)
+  const updatedSection = updateAcceptanceSectionLines(section, input)
+  return `${[...before, ...updatedSection, ...after].join("\n")}\n`
+}
+
+function updateAcceptanceSectionLines(
+  section: string[],
+  input: {
+    level: string
+    state: StackEffortAcceptanceUpdateState
+    status: string
+    evidence: string[]
+    paths: string[]
+    result?: string
+    decision?: string
+    next?: string
+    observedAt: string
+  },
+): string[] {
+  const lines = section.length > 0 ? [...section] : [`## ${input.level} - ${input.level}`]
+  const statusIndex = lines.findIndex((line) => /^Status:\s*/i.test(line))
+  if (statusIndex >= 0) {
+    lines[statusIndex] = `Status: ${input.status}`
+  } else {
+    lines.splice(1, 0, "", `Status: ${input.status}`)
+  }
+  if (lines[lines.length - 1]?.trim()) lines.push("")
+  lines.push(`### Stack acceptance update - ${input.observedAt}`, "")
+  lines.push(`- State: ${input.state}`)
+  if (input.evidence.length > 0) {
+    lines.push(...input.evidence.map((entry) => `- Evidence: ${entry}`))
+  }
+  if (input.paths.length > 0) {
+    lines.push(...input.paths.map((entry) => `- Path: ${entry}`))
+  }
+  if (input.result) lines.push(`- Result: ${input.result}`)
+  if (input.decision) lines.push(`- Decision: ${input.decision}`)
+  if (input.next) lines.push(`- Next: ${input.next}`)
+  return lines
 }
 
 function acceptanceSectionHeading(section: string, label: string): string {

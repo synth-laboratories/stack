@@ -54,6 +54,7 @@ import {
   readEffortOptimizerCandidateSummaries as readStackEffortOptimizerCandidateSummaries,
   readEffortProgressTail as readStackEffortProgressTail,
   readEffortRemainingWork as readStackEffortRemainingWork,
+  recordEffortAcceptance as recordStackEffortAcceptance,
   recordEffortBlocker as recordStackEffortBlocker,
   recordEffortCapture as recordStackEffortCapture,
   recordEffortFinding as recordStackEffortFinding,
@@ -915,6 +916,32 @@ export class StackMcpServer {
     })
     return toJsonValue(await this.effortPayload(config, effort, {
       receipt: "lever.stack_mcp effort.blocker_recorded",
+    })) ?? null
+  }
+
+  async recordEffortAcceptance(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const result = recordStackEffortAcceptance({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      level: requiredString(args, "level"),
+      state: optionalString(args, "state") as "recorded" | "pending" | "not_recorded" | undefined,
+      status: optionalString(args, "status"),
+      evidence: optionalStringArray(args, "evidence"),
+      paths: optionalStringArray(args, "paths"),
+      result: optionalString(args, "result"),
+      decision: optionalString(args, "decision"),
+      next: optionalString(args, "next"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      acceptance_level: result.level,
+      acceptance_state: result.state,
+      acceptance_status: result.status,
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      receipt: "lever.stack_mcp effort.acceptance_recorded",
     })) ?? null
   }
 
@@ -5042,6 +5069,26 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["effort_ref", "blocker", "evidence", "owner", "next"],
       ),
       handler: (args) => server.recordEffortBlocker(args),
+    },
+    {
+      name: "stack_effort_record_acceptance",
+      description: "Record or update one acceptance level in an Effort's findings/results/acceptance-summary.md and append a typed acceptance activity receipt. Use this after concrete proof artifacts, receipts, or run ids exist for A0/A1/A2/A3/A4-style acceptance evidence.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          level: stringProperty("Acceptance level such as A0, A1, A2, A3, or A4."),
+          state: enumProperty(["recorded", "pending", "not_recorded"], "Acceptance state. Defaults to recorded."),
+          status: stringProperty("Optional status text to write on the level's Status line."),
+          evidence: arrayProperty("Evidence bullets to append to the acceptance level."),
+          paths: arrayProperty("Artifact, receipt, config, or scorecard paths to append to the acceptance level."),
+          result: stringProperty("Optional result summary."),
+          decision: stringProperty("Optional decision or interpretation."),
+          next: stringProperty("Optional next action for this acceptance level."),
+        },
+        ["effort_ref", "level"],
+      ),
+      handler: (args) => server.recordEffortAcceptance(args),
     },
     {
       name: "stack_effort_record_research_log",
