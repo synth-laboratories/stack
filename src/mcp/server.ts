@@ -3192,6 +3192,7 @@ export class StackMcpServer {
       hostedEffortId: optionalString(args, "hosted_effort_id"),
       sourceRunIds: optionalStringArray(args, "source_run_ids"),
       traceId: optionalString(args, "trace_id"),
+      confirmPublish: optionalBoolean(args, "confirm_publish") ?? false,
     })
     return toJsonValue(result) ?? null
   }
@@ -3206,6 +3207,7 @@ export class StackMcpServer {
       sourceRunIds: optionalStringArray(args, "source_run_ids"),
       traceId: optionalString(args, "trace_id"),
       publicSlug: optionalString(args, "public_slug"),
+      confirmPublish: optionalBoolean(args, "confirm_publish") ?? false,
       confirmPublic: optionalBoolean(args, "confirm_public") ?? false,
     })
     return toJsonValue(result) ?? null
@@ -5757,6 +5759,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           hosted_effort_id: stringProperty("Optional Synth hosted Effort id. Distinct from local Stack effort slug."),
           source_run_ids: arrayProperty("Optional source SMR run ids to carry into lineage."),
           trace_id: stringProperty("Optional trace id."),
+          confirm_publish: { type: "boolean", description: "Must be true for the first hosted publish of this artifact. Republish is allowed after consent is recorded in the manifest." },
         },
         ["slug"],
       ),
@@ -5774,6 +5777,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           hosted_effort_id: stringProperty("Optional Synth hosted Effort id. Distinct from local Stack effort slug."),
           source_run_ids: arrayProperty("Optional source SMR run ids to carry into lineage."),
           trace_id: stringProperty("Optional trace id."),
+          confirm_publish: { type: "boolean", description: "Must be true for the first hosted publish of this artifact. Republish is allowed after consent is recorded in the manifest." },
           public_slug: stringProperty("Optional public Open Research slug. Omit to publish org/private only."),
           confirm_public: { type: "boolean", description: "Must be true to create or reuse a public Open Research slug." },
         },

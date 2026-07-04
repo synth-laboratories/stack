@@ -128,6 +128,7 @@ export async function runArtifactsCli(config: StackConfig, argv: string[]): Prom
         sourceRunIds: readFlagList(parsed, "source-run-id"),
         traceId: readFlagString(parsed, "trace-id"),
         publicSlug: readFlagString(parsed, "public"),
+        confirmPublish: true,
         confirmPublic: readFlagBoolean(parsed, "confirm-public"),
       }
       const result = action === "share" ? await shareArtifact(config, request) : await publishArtifact(config, request)

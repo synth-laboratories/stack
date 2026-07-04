@@ -27,3 +27,4 @@ Create a local artifact page first. Publish or share only after the operator exp
 
 - Read `references/kit-api.md` when using the bundled Artifact Site kit.
 - Read `references/page-template.tsx` when starting a new TSX artifact page.
+- Read `references/banking77-example.md` for a worked comparison page shape with split-labeled scores and receipts.

@@ -31,6 +31,16 @@ export const STACK_ARTIFACT_KINDS = ["result", "analysis", "bloglet", "blog"] as
 
 export type StackArtifactKind = (typeof STACK_ARTIFACT_KINDS)[number]
 
+export type StackArtifactHostedEnvironment = {
+  hosted_artifact_id?: string
+  hosted_url?: string
+  canonical_url?: string
+  public_url?: string
+  public_slug?: string
+  cloud_visibility?: string
+  artifact_version?: number
+}
+
 export type StackArtifactManifestEntry = {
   schema: "stack/artifact-page/v1"
   slug: string
@@ -55,6 +65,7 @@ export type StackArtifactManifestEntry = {
   compiled_bytes?: number
   publish_consent?: boolean
   splits_cited?: string[]
+  hosted_environments?: Record<string, StackArtifactHostedEnvironment>
 }
 
 export type StackArtifactWriteRequest = {
@@ -132,6 +143,7 @@ export type StackArtifactPublishRequest = {
   sourceRunIds?: string[]
   traceId?: string
   publicSlug?: string
+  confirmPublish?: boolean
   confirmPublic?: boolean
 }
 
@@ -440,6 +452,7 @@ export async function writeArtifactPage(config: StackConfig, request: StackArtif
     ...(existing?.compiled_bytes ? { compiled_bytes: existing.compiled_bytes } : {}),
     ...(existing?.publish_consent ? { publish_consent: existing.publish_consent } : {}),
     ...(existing?.splits_cited ? { splits_cited: existing.splits_cited } : {}),
+    ...(existing?.hosted_environments ? { hosted_environments: existing.hosted_environments } : {}),
   }
   appendFileSync(artifactManifestPath(config), `${JSON.stringify(entry)}\n`, "utf8")
   const served = await serveArtifactSite(config)
@@ -546,6 +559,17 @@ export async function publishArtifact(
   if (!lint.ok) {
     return { ok: false, status: 0, message: "artifact lint failed", artifact, lint, receipt: null }
   }
+  const hostedEnvironment = hostedArtifactEnvironment(config, artifact)
+  if (!artifact.publish_consent && !hostedEnvironment.hosted_artifact_id && !request.confirmPublish) {
+    return {
+      ok: false,
+      status: 0,
+      message: "first publish requires operator confirmation; pass confirm_publish=true",
+      artifact,
+      lint,
+      receipt: null,
+    }
+  }
   const compiled = compileArtifact(config, slug)
   const hosted = await publishHostedArtifact(config, {
     title: artifact.title,
@@ -553,7 +577,7 @@ export async function publishArtifact(
     visibility: request.visibility ?? "org",
     projectId: request.projectId,
     effortId: request.hostedEffortId,
-    hostedArtifactId: artifact.hosted_artifact_id,
+    hostedArtifactId: hostedEnvironment.hosted_artifact_id,
     sourceRunIds: request.sourceRunIds,
     traceId: request.traceId,
     slugHint: slug,
@@ -562,16 +586,18 @@ export async function publishArtifact(
     return { ok: false, status: hosted.status, message: hosted.message, artifact, hosted, lint, receipt: null }
   }
   const updated = appendArtifactManifestPatch(config, slug, {
-    hosted_artifact_id: hosted.hostedArtifactId,
-    hosted_url: hosted.hostedUrl,
-    canonical_url: hosted.canonicalUrl,
-    artifact_version: hosted.artifactVersion,
-    cloud_visibility: hosted.visibility,
+    ...hostedManifestPatch(config, artifact, {
+      hosted_artifact_id: hosted.hostedArtifactId,
+      hosted_url: hosted.hostedUrl,
+      canonical_url: hosted.canonicalUrl,
+      artifact_version: hosted.artifactVersion,
+      cloud_visibility: hosted.visibility,
+    }),
     compiled_sha256: compiled.sha256,
     compiled_bytes: compiled.bytes,
     publish_consent: true,
   })
-  const evidence = recordArtifactEvidenceIfBound(config, updated, compiled.sha256, request)
+  const evidence = request.publicSlug ? {} : recordArtifactEvidenceIfBound(config, updated, compiled.sha256, request)
   return {
     ok: true,
     status: hosted.status,
@@ -616,14 +642,14 @@ export async function shareArtifact(
       receipt: null,
     }
   }
-  const updated = appendArtifactManifestPatch(config, published.artifact.slug, {
+  const updated = appendArtifactManifestPatch(config, published.artifact.slug, hostedManifestPatch(config, published.artifact, {
     public_url: publicResult.publicUrl,
     public_slug: publicResult.slug ?? request.publicSlug,
     hosted_artifact_id: publicResult.hostedArtifactId ?? published.hosted.hostedArtifactId,
     hosted_url: publicResult.hostedUrl ?? published.artifact.hosted_url,
     canonical_url: publicResult.canonicalUrl ?? published.artifact.canonical_url,
     artifact_version: publicResult.artifactVersion ?? published.artifact.artifact_version,
-  })
+  }))
   const evidence = recordArtifactEvidenceIfBound(config, updated, updated.compiled_sha256, request)
   return {
     ...published,
@@ -655,6 +681,50 @@ function appendArtifactManifestPatch(
   return entry
 }
 
+function hostedArtifactEnvironment(
+  config: StackConfig,
+  artifact: StackArtifactManifestEntry,
+): StackArtifactHostedEnvironment {
+  const environment = artifact.hosted_environments?.[config.environmentName]
+  if (environment?.hosted_artifact_id) return environment
+  if (config.environmentName === "dev") return legacyHostedEnvironment(artifact) ?? {}
+  return {}
+}
+
+function hostedManifestPatch(
+  config: StackConfig,
+  artifact: StackArtifactManifestEntry,
+  patch: StackArtifactHostedEnvironment,
+): Partial<StackArtifactManifestEntry> {
+  const cleaned = dropUndefinedFields({ ...patch })
+  const hostedEnvironments: Record<string, StackArtifactHostedEnvironment> = {
+    ...(artifact.hosted_environments ?? {}),
+  }
+  const legacy = legacyHostedEnvironment(artifact)
+  if (legacy && !hostedEnvironments.dev) hostedEnvironments.dev = legacy
+  hostedEnvironments[config.environmentName] = dropUndefinedFields({
+    ...(hostedEnvironments[config.environmentName] ?? {}),
+    ...cleaned,
+  })
+  return {
+    ...cleaned,
+    hosted_environments: hostedEnvironments,
+  }
+}
+
+function legacyHostedEnvironment(artifact: StackArtifactManifestEntry): StackArtifactHostedEnvironment | undefined {
+  if (!artifact.hosted_artifact_id) return undefined
+  return dropUndefinedFields({
+    hosted_artifact_id: artifact.hosted_artifact_id,
+    hosted_url: artifact.hosted_url,
+    canonical_url: artifact.canonical_url,
+    public_url: artifact.public_url,
+    public_slug: artifact.public_slug,
+    cloud_visibility: artifact.cloud_visibility,
+    artifact_version: artifact.artifact_version,
+  })
+}
+
 function recordArtifactEvidenceIfBound(
   config: StackConfig,
   artifact: StackArtifactManifestEntry,
@@ -676,6 +746,9 @@ function recordArtifactEvidenceIfBound(
       sha256,
       splitsCited: artifact.splits_cited ?? [],
       sourcePath: join(artifactsRoot(config), artifact.page_path),
+      filename: artifact.hosted_artifact_id && artifact.artifact_version
+        ? `${artifact.slug}-artifact-page-v${artifact.artifact_version}.tsx`
+        : undefined,
       body: [
         `Artifact Site page published from local slug ${artifact.slug}.`,
         request.publicSlug ? `Public slug requested: ${request.publicSlug}.` : "",
