@@ -1027,6 +1027,16 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
       ...handoffMissing.map((section) => `missing section: ${section}`),
     ],
   )
+  const remainingWork = readEffortRemainingWork(effort)
+  const handoffRiskCoverage = handoffRiskCoverageAudit(handoffText, remainingWork)
+  check(
+    "handoff_risks",
+    handoffRiskCoverage.ok ? "pass" : "fail",
+    handoffRiskCoverage.ok
+      ? "Generated handoff risks reflect structured remaining work."
+      : "Generated handoff risks do not reflect structured remaining work.",
+    handoffRiskCoverage.evidence,
+  )
   check(
     "acceptance_packet",
     effort.manifest.acceptance.criteria.length === 0 || paths.acceptance_summary ? "pass" : "warn",
@@ -2241,6 +2251,39 @@ function effortHandoffRiskLines(inputRisks: string[] | undefined, remaining: Sta
   return uniqueRisks.length > 0
     ? uniqueRisks.map((risk) => `- ${risk}`)
     : ["- No risks recorded in this handoff packet."]
+}
+
+function handoffRiskCoverageAudit(handoffText: string, remaining: StackEffortRemainingWork): { ok: boolean; evidence: string[] } {
+  const evidence = [
+    `remaining_state=${remaining.state}`,
+    `remaining_summary=${remaining.summary}`,
+  ]
+  if (remaining.state !== "open") return { ok: true, evidence }
+  const section = markdownSectionText(handoffText, "Risks And Open Threads")
+  const missing: string[] = []
+  if (!section) missing.push("Risks And Open Threads section")
+  if (section.includes("No risks recorded in this handoff packet.")) missing.push("no-risks placeholder")
+  for (const level of remaining.open_acceptance) {
+    if (!section.includes(level.label) || !section.includes(level.title)) missing.push(`open acceptance ${level.label}`)
+  }
+  if (remaining.latest_blocker && !section.includes(remaining.latest_blocker.blocker)) missing.push("latest blocker")
+  return {
+    ok: missing.length === 0,
+    evidence: [
+      ...evidence,
+      `open_acceptance=${remaining.open_acceptance.map((level) => level.label).join(",") || "none"}`,
+      `latest_blocker=${remaining.latest_blocker?.blocker ?? "none"}`,
+      ...(missing.length > 0 ? missing.map((entry) => `missing: ${entry}`) : ["coverage=ok"]),
+    ],
+  }
+}
+
+function markdownSectionText(markdown: string, heading: string): string {
+  const lines = markdown.split(/\r?\n/)
+  const start = lines.findIndex((line) => line.trim() === `## ${heading}`)
+  if (start < 0) return ""
+  const end = lines.findIndex((line, index) => index > start && /^##\s+/.test(line))
+  return lines.slice(start + 1, end < 0 ? lines.length : end).join("\n")
 }
 
 function effortBlockerRecords(effort: StackEffort, pending: StackEffortActivityRecord[], limit: number): StackEffortBlockerRecord[] {

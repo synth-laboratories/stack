@@ -68,7 +68,8 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   summary so resume agents can see what remains without parsing markdown.
   Generated handoffs also derive Risks And Open Threads bullets from open
   acceptance levels and the latest blocker when callers do not provide
-  explicit `--risk` entries.
+  explicit `--risk` entries, and `stack effort audit` now checks that generated
+  handoff risks still reflect structured remaining work.
   `stack effort acceptance` and `stack_effort_record_acceptance` now update a
   single A-level section in `findings/results/acceptance-summary.md` and append a
   typed acceptance activity receipt, so A2/A3/A4 graduation evidence can be

@@ -477,8 +477,9 @@ levels and the latest blocker next action. The packet points at
 coherence audit status, and surfaces recent `effort.blocker_recorded` receipts
 from `ACTIVITY.jsonl`. If no explicit `--risk` values are supplied, handoffs
 derive Risks And Open Threads bullets from open acceptance levels and the latest
-blocker. Handoffs also show receipt-sidecar counts and a dedicated Receipt
-Sidecars artifact section.
+blocker, and `stack effort audit` checks that generated handoff risks still
+reflect structured remaining work. Handoffs also show receipt-sidecar counts and
+a dedicated Receipt Sidecars artifact section.
 
 Stack writes local session logs under `.stack/sessions/`. Current release includes
 read-only remote SMR visibility for jobs, run artifacts, WorkProducts, and
