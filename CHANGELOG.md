@@ -61,8 +61,10 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   receipt-sidecar counts, and `stack effort audit --json` exposes receipt
   sidecars in structured audit counts. `stack effort show` and generated
   handoffs now list receipt source kind, finding path, workspace path, and
-  digest when available, while `/efforts` shows the same count line so agents
-  and humans can orient around proof material without scraping `HANDOFF.md`.
+  digest when available, while `/efforts` shows the same count line plus
+  idea, human-context, and receipt source-kind counts so agents and humans can
+  orient around operator thinking and proof material without scraping
+  `HANDOFF.md`.
 - **Pulled and local artifacts can become Effort findings.** `stack effort
   finding --path` now writes an Effort-local source receipt sidecar for
   local/ad-hoc evidence, while `--receipt-path` and

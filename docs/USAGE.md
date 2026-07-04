@@ -347,6 +347,10 @@ audit status, latest progress, latest activity, latest blocker,
 repo/optimizer/SMR/Tinker ref counts, artifact counts, and
 handoff/acceptance markers so gardeners can choose the right Effort before
 calling `stack_effort_get`.
+The `/efforts` TUI panel keeps the same scan lightweight but also surfaces
+preserved idea and human-context counts, and annotates receipt counts with
+parsed source-kind counts when available, such as local path or hosted artifact
+provenance.
 Use `stack_effort_activity` when a gardener or agent needs a bounded timeline
 larger than the compact orientation tail.
 Use `stack_effort_audit` before handoff or review when the question is whether

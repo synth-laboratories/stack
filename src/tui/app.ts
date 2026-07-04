@@ -10613,13 +10613,34 @@ function effortArtifactInventoryLine(effort: StackEffortSummary, workspaceRoot: 
       `${inventory.counts.total} total`,
       `${findingCount} findings`,
     ]
+    if (inventory.counts.ideas > 0) parts.push(`${inventory.counts.ideas} idea${inventory.counts.ideas === 1 ? "" : "s"}`)
+    if (inventory.counts.human > 0) parts.push(`${inventory.counts.human} human`)
     if (inventory.counts.generated > 0) parts.push(`${inventory.counts.generated} generated`)
     if (inventory.counts.repos > 0) parts.push(`${inventory.counts.repos} repos`)
-    if (inventory.counts.receipt_sidecars > 0) parts.push(`${inventory.counts.receipt_sidecars} receipts`)
+    if (inventory.counts.receipt_sidecars > 0) {
+      const sourceSummary = effortReceiptSourceSummary(inventory.receipt_sources)
+      const label = `${inventory.counts.receipt_sidecars} receipt${inventory.counts.receipt_sidecars === 1 ? "" : "s"}`
+      parts.push(sourceSummary ? `${label} ${sourceSummary}` : label)
+    }
     return parts.join(" - ")
   } catch {
     return ""
   }
+}
+
+function effortReceiptSourceSummary(sources: ReturnType<typeof effortArtifactInventory>["receipt_sources"]): string {
+  if (sources.length === 0) return ""
+  const counts = new Map<string, number>()
+  for (const source of sources) {
+    const key = source.receipt.source_kind?.trim() || "source"
+    counts.set(key, (counts.get(key) ?? 0) + 1)
+  }
+  const parts = Array.from(counts.entries())
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .slice(0, 2)
+    .map(([kind, count]) => `${count} ${kind}`)
+  const hidden = Math.max(0, counts.size - parts.length)
+  return `(${parts.join(", ")}${hidden > 0 ? ` +${hidden}` : ""})`
 }
 
 function effortAuditLine(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): { text: string; color: string } | undefined {
