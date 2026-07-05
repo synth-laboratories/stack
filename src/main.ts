@@ -144,6 +144,9 @@ try {
   await ensureStackdForTui(config)
   const workspace = await detectWorkspace(config.workingDir)
   const session = createSession(config.workspaceRoot, harnessSessionCommand(config))
+  if (process.env.STACK_SESSION_ID?.trim()) {
+    session.id = process.env.STACK_SESSION_ID.trim()
+  }
 
   void emitSessionFunnel()
   await runStackApp({ config, workspace, session })

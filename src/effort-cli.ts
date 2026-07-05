@@ -1,13 +1,14 @@
-import { existsSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import type { StackConfig } from "./config.js"
+import { sessionHistoryScanDirs, type StackConfig } from "./config.js"
 import { artifactsRoot, readLatestArtifacts } from "./artifacts.js"
 import {
   stackdMissingEffortRefRouteMessage,
   stackdUpdateMetaThreadEffortRef,
   type StackdMetaThreadManifest,
 } from "./client/stackd.js"
-import { formatTokenTotal, sessionTokenTotal } from "./codex/usage-cost.js"
+import { buildSessionUsageSummary, formatTokenTotal, sessionTokenTotal } from "./codex/usage-cost.js"
+import { readSessionLog } from "./session.js"
 import {
   EFFORT_LAUNCH_CAPABILITIES,
   STACK_EFFORT_STATUSES,
@@ -345,6 +346,30 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
         diff_stat: result.diffStat,
         git_status: result.gitStatus,
       })
+      return 0
+    }
+
+    if (action === "export-usage" || action === "usage-export") {
+      const ref = parsed.args[0]
+      if (!ref) return usageError("usage: stack effort export-usage <effort> --session-id <id> --packet <path> [--json]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const sessionId = readFlagString(parsed, "session-id")
+      const packet = readFlagString(parsed, "packet")
+      if (!sessionId) return usageError("stack effort export-usage requires --session-id <id>")
+      if (!packet) return usageError("stack effort export-usage requires --packet <path>")
+      const result = await exportEffortUsageToPacket(config, {
+        effortRef: effort.manifest.id,
+        sessionId,
+        packet,
+      })
+      if (json) {
+        console.log(JSON.stringify(result, null, 2))
+      } else {
+        console.log(`worker_usage: ${result.worker_usage_path}`)
+        console.log(`session_id: ${result.session_id}`)
+        console.log(`total_tokens: ${result.tokens.total_tokens}`)
+      }
       return 0
     }
 
@@ -1419,6 +1444,71 @@ function effortSourceReceiptFromRoundTrip(receipt: RoundTripPullReceiptRecord): 
   }
 }
 
+type EffortUsageExportResult = {
+  schema: "stack.effort_usage_export.v1"
+  effort_ref: string
+  session_id: string
+  worker_usage_path: string
+  session_path: string
+  model: string | null
+  turns: number
+  tokens: {
+    input_tokens: number
+    cached_input_tokens: number
+    output_tokens: number
+    reasoning_output_tokens: number
+    total_tokens: number
+  }
+  estimated_spend_usd?: number
+  exported_at: string
+}
+
+async function exportEffortUsageToPacket(
+  config: StackConfig,
+  input: { effortRef: string; sessionId: string; packet: string },
+): Promise<EffortUsageExportResult> {
+  const sessionPath = sessionHistoryScanDirs(config)
+    .map((dir) => join(dir, `${input.sessionId}.json`))
+    .find((path) => existsSync(path))
+  if (!sessionPath) {
+    throw new Error(`session ${input.sessionId} not found in ${sessionHistoryScanDirs(config).join(", ")}`)
+  }
+  const session = await readSessionLog(sessionPath)
+  const model = session.codexModel ?? session.harnessModel ?? config.codexModel
+  const summary = session.usageSummary ?? buildSessionUsageSummary(session.turns, model, config.codexPricing)
+  if (!summary) {
+    throw new Error(`session ${input.sessionId} has no usage summary yet: ${sessionPath}`)
+  }
+  const packet = resolveCliEffortSourcePath(config, process.cwd(), input.packet)
+  if (!existsSync(packet)) {
+    throw new Error(`packet directory does not exist: ${packet}`)
+  }
+  const scorecardsDir = join(packet, "scorecards")
+  mkdirSync(scorecardsDir, { recursive: true })
+  const outPath = join(scorecardsDir, "worker_usage.json")
+  const tokens = {
+    input_tokens: summary.totals.inputTokens,
+    cached_input_tokens: summary.totals.cachedInputTokens,
+    output_tokens: summary.totals.outputTokens,
+    reasoning_output_tokens: summary.totals.reasoningOutputTokens,
+    total_tokens: sessionTokenTotal(summary.totals),
+  }
+  const payload: EffortUsageExportResult = {
+    schema: "stack.effort_usage_export.v1",
+    effort_ref: input.effortRef,
+    session_id: input.sessionId,
+    worker_usage_path: outPath,
+    session_path: sessionPath,
+    model: summary.model,
+    turns: summary.totals.turnCountWithUsage,
+    tokens,
+    ...(summary.estimatedSpendUsd !== undefined ? { estimated_spend_usd: summary.estimatedSpendUsd } : {}),
+    exported_at: new Date().toISOString(),
+  }
+  writeFileSync(outPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
+  return payload
+}
+
 function printEffortUsage(): void {
   console.error("usage: stack effort <command>")
   console.error("  stack effort create <slug> [--template <id>] [--title <title>] [--topic <topic>] [--folder <path>]")
@@ -1437,6 +1527,7 @@ function printEffortUsage(): void {
   console.error("  stack effort research-log <effort> <title> --work-summary <text> [--operator-message <text>] [--result <text>] [--metric <text>] [--path <path>] [--command <command>] [--next <text>]")
   console.error("  stack effort handoff <effort> [--summary <text>] [--risk <text>] [--next <text>] [--owner <text>]")
   console.error("  stack effort engineering-packet <effort> [--repo <path>] [--base <ref>] [--summary <text>] [--file <path>] [--validation <text>] [--skipped-gate <text>] [--risk <text>] [--next <text>]")
+  console.error("  stack effort export-usage <effort> --session-id <id> --packet <path> [--json]")
   console.error("  stack effort refs <effort> [--factory-id <id>] [--hosted-effort-id <id>] [--project-id <id>] [--optimizer-run-id <id>] [--smr-run-id <id>] [--tinker-run-id <id>] [--repo-ref <ref>] [--initiative-id <id>]")
   console.error("  stack effort scope <effort> [--capabilities <a,b,c>] [--json]")
   console.error(`  stack effort launch <effort> --kind ${EFFORT_LAUNCH_KINDS.join("|")} --capability <${EFFORT_LAUNCH_CAPABILITIES.join("|")}> [--config <gepa toml path>] [--tunnel-url <url>] [--container-pool <id>] [--goal <text>] [--project-id <id>] [--factory-id <id>] [--request-json <json>] [--name <name>] [--description <text>] [--status <status>] [--pool <id>] [--task-id <id>] [--split <name>] [--seed <n>] [--policy-name <name>] [--policy-config-json <json>] [--image-ref <ref>|--service-url <url>] [--runtime-kind <kind>] [--release-name <name>] [--provider <name>] [--json]`)
