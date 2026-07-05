@@ -34,6 +34,7 @@
     "smoke:installer:contract": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_installer_contract.ts\"",
     "smoke:installer:apply-rollback": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_installer_apply_rollback.ts\"",
     "smoke:release-site:contract": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_release_site_contract.ts\"",
+    "smoke:artifact-pages": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/artifacts/smoke_artifact_pages.ts\"",
     "smoke:artifact-security": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_artifact_security.ts\"",
     "smoke:first-run:local": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_first_run_local.ts\"",
     "smoke:launch-docs-alignment": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_launch_docs_alignment.ts\"",
