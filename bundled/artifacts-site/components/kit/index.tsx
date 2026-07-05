@@ -146,7 +146,7 @@ export function ReceiptFooter({
   note?: string
 }) {
   return (
-    <footer className="kit-panel" style={receiptStyle}>
+    <footer className="kit-panel" data-artifact-receipt={sha256 ?? effort ?? "artifact"} style={receiptStyle}>
       {effort ? <span>effort: <code>{effort}</code></span> : null}
       {sha256 ? <span>sha256: <code>{sha256}</code></span> : null}
       {receipts?.length ? (
