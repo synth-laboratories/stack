@@ -926,7 +926,7 @@ export function ensureArtifactWorkspace(config: StackConfig): void {
 function ensureArtifactSiteScaffold(config: StackConfig): void {
   const source = join(bundledDefaultsRoot(config.appRoot), "artifacts-site")
   if (!existsSync(source)) throw new Error(`missing bundled Artifact Site scaffold: ${source}`)
-  copyTreeIfMissing(source, artifactSiteDir(config))
+  syncArtifactSiteScaffold(source, artifactSiteDir(config))
   mkdirSync(join(artifactSiteDir(config), "app", "a"), { recursive: true })
 }
 
@@ -943,7 +943,7 @@ function installArtifactSiteDependencies(config: StackConfig): void {
   }
 }
 
-function copyTreeIfMissing(source: string, dest: string): void {
+function syncArtifactSiteScaffold(source: string, dest: string, relativePath = ""): void {
   mkdirSync(dest, { recursive: true })
   let entries: Dirent[]
   try {
@@ -954,12 +954,23 @@ function copyTreeIfMissing(source: string, dest: string): void {
   for (const entry of entries) {
     const srcPath = join(source, entry.name)
     const dstPath = join(dest, entry.name)
-    if (entry.isDirectory()) {
-      copyTreeIfMissing(srcPath, dstPath)
+    const childRelativePath = relativePath ? join(relativePath, entry.name) : entry.name
+    if (childRelativePath === join("app", "a")) {
+      mkdirSync(dstPath, { recursive: true })
       continue
     }
-    if (entry.isFile() && !existsSync(dstPath)) cpSync(srcPath, dstPath)
+    if (entry.isDirectory()) {
+      syncArtifactSiteScaffold(srcPath, dstPath, childRelativePath)
+      continue
+    }
+    if (entry.isFile()) syncArtifactSiteScaffoldFile(srcPath, dstPath, childRelativePath)
   }
+}
+
+function syncArtifactSiteScaffoldFile(source: string, dest: string, relativePath: string): void {
+  if (relativePath === "tsconfig.json" && existsSync(dest)) return
+  if (existsSync(dest) && readFileSync(source).equals(readFileSync(dest))) return
+  cpSync(source, dest)
 }
 
 async function probeArtifactSite(): Promise<ArtifactSiteProbe> {
