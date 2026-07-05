@@ -59,6 +59,8 @@ export type EffortLaunchResult = {
   lane: StackEffortRefLane
   message: string
   id: string | null
+  candidateId?: string
+  releaseId?: string
   ref: StackEffortRef | null
   recorded_in: string | null
   detail: Record<string, unknown>
@@ -173,6 +175,8 @@ export async function launchEffortRun(config: StackConfig, input: EffortLaunchIn
         ? `${launched.message}; no run id returned, nothing recorded on the effort`
         : launched.message,
       id: launched.id ?? null,
+      ...(launched.candidateId ? { candidateId: launched.candidateId } : {}),
+      ...(launched.releaseId ? { releaseId: launched.releaseId } : {}),
       ref: null,
       recorded_in: null,
       detail: launched.detail,
@@ -195,6 +199,8 @@ export async function launchEffortRun(config: StackConfig, input: EffortLaunchIn
     ok: true,
     message: launched.message,
     id: launched.id,
+    ...(launched.candidateId ? { candidateId: launched.candidateId } : {}),
+    ...(launched.releaseId ? { releaseId: launched.releaseId } : {}),
     ref,
     recorded_in: recorded.registry.folder_ref,
     detail: launched.detail,
@@ -206,6 +212,8 @@ type EffortLaunchExecution = {
   message: string
   system: string
   id?: string
+  candidateId?: string
+  releaseId?: string
   detail: Record<string, unknown>
 }
 
@@ -335,13 +343,18 @@ async function executeEffortLaunch(
       ok: result.ok,
       message: result.message,
       system: "container-pool",
-      ...(result.ok ? { id: result.releaseId ?? poolId } : {}),
+      ...(result.ok && result.releaseId ? {
+        id: result.releaseId,
+        candidateId: result.releaseId,
+        releaseId: result.releaseId,
+      } : {}),
       detail: {
         status: result.status,
         environment: result.environmentName,
         api_base_url: result.apiBaseUrl,
         pool_id: poolId,
         ...(result.taskId ? { task_id: result.taskId } : {}),
+        ...(result.releaseId ? { candidate_id: result.releaseId } : {}),
         ...(result.releaseId ? { release_id: result.releaseId } : {}),
         ...(result.release ? { release: result.release } : {}),
         ...(result.binding ? { binding: result.binding } : {}),
