@@ -1,3 +1,4 @@
+mod assembly_store;
 mod handlers;
 mod mcp_sidecar;
 mod meta;

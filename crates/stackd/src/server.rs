@@ -1,6 +1,6 @@
 use crate::handlers::{
-    checkpoints, codex, export, health, logs, mcp, memories, meta, meta_threads, runtime, skills,
-    telemetry, threads,
+    assembly, checkpoints, codex, export, health, logs, mcp, memories, meta, meta_threads, runtime,
+    skills, telemetry, threads,
 };
 use crate::mcp_sidecar::McpSidecar;
 use crate::monitor_scheduler;
@@ -216,6 +216,19 @@ fn router(state: Arc<AppState>) -> Router {
         .route(
             "/meta-threads/:id/handoff/continue",
             post(meta_threads::continue_handoff),
+        )
+        .route(
+            "/assembly-lines",
+            get(assembly::list_assembly_lines).post(assembly::create_assembly_line),
+        )
+        .route("/assembly-lines/:id", get(assembly::get_assembly_line))
+        .route(
+            "/assembly-lines/:id/snapshot",
+            get(assembly::get_assembly_line_snapshot),
+        )
+        .route(
+            "/assembly-lines/:id/events",
+            post(assembly::post_assembly_transition),
         )
         .route(
             "/memories",

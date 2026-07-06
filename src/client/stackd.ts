@@ -1259,6 +1259,171 @@ export async function stackdListMemories(
   return requestJson(baseUrl, `${url.pathname}${url.search}`)
 }
 
+// Assembly Lines — the process layer above Efforts, owned by stackd
+// (stack_core::assembly_line + .stack/runtime/assembly.sqlite). One station
+// schema, two presets, typed transition events. See docs/ASSEMBLY_LINES.md.
+
+export type StackdAssemblyPreset = "ship" | "effort"
+export type StackdAssemblyGateVerdict = "pass" | "concern" | "fail" | "n_a"
+export type StackdAssemblyStationState = "pending" | "started"
+export type StackdAssemblyEventKind =
+  | "assembly.created"
+  | "assembly.station_started"
+  | "assembly.station_completed"
+  | "assembly.gate_failed"
+  | "assembly.gate_passed"
+  | "assembly.shipped"
+  | "assembly.follow_up_due"
+
+export type StackdAssemblyBindings = {
+  effort_ids?: string[]
+  meta_thread_ids?: string[]
+  worker_ids?: string[]
+  gardener_ids?: string[]
+  monitor_ids?: string[]
+  evidence_paths?: string[]
+  ship_bundle_path?: string | null
+}
+
+export type StackdAssemblyLineRecord = {
+  id: string
+  title: string
+  preset: StackdAssemblyPreset
+  owner: string
+  created_at: string
+  bindings: StackdAssemblyBindings
+}
+
+export type StackdAssemblyGatePayload = {
+  verdict: StackdAssemblyGateVerdict
+  next_owner?: string | null
+  next_safe_action?: string | null
+}
+
+export type StackdAssemblyEvent = {
+  event_id: string
+  seq: number
+  line_id: string
+  kind: StackdAssemblyEventKind
+  occurred_at: string
+  actor_id: string
+  station?: string | null
+  evidence_paths?: string[]
+  gate?: StackdAssemblyGatePayload | null
+  due_at?: string | null
+  note?: string | null
+}
+
+export type StackdAssemblyOpenGate = {
+  station: string
+  verdict: StackdAssemblyGateVerdict
+  next_owner: string
+  next_safe_action: string
+  failed_at: string
+}
+
+export type StackdAssemblyLineSnapshot = {
+  line_id: string
+  title: string
+  preset: StackdAssemblyPreset
+  owner: string
+  created_at: string
+  age_seconds: number
+  current_station: string
+  station_state: StackdAssemblyStationState
+  completed_stations: string[]
+  open_gate: StackdAssemblyOpenGate | null
+  shipped: boolean
+  complete: boolean
+  follow_up_due_at: string | null
+  bindings: StackdAssemblyBindings
+  last_event: {
+    event_id: string
+    kind: StackdAssemblyEventKind
+    occurred_at: string
+    actor_id: string
+    station?: string | null
+  } | null
+  next_action: string
+}
+
+export type StackdAssemblyCreateRequest = {
+  title: string
+  preset: StackdAssemblyPreset
+  owner: string
+  bindings?: StackdAssemblyBindings
+  actor_id?: string
+}
+
+export type StackdAssemblyTransitionRequest =
+  | { kind: "assembly.station_started"; station: string; actor_id: string }
+  | {
+      kind: "assembly.station_completed"
+      station: string
+      actor_id: string
+      evidence_paths?: string[]
+      note?: string
+    }
+  | {
+      kind: "assembly.gate_failed"
+      station: string
+      actor_id: string
+      verdict: "concern" | "fail"
+      next_owner: string
+      next_safe_action: string
+      evidence_paths?: string[]
+      note?: string
+    }
+  | {
+      kind: "assembly.gate_passed"
+      station: string
+      actor_id: string
+      verdict: "pass" | "n_a"
+      evidence_paths?: string[]
+      note?: string
+    }
+  | { kind: "assembly.shipped"; actor_id: string; evidence_paths?: string[]; note?: string }
+  | { kind: "assembly.follow_up_due"; actor_id: string; due_at: string; note?: string }
+
+export async function stackdAssemblyCreate(
+  request: StackdAssemblyCreateRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<{ record: StackdAssemblyLineRecord; event: StackdAssemblyEvent; snapshot: StackdAssemblyLineSnapshot }> {
+  return requestJson(baseUrl, "/assembly-lines", jsonPost(request))
+}
+
+export async function stackdAssemblyList(
+  baseUrl = stackdBaseUrl(),
+): Promise<{ count: number; lines: StackdAssemblyLineSnapshot[] }> {
+  return requestJson(baseUrl, "/assembly-lines")
+}
+
+export async function stackdAssemblyGet(
+  lineId: string,
+  baseUrl = stackdBaseUrl(),
+): Promise<{ record: StackdAssemblyLineRecord; events: StackdAssemblyEvent[]; snapshot: StackdAssemblyLineSnapshot }> {
+  return requestJson(baseUrl, `/assembly-lines/${encodeURIComponent(lineId)}`)
+}
+
+export async function stackdAssemblySnapshot(
+  lineId: string,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdAssemblyLineSnapshot> {
+  return requestJson(baseUrl, `/assembly-lines/${encodeURIComponent(lineId)}/snapshot`)
+}
+
+export async function stackdAssemblyTransition(
+  lineId: string,
+  transition: StackdAssemblyTransitionRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<{ event: StackdAssemblyEvent; snapshot: StackdAssemblyLineSnapshot }> {
+  return requestJson(
+    baseUrl,
+    `/assembly-lines/${encodeURIComponent(lineId)}/events`,
+    jsonPost(transition),
+  )
+}
+
 async function requestJson<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(new URL(path, ensureTrailingSlash(baseUrl)), init)
   if (!response.ok) {

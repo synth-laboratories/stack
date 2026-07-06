@@ -1249,6 +1249,38 @@ for file-flow expansion and hosted optimizer control. Hosted optimizer jobs and
 cancel are read/executed through the backend optimizer owner surface, not the
 local GEPA service DB and not SMR compatibility projections.
 
+## Assembly Lines
+
+An AssemblyLine is the process layer above Efforts: it tracks which station an
+initiative sits at, whether a standards gate is open, who owns the next move,
+and the next safe action. One station schema, two presets — `ship`
+(intake → problem_selection → scope_lock → build → internal_proof →
+quality_review → staging → prod → readout) and `effort` (intake → plan →
+execute → validate → review → ship → monitor → follow_up). Full spec:
+`docs/ASSEMBLY_LINES.md`.
+
+Operator-visible behavior:
+
+- `stack assembly list` — one row per line: line id, preset, current station,
+  owner, age, open gate, next action.
+- `stack assembly get <line-id>` — snapshot plus recent typed events.
+- `stack assembly transition <line-id> --kind assembly.station_completed
+  --station build --actor worker_1 --evidence path/to/proof.md` — append one
+  typed transition event.
+- Stack MCP tools: `stack_assembly_create`, `stack_assembly_list`,
+  `stack_assembly_get`, `stack_assembly_transition`.
+- stackd routes: `GET/POST /assembly-lines`, `GET /assembly-lines/:id`,
+  `GET /assembly-lines/:id/snapshot`, `POST /assembly-lines/:id/events`.
+
+Stations complete in preset order; completing an evidence-bearing station
+without evidence, skipping stations, or naming an unknown station returns a
+typed error surfacing the failure class (`missing_evidence`,
+`invalid_transition`, `unknown_station`). `assembly.gate_failed` always
+carries `next_owner` and `next_safe_action`; gate verdicts are
+`pass | concern | fail | n_a`. `assembly.shipped` unlocks only after the
+preset's ship station (`prod` / `ship`) completes, and `assembly.follow_up_due`
+only after `assembly.shipped`.
+
 ## Easy start (local + hosted)
 
 Stack reduces setup friction on the ops panel (`p` toggles **Local** vs **Synth Hosted**).

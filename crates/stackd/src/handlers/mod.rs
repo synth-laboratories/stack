@@ -1,3 +1,4 @@
+pub mod assembly;
 pub mod checkpoints;
 pub mod codex;
 pub mod export;
@@ -34,6 +35,13 @@ impl ApiError {
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
+            message: message.into(),
+        }
+    }
+
+    pub fn with_status(status: StatusCode, message: impl Into<String>) -> Self {
+        Self {
+            status,
             message: message.into(),
         }
     }
