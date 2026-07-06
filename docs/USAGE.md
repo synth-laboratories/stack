@@ -160,6 +160,7 @@ stack effort activity banking77-top-score --limit 20
 stack effort refresh-receipts banking77-top-score
 stack effort bind banking77-top-score <meta-thread-id>
 stack effort progress banking77-top-score "Baseline and split protocol recorded"
+stack effort effort-session banking77-top-score "Local GEPA rerun" --session-id effsess_20260706T120000Z-b77 --actor codex --kind effortbench.live --tag effortbench
 stack effort blocker banking77-top-score --blocker "Hosted graduation path not selected" --evidence "A0/A1 recorded; A2-A4 are optional graduation proofs" --owner operator --next "Choose hosted GEPA, SMR harness, or Tinker proof if stronger evidence is needed"
 stack effort resolve-blocker banking77-top-score --resolution "Hosted graduation path selected" --evidence "A2 path recorded in acceptance packet" --owner operator
 stack effort acceptance banking77-top-score A1 --state recorded --status "heldout proof recorded" --evidence "scorecard receipt <path>" --path findings/proof/local-gepa/heldout-score.txt --result "candidate beat baseline" --next "Review graduation path"
@@ -184,10 +185,11 @@ stack effort archive banking77-top-score
 ```
 
 `stack effort show` prints the same orientation cues as `stack_effort_get`: key
-file paths, acceptance summary when present, bound meta-thread context, latest
-progress, latest activity, latest unresolved blocker, parsed acceptance packet state,
-receipt-source provenance when
-present, and small progress/activity/blocker tails. Use `stack effort activity
+file paths, the `EFFORT_SESSIONS.jsonl` ledger path, recent `effort_session`
+rows when present, acceptance summary when present, bound meta-thread context,
+latest progress, latest activity, latest unresolved blocker, parsed acceptance
+packet state, receipt-source provenance when present, and small
+progress/activity/session/blocker tails. Use `stack effort activity
 <effort> --limit <n>` for a dedicated human-readable or JSON activity timeline
 from `ACTIVITY.jsonl`.
 
@@ -241,6 +243,12 @@ skipped gates, risks, and next action in one stable review packet. Pass
 `--repo <path>` to read a local git worktree, `--base <ref>` to diff against a
 base ref, or use repeated `--file`, `--validation`, `--skipped-gate`, and
 `--risk` flags for a manual packet.
+
+`stack effort handoff <effort>` writes `HANDOFF.md` as the review packet for the
+next operator or agent. Generated handoffs always include orientation paths,
+latest progress/activity, `## Effort Sessions` with the session ledger and
+recent session rows, `## Research Log`, release artifact proof when recorded,
+artifact receipt summaries, audit state, and remaining risks/open threads.
 
 For `stack effort finding --path`, relative paths resolve inside the Effort
 folder first, then from the current shell directory, then from the Stack working
@@ -373,6 +381,11 @@ and missing source receipts when a page is expected to carry one. `stack
 artifacts publish` posts the compiled page to the selected Synth environment's
 hosted artifact route; `stack artifacts share` promotes a hosted page to a
 public URL when the backend allows public publication.
+
+The local Artifact Site is a temporary preview server, not durable storage. It
+auto-stops after 30 minutes by default to avoid long-lived Next/Bun processes;
+set `STACK_ARTIFACT_SITE_TTL_SECONDS=0` to keep the old always-on behavior, or
+set it to another number of seconds for a shorter or longer preview window.
 
 For MCP workflows, `stack_effort_record_finding` accepts the same
 `path` or `receipt_path` inputs and returns receipt metadata alongside the usual
@@ -886,6 +899,27 @@ Env:
 - `STACK_API_BIND`: bind host; defaults to `127.0.0.1`, with `0.0.0.0` only by explicit opt-in
 - `STACK_API_PORT`: port; defaults to `8792`
 - `CODEX_HOME`: Codex home; defaults to `~/.codex`
+
+### Codex Isolation
+
+Stack owns its own Codex namespace: every Codex subprocess Stack launches
+(workers, monitor sidecars, gardeners, eval players, usage/rate probes) runs
+with `CODEX_HOME=<workspace>/.stack/codex-home`. Stack threads never appear in
+the personal Codex desktop/CLI sidebar, and Stack never reads or writes
+`~/.codex` sessions, `history.jsonl`, or `session_index.jsonl`. Only
+`auth.json` is copied into the isolated home, so ChatGPT auth keeps working.
+
+- `STACK_CODEX_HOME` relocates the isolated home.
+- `STACK_CODEX_ISOLATION` selects the mode: `isolated_app_server` (default;
+  app-server threads persist inside the isolated home only), `ephemeral_exec`
+  (app-server disabled for background actors; everything non-interactive runs
+  `codex exec --ephemeral`), or `personal_dev_override` (unsafe: uses the
+  personal `~/.codex`; requires `STACK_CODEX_UNSAFE_PERSONAL=1` and is labeled
+  in the TUI).
+- The Actors panel shows the active `codex home` under Launch config, and
+  `GET /codex/isolation` on stackd reports the boundary health.
+- `bun run smoke:codex-isolation` proves a Stack turn leaves the personal
+  `~/.codex` untouched; the `check` script gates raw codex spawns.
 
 ### Workspace Config
 
