@@ -234,14 +234,22 @@ pub fn record_memory(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    if path.exists() {
-        let mut existing = fs::read_to_string(&path)?;
-        if !existing.ends_with('\n') {
-            existing.push('\n');
-        }
-        fs::write(&path, format!("{existing}\n{block}"))?;
-    } else {
-        fs::write(&path, &block)?;
+    // True O_APPEND write: concurrent stackd /memories POSTs must never lose
+    // entries to a read-modify-write race. Every block this writer emits ends
+    // with '\n', so a leading blank-line separator (kept for ledger
+    // readability) is safe to prepend whenever the file is non-empty.
+    {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)?;
+        let chunk = if file.metadata()?.len() == 0 {
+            block.clone()
+        } else {
+            format!("\n{block}")
+        };
+        file.write_all(chunk.as_bytes())?;
     }
 
     let mirrored_to_packet = mirror_to_packet(&request, kind, severity, summary, body, &ts, &path)?;
@@ -289,17 +297,16 @@ fn mirror_to_packet(
         "ledger_path": ledger_path.to_string_lossy(),
     });
     let mirror_path = packet.join("memories.jsonl");
-    let mut existing = if mirror_path.exists() {
-        fs::read_to_string(&mirror_path)?
-    } else {
-        String::new()
-    };
-    if !existing.is_empty() && !existing.ends_with('\n') {
-        existing.push('\n');
+    // True O_APPEND write of one JSONL row; every row this writer emits ends
+    // with '\n', so the file stays newline-terminated without a read pass.
+    {
+        use std::io::Write;
+        let mut file = fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&mirror_path)?;
+        file.write_all(format!("{row}\n").as_bytes())?;
     }
-    existing.push_str(&row.to_string());
-    existing.push('\n');
-    fs::write(&mirror_path, existing)?;
     Ok(true)
 }
 
@@ -368,4 +375,80 @@ fn sanitize_field(value: &str) -> String {
         .chars()
         .map(|c| if c == '|' || c == '\r' || c == '\n' { '_' } else { c })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    fn temp_paths(name: &str) -> StackPaths {
+        let root = std::env::temp_dir()
+            .join("stack-memories-tests")
+            .join(format!("{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        StackPaths {
+            app_root: root.clone(),
+            install_root: root.clone(),
+            stack_global_dir: root.join("global"),
+            stack_dir: root.join(".stack"),
+            session_log_dir: root.join(".stack/sessions"),
+            export_dir: root.join(".stack/exports"),
+            runtime_status_path: root.join(".stack/runtime/status.json"),
+            codex_home: root.join(".stack/codex-home"),
+        }
+    }
+
+    fn request(summary: &str, packet_dir: Option<&Path>) -> RecordMemoryRequest {
+        RecordMemoryRequest {
+            kind: "learning".into(),
+            summary: summary.into(),
+            body: None,
+            file: None,
+            severity: None,
+            source: MemorySource::Worker,
+            context: BTreeMap::new(),
+            packet_dir: packet_dir.map(|dir| dir.to_string_lossy().into_owned()),
+        }
+    }
+
+    #[test]
+    fn ledger_appends_preserve_every_entry() {
+        let paths = temp_paths("ledger-append");
+        let first = record_memory(&paths, request("first entry", None)).unwrap();
+        record_memory(&paths, request("second entry", None)).unwrap();
+        record_memory(&paths, request("third entry", None)).unwrap();
+
+        let content = fs::read_to_string(&first.path).unwrap();
+        assert!(content.ends_with('\n'));
+        let entries = parse_ledger(&content);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].summary, "first entry");
+        assert_eq!(entries[2].summary, "third entry");
+
+        let listed = list_memories(&paths, "learning", 10).unwrap();
+        assert_eq!(listed.len(), 3);
+    }
+
+    #[test]
+    fn packet_mirror_appends_one_jsonl_row_per_record() {
+        let paths = temp_paths("packet-mirror");
+        let packet = paths.app_root.join("packet");
+        fs::create_dir_all(&packet).unwrap();
+
+        let first = record_memory(&paths, request("mirrored one", Some(&packet))).unwrap();
+        assert!(first.mirrored_to_packet);
+        record_memory(&paths, request("mirrored two", Some(&packet))).unwrap();
+
+        let mirror = fs::read_to_string(packet.join("memories.jsonl")).unwrap();
+        assert!(mirror.ends_with('\n'));
+        let rows: Vec<serde_json::Value> = mirror
+            .lines()
+            .map(|line| serde_json::from_str(line).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["summary"], "mirrored one");
+        assert_eq!(rows[1]["summary"], "mirrored two");
+    }
 }
