@@ -116,6 +116,10 @@ import {
 import { isUiPanelId, panelOpenAllowed, panelViewAllowed, UI_PANEL_IDS, UI_PANELS, type UiPanelOpener } from "../ui/vocabulary.js"
 import {
   stackdExport,
+  stackdAssemblyCreate,
+  stackdAssemblyGet,
+  stackdAssemblyList,
+  stackdAssemblyTransition,
   stackdBindMetaThreadRemoteSmrRun,
   stackdAssertMetaThreadEffortRefRoute,
   stackdCreateMetaThread,
@@ -138,6 +142,9 @@ import {
   stackdUpdateMetaThreadGoal,
   stackdUpdateMetaThreadLifecycle,
   stackdUpdateMetaThreadTitle,
+  type StackdAssemblyBindings,
+  type StackdAssemblyPreset,
+  type StackdAssemblyTransitionRequest,
   type StackdFactorySnapshot,
   type StackdMemorySeverity,
   type StackdMemorySource,
@@ -6930,6 +6937,99 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       },
     },
     {
+      name: "stack_assembly_create",
+      description:
+        "Create an AssemblyLine — the process layer above Efforts — via stackd. One station schema, preset ship (intake→…→prod→readout) or effort (intake→…→monitor→follow_up). Bindings reference Efforts, meta-threads, actors, evidence artifacts, and the external Jstack ship bundle path (a linked record, not a second source of truth).",
+      inputSchema: objectSchema(
+        {
+          title: stringProperty("Line title."),
+          preset: enumProperty(["ship", "effort"], "Station preset."),
+          owner: stringProperty("Owning actor id."),
+          actor_id: stringProperty("Actor recording the creation. Defaults to operator."),
+          effort_ids: arrayProperty("Optional bound Stack Effort ids."),
+          meta_thread_ids: arrayProperty("Optional bound meta-thread ids."),
+          worker_ids: arrayProperty("Optional bound worker actor ids (manifest-associated workers only)."),
+          gardener_ids: arrayProperty("Optional bound gardener actor ids."),
+          monitor_ids: arrayProperty("Optional bound monitor actor ids (monitors audit and recommend; they do not own gate verdicts)."),
+          evidence_paths: arrayProperty("Optional evidence artifact paths."),
+          ship_bundle_path: stringProperty("Optional external Jstack markdown ship bundle path (linked record)."),
+        },
+        ["title", "preset", "owner"],
+      ),
+      handler: async (args) => {
+        const bindings: StackdAssemblyBindings = {
+          effort_ids: optionalStringArray(args, "effort_ids") ?? [],
+          meta_thread_ids: optionalStringArray(args, "meta_thread_ids") ?? [],
+          worker_ids: optionalStringArray(args, "worker_ids") ?? [],
+          gardener_ids: optionalStringArray(args, "gardener_ids") ?? [],
+          monitor_ids: optionalStringArray(args, "monitor_ids") ?? [],
+          evidence_paths: optionalStringArray(args, "evidence_paths") ?? [],
+          ship_bundle_path: optionalString(args, "ship_bundle_path") ?? null,
+        }
+        const result = await stackdAssemblyCreate({
+          title: requiredString(args, "title"),
+          preset: requiredString(args, "preset") as StackdAssemblyPreset,
+          owner: requiredString(args, "owner"),
+          bindings,
+          actor_id: optionalString(args, "actor_id"),
+        })
+        return toJsonValue(result) ?? null
+      },
+    },
+    {
+      name: "stack_assembly_list",
+      description:
+        "List AssemblyLine snapshots from stackd: line id, preset, current station, owner, age, open gate, next action.",
+      inputSchema: objectSchema({}),
+      handler: async () => toJsonValue(await stackdAssemblyList()) ?? null,
+    },
+    {
+      name: "stack_assembly_get",
+      description: "Read one AssemblyLine: record, full typed event log, and snapshot projection.",
+      inputSchema: objectSchema(
+        {
+          line_id: stringProperty("AssemblyLine id."),
+        },
+        ["line_id"],
+      ),
+      handler: async (args) => toJsonValue(await stackdAssemblyGet(requiredString(args, "line_id"))) ?? null,
+    },
+    {
+      name: "stack_assembly_transition",
+      description:
+        "Append one typed transition event to an AssemblyLine. Stations complete in preset order; completion requires evidence when the station schema requires it; gate_failed requires verdict (concern|fail) plus next_owner and next_safe_action; shipped requires the preset ship station completed. Invalid transitions return typed errors (unknown_station, invalid_transition, missing_evidence, invalid_gate_event).",
+      inputSchema: objectSchema(
+        {
+          line_id: stringProperty("AssemblyLine id."),
+          kind: enumProperty(
+            [
+              "assembly.station_started",
+              "assembly.station_completed",
+              "assembly.gate_failed",
+              "assembly.gate_passed",
+              "assembly.shipped",
+              "assembly.follow_up_due",
+            ],
+            "Transition event kind.",
+          ),
+          station: stringProperty("Station id. Required for station and gate events."),
+          actor_id: stringProperty("Actor issuing the transition."),
+          verdict: enumProperty(["pass", "concern", "fail", "n_a"], "Standards gate verdict. Required for gate events."),
+          next_owner: stringProperty("Required on gate_failed: actor who owns resolving the gate."),
+          next_safe_action: stringProperty("Required on gate_failed: the one concrete next action."),
+          evidence_paths: arrayProperty("Evidence artifact paths. Required to complete evidence-bearing stations."),
+          due_at: stringProperty("Required on follow_up_due: RFC3339 due timestamp."),
+          note: stringProperty("Optional note."),
+        },
+        ["line_id", "kind", "actor_id"],
+      ),
+      handler: async (args) => {
+        const lineId = requiredString(args, "line_id")
+        const transition = assemblyTransitionFromArgs(args)
+        return toJsonValue(await stackdAssemblyTransition(lineId, transition)) ?? null
+      },
+    },
+    {
       name: "stack_effort_record_capture",
       description: "Capture terminal/browser/screenshot/video/local/monitor/memory/text/benchmark/optimizer evidence into an Effort finding with capture-oriented source receipt metadata. Use this for ad hoc evidence when no richer adapter exists.",
       inputSchema: objectSchema(
@@ -8279,6 +8379,60 @@ function requiredString(args: JsonObject, key: string): string {
   const value = optionalString(args, key)
   if (!value) throw new RpcError(-32602, `${key} is required`)
   return value
+}
+
+function assemblyTransitionFromArgs(args: JsonObject): StackdAssemblyTransitionRequest {
+  const kind = requiredString(args, "kind")
+  const actorId = requiredString(args, "actor_id")
+  const station = optionalString(args, "station")
+  const verdict = optionalString(args, "verdict")
+  const evidencePaths = optionalStringArray(args, "evidence_paths") ?? []
+  const note = optionalString(args, "note")
+  const requireStation = (): string => {
+    if (!station) throw new RpcError(-32602, `station is required for ${kind}`)
+    return station
+  }
+  if (kind === "assembly.station_started") {
+    return { kind, station: requireStation(), actor_id: actorId }
+  }
+  if (kind === "assembly.station_completed") {
+    return { kind, station: requireStation(), actor_id: actorId, evidence_paths: evidencePaths, note }
+  }
+  if (kind === "assembly.gate_failed") {
+    if (verdict !== "concern" && verdict !== "fail") {
+      throw new RpcError(-32602, "assembly.gate_failed requires verdict concern or fail")
+    }
+    const nextOwner = optionalString(args, "next_owner")
+    const nextSafeAction = optionalString(args, "next_safe_action")
+    if (!nextOwner || !nextSafeAction) {
+      throw new RpcError(-32602, "assembly.gate_failed requires next_owner and next_safe_action")
+    }
+    return {
+      kind,
+      station: requireStation(),
+      actor_id: actorId,
+      verdict,
+      next_owner: nextOwner,
+      next_safe_action: nextSafeAction,
+      evidence_paths: evidencePaths,
+      note,
+    }
+  }
+  if (kind === "assembly.gate_passed") {
+    if (verdict !== "pass" && verdict !== "n_a") {
+      throw new RpcError(-32602, "assembly.gate_passed requires verdict pass or n_a")
+    }
+    return { kind, station: requireStation(), actor_id: actorId, verdict, evidence_paths: evidencePaths, note }
+  }
+  if (kind === "assembly.shipped") {
+    return { kind, actor_id: actorId, evidence_paths: evidencePaths, note }
+  }
+  if (kind === "assembly.follow_up_due") {
+    const dueAt = optionalString(args, "due_at")
+    if (!dueAt) throw new RpcError(-32602, "assembly.follow_up_due requires due_at")
+    return { kind, actor_id: actorId, due_at: dueAt, note }
+  }
+  throw new RpcError(-32602, `unknown assembly transition kind: ${kind}`)
 }
 
 function requiredHostedOptimizerAlgorithm(

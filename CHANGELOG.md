@@ -19,6 +19,16 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ### Added
 
+- **Assembly Lines v0.** New AssemblyLine primitive — the process layer above
+  Efforts. One station schema with `ship` and `effort` presets, typed
+  transition events (`assembly.created` … `assembly.follow_up_due`), standards
+  gate verdicts (`pass|concern|fail|n_a`) where `gate_failed` always carries
+  `next_owner` + `next_safe_action`, and evidence-required station completion.
+  Core types and transition rules in `stack_core::assembly_line`, SQLite
+  persistence + `/assembly-lines` routes in stackd, thin TS client, MCP tools
+  (`stack_assembly_create/list/get/transition`), and a `stack assembly`
+  read+transition CLI. Spec: `docs/ASSEMBLY_LINES.md`.
+
 - **Generic hosted optimizer submit.** `stack_submit_hosted_optimizer_run` MCP
   tool and `submitHostedOptimizerRun` client post to the backend optimizer
   owner route (`POST /api/v1/optimizers/runs`) for `gepa`, `go-ex`, `mapo`,
