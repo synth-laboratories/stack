@@ -353,11 +353,31 @@ import {
   stackdTelemetryStatus,
   stackdThreads,
   stackdUpdateTelemetryConfig,
+  stackdAssemblyCreate,
+  stackdAssemblyGet,
+  stackdAssemblyList,
+  stackdAssemblyTransition,
+  stackdAssemblyUpdateBindings,
+  type StackdAssemblyLineSnapshot,
+  type StackdAssemblyPreset,
   type StackdFactorySnapshot,
   type StackdRuntimeEventAppendRequest,
   type StackdTelemetryStatus,
   type StackdThreadSummary,
 } from "../client/stackd.js"
+import {
+  buildWorkersPanelRows,
+  renderWorkersPanelStyled,
+  selectableWorkersPanelRows,
+  type WorkersPanelRows,
+} from "./workers-panel.js"
+import {
+  assemblyReviewStation,
+  renderAssemblyPanelStyled,
+  type AssemblyPanelDetail,
+  type AssemblyPanelView,
+} from "./assembly-panel.js"
+import { writeAssemblyHandback } from "../assembly-context.js"
 import { appendThreadMetaEvent, latestForHumanMonitorHeadline, readThreadMetaEvents, stackEventId, type StackThreadMetaEvent } from "../thread-events.js"
 import { isUiPanelId, type UiPanelId } from "../ui/vocabulary.js"
 import {
@@ -554,7 +574,15 @@ type LiveOpsMode = "local" | "remote"
 type MonitorPanelMode = "chat" | "events"
 type WorkerPanelView = "chat" | "goal"
 type GardenerPanelMode = "chat" | "events"
-type RightPanelContent = "default" | "gardener" | "threads" | "experimental" | "lights" | "efforts"
+type RightPanelContent =
+  | "default"
+  | "gardener"
+  | "threads"
+  | "experimental"
+  | "lights"
+  | "efforts"
+  | "workers"
+  | "assembly"
 
 type LightsPanelSection = {
   id: LightsPanelSectionId
@@ -700,6 +728,12 @@ type AppState = {
   localBootstrapSnapshot: LocalBootstrapSnapshot
   opsScrollOffset: number
   selectedEffortIndex: number
+  selectedWorkersPanelIndex: number
+  workersPanelShowUnassociated: boolean
+  selectedAssemblyIndex: number
+  assemblyPanelView: AssemblyPanelView
+  assemblyLinesSnapshot: AssemblyLinesSnapshot
+  assemblyDetail?: AssemblyPanelDetail
   lightsThreadScrollOffset: number
   lightsThreadFilter: string
   lightsSelectedThreadId?: string
@@ -796,6 +830,13 @@ type AppState = {
   appliedStackdSidePanelKey?: string
   appliedStackdLightsPanelByThread: Map<string, string>
   lastOperatorSidePanelClosedAtMs?: number
+}
+
+type AssemblyLinesSnapshot = {
+  status: "idle" | "ready" | "error"
+  lines: StackdAssemblyLineSnapshot[]
+  error?: string
+  fetchedAtMs?: number
 }
 
 type ActiveEffortWorkerFilter = {
@@ -1123,6 +1164,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     gardenerEventScrollPinned: true,
     opsScrollOffset: 0,
     selectedEffortIndex: 0,
+    selectedWorkersPanelIndex: 0,
+    workersPanelShowUnassociated: false,
+    selectedAssemblyIndex: 0,
+    assemblyPanelView: "lanes",
+    assemblyLinesSnapshot: { status: "idle", lines: [] },
     lightsThreadScrollOffset: 0,
     lightsThreadFilter: "",
     lightsSelectedThreadId: lightsViewState.selectedThreadId,
@@ -1836,6 +1882,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     void refreshStackdMetaStatusUi()
   }, 1_000)
 
+  const assemblyInterval = setInterval(() => {
+    if (!(state.rightPanelOpen && state.rightPanelContent === "assembly")) return
+    void refreshAssemblyPanel(state).finally(scheduleRemount)
+  }, 5_000)
+
   registerFatalProcessHandlers(shutdown)
   try {
     process.stdout.write(ENABLE_BRACKETED_PASTE)
@@ -1855,7 +1906,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   registerRendererShutdown(
     shutdown,
     renderer,
-    [spinnerInterval, metaStatusInterval, optimizerInterval, projectsInterval, rateLimitsInterval],
+    [spinnerInterval, metaStatusInterval, optimizerInterval, projectsInterval, rateLimitsInterval, assemblyInterval],
     [
       () => {
         remountCoordinator.dispose()
@@ -2229,6 +2280,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
         handleLightsKey(key, options, state, buildOpsPanelInput(options, state), rightPanelThreadRows(renderer), remount)
       } else if (state.rightPanelContent === "efforts") {
         void handleEffortsKey(key, options, state, remount)
+      } else if (state.rightPanelContent === "workers") {
+        void handleWorkersPanelKey(key, options, state, codexSessionHandle, remount, refreshHistory, refreshMetaEvents)
+      } else if (state.rightPanelContent === "assembly") {
+        void handleAssemblyKey(key, options, state, remount)
       } else {
         handleOpsKey(key, state, renderer, options, buildOpsPanelInput(options, state), opsVisibleRows(renderer, state), remount, refreshRemoteOpsPanel, refreshOptimizers)
       }
@@ -2371,6 +2426,8 @@ function createView(
   const showRightThreadsPanel = state.rightPanelOpen && state.rightPanelContent === "threads"
   const showRightLightsPanel = state.rightPanelOpen && state.rightPanelContent === "lights"
   const showRightEffortsPanel = state.rightPanelOpen && state.rightPanelContent === "efforts"
+  const showRightWorkersPanel = state.rightPanelOpen && state.rightPanelContent === "workers"
+  const showRightAssemblyPanel = state.rightPanelOpen && state.rightPanelContent === "assembly"
   const showDefaultRightPanel = state.rightPanelOpen && state.rightPanelContent === "default"
   const showCoreGardenerPanel =
     state.focusMode === "gardener" ||
@@ -3006,6 +3063,44 @@ function createView(
                       },
                       Text({
                         content: renderEffortsPanelStyled(options, state, rightColumns, lightsRows),
+                        fg: theme.fgPrimary,
+                      }),
+                    ),
+                  ]
+                : []),
+              ...(showRightWorkersPanel
+                ? [
+                    Box(
+                      {
+                        border: true,
+                        borderStyle: "single",
+                        borderColor: theme.borderInactive,
+                        title: `Workers · ${options.config.environmentName}`,
+                        backgroundColor: theme.bgPanel,
+                        flexGrow: 1,
+                        padding: stackTuiLayout.panelPadding,
+                      },
+                      Text({
+                        content: renderWorkersPanelForApp(options, state, rightColumns, lightsRows),
+                        fg: theme.fgPrimary,
+                      }),
+                    ),
+                  ]
+                : []),
+              ...(showRightAssemblyPanel
+                ? [
+                    Box(
+                      {
+                        border: true,
+                        borderStyle: "single",
+                        borderColor: theme.borderInactive,
+                        title: `Assembly · ${options.config.environmentName}`,
+                        backgroundColor: theme.bgPanel,
+                        flexGrow: 1,
+                        padding: stackTuiLayout.panelPadding,
+                      },
+                      Text({
+                        content: renderAssemblyPanelForApp(state, rightColumns, lightsRows),
                         fg: theme.fgPrimary,
                       }),
                     ),
@@ -5201,6 +5296,8 @@ function closeOperatorSidePanels(
     else if (state.rightPanelContent === "threads") closedPanels.push("threads")
     else if (state.rightPanelContent === "lights") closedPanels.push("ops")
     else if (state.rightPanelContent === "efforts") closedPanels.push("efforts")
+    else if (state.rightPanelContent === "workers") closedPanels.push("workers")
+    else if (state.rightPanelContent === "assembly") closedPanels.push("assembly")
     else closedPanels.push(state.rightPanelOpsVisible || !isMonitorOn(state.monitorSnapshot) ? "ops" : "monitor")
     state.rightPanelOpen = false
     state.rightPanelContent = "default"
@@ -5554,6 +5651,113 @@ function openEffortsPanel(
   state.focusMode = "ops"
   state.opsScrollOffset = 0
   appendUiPanelOpened(options, state, "efforts", "list", "operator", reason)
+  refresh()
+}
+
+function openWorkersPanel(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  reason = "slash",
+): void {
+  state.leftPanelOpen = false
+  state.rightPanelOpen = true
+  state.rightPanelContent = "workers"
+  state.rightPanelOpsVisible = false
+  state.focusMode = "ops"
+  state.opsScrollOffset = 0
+  appendUiPanelOpened(options, state, "workers", "list", "operator", reason)
+  refresh()
+}
+
+function openAssemblyPanel(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  reason = "slash",
+): void {
+  state.leftPanelOpen = false
+  state.rightPanelOpen = true
+  state.rightPanelContent = "assembly"
+  state.rightPanelOpsVisible = false
+  state.focusMode = "ops"
+  state.opsScrollOffset = 0
+  appendUiPanelOpened(options, state, "assembly", state.assemblyPanelView, "operator", reason)
+  void refreshAssemblyPanel(state).finally(refresh)
+  refresh()
+}
+
+function handleAssemblySlash(
+  args: string,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  const trimmed = args.trim()
+  if (!trimmed) {
+    openAssemblyPanel(options, state, refresh, "slash")
+    return
+  }
+  const tokens = trimmed.split(/\s+/)
+  const action = tokens[0]?.toLowerCase()
+  if (action === "new") {
+    const presetIndex = tokens.indexOf("--preset")
+    const preset = presetIndex >= 0 ? tokens[presetIndex + 1] : undefined
+    const title = (presetIndex >= 0 ? tokens.slice(1, presetIndex) : tokens.slice(1)).join(" ").trim()
+    if (!title || (preset !== undefined && preset !== "ship" && preset !== "effort")) {
+      appendStackBlock(state.blocks, "assembly new - /assembly new <title> [--preset ship|effort]")
+      refresh()
+      return
+    }
+    void createAssemblyLineFromUi(options, state, refresh, title, (preset ?? "ship") as StackdAssemblyPreset)
+    return
+  }
+  if (action === "bundle" || action === "evidence") {
+    const path = tokens.slice(1).join(" ").trim()
+    if (!path) {
+      appendStackBlock(state.blocks, `assembly ${action} - /assembly ${action} <path>`)
+      refresh()
+      return
+    }
+    void attachToSelectedAssemblyLine(options, state, refresh, action, path)
+    return
+  }
+  if (action === "complete") {
+    const evidenceIndex = tokens.indexOf("--evidence")
+    const evidence =
+      evidenceIndex >= 0
+        ? (tokens[evidenceIndex + 1] ?? "")
+            .split(",")
+            .map((path) => path.trim())
+            .filter(Boolean)
+        : []
+    void completeSelectedAssemblyStation(options, state, refresh, evidence)
+    return
+  }
+  if (action === "start") {
+    void startSelectedAssemblyStation(options, state, refresh)
+    return
+  }
+  if (action === "effort") {
+    void bindActiveEffortToSelectedAssemblyLine(options, state, refresh)
+    return
+  }
+  if (action === "route") {
+    void routeSelectedAssemblyLineToGardener(options, state, refresh)
+    return
+  }
+  if (action === "review") {
+    void requestQualityReviewForSelectedAssemblyLine(options, state, refresh)
+    return
+  }
+  if (action === "handback") {
+    void generateHandbackForSelectedAssemblyLine(options, state, refresh)
+    return
+  }
+  appendStackBlock(
+    state.blocks,
+    "assembly - /assembly [new <title> [--preset ship|effort]|start|complete [--evidence <p1,p2>]|effort|bundle <path>|evidence <path>|route|review|handback]",
+  )
   refresh()
 }
 
@@ -6873,6 +7077,12 @@ function buildSlashDispatchHooks(
     },
     openEfforts: (args) => {
       handleEffortsSlash(args ?? "", options, state, refresh)
+    },
+    openWorkers: () => {
+      openWorkersPanel(options, state, refresh, "slash")
+    },
+    openAssembly: (args) => {
+      handleAssemblySlash(args ?? "", options, state, refresh)
     },
     startNewThread: () => {
       void startNewThread(options, state, codexSessionHandle, refresh, refreshHistory, refreshMetaEvents)
@@ -8298,6 +8508,10 @@ function handleRawInputInner(
       handleLightsKey({ name: keyName }, options, state, buildOpsPanelInput(options, state), rightPanelThreadRows(renderer), refresh)
     } else if (state.rightPanelContent === "efforts") {
       void handleEffortsKey({ name: keyName }, options, state, refresh)
+    } else if (state.rightPanelContent === "workers") {
+      void handleWorkersPanelKey({ name: keyName }, options, state, codexSessionHandle, refresh, refreshHistory, refreshMetaEvents)
+    } else if (state.rightPanelContent === "assembly") {
+      void handleAssemblyKey({ name: keyName }, options, state, refresh)
     } else {
       handleOpsKey(
         { name: keyName },
@@ -10200,6 +10414,514 @@ async function bindSelectedEffortToCurrentThread(
     appendStackBlock(state.blocks, `bound current meta-thread ${manifest.id.slice(0, 8)} to effort ${effort.manifest.slug}`)
   } catch (error) {
     appendStackBlock(state.blocks, `efforts bind failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+// Workers panel — the current gardener's live workers by manifest authority
+// (src/tui/workers-panel.ts holds the selection rule and renderer).
+
+function workersPanelRowsForApp(options: StackAppOptions, state: AppState): WorkersPanelRows {
+  const manifestsByThreadId = new Map<string, StackdMetaThreadManifest>()
+  for (const summary of state.history) {
+    const manifest = manifestForThreadSummary(options, state, summary)
+    if (manifest) manifestsByThreadId.set(summary.id, manifest)
+  }
+  const activeEffort = activeEffortWorkerFilter(options, state)
+  let effortTitleByRef: Map<string, string> | undefined
+  try {
+    effortTitleByRef = new Map(
+      readEffortsPanelSummaries(options).map((effort) => [effort.id, effort.short_title ?? effort.title]),
+    )
+  } catch {
+    effortTitleByRef = undefined
+  }
+  return buildWorkersPanelRows({
+    summaries: state.history,
+    manifestsByThreadId,
+    gardenerThreadId: gardenerThreadId(state),
+    activeEffort:
+      activeEffort.slug && activeEffort.effortId
+        ? {
+            effortId: activeEffort.effortId,
+            title: taggedEffortDisplayLabel(options.config, activeEffort.slug),
+            metaThreadRefs: activeEffort.metaThreadRefs,
+          }
+        : undefined,
+    effortTitleByRef,
+  })
+}
+
+function renderWorkersPanelForApp(
+  options: StackAppOptions,
+  state: AppState,
+  columns: number,
+  visibleRows: number,
+): StyledText {
+  try {
+    const rows = workersPanelRowsForApp(options, state)
+    const selectable = selectableWorkersPanelRows(rows, state.workersPanelShowUnassociated)
+    state.selectedWorkersPanelIndex = clampIndex(state.selectedWorkersPanelIndex, selectable.length)
+    const activeEffort = activeEffortWorkerFilter(options, state)
+    return renderWorkersPanelStyled({
+      rows,
+      selectedIndex: state.selectedWorkersPanelIndex,
+      showUnassociated: state.workersPanelShowUnassociated,
+      effortOnTitle:
+        activeEffort.slug && activeEffort.effortId
+          ? taggedEffortDisplayLabel(options.config, activeEffort.slug)
+          : undefined,
+      columns,
+      visibleRows,
+    })
+  } catch (error) {
+    return renderWorkersPanelStyled({
+      rows: { associated: [], unassociated: [] },
+      selectedIndex: 0,
+      showUnassociated: false,
+      columns,
+      visibleRows,
+      loadError: errorMessage(error),
+    })
+  }
+}
+
+async function handleWorkersPanelKey(
+  key: { name?: string },
+  options: StackAppOptions,
+  state: AppState,
+  codexSessionHandle: { session?: HarnessSession },
+  refresh: () => void,
+  refreshHistory: () => Promise<void>,
+  refreshMetaEvents: () => void,
+): Promise<void> {
+  const selectable = selectableWorkersPanelRows(
+    workersPanelRowsForApp(options, state),
+    state.workersPanelShowUnassociated,
+  )
+  if (key.name === "j" || key.name === "down") {
+    state.selectedWorkersPanelIndex = clampIndex(state.selectedWorkersPanelIndex + 1, selectable.length)
+    refresh()
+    return
+  }
+  if (key.name === "k" || key.name === "up") {
+    state.selectedWorkersPanelIndex = clampIndex(state.selectedWorkersPanelIndex - 1, selectable.length)
+    refresh()
+    return
+  }
+  if (key.name === "u") {
+    state.workersPanelShowUnassociated = !state.workersPanelShowUnassociated
+    state.selectedWorkersPanelIndex = 0
+    refresh()
+    return
+  }
+  if (key.name === "r") {
+    void refreshHistory().finally(refresh)
+    return
+  }
+  if (key.name === "return" || key.name === "enter") {
+    const selected = selectable[clampIndex(state.selectedWorkersPanelIndex, selectable.length)]
+    if (!selected) {
+      appendStackBlock(state.blocks, "workers open: no worker selected")
+      refresh()
+      return
+    }
+    const historyIndex = state.history.findIndex((summary) => summary.id === selected.summary.id)
+    if (historyIndex < 0) {
+      appendStackBlock(state.blocks, `workers open failed: thread ${selected.summary.id.slice(0, 8)} not in session history`)
+      refresh()
+      return
+    }
+    state.selectedHistoryIndex = historyIndex
+    await loadSelectedSession(options, state, codexSessionHandle, refresh, refreshHistory, refreshMetaEvents, "resume")
+  }
+}
+
+// Assembly panel — cockpit surface over the Assembly Lines v0 backend. All
+// actions are typed stackd calls; failures surface the server's typed error
+// (unknown_station, invalid_transition, missing_evidence, invalid_gate_event,
+// not_found).
+
+const ASSEMBLY_PANEL_ACTOR = "operator"
+
+function renderAssemblyPanelForApp(state: AppState, columns: number, visibleRows: number): StyledText {
+  const snapshot = state.assemblyLinesSnapshot
+  if (snapshot.status === "idle") {
+    return new StyledText([fg(theme.fgMuted)("loading assembly lines from stackd ...")])
+  }
+  state.selectedAssemblyIndex = clampIndex(state.selectedAssemblyIndex, snapshot.lines.length)
+  return renderAssemblyPanelStyled({
+    view: state.assemblyPanelView,
+    lines: snapshot.lines,
+    selectedIndex: state.selectedAssemblyIndex,
+    detail: state.assemblyDetail,
+    loadError: snapshot.status === "error" ? snapshot.error : undefined,
+    columns,
+    visibleRows,
+  })
+}
+
+async function refreshAssemblyPanel(state: AppState): Promise<void> {
+  try {
+    const { lines } = await stackdAssemblyList()
+    state.assemblyLinesSnapshot = { status: "ready", lines, fetchedAtMs: Date.now() }
+    state.selectedAssemblyIndex = clampIndex(state.selectedAssemblyIndex, lines.length)
+    if (state.assemblyPanelView === "detail") {
+      const selected = lines[state.selectedAssemblyIndex]
+      if (selected) {
+        state.assemblyDetail = await stackdAssemblyGet(selected.line_id)
+      } else {
+        state.assemblyPanelView = "lanes"
+        state.assemblyDetail = undefined
+      }
+    }
+  } catch (error) {
+    state.assemblyLinesSnapshot = {
+      status: "error",
+      lines: state.assemblyLinesSnapshot.lines,
+      error: errorMessage(error),
+      fetchedAtMs: Date.now(),
+    }
+  }
+}
+
+function selectedAssemblyLine(state: AppState): StackdAssemblyLineSnapshot | undefined {
+  const lines = state.assemblyLinesSnapshot.lines
+  state.selectedAssemblyIndex = clampIndex(state.selectedAssemblyIndex, lines.length)
+  return lines[state.selectedAssemblyIndex]
+}
+
+async function handleAssemblyKey(
+  key: { name?: string },
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  if (key.name === "j" || key.name === "down") {
+    if (state.assemblyPanelView === "lanes") {
+      state.selectedAssemblyIndex = clampIndex(state.selectedAssemblyIndex + 1, state.assemblyLinesSnapshot.lines.length)
+      refresh()
+    }
+    return
+  }
+  if (key.name === "k" || key.name === "up") {
+    if (state.assemblyPanelView === "lanes") {
+      state.selectedAssemblyIndex = clampIndex(state.selectedAssemblyIndex - 1, state.assemblyLinesSnapshot.lines.length)
+      refresh()
+    }
+    return
+  }
+  if (key.name === "return" || key.name === "enter") {
+    if (state.assemblyPanelView === "lanes") {
+      const selected = selectedAssemblyLine(state)
+      if (!selected) {
+        appendStackBlock(state.blocks, "assembly detail: no line selected")
+        refresh()
+        return
+      }
+      state.assemblyPanelView = "detail"
+      await refreshAssemblyPanel(state)
+    } else {
+      state.assemblyPanelView = "lanes"
+      state.assemblyDetail = undefined
+    }
+    refresh()
+    return
+  }
+  if (key.name === "r") {
+    await refreshAssemblyPanel(state)
+    refresh()
+    return
+  }
+  if (key.name === "n") {
+    state.inputBuffer = "/assembly new "
+    state.focusMode = "agent"
+    refresh()
+    return
+  }
+  if (key.name === "s") {
+    await startSelectedAssemblyStation(options, state, refresh)
+    return
+  }
+  if (key.name === "c") {
+    const selected = selectedAssemblyLine(state)
+    if (selected && selected.current_station !== "intake") {
+      state.inputBuffer = "/assembly complete --evidence "
+      state.focusMode = "agent"
+      refresh()
+      return
+    }
+    await completeSelectedAssemblyStation(options, state, refresh, [])
+    return
+  }
+  if (key.name === "b") {
+    await bindActiveEffortToSelectedAssemblyLine(options, state, refresh)
+    return
+  }
+  if (key.name === "g") {
+    await routeSelectedAssemblyLineToGardener(options, state, refresh)
+    return
+  }
+  if (key.name === "q") {
+    await requestQualityReviewForSelectedAssemblyLine(options, state, refresh)
+    return
+  }
+  if (key.name === "e") {
+    state.inputBuffer = "/assembly evidence "
+    state.focusMode = "agent"
+    refresh()
+    return
+  }
+  if (key.name === "u") {
+    state.inputBuffer = "/assembly bundle "
+    state.focusMode = "agent"
+    refresh()
+    return
+  }
+  if (key.name === "H") {
+    await generateHandbackForSelectedAssemblyLine(options, state, refresh)
+  }
+}
+
+async function createAssemblyLineFromUi(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  title: string,
+  preset: StackdAssemblyPreset,
+): Promise<void> {
+  try {
+    const { record } = await stackdAssemblyCreate({
+      title,
+      preset,
+      owner: ASSEMBLY_PANEL_ACTOR,
+      actor_id: ASSEMBLY_PANEL_ACTOR,
+    })
+    appendStackBlock(state.blocks, `assembly line created: ${record.id} [${record.preset}] ${record.title}`)
+    await refreshAssemblyPanel(state)
+    state.selectedAssemblyIndex = Math.max(
+      0,
+      state.assemblyLinesSnapshot.lines.findIndex((line) => line.line_id === record.id),
+    )
+    openAssemblyPanel(options, state, refresh, "slash:new")
+  } catch (error) {
+    appendStackBlock(state.blocks, `assembly create failed: ${errorMessage(error)}`)
+    refresh()
+  }
+}
+
+async function attachToSelectedAssemblyLine(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  kind: "bundle" | "evidence",
+  path: string,
+): Promise<void> {
+  const selected = selectedAssemblyLine(state)
+  if (!selected) {
+    appendStackBlock(state.blocks, `assembly ${kind}: no line selected — open /assembly first`)
+    refresh()
+    return
+  }
+  try {
+    await stackdAssemblyUpdateBindings(
+      selected.line_id,
+      kind === "bundle" ? { ship_bundle_path: path } : { evidence_paths: [path] },
+    )
+    appendStackBlock(
+      state.blocks,
+      kind === "bundle"
+        ? `assembly ${selected.line_id}: ship bundle linked - ${path}`
+        : `assembly ${selected.line_id}: evidence attached - ${path}`,
+    )
+    await refreshAssemblyPanel(state)
+  } catch (error) {
+    appendStackBlock(state.blocks, `assembly ${kind} failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+async function startSelectedAssemblyStation(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  const selected = selectedAssemblyLine(state)
+  if (!selected) {
+    appendStackBlock(state.blocks, "assembly start: no line selected")
+    refresh()
+    return
+  }
+  try {
+    const { event } = await stackdAssemblyTransition(selected.line_id, {
+      kind: "assembly.station_started",
+      station: selected.current_station,
+      actor_id: ASSEMBLY_PANEL_ACTOR,
+    })
+    appendStackBlock(state.blocks, `assembly ${selected.line_id}: station ${event.station} started`)
+    await refreshAssemblyPanel(state)
+  } catch (error) {
+    appendStackBlock(state.blocks, `assembly start failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+async function completeSelectedAssemblyStation(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  evidencePaths: string[],
+): Promise<void> {
+  const selected = selectedAssemblyLine(state)
+  if (!selected) {
+    appendStackBlock(state.blocks, "assembly complete: no line selected — open /assembly first")
+    refresh()
+    return
+  }
+  try {
+    const { event, snapshot } = await stackdAssemblyTransition(selected.line_id, {
+      kind: "assembly.station_completed",
+      station: selected.current_station,
+      actor_id: ASSEMBLY_PANEL_ACTOR,
+      evidence_paths: evidencePaths,
+    })
+    appendStackBlock(
+      state.blocks,
+      `assembly ${selected.line_id}: station ${event.station} completed - now at ${snapshot.current_station}`,
+    )
+    await refreshAssemblyPanel(state)
+  } catch (error) {
+    appendStackBlock(state.blocks, `assembly complete rejected: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+async function bindActiveEffortToSelectedAssemblyLine(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  const selected = selectedAssemblyLine(state)
+  if (!selected) {
+    appendStackBlock(state.blocks, "assembly effort: no line selected")
+    refresh()
+    return
+  }
+  const activeEffort = activeEffortWorkerFilter(options, state)
+  if (!activeEffort.slug || !activeEffort.effortId) {
+    appendStackBlock(state.blocks, "assembly effort: no Effort is ON — turn one on in /efforts first")
+    refresh()
+    return
+  }
+  try {
+    await stackdAssemblyUpdateBindings(selected.line_id, { effort_ids: [activeEffort.effortId] })
+    appendStackBlock(
+      state.blocks,
+      `assembly ${selected.line_id}: bound effort ${taggedEffortDisplayLabel(options.config, activeEffort.slug)}`,
+    )
+    await refreshAssemblyPanel(state)
+  } catch (error) {
+    appendStackBlock(state.blocks, `assembly effort bind failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+async function routeSelectedAssemblyLineToGardener(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  const selected = selectedAssemblyLine(state)
+  if (!selected) {
+    appendStackBlock(state.blocks, "assembly route: no line selected")
+    refresh()
+    return
+  }
+  try {
+    const gate = selected.open_gate
+      ? ` open gate ${selected.open_gate.station}:${selected.open_gate.verdict} (${selected.open_gate.next_owner} must ${selected.open_gate.next_safe_action}).`
+      : ""
+    enqueueGardenerInbox(
+      options.config.stackDataRoot,
+      gardenerThreadId(state),
+      `assembly line ${selected.line_id} (${selected.title}) at station ${selected.current_station}.${gate} Next action: ${selected.next_action}. Read it with stack_assembly_get.`,
+      { source: "assembly", dispatchKind: "queue" },
+    )
+    await stackdAssemblyUpdateBindings(selected.line_id, { gardener_ids: [gardenerThreadId(state)] })
+    appendStackBlock(state.blocks, `assembly ${selected.line_id}: routed to gardener inbox`)
+    await refreshAssemblyPanel(state)
+  } catch (error) {
+    appendStackBlock(state.blocks, `assembly route failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+async function requestQualityReviewForSelectedAssemblyLine(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  const selected = selectedAssemblyLine(state)
+  if (!selected) {
+    appendStackBlock(state.blocks, "assembly review: no line selected")
+    refresh()
+    return
+  }
+  const reviewStation = assemblyReviewStation(selected.preset)
+  if (selected.current_station !== reviewStation) {
+    appendStackBlock(
+      state.blocks,
+      `assembly review unavailable: current station ${selected.current_station} (review station is ${reviewStation})`,
+    )
+    refresh()
+    return
+  }
+  try {
+    if (selected.station_state === "pending") {
+      await stackdAssemblyTransition(selected.line_id, {
+        kind: "assembly.station_started",
+        station: reviewStation,
+        actor_id: ASSEMBLY_PANEL_ACTOR,
+      })
+    }
+    enqueueGardenerInbox(
+      options.config.stackDataRoot,
+      gardenerThreadId(state),
+      `quality review requested for assembly line ${selected.line_id} (${selected.title}) at station ${reviewStation}. Record the standards verdict with stack_assembly_transition (assembly.gate_passed or assembly.gate_failed with next_owner + next_safe_action).`,
+      { source: "assembly", dispatchKind: "queue" },
+    )
+    appendStackBlock(state.blocks, `assembly ${selected.line_id}: quality review requested at ${reviewStation}`)
+    await refreshAssemblyPanel(state)
+  } catch (error) {
+    appendStackBlock(state.blocks, `assembly review request failed: ${errorMessage(error)}`)
+  }
+  refresh()
+}
+
+async function generateHandbackForSelectedAssemblyLine(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): Promise<void> {
+  const selected = selectedAssemblyLine(state)
+  if (!selected) {
+    appendStackBlock(state.blocks, "assembly handback: no line selected")
+    refresh()
+    return
+  }
+  try {
+    const detail = await stackdAssemblyGet(selected.line_id)
+    const path = writeAssemblyHandback({
+      stackDataRoot: options.config.stackDataRoot,
+      record: detail.record,
+      events: detail.events,
+      snapshot: detail.snapshot,
+    })
+    await stackdAssemblyUpdateBindings(selected.line_id, { evidence_paths: [path] })
+    appendStackBlock(state.blocks, `assembly ${selected.line_id}: handback written - ${path}`)
+    await refreshAssemblyPanel(state)
+  } catch (error) {
+    appendStackBlock(state.blocks, `assembly handback failed: ${errorMessage(error)}`)
   }
   refresh()
 }

@@ -113,6 +113,15 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     description: "Open or update Efforts",
   },
   {
+    command: "workers",
+    description: "Open the gardener workers panel",
+  },
+  {
+    command: "assembly",
+    args: "[new <title> [--preset ship|effort]|start|complete [--evidence <p1,p2>]|effort|bundle <path>|evidence <path>|route|review|handback]",
+    description: "Open or act on Assembly Lines",
+  },
+  {
     command: "subagents",
     args: "[on|off]",
     description: "Toggle subagents",
@@ -383,6 +392,8 @@ export type SlashDispatchHooks = {
   openExperimental: () => void
   cycleEffort: () => void
   openEfforts: (args?: string) => void
+  openWorkers: () => void
+  openAssembly: (args?: string) => void
   setSubagents: (enabled: boolean | undefined) => void
   toggleDetails: () => void
   toggleRails: () => void
@@ -545,6 +556,12 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
       return true
     case "efforts":
       hooks.openEfforts(args)
+      return true
+    case "workers":
+      hooks.openWorkers()
+      return true
+    case "assembly":
+      hooks.openAssembly(args)
       return true
     case "subagents":
       if (args === "on") hooks.setSubagents(true)
