@@ -23,6 +23,15 @@ export type StackUxSettings = {
   lightsPanelOpen: boolean
   /** When true, the Lights panel shows only Threads (no gardeners/actors/cloud/local/usage). */
   lightsThreadsOnly: boolean
+  /** Stack Effort slug tagged to the worker panel; null hides the badge. */
+  taggedEffortSlug: string | null
+}
+
+export function normalizeTaggedEffortSlug(value: unknown): string | null {
+  if (value === null || value === undefined) return null
+  if (typeof value !== "string") return null
+  const trimmed = value.trim()
+  return trimmed.length > 0 ? trimmed : null
 }
 
 export function normalizeLightsCollapsedSections(value: unknown): LightsPanelSectionId[] {
@@ -51,6 +60,7 @@ export function readStackUxSettings(stackRoot: string): StackUxSettings {
       lightsCollapsedSections: [],
       lightsPanelOpen: false,
       lightsThreadsOnly: false,
+      taggedEffortSlug: null,
     }
   }
 
@@ -63,6 +73,7 @@ export function readStackUxSettings(stackRoot: string): StackUxSettings {
       lightsCollapsedSections: [],
       lightsPanelOpen: false,
       lightsThreadsOnly: false,
+      taggedEffortSlug: null,
     }
   }
 
@@ -77,6 +88,7 @@ export function readStackUxSettings(stackRoot: string): StackUxSettings {
     lightsCollapsedSections: normalizeLightsCollapsedSections(record.lightsCollapsedSections),
     lightsPanelOpen: record.lightsPanelOpen === true,
     lightsThreadsOnly: record.lightsThreadsOnly === true,
+    taggedEffortSlug: normalizeTaggedEffortSlug(record.taggedEffortSlug),
   }
 }
 
@@ -91,6 +103,10 @@ export function writeStackUxSettings(stackRoot: string, patch: Partial<StackUxSe
     lightsCollapsedSections: patch.lightsCollapsedSections ?? current.lightsCollapsedSections,
     lightsPanelOpen: patch.lightsPanelOpen ?? current.lightsPanelOpen,
     lightsThreadsOnly: patch.lightsThreadsOnly ?? current.lightsThreadsOnly,
+    taggedEffortSlug:
+      patch.taggedEffortSlug !== undefined
+        ? normalizeTaggedEffortSlug(patch.taggedEffortSlug)
+        : current.taggedEffortSlug,
   }
   writeFileSync(path, `${JSON.stringify(normalized, null, 2)}\n`, "utf8")
 }
