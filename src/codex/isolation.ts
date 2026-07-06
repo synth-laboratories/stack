@@ -38,8 +38,13 @@ export type StackCodexIsolationConfig = {
 }
 
 export function personalCodexHome(): string {
-  // $HOME first (matches the Rust core and lets tests relocate the personal
-  // namespace); Bun's homedir() ignores a changed $HOME.
+  // The user's real Codex home. Single resolution rule (matches the Rust
+  // core): $CODEX_HOME when the user relocated their Codex home, else
+  // ~/.codex. $HOME is honored before homedir() because Bun's homedir()
+  // ignores a changed $HOME (tests relocate the personal namespace that way).
+  // Stack only READS auth material from this home; it never writes to it.
+  const relocated = process.env.CODEX_HOME?.trim()
+  if (relocated) return relocated
   const home = process.env.HOME?.trim() || homedir()
   return join(home, ".codex")
 }
