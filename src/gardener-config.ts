@@ -14,6 +14,7 @@ import {
   type ActorModelConfig,
   type ParsedTomlSections,
 } from "./actor-config.js"
+import { readStackExperimentalConfig } from "./config.js"
 import { readStackProfile } from "./operator-profile.js"
 import { ensureStackDefaults } from "./seed/defaults.js"
 import { stackAppRoot } from "./version.js"
@@ -452,7 +453,13 @@ export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
   backfillGardenerLightsThreadViewTool(config)
   backfillGardenerEffortTools(config)
   config.tools.allow = config.tools.allow.filter((tool) => !REMOVED_ONLINE_REFLEXION_TOOLS.includes(tool))
-  backfillGardenerAssemblyTools(config)
+  // Assembly Lines are experimental: the gardener read surface exists only
+  // while `experimental.assembly_lines` is on in stack.config.json.
+  if (readStackExperimentalConfig(stackAppRoot()).assemblyLines) {
+    backfillGardenerAssemblyTools(config)
+  } else {
+    config.tools.allow = config.tools.allow.filter((tool) => !GARDENER_ASSEMBLY_TOOLS.includes(tool))
+  }
   const enabledOverride = process.env.STACK_GARDENER_ENABLED?.trim()
   if (enabledOverride === "0" || enabledOverride === "false") config.enabled = false
   if (enabledOverride === "1" || enabledOverride === "true") config.enabled = true

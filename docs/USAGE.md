@@ -71,7 +71,7 @@ matching, aliases, and tab completion.
 | `/lights on\|off` | Open or close the Lights status panel |
 | `/efforts` | Open the Efforts workstream panel |
 | `/workers` | Open the gardener workers panel |
-| `/assembly` | Open the Assembly Lines panel; subcommands act on the selected line |
+| `/assembly` | Open the Assembly Lines panel (experimental — enable in `/experimental`); subcommands act on the selected line |
 | `/threads` / `/p` | Open thread navigation; `/threads new` starts a new thread |
 | `/mode eng\|research` / `/work_mode` | Record the future work-mode flag |
 | `/feedback [kind] [text]` / `/eval-feedback` | In eval mode, open or prefill the human feedback modal |
@@ -81,7 +81,7 @@ matching, aliases, and tab completion.
 | `/model [filter]` | Select a worker model |
 | `/effort` | Cycle reasoning effort |
 | `/subagents on\|off` | Toggle subagents |
-| `/experimental` | Toggle experimental controls |
+| `/experimental` | Toggle experimental features (e.g. `assembly lines`); persisted to `stack.config.json` |
 | `/usage daily\|weekly\|cumulative` | Refresh ChatGPT limits, token activity, and Synth plan usage |
 | `/ops` | Open the ops panel |
 | `/actors` | Toggle actor status |
@@ -136,6 +136,12 @@ worker, `enter` opens (resumes) the selected worker thread, `u` toggles the
 unassociated debug section, and `r` refreshes thread history.
 
 ### Assembly Lines panel
+
+Assembly Lines are experimental. The operator surface (`/assembly`, the
+`stack assembly` CLI, `stack_assembly_*` MCP tools, gardener + monitor
+integration) is off until you turn on the `assembly lines` toggle in
+`/experimental` (persisted as `experimental.assembly_lines` in
+`stack.config.json`). The stackd endpoints stay available regardless.
 
 `/assembly` opens the right-panel Assembly Lines view over the stackd Assembly
 Lines backend (`docs/ASSEMBLY_LINES.md`). The lane view renders one row per
@@ -1305,6 +1311,12 @@ cancel are read/executed through the backend optimizer owner surface, not the
 local GEPA service DB and not SMR compatibility projections.
 
 ## Assembly Lines
+
+Assembly Lines are experimental: turn on the `assembly lines` toggle in
+`/experimental` (persisted as `experimental.assembly_lines` in
+`stack.config.json`) before using the CLI, MCP tools, or panel below. With the
+toggle off, `stack assembly` returns a typed config error naming the flag and
+the `stack_assembly_*` MCP tools are not registered.
 
 An AssemblyLine is the process layer above Efforts: it tracks which station an
 initiative sits at, whether a standards gate is open, who owns the next move,

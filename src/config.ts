@@ -70,6 +70,12 @@ export type StackVoiceConfig = {
   envFile?: string
 }
 
+// Experimental feature flags: typed, default-off, persisted in stack.config.json
+// under `experimental`. Toggled from the TUI Experimental panel (/experimental).
+export type StackExperimentalConfig = {
+  assemblyLines: boolean
+}
+
 export type StackConfig = {
   appRoot: string
   stackDataRoot: string
@@ -120,6 +126,7 @@ export type StackConfig = {
   initialPromptFile?: string
   autoSubmitInitialPrompt: boolean
   voice: StackVoiceConfig
+  experimental: StackExperimentalConfig
 }
 
 type StackConfigFile = {
@@ -150,6 +157,9 @@ type StackConfigFile = {
     language?: string
     env_file?: string
   }
+  experimental?: {
+    assembly_lines?: boolean
+  }
 }
 
 export type StackConfigPatch = Partial<Pick<
@@ -164,6 +174,7 @@ export type StackConfigPatch = Partial<Pick<
   | "codexSubagentReasoningEffort"
 >> & {
   voice?: Partial<NonNullable<StackConfigFile["voice"]>>
+  experimental?: Partial<NonNullable<StackConfigFile["experimental"]>>
 }
 
 const loadedAuthEnvFiles = new Map<string, string>()
@@ -348,7 +359,21 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
       : undefined,
     autoSubmitInitialPrompt: process.env.STACK_AUTOSUBMIT === "1",
     voice: readVoiceConfig(appRoot, fileConfig),
+    experimental: experimentalConfigFromFile(fileConfig),
   }
+}
+
+function experimentalConfigFromFile(fileConfig: StackConfigFile): StackExperimentalConfig {
+  return {
+    assemblyLines: fileConfig.experimental?.assembly_lines ?? false,
+  }
+}
+
+// Synchronous read of the experimental flags for callers that resolve the
+// app root without loading the full StackConfig (e.g. the MCP server
+// constructor, gardener config loading).
+export function readStackExperimentalConfig(appRoot: string): StackExperimentalConfig {
+  return experimentalConfigFromFile(readConfigFile(appRoot))
 }
 
 function readVoiceConfig(appRoot: string, fileConfig: StackConfigFile): StackVoiceConfig {
@@ -398,6 +423,9 @@ export function writeStackConfigPatch(appRoot: string, patch: StackConfigPatch):
     ...current,
     ...withoutUndefined(patch),
     voice: patch.voice ? { ...(current.voice ?? {}), ...withoutUndefined(patch.voice) } : current.voice,
+    experimental: patch.experimental
+      ? { ...(current.experimental ?? {}), ...withoutUndefined(patch.experimental) }
+      : current.experimental,
   }
   writeFileSync(path, `${JSON.stringify(next, null, 2)}\n`, "utf8")
   return path

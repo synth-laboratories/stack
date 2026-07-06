@@ -1561,6 +1561,9 @@ async function workerAssemblyContext(
   config: StackConfig,
   session: StackLocalSession,
 ): Promise<StackAssemblyWorkerContext | undefined> {
+  // Assembly Lines are experimental: the monitor annotates status payloads
+  // with line/station context only while `experimental.assembly_lines` is on.
+  if (!config.experimental.assemblyLines) return undefined
   if (!session.metaThreadId) return undefined
   try {
     const manifest = await readMetaThreadManifest(config.stackDataRoot, session.metaThreadId)

@@ -13,7 +13,13 @@ import {
 // cockpit-style list convention: one row per line with id, preset, current
 // station, owner, age, open gate, next action. No filters, no modes.
 
-export async function runAssemblyCli(_config: StackConfig, argv: string[]): Promise<number> {
+export async function runAssemblyCli(config: StackConfig, argv: string[]): Promise<number> {
+  if (!config.experimental.assemblyLines) {
+    console.error(
+      "config error: assembly lines are experimental and currently off — enable experimental.assembly_lines in stack.config.json (TUI: /experimental)",
+    )
+    return 2
+  }
   const [, verb, ...rest] = argv
   try {
     if (verb === "list" || verb === undefined) {

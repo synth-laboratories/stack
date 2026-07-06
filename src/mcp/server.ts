@@ -8,6 +8,7 @@ import {
   harnessModel,
   harnessSessionCommand,
   loadConfig,
+  readStackExperimentalConfig,
   setStackEnvironment,
   type StackConfig,
   type StackEnvironmentName,
@@ -262,14 +263,26 @@ type McpToolFilter = {
   deny: Set<string>
 }
 
+// Assembly Lines are an experimental feature: these tools register only when
+// `experimental.assembly_lines` is on in stack.config.json (/experimental).
+const EXPERIMENTAL_ASSEMBLY_TOOL_NAMES = new Set([
+  "stack_assembly_create",
+  "stack_assembly_list",
+  "stack_assembly_get",
+  "stack_assembly_transition",
+  "stack_assembly_bind",
+])
+
 export class StackMcpServer {
   private readonly tools: Map<string, ToolDefinition>
   private httpMode = false
 
   constructor(private readonly appRoot: string) {
     const filter = mcpToolFilterFromEnv()
+    const experimental = readStackExperimentalConfig(appRoot)
     this.tools = new Map(
       buildTools(this)
+        .filter((tool) => experimental.assemblyLines || !EXPERIMENTAL_ASSEMBLY_TOOL_NAMES.has(tool.name))
         .filter((tool) => mcpToolAllowed(tool.name, filter))
         .map((tool) => [tool.name, tool]),
     )
