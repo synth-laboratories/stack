@@ -1,13 +1,14 @@
-import { existsSync } from "node:fs"
+import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { join, resolve } from "node:path"
-import type { StackConfig } from "./config.js"
+import { sessionHistoryScanDirs, type StackConfig } from "./config.js"
 import { artifactsRoot, readLatestArtifacts } from "./artifacts.js"
 import {
   stackdMissingEffortRefRouteMessage,
   stackdUpdateMetaThreadEffortRef,
   type StackdMetaThreadManifest,
 } from "./client/stackd.js"
-import { formatTokenTotal, sessionTokenTotal } from "./codex/usage-cost.js"
+import { buildSessionUsageSummary, formatTokenTotal, sessionTokenTotal } from "./codex/usage-cost.js"
+import { readSessionLog } from "./session.js"
 import {
   EFFORT_LAUNCH_CAPABILITIES,
   STACK_EFFORT_STATUSES,
@@ -28,6 +29,7 @@ import {
   readEffortBlockerTail,
   readEffortOpenBlockerTail,
   readEffortOptimizerCandidateSummaries,
+  readEffortSessionTail,
   parseEffortLaunchCapability,
   readEffortProgressTail,
   readEffortReleaseArtifactSummaries,
@@ -46,6 +48,7 @@ import {
   recordEffortReleaseArtifact,
   recordEffortRepo,
   recordEffortRunEvidence,
+  recordEffortSession,
   resolveEffortBlocker,
   updateEffortRefs,
   updateEffortScope,
@@ -69,6 +72,7 @@ import {
   type StackEffortReleaseArtifactSummary,
   type StackEffortRemainingWork,
   type StackEffortRunEvidenceSummary,
+  type StackEffortSessionRecord,
   type StackEffortSummary,
   type StackEffortStatus,
   type StackEffortTemplateSummary,
@@ -121,13 +125,14 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
 
     if (action === "create") {
       const slug = parsed.args[0]
-      if (!slug) return usageError("usage: stack effort create <slug> [--template <id>] [--title <title>] [--topic <topic>] [--folder <path>]")
+      if (!slug) return usageError("usage: stack effort create <slug> [--template <id>] [--title <title>] [--short-title <10chars>] [--topic <topic>] [--folder <path>]")
       const effort = createEffort({
         stackDataRoot: config.stackDataRoot,
         workspaceRoot: config.workspaceRoot,
         appRoot: config.appRoot,
         slug,
         title: readFlagString(parsed, "title") ?? titleFromSlug(slug),
+        shortTitle: readFlagString(parsed, "short-title") ?? readFlagString(parsed, "short_title"),
         template: readFlagString(parsed, "template") ?? "research",
         topic: readFlagString(parsed, "topic"),
         folderRef: readFlagString(parsed, "folder"),
@@ -229,6 +234,36 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
       return 0
     }
 
+    if (action === "effort-session" || action === "effort-sessions" || action === "session" || action === "start-session") {
+      const ref = parsed.args[0]
+      const title = readFlagString(parsed, "title") ?? parsed.args.slice(1).join(" ").trim()
+      if (!ref || !title) return usageError("usage: stack effort effort-session <effort> <title> [--session-id <id>] [--actor <actor>] [--kind <kind>] [--parent-session-id <id>] [--tag <tag>] [--summary <text>] [--payload-json <json>]")
+      const result = recordEffortSession({
+        ...config,
+        effortRef: ref,
+        sessionId: readFlagString(parsed, "session-id"),
+        title,
+        actor: readFlagString(parsed, "actor"),
+        kind: readFlagString(parsed, "kind"),
+        summary: readFlagString(parsed, "summary"),
+        parentSessionId: readFlagString(parsed, "parent-session-id"),
+        tags: readFlagList(parsed, "tag"),
+        payload: readFlagJsonObject(parsed, "payload-json"),
+      })
+      if (json) {
+        console.log(JSON.stringify({
+          effort: result.effort,
+          session: result.session,
+          path: result.path,
+        }, null, 2))
+      } else {
+        console.log(`effort_session: ${result.session.session_id}`)
+        console.log(`path: ${result.path}`)
+        await printEffort(config, result.effort, false)
+      }
+      return 0
+    }
+
     if (action === "blocker") {
       const ref = parsed.args[0]
       if (!ref) return usageError("usage: stack effort blocker <effort> --blocker <text> --evidence <text> --owner <owner> --next <text>")
@@ -286,13 +321,15 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
     if (action === "research-log" || action === "log") {
       const ref = parsed.args[0]
       const title = readFlagString(parsed, "title") ?? parsed.args.slice(1).join(" ").trim()
-      if (!ref || !title) return usageError("usage: stack effort research-log <effort> <title> --work-summary <text> [--operator-message <text>] [--result <text>] [--metric <text>] [--path <path>] [--command <command>] [--next <text>]")
+      if (!ref || !title) return usageError("usage: stack effort research-log <effort> <title> --work-summary <text> [--session-id <id>] [--operator-message <text>] [--result <text>] [--metric <text>] [--path <path>] [--command <command>] [--next <text>]")
       const workSummary = readFlagString(parsed, "work-summary")
       if (!workSummary) return usageError("stack effort research-log requires --work-summary <text>")
+      const sessionId = readFlagString(parsed, "session-id")
       const result = appendEffortResearchLog({
         ...config,
         effortRef: ref,
         title,
+        sessionId,
         operatorMessage: readFlagString(parsed, "operator-message"),
         workSummary,
         result: readFlagString(parsed, "result"),
@@ -301,7 +338,9 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
         reproduceCommands: readFlagList(parsed, "command"),
         next: readFlagString(parsed, "next"),
       })
-      await printArtifactResult(config, result.effort, result.path, json)
+      await printArtifactResult(config, result.effort, result.path, json, undefined, undefined, undefined, {
+        ...(sessionId ? { session_id: sessionId } : {}),
+      })
       return 0
     }
 
@@ -345,6 +384,30 @@ export async function runEffortCli(config: StackConfig, argv: string[]): Promise
         diff_stat: result.diffStat,
         git_status: result.gitStatus,
       })
+      return 0
+    }
+
+    if (action === "export-usage" || action === "usage-export") {
+      const ref = parsed.args[0]
+      if (!ref) return usageError("usage: stack effort export-usage <effort> --session-id <id> --packet <path> [--json]")
+      const effort = readEffort(config, ref)
+      if (!effort) return notFound(ref)
+      const sessionId = readFlagString(parsed, "session-id")
+      const packet = readFlagString(parsed, "packet")
+      if (!sessionId) return usageError("stack effort export-usage requires --session-id <id>")
+      if (!packet) return usageError("stack effort export-usage requires --packet <path>")
+      const result = await exportEffortUsageToPacket(config, {
+        effortRef: effort.manifest.id,
+        sessionId,
+        packet,
+      })
+      if (json) {
+        console.log(JSON.stringify(result, null, 2))
+      } else {
+        console.log(`worker_usage: ${result.worker_usage_path}`)
+        console.log(`session_id: ${result.session_id}`)
+        console.log(`total_tokens: ${result.tokens.total_tokens}`)
+      }
       return 0
     }
 
@@ -1014,6 +1077,13 @@ function formatBlockerLine(blocker: StackEffortBlockerRecord): string {
   return `${blocker.observed_at} - ${blocker.blocker} - open - owner ${blocker.owner} - next ${blocker.next}`
 }
 
+function formatEffortSessionLine(session: StackEffortSessionRecord): string {
+  const parts = [session.observed_at, session.session_id, session.kind, session.actor, session.title]
+  if (session.tags.length > 0) parts.push(`tags=${session.tags.join(",")}`)
+  if (session.parent_session_id) parts.push(`parent=${session.parent_session_id}`)
+  return parts.filter(Boolean).join(" - ")
+}
+
 function missingEffortRemainingWork(): StackEffortRemainingWork {
   return {
     state: "untracked",
@@ -1047,6 +1117,7 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   const artifactInventory = effortArtifactInventory(effort)
   const progressTail = readEffortProgressTail(effort, 5)
   const activityTail = readEffortActivityTail(effort, 5)
+  const sessionTail = readEffortSessionTail(effort, 5)
   const blockerTail = readEffortBlockerTail(effort, 5)
   const openBlockerTail = readEffortOpenBlockerTail(effort, 5)
   const acceptancePacket = readEffortAcceptancePacket(effort) ?? null
@@ -1065,6 +1136,7 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
       progress_tail: progressTail,
       latest_activity: activityTail[activityTail.length - 1] ?? null,
       activity_tail: activityTail,
+      session_tail: sessionTail,
       latest_blocker: openBlockerTail[openBlockerTail.length - 1] ?? null,
       blocker_tail: blockerTail,
       open_blocker_tail: openBlockerTail,
@@ -1107,6 +1179,7 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   console.log(`  playbook: ${paths.playbook}`)
   console.log(`  progress: ${paths.progress}`)
   console.log(`  activity: ${paths.activity}`)
+  console.log(`  effort-sessions: ${paths.effort_sessions}`)
   console.log(`  handoff: ${paths.handoff}`)
   if (paths.acceptance_summary) console.log(`  acceptance-summary: ${paths.acceptance_summary}`)
   if (paths.research_log) console.log(`  research-log: ${paths.research_log}`)
@@ -1171,6 +1244,10 @@ async function printEffort(config: StackConfig, effort: StackEffort, json: boole
   if (activityTail.length > 0) {
     console.log("recent activity:")
     for (const activity of activityTail) console.log(`  ${activity.observed_at} - ${activity.type} - ${activity.summary}`)
+  }
+  if (sessionTail.length > 0) {
+    console.log("recent sessions:")
+    for (const session of sessionTail) console.log(`  ${formatEffortSessionLine(session)}`)
   }
   if (blockerTail.length > 0) {
     console.log("recorded blockers:")
@@ -1419,6 +1496,71 @@ function effortSourceReceiptFromRoundTrip(receipt: RoundTripPullReceiptRecord): 
   }
 }
 
+type EffortUsageExportResult = {
+  schema: "stack.effort_usage_export.v1"
+  effort_ref: string
+  session_id: string
+  worker_usage_path: string
+  session_path: string
+  model: string | null
+  turns: number
+  tokens: {
+    input_tokens: number
+    cached_input_tokens: number
+    output_tokens: number
+    reasoning_output_tokens: number
+    total_tokens: number
+  }
+  estimated_spend_usd?: number
+  exported_at: string
+}
+
+async function exportEffortUsageToPacket(
+  config: StackConfig,
+  input: { effortRef: string; sessionId: string; packet: string },
+): Promise<EffortUsageExportResult> {
+  const sessionPath = sessionHistoryScanDirs(config)
+    .map((dir) => join(dir, `${input.sessionId}.json`))
+    .find((path) => existsSync(path))
+  if (!sessionPath) {
+    throw new Error(`session ${input.sessionId} not found in ${sessionHistoryScanDirs(config).join(", ")}`)
+  }
+  const session = await readSessionLog(sessionPath)
+  const model = session.codexModel ?? session.harnessModel ?? config.codexModel
+  const summary = session.usageSummary ?? buildSessionUsageSummary(session.turns, model, config.codexPricing)
+  if (!summary) {
+    throw new Error(`session ${input.sessionId} has no usage summary yet: ${sessionPath}`)
+  }
+  const packet = resolveCliEffortSourcePath(config, process.cwd(), input.packet)
+  if (!existsSync(packet)) {
+    throw new Error(`packet directory does not exist: ${packet}`)
+  }
+  const scorecardsDir = join(packet, "scorecards")
+  mkdirSync(scorecardsDir, { recursive: true })
+  const outPath = join(scorecardsDir, "worker_usage.json")
+  const tokens = {
+    input_tokens: summary.totals.inputTokens,
+    cached_input_tokens: summary.totals.cachedInputTokens,
+    output_tokens: summary.totals.outputTokens,
+    reasoning_output_tokens: summary.totals.reasoningOutputTokens,
+    total_tokens: sessionTokenTotal(summary.totals),
+  }
+  const payload: EffortUsageExportResult = {
+    schema: "stack.effort_usage_export.v1",
+    effort_ref: input.effortRef,
+    session_id: input.sessionId,
+    worker_usage_path: outPath,
+    session_path: sessionPath,
+    model: summary.model,
+    turns: summary.totals.turnCountWithUsage,
+    tokens,
+    ...(summary.estimatedSpendUsd !== undefined ? { estimated_spend_usd: summary.estimatedSpendUsd } : {}),
+    exported_at: new Date().toISOString(),
+  }
+  writeFileSync(outPath, `${JSON.stringify(payload, null, 2)}\n`, "utf8")
+  return payload
+}
+
 function printEffortUsage(): void {
   console.error("usage: stack effort <command>")
   console.error("  stack effort create <slug> [--template <id>] [--title <title>] [--topic <topic>] [--folder <path>]")
@@ -1431,12 +1573,14 @@ function printEffortUsage(): void {
   console.error("  stack effort refresh-receipts <effort> [--json]")
   console.error("  stack effort bind <effort> <meta-thread-id>")
   console.error("  stack effort progress <effort> <message>")
+  console.error("  stack effort effort-session <effort> <title> [--session-id <id>] [--actor <actor>] [--kind <kind>] [--parent-session-id <id>] [--tag <tag>] [--summary <text>] [--payload-json <json>]")
   console.error("  stack effort blocker <effort> --blocker <text> --evidence <text> --owner <owner> --next <text>")
   console.error("  stack effort resolve-blocker <effort> --resolution <text> [--activity-id <id>] [--evidence <text>] [--owner <owner>]")
   console.error("  stack effort acceptance <effort> <A0|A1|A2...> [--state recorded|pending|not_recorded] [--status <text>] [--evidence <text>] [--path <path>] [--result <text>] [--decision <text>] [--next <text>]")
-  console.error("  stack effort research-log <effort> <title> --work-summary <text> [--operator-message <text>] [--result <text>] [--metric <text>] [--path <path>] [--command <command>] [--next <text>]")
+  console.error("  stack effort research-log <effort> <title> --work-summary <text> [--session-id <id>] [--operator-message <text>] [--result <text>] [--metric <text>] [--path <path>] [--command <command>] [--next <text>]")
   console.error("  stack effort handoff <effort> [--summary <text>] [--risk <text>] [--next <text>] [--owner <text>]")
   console.error("  stack effort engineering-packet <effort> [--repo <path>] [--base <ref>] [--summary <text>] [--file <path>] [--validation <text>] [--skipped-gate <text>] [--risk <text>] [--next <text>]")
+  console.error("  stack effort export-usage <effort> --session-id <id> --packet <path> [--json]")
   console.error("  stack effort refs <effort> [--factory-id <id>] [--hosted-effort-id <id>] [--project-id <id>] [--optimizer-run-id <id>] [--smr-run-id <id>] [--tinker-run-id <id>] [--repo-ref <ref>] [--initiative-id <id>]")
   console.error("  stack effort scope <effort> [--capabilities <a,b,c>] [--json]")
   console.error(`  stack effort launch <effort> --kind ${EFFORT_LAUNCH_KINDS.join("|")} --capability <${EFFORT_LAUNCH_CAPABILITIES.join("|")}> [--config <gepa toml path>] [--tunnel-url <url>] [--container-pool <id>] [--goal <text>] [--project-id <id>] [--factory-id <id>] [--request-json <json>] [--name <name>] [--description <text>] [--status <status>] [--pool <id>] [--task-id <id>] [--split <name>] [--seed <n>] [--policy-name <name>] [--policy-config-json <json>] [--image-ref <ref>|--service-url <url>] [--runtime-kind <kind>] [--release-name <name>] [--provider <name>] [--json]`)

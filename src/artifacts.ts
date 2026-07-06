@@ -98,6 +98,8 @@ export type StackArtifactServeResult = {
   siteDir: string
   logPath: string
   pid?: number
+  ttlSeconds?: number
+  watchdogPid?: number
   message: string
 }
 
@@ -169,6 +171,7 @@ type ArtifactSiteProbe = {
 const ARTIFACT_SITE_SCHEMA = "stack.artifacts-site.v1"
 const ARTIFACT_SITE_START_ATTEMPTS = 120
 const ARTIFACT_SITE_START_DELAY_MS = 500
+const ARTIFACT_SITE_DEFAULT_TTL_SECONDS = 30 * 60
 const ARTIFACT_HTML_WARN_BYTES = 2 * 1024 * 1024
 const ARTIFACT_HTML_MAX_BYTES = 4 * 1024 * 1024
 
@@ -206,6 +209,10 @@ export function artifactSiteLogPath(config: StackConfig): string {
 
 export function artifactSitePidPath(config: StackConfig): string {
   return join(artifactRuntimeDir(config), "artifacts-site.pid")
+}
+
+export function artifactSiteWatchdogPidPath(config: StackConfig): string {
+  return join(artifactRuntimeDir(config), "artifacts-site-watchdog.pid")
 }
 
 export function readArtifactManifestEntries(config: StackConfig): StackArtifactManifestEntry[] {
@@ -263,8 +270,11 @@ export async function serveArtifactSite(config: StackConfig): Promise<StackArtif
   const siteDir = artifactSiteDir(config)
   const logPath = artifactSiteLogPath(config)
   const url = artifactSiteBaseUrl()
+  const ttlSeconds = readArtifactSiteTtlSeconds()
   const probe = await probeArtifactSite()
   if (probe.running) {
+    const pid = readArtifactSitePid(config)
+    const watchdogPid = pid ? ensureArtifactSiteWatchdog(config, pid, ttlSeconds) : undefined
     return {
       ok: true,
       running: true,
@@ -272,8 +282,12 @@ export async function serveArtifactSite(config: StackConfig): Promise<StackArtif
       url,
       siteDir,
       logPath,
-      ...(readArtifactSitePid(config) ? { pid: readArtifactSitePid(config) } : {}),
-      message: "Artifact Site already running.",
+      ...(pid ? { pid } : {}),
+      ...(ttlSeconds ? { ttlSeconds } : {}),
+      ...(watchdogPid ? { watchdogPid } : {}),
+      message: ttlSeconds
+        ? `Artifact Site already running; auto-stop in ${ttlSeconds}s.`
+        : "Artifact Site already running.",
     }
   }
   if (probe.occupied) {
@@ -308,10 +322,12 @@ export async function serveArtifactSite(config: StackConfig): Promise<StackArtif
         url,
         log_path: logPath,
         started_at: new Date().toISOString(),
+        ttl_seconds: ttlSeconds,
       }, null, 2)}\n`,
       "utf8",
     )
   }
+  const watchdogPid = child.pid ? ensureArtifactSiteWatchdog(config, child.pid, ttlSeconds) : undefined
 
   for (let attempt = 0; attempt < ARTIFACT_SITE_START_ATTEMPTS; attempt += 1) {
     await sleep(ARTIFACT_SITE_START_DELAY_MS)
@@ -325,7 +341,11 @@ export async function serveArtifactSite(config: StackConfig): Promise<StackArtif
         siteDir,
         logPath,
         ...(child.pid ? { pid: child.pid } : {}),
-        message: "Artifact Site started.",
+        ...(ttlSeconds ? { ttlSeconds } : {}),
+        ...(watchdogPid ? { watchdogPid } : {}),
+        message: ttlSeconds
+          ? `Artifact Site started; auto-stop in ${ttlSeconds}s.`
+          : "Artifact Site started.",
       }
     }
   }
@@ -349,14 +369,16 @@ export async function stopArtifactSite(config: StackConfig): Promise<StackArtifa
   const logPath = artifactSiteLogPath(config)
   const url = artifactSiteBaseUrl()
   if (!pid) {
+    stopArtifactSiteWatchdog(config)
     return { ok: true, running: false, started: false, url, siteDir, logPath, message: "No Artifact Site pidfile." }
   }
   if (!processAlive(pid)) {
+    stopArtifactSiteWatchdog(config)
     removeArtifactPid(config)
     return { ok: true, running: false, started: false, url, siteDir, logPath, message: "Removed stale Artifact Site pidfile." }
   }
   try {
-    process.kill(pid, "SIGTERM")
+    terminateArtifactSiteProcess(pid, "SIGTERM")
   } catch (error) {
     return {
       ok: false,
@@ -372,6 +394,7 @@ export async function stopArtifactSite(config: StackConfig): Promise<StackArtifa
   for (let attempt = 0; attempt < 20; attempt += 1) {
     await sleep(250)
     if (!processAlive(pid)) {
+      stopArtifactSiteWatchdog(config)
       removeArtifactPid(config)
       return { ok: true, running: false, started: false, url, siteDir, logPath, pid, message: "Artifact Site stopped." }
     }
@@ -985,6 +1008,108 @@ async function probeArtifactSite(): Promise<ArtifactSiteProbe> {
   }
 }
 
+function readArtifactSiteTtlSeconds(): number {
+  const raw = process.env.STACK_ARTIFACT_SITE_TTL_SECONDS?.trim()
+  if (!raw) return ARTIFACT_SITE_DEFAULT_TTL_SECONDS
+  const parsed = Number(raw)
+  if (!Number.isFinite(parsed) || parsed < 0) return ARTIFACT_SITE_DEFAULT_TTL_SECONDS
+  return Math.floor(parsed)
+}
+
+function ensureArtifactSiteWatchdog(config: StackConfig, pid: number, ttlSeconds: number): number | undefined {
+  if (ttlSeconds <= 0) return undefined
+  const existing = readArtifactSiteWatchdogPid(config)
+  if (existing && processAlive(existing)) {
+    stopArtifactSiteWatchdog(config)
+  }
+
+  mkdirSync(artifactRuntimeDir(config), { recursive: true })
+  const scriptPath = join(artifactRuntimeDir(config), "artifacts-site-watchdog.mjs")
+  writeFileSync(scriptPath, artifactSiteWatchdogSource(), "utf8")
+  const logFd = openSync(artifactSiteLogPath(config), "a")
+  const child = spawn(process.execPath, [
+    scriptPath,
+    String(pid),
+    String(ttlSeconds),
+    artifactSitePidPath(config),
+    join(artifactRuntimeDir(config), "artifacts-site.json"),
+    artifactSiteWatchdogPidPath(config),
+  ], {
+    detached: true,
+    stdio: ["ignore", logFd, logFd],
+  })
+  child.unref()
+  closeSync(logFd)
+  if (child.pid) {
+    writeFileSync(artifactSiteWatchdogPidPath(config), `${child.pid}\n`, "utf8")
+  }
+  return child.pid
+}
+
+function stopArtifactSiteWatchdog(config: StackConfig): void {
+  const watchdogPid = readArtifactSiteWatchdogPid(config)
+  if (watchdogPid && processAlive(watchdogPid)) {
+    try {
+      process.kill(watchdogPid, "SIGTERM")
+    } catch {
+      // Watchdog cleanup is best-effort; the site process is the owned resource.
+    }
+  }
+}
+
+function artifactSiteWatchdogSource(): string {
+  return `import { existsSync, unlinkSync } from "node:fs"
+
+const pid = Number(process.argv[2])
+const ttlSeconds = Number(process.argv[3])
+const paths = process.argv.slice(4)
+
+function removeRuntimeFiles() {
+  for (const path of paths) {
+    try {
+      if (path && existsSync(path)) unlinkSync(path)
+    } catch {
+      // Best-effort runtime cleanup only.
+    }
+  }
+}
+
+function signal(targetPid, signal) {
+  try {
+    process.kill(-targetPid, signal)
+    return true
+  } catch {
+    try {
+      process.kill(targetPid, signal)
+      return true
+    } catch {
+      return false
+    }
+  }
+}
+
+function stop() {
+  if (Number.isInteger(pid) && pid > 0) {
+    signal(pid, "SIGTERM")
+    setTimeout(() => {
+      signal(pid, "SIGKILL")
+      removeRuntimeFiles()
+      process.exit(0)
+    }, 5000)
+    return
+  }
+  removeRuntimeFiles()
+  process.exit(0)
+}
+
+if (!Number.isFinite(ttlSeconds) || ttlSeconds <= 0) {
+  process.exit(0)
+}
+
+setTimeout(stop, Math.floor(ttlSeconds) * 1000)
+`
+}
+
 function readArtifactSitePid(config: StackConfig): number | undefined {
   const path = artifactSitePidPath(config)
   if (!existsSync(path)) return undefined
@@ -992,9 +1117,28 @@ function readArtifactSitePid(config: StackConfig): number | undefined {
   return Number.isInteger(pid) && pid > 0 ? pid : undefined
 }
 
+function readArtifactSiteWatchdogPid(config: StackConfig): number | undefined {
+  const path = artifactSiteWatchdogPidPath(config)
+  if (!existsSync(path)) return undefined
+  const pid = Number(readFileSync(path, "utf8").trim())
+  return Number.isInteger(pid) && pid > 0 ? pid : undefined
+}
+
 function removeArtifactPid(config: StackConfig): void {
-  for (const path of [artifactSitePidPath(config), join(artifactRuntimeDir(config), "artifacts-site.json")]) {
+  for (const path of [
+    artifactSitePidPath(config),
+    artifactSiteWatchdogPidPath(config),
+    join(artifactRuntimeDir(config), "artifacts-site.json"),
+  ]) {
     if (existsSync(path)) unlinkSync(path)
+  }
+}
+
+function terminateArtifactSiteProcess(pid: number, signal: "SIGTERM" | "SIGKILL"): void {
+  try {
+    process.kill(-pid, signal)
+  } catch {
+    process.kill(pid, signal)
   }
 }
 

@@ -37,7 +37,7 @@ impl StackPaths {
             .unwrap_or_else(|| stack_dir.join("sessions"));
         let export_dir = stack_dir.join("exports");
         let runtime_status_path = stack_dir.join("runtime").join("status.json");
-        let codex_home = default_codex_home();
+        let codex_home = default_codex_home(&app_root);
 
         Ok(Self {
             app_root,
@@ -88,13 +88,26 @@ pub fn default_stack_global_dir() -> PathBuf {
     PathBuf::from(home).join(".stack")
 }
 
-pub fn default_codex_home() -> PathBuf {
-    if let Some(path) = env::var("CODEX_HOME")
+/// Codex home for Stack-owned Codex state. Stack actors run against the
+/// Stack namespace (`<app_root>/.stack/codex-home`) so their threads never
+/// surface in the personal Codex app. `STACK_CODEX_HOME` overrides the
+/// location; `STACK_CODEX_ISOLATION=personal_dev_override` is the explicit
+/// unsafe escape hatch back to the personal `~/.codex` (honoring `CODEX_HOME`).
+pub fn default_codex_home(app_root: &Path) -> PathBuf {
+    if let Some(path) = env::var("STACK_CODEX_HOME")
         .ok()
         .filter(|value| !value.trim().is_empty())
     {
         return PathBuf::from(path);
     }
-    let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
-    PathBuf::from(home).join(".codex")
+    if env::var("STACK_CODEX_ISOLATION").as_deref() == Ok("personal_dev_override") {
+        if let Some(path) = env::var("CODEX_HOME")
+            .ok()
+            .filter(|value| !value.trim().is_empty())
+        {
+            return PathBuf::from(path);
+        }
+        return crate::codex_isolation::personal_codex_home();
+    }
+    crate::codex_isolation::stack_codex_home(app_root)
 }

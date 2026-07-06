@@ -505,11 +505,19 @@ function truncateText(text: string, maxWidth: number): string {
 }
 
 /**
- * Codex sessions live under `<codexHome>/sessions`. Derived from `defaultCodexHome()` so it
- * honors `CODEX_HOME` — never hardcode `~/.codex`, or resolution breaks whenever a caller runs
- * with a relocated codex home.
+ * Codex sessions live under `<codexHome>/sessions`. Stack-launched Codex processes run against
+ * the Stack-owned codex home (see src/codex/isolation.ts), so `loadConfig` pins this process's
+ * sessions root there via `setStackCodexSessionsRoot` — every rollout reader then resolves
+ * Stack threads inside the Stack namespace instead of the personal ~/.codex.
  */
+let stackCodexSessionsRootOverride: string | undefined
+
+export function setStackCodexSessionsRoot(root: string | undefined): void {
+  stackCodexSessionsRootOverride = root?.trim() ? resolve(root) : undefined
+}
+
 export function defaultCodexSessionsRoot(): string {
+  if (stackCodexSessionsRootOverride) return stackCodexSessionsRootOverride
   return join(defaultCodexHome(), "sessions")
 }
 

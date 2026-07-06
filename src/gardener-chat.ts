@@ -61,6 +61,7 @@ export async function runGardenerChatTurn(input: GardenerChatTurnInput): Promise
       selectedFiles: [],
       priorTurns: gardenerSession.turns,
       imagePaths: input.imagePaths,
+      actorRole: "gardener",
       onOutput: input.onOutput ?? (() => undefined),
     })
     gardenerSession.turns.push(turn)

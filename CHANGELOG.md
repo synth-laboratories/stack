@@ -17,6 +17,73 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260706.1] - 2026-07-06
+
+Efforts serious-work cockpit dev release.
+
+### Added
+
+- **Effort sessions.** Efforts now carry an append-only
+  `EFFORT_SESSIONS.jsonl` ledger so gardener, worker, eval, artifact, usage,
+  and submission work can share one correlation tag across downstream actions.
+- **Effort session handoff surfacing.** Generated Effort handoffs now include
+  the session ledger path, a `## Effort Sessions` section with recent session
+  rows, a `## Research Log` section even for templates without a research log
+  yet, and release artifact proof sections when release evidence exists.
+- **Sequestered Codex namespace.** Stack now runs every Codex subprocess it
+  launches (workers, monitor sidecars, gardeners, eval players, usage/rate
+  probes) against a Stack-owned `CODEX_HOME` at `<workspace>/.stack/codex-home`.
+  Stack threads no longer appear in the personal Codex desktop/CLI sidebar, and
+  Stack never reads or writes `~/.codex` sessions, `history.jsonl`, or
+  `session_index.jsonl`. Only `auth.json` is copied into the isolated home, so
+  ChatGPT auth keeps working.
+- **Isolation modes and guardrails.** `STACK_CODEX_ISOLATION` selects
+  `isolated_app_server` (default), `ephemeral_exec` (app-server disabled for
+  background actors), or `personal_dev_override` (requires
+  `STACK_CODEX_UNSAFE_PERSONAL=1` and is loudly labeled). A hard preflight
+  guard refuses any launch whose codex home resolves to `~/.codex` or symlinks
+  session state back into it; background exec turns (gardener, eval, wakeup)
+  are forced onto `codex exec --ephemeral`. `STACK_CODEX_HOME` relocates the
+  isolated home.
+- **Isolation health surfaces.** stackd exposes `GET /codex/isolation` (home,
+  sessions root, violation report), and the TUI Actors panel shows the active
+  `codex home` path under Launch config. `bun run check` now includes a source
+  gate that rejects codex spawns outside the approved launcher path;
+  `bun run smoke:codex-isolation` proves a Stack turn leaves the personal
+  `~/.codex` byte-for-byte unchanged.
+- **Gardener worker association smoke.** `bun run
+  smoke:gardener-worker-association` proves gardener routing across multiple
+  gardeners, active Efforts, archived workers, unassociated legacy workers, and
+  reverse-index fallback cases.
+
+### Changed
+
+- **Codex rollout readers follow the Stack namespace.** Rate-limit, goal, and
+  agent-context readers (TS and stackd) resolve Stack thread rollouts under
+  `.stack/codex-home/sessions` instead of the personal Codex home.
+
+### Fixed
+
+- **Manifest-scoped gardener worker routing.** The gardener no longer targets
+  the latest non-gardener thread. Route/suggest/maintenance now select only live
+  workers whose meta-thread manifest declares the current `gardener_thread_id`
+  and, when an Effort is ON, the active `effort_ref`; unassociated legacy
+  workers are excluded from automatic routing.
+- **Gardener-first EffortBench startup.** Eval-mode launches can open on the
+  gardener, preserve the Lights panel in fresh isolated Stack roots, and record
+  gardener-first readiness as `effort_bench.gardener_thread_ready`.
+- **EffortBench TUI input proof.** `smoke:tui-input-fuzz` covers first-letter
+  text entry, editable chunks, submit/edit keys, and slash-menu remount
+  boundaries so global shortcuts do not steal worker prompt input.
+
+### Migration notes
+
+- Worker and monitor threads recorded before this change point at rollouts in
+  the personal `~/.codex`, which Stack no longer reads. On the first resume
+  after upgrading, Stack starts a fresh isolated Codex thread and logs the
+  cutover in the transcript; Stack-side session logs and transcripts are
+  unaffected.
+
 ## [0.2.0-dev.20260704.4] - 2026-07-04
 
 Effort launch scope hardening release (merge of PR #16 residuals).

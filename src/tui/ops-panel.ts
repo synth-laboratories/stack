@@ -1,4 +1,5 @@
 import { StyledText, dim, fg, type TextChunk } from "@opentui/core"
+import { homedir } from "node:os"
 import type { LocalBootstrapSnapshot } from "../local/bootstrap.js"
 import type { OptimizerRunSummary, OptimizerSnapshot } from "../local/optimizers.js"
 import type { RemoteAccountSnapshot } from "../remote/account.js"
@@ -55,6 +56,8 @@ export type OpsPanelActors = {
   synthWorkerInferenceEnabled: boolean
   synthWorkerInferenceModel: string
   codexArgs: string[]
+  codexHome: string
+  codexIsolationMode: string
   subagents: SubagentLog[]
 }
 
@@ -517,6 +520,7 @@ function actorsLines(actors: OpsPanelActors): string[] {
     `  ${oneLine(featuresMultiAgentArg(actors.codexArgs), 46)}`,
     `  worker route ${actors.synthWorkerInferenceEnabled ? `Synth ${oneLine(actors.synthWorkerInferenceModel, 18)}` : "Codex/BYOK"}`,
     `  subagent model ${oneLine(actors.codexSubagentModel, 18)} · ${actors.codexSubagentReasoningEffort}`,
+    `  codex home ${oneLine(homeAbbreviated(actors.codexHome), 40)}${actors.codexIsolationMode === "personal_dev_override" ? " · UNSAFE personal" : ""}`,
     "",
     `Actors`,
     `├─ primary ${oneLine(actors.primaryStatus, 9)} · ${oneLine(actors.primaryModel, 14)} · turn ${actors.turnCount}`,
@@ -1013,6 +1017,11 @@ function scrollWindow(lines: string[], offset: number, visibleRows: number): str
   if (visibleRows <= 0) return []
   const start = Math.max(0, Math.min(offset, Math.max(0, lines.length - visibleRows)))
   return lines.slice(start, start + visibleRows)
+}
+
+function homeAbbreviated(path: string): string {
+  const home = homedir()
+  return path.startsWith(home) ? `~${path.slice(home.length)}` : path
 }
 
 function oneLine(value: string, max: number): string {

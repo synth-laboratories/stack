@@ -25,9 +25,10 @@ export type CodexUsageActivityView = "daily" | "weekly" | "cumulative"
 export async function readCodexAccountUsage(options: {
   codexCommand: string
   codexArgs?: readonly string[]
+  env?: Record<string, string | undefined>
 }): Promise<CodexAccountUsageSnapshot | undefined> {
   try {
-    return await readCodexAccountUsageFromAppServer(options.codexCommand, options.codexArgs ?? [])
+    return await readCodexAccountUsageFromAppServer(options.codexCommand, options.codexArgs ?? [], options.env)
   } catch {
     return undefined
   }
@@ -36,12 +37,14 @@ export async function readCodexAccountUsage(options: {
 export async function readCodexAccountUsageFromAppServer(
   codexCommand: string,
   codexArgs: readonly string[] = [],
+  env?: Record<string, string | undefined>,
 ): Promise<CodexAccountUsageSnapshot | undefined> {
   const client = await CodexAppServerClient.start({
     launch: {
       command: codexCommand,
       args: codexAppServerArgs(codexArgs),
       cwd: process.cwd(),
+      env,
     },
     clientName: "stack",
     clientTitle: "Stack",

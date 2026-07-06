@@ -11,6 +11,7 @@ import {
   type JsonRpcServerRequest,
 } from "./codex/app-server-client.js"
 import { autoApproveServerRequest, CodexAppServerEventBridge } from "./codex/app-server-bridge.js"
+import { assertStackCodexIsolation, stackCodexEnv } from "./codex/isolation.js"
 import { buildCodexTurnInputParts } from "./image-input.js"
 import { resolveMonitorSystemPrompt, type StackMonitorConfig } from "./monitor.js"
 import type { StackCodexUsage } from "./session.js"
@@ -161,6 +162,7 @@ async function runMonitorCodexSidecarPrompt(input: {
   let stdout = ""
   let stderr = ""
   let codexThreadId = input.codexThreadId
+  assertStackCodexIsolation(input.stackConfig, "monitor", { transport: "app_server" })
   const client = await CodexAppServerClient.start({
     launch: {
       command: input.stackConfig.codexCommand,
@@ -169,6 +171,7 @@ async function runMonitorCodexSidecarPrompt(input: {
         ...monitorMcpToolFilterArgs(input.stackConfig, input.monitorConfig),
       ],
       cwd: input.stackConfig.workspaceRoot,
+      env: stackCodexEnv(input.stackConfig),
     },
     clientName: "stack-sidecar",
     clientTitle: "Stack Sidecar Monitor",
@@ -184,8 +187,18 @@ async function runMonitorCodexSidecarPrompt(input: {
   })
   try {
     if (codexThreadId) {
-      await client.request("thread/resume", { threadId: codexThreadId })
-    } else {
+      try {
+        await client.request("thread/resume", { threadId: codexThreadId })
+      } catch (error) {
+        // Namespace cutover: sidecar thread ids recorded before Codex
+        // isolation live in the personal ~/.codex, which Stack no longer
+        // reads. Start a fresh Stack-owned sidecar thread.
+        const detail = error instanceof Error ? error.message : String(error)
+        stdout += `${JSON.stringify({ type: "stack", message: `sidecar thread/resume ${codexThreadId} failed (${detail}); starting fresh isolated thread` })}\n`
+        codexThreadId = undefined
+      }
+    }
+    if (!codexThreadId) {
       const started = await client.request("thread/start", {
         model: input.monitorConfig.model.model || input.stackConfig.codexModel,
         cwd: input.stackConfig.workspaceRoot,

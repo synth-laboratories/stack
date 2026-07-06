@@ -3,6 +3,14 @@ import { dirname, isAbsolute, join, resolve } from "node:path"
 import { defaultCodexPricing, type CodexModelPricing } from "./codex/usage-cost.js"
 import { loadOpenAiPricing } from "./codex/openai-pricing.js"
 import { readStackProfile, STACK_PROFILE_DEFAULTS } from "./operator-profile.js"
+import { setStackCodexSessionsRoot } from "./codex/agent-context.js"
+import {
+  CODEX_ISOLATION_MODES,
+  defaultStackCodexHome,
+  ensureStackCodexHome,
+  personalCodexHome,
+  type StackCodexIsolationMode,
+} from "./codex/isolation.js"
 
 const DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
 const DEFAULT_CODEX_REASONING_EFFORT = "medium"
@@ -74,6 +82,12 @@ export type StackConfig = {
   environments: Record<StackEnvironmentName, StackEnvironmentConfig>
   codexCommand: string
   codexArgs: string[]
+  // Stack-owned Codex namespace: every Codex subprocess Stack launches runs
+  // with CODEX_HOME=codexHome so Stack threads never appear in the personal
+  // Codex app (~/.codex). See src/codex/isolation.ts.
+  codexHome: string
+  codexSessionsRoot: string
+  codexIsolationMode: StackCodexIsolationMode
   codexModel: string
   codexReasoningEffort: string
   codexProvider: string
@@ -221,6 +235,22 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     explicitStackRoot ?? (explicitWorkingDir && existsSync(join(workingDir, ".stack")) ? workingDir : workspaceHome)
   const sessionLogDir = process.env.STACK_SESSION_DIR ?? join(stackDataHome, ".stack", "sessions")
   const stackDataRoot = stackDataRootFromSessionDir(sessionLogDir) ?? stackDataHome
+  const codexIsolationMode = normalizeOption(
+    process.env.STACK_CODEX_ISOLATION,
+    CODEX_ISOLATION_MODES,
+    "isolated_app_server",
+    "STACK_CODEX_ISOLATION",
+  )
+  const codexHome =
+    codexIsolationMode === "personal_dev_override"
+      ? personalCodexHome()
+      : resolveConfigPath(appRoot, process.env.STACK_CODEX_HOME ?? defaultStackCodexHome(stackDataRoot))
+  if (codexIsolationMode !== "personal_dev_override") {
+    ensureStackCodexHome(codexHome)
+  }
+  const codexSessionsRoot = join(codexHome, "sessions")
+  // Pin every rollout reader in this process to the Stack codex namespace.
+  setStackCodexSessionsRoot(codexSessionsRoot)
   const activeProfile = readStackProfile(stackDataRoot).active
   const profileDefaults = STACK_PROFILE_DEFAULTS[activeProfile]
   const profileDefaultModel = normalizeOption(
@@ -267,6 +297,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
           codexSubagentsEnabled,
           stackMcpEnabled ? stackMcpCommand : undefined,
           environmentName,
+          stackDataRoot,
           synthWorkerInferenceEnabled
             ? {
                 apiBaseUrl: environment.apiBaseUrl,
@@ -275,6 +306,9 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
               }
             : undefined,
         ),
+    codexHome,
+    codexSessionsRoot,
+    codexIsolationMode,
     codexModel,
     codexReasoningEffort,
     codexProvider: process.env.STACK_CODEX_PROVIDER ?? DEFAULT_CODEX_PROVIDER,
@@ -528,6 +562,7 @@ export function refreshCodexArgs(config: StackConfig): void {
     config.codexSubagentsEnabled,
     config.stackMcpEnabled ? config.stackMcpCommand : undefined,
     config.environmentName,
+    config.stackDataRoot,
     config.synthWorkerInferenceEnabled
       ? {
           apiBaseUrl: config.environment.apiBaseUrl,
@@ -544,6 +579,7 @@ export function defaultCodexArgs(
   subagentsEnabled: boolean,
   stackMcpCommand?: string,
   stackEnvironmentName?: StackEnvironmentName,
+  stackDataRoot?: string,
   synthWorkerInference?: {
     apiBaseUrl: string
     authEnv: string
@@ -574,7 +610,21 @@ export function defaultCodexArgs(
       "mcp_servers.stack_live_ops.startup_timeout_sec=15",
       "-c",
       `mcp_servers.stack_live_ops.env.STACK_ENVIRONMENT=${tomlString(stackEnvironmentName ?? DEFAULT_ENVIRONMENT)}`,
+      "-c",
+      `mcp_servers.stack_live_ops.env.STACK_ROOT=${tomlString(stackDataRoot ?? process.env.STACK_ROOT ?? process.cwd())}`,
     )
+    for (const envName of [
+      "STACK_API_URL",
+      "STACK_API_PORT",
+      "STACK_MCP_HTTP_PORT",
+      "STACKEVAL_EFFORT_SLUG",
+      "STACKEVAL_EFFORT_SESSION_ID",
+      "STACKEVAL_PACKET",
+    ]) {
+      const value = process.env[envName]?.trim()
+      if (!value) continue
+      args.push("-c", `mcp_servers.stack_live_ops.env.${envName}=${tomlString(value)}`)
+    }
   }
   if (synthWorkerInference) {
     const providerId = "synth_stack_inference"

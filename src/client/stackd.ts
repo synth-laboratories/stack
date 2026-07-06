@@ -618,6 +618,30 @@ export type StackdMetaThreadCreateRequest = {
   active_goal?: StackdMetaThreadActiveGoal
 }
 
+export type StackdWorkerMetaThreadCreateRequest = {
+  title: string
+  workspace_root: string
+  codex_command: string
+  role?: string
+  model: string
+  reasoning_effort: string
+  harness: "codex" | "cursor" | string
+  source?: string
+  source_ref?: string
+  effort_ref?: string
+  repo_refs?: string[]
+  worktree_refs?: string[]
+  gardener_thread_id?: string
+  monitor_profile?: string
+  active_goal?: StackdMetaThreadActiveGoal
+}
+
+export type StackdWorkerMetaThreadCreateResponse = {
+  manifest: StackdMetaThreadManifest
+  session: unknown
+  session_path: string
+}
+
 export type StackdUpdateMetaThreadGoalRequest = {
   objective?: string
   status?: string
@@ -937,6 +961,13 @@ export async function stackdCreateMetaThread(
   return requestJson<StackdMetaThreadManifest>(baseUrl, "/meta-threads", jsonPost(request))
 }
 
+export async function stackdCreateWorkerMetaThread(
+  request: StackdWorkerMetaThreadCreateRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdWorkerMetaThreadCreateResponse> {
+  return requestJson<StackdWorkerMetaThreadCreateResponse>(baseUrl, "/meta-threads/worker", jsonPost(request))
+}
+
 export async function stackdSealMetaThreadSegment(
   metaThreadId: string,
   segmentId: string,
@@ -1157,6 +1188,75 @@ export async function stackdRegisterSkill(
 
 export async function stackdBootstrapSkills(baseUrl = stackdBaseUrl()): Promise<StackdSkillListResponse> {
   return requestJson<StackdSkillListResponse>(baseUrl, "/skills/bootstrap", jsonPost({}))
+}
+
+// Runtime memories — typed STACK_MEMORY guidance-ledger entries owned by
+// stackd (stack_core::memories). MLDP kinds (mistake/learning/desire/papercut)
+// are the built-in instances; the TS side is a thin client.
+
+export type StackdMemorySeverity = "LOW" | "MED" | "HIGH"
+export type StackdMemorySource = "gardener" | "monitor" | "worker" | "operator" | "tui" | "mcp"
+
+export type StackdMemoryKindSpec = {
+  id: string
+  title: string
+  description: string
+  ledger_dir: string
+  default_severity: StackdMemorySeverity
+}
+
+export type StackdRecordMemoryRequest = {
+  kind: string
+  summary: string
+  body?: string
+  file?: string
+  severity?: StackdMemorySeverity
+  source: StackdMemorySource
+  context?: Record<string, string>
+  packet_dir?: string
+}
+
+export type StackdMemoryReceipt = {
+  kind: string
+  severity: StackdMemorySeverity
+  path: string
+  line: string
+  ts: string
+  mirrored_to_packet: boolean
+}
+
+export type StackdMemoryEntry = {
+  ts: string
+  kind: string
+  severity: string
+  source: string
+  fields: Record<string, string>
+  summary: string
+  body: string | null
+}
+
+export async function stackdMemoryKinds(
+  baseUrl = stackdBaseUrl(),
+): Promise<{ count: number; kinds: StackdMemoryKindSpec[] }> {
+  return requestJson(baseUrl, "/memories/kinds")
+}
+
+export async function stackdRecordMemory(
+  request: StackdRecordMemoryRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdMemoryReceipt> {
+  return requestJson<StackdMemoryReceipt>(baseUrl, "/memories", jsonPost(request))
+}
+
+export async function stackdListMemories(
+  kind: string,
+  recent = 20,
+  baseUrl = stackdBaseUrl(),
+): Promise<{ kind: string; count: number; entries: StackdMemoryEntry[] }> {
+  const url = new URL("/memories", ensureTrailingSlash(baseUrl))
+  url.searchParams.set("kind", kind)
+  url.searchParams.set("recent", String(recent))
+  return requestJson(baseUrl, `${url.pathname}${url.search}`)
 }
 
 async function requestJson<T>(baseUrl: string, path: string, init?: RequestInit): Promise<T> {

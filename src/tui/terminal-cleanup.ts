@@ -152,8 +152,24 @@ function drainReadableInput(): void {
 
 import { reportStackCrash } from "../telemetry/crash-report.js"
 
+// EINTR/EAGAIN escaping a sync fs call is a transient syscall interruption,
+// not a corrupt-state fatal: the event loop is intact and the caller's next
+// poll retries the read. Killing the TUI here took down live eval runs.
+function isTransientSyscallError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return code === "EINTR" || code === "EAGAIN"
+}
+
 export function registerFatalProcessHandlers(shutdown: StackAppShutdown): void {
+  let fatalHandled = false
   const onFatal = (error: unknown) => {
+    if (isTransientSyscallError(error)) {
+      console.error(`stack transient syscall interrupt (continuing): ${(error as Error).message}`)
+      void reportStackCrash(error, "tui_transient_syscall")
+      return
+    }
+    if (fatalHandled) return
+    fatalHandled = true
     if (error instanceof Error) {
       console.error(`stack fatal: ${error.stack ?? error.message}`)
     } else {
@@ -164,8 +180,8 @@ export function registerFatalProcessHandlers(shutdown: StackAppShutdown): void {
     })
   }
 
-  process.once("uncaughtException", onFatal)
-  process.once("unhandledRejection", onFatal)
+  process.on("uncaughtException", onFatal)
+  process.on("unhandledRejection", onFatal)
   process.once("SIGTERM", () => shutdown.run(143))
 }
 

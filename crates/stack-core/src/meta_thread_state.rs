@@ -243,6 +243,7 @@ mod tests {
             archive_reason: None,
             source: None,
             source_ref: None,
+            effort_ref: None,
             repo_refs: Vec::new(),
             worktree_refs: Vec::new(),
             created_at: "now".to_string(),

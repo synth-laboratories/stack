@@ -4,3 +4,4 @@ __pycache__/
 .stack/
 .env
 target/
+_runs/

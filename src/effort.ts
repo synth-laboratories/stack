@@ -15,6 +15,47 @@ import { bundledDefaultsRoot } from "./seed/defaults.js"
 import { stackAppRoot } from "./version.js"
 
 export const STACK_EFFORT_SCHEMA = "stack/effort/v1"
+export const EFFORT_SHORT_TITLE_LEN = 10
+
+export function normalizeEffortShortTitle(value: string): string {
+  const compact = value.replace(/\s+/g, "").trim()
+  if (!compact) return "?"
+  return compact.length <= EFFORT_SHORT_TITLE_LEN ? compact : compact.slice(0, EFFORT_SHORT_TITLE_LEN)
+}
+
+function slugPartShort(part: string): string {
+  const match = part.match(/^([a-zA-Z]+)(\d+)?([a-zA-Z]+)?/)
+  if (!match) return part.slice(0, 3)
+  const letters = match[1] ?? ""
+  const digits = match[2] ?? ""
+  const tail = match[3] ?? ""
+  const head = letters ? `${letters[0]?.toUpperCase() ?? ""}${digits}${tail.slice(0, 2)}` : part.slice(0, 3)
+  return head
+}
+
+export function deriveEffortShortTitle(title: string, slug: string): string {
+  const baseSlug = slug.replace(/-\d{8}t\d{6}z$/i, "")
+  const parts = baseSlug.split("-").filter(Boolean)
+  if (parts.length > 0) {
+    return normalizeEffortShortTitle(parts.map(slugPartShort).join(""))
+  }
+  const words = title.split(/\s+/).filter(Boolean)
+  if (words.length >= 2) {
+    const first = words[0] ?? ""
+    const rest = words.slice(1).map((word) => word[0]?.toUpperCase() ?? "").join("")
+    return normalizeEffortShortTitle(`${first.slice(0, 4)}${rest}`)
+  }
+  return normalizeEffortShortTitle(title)
+}
+
+export function resolveEffortShortTitle(source: {
+  title: string
+  slug: string
+  short_title?: string
+}): string {
+  if (source.short_title?.trim()) return normalizeEffortShortTitle(source.short_title)
+  return deriveEffortShortTitle(source.title, source.slug)
+}
 
 export const STACK_EFFORT_STATUSES = ["active", "paused", "done", "archived"] as const
 export type StackEffortStatus = (typeof STACK_EFFORT_STATUSES)[number]
@@ -108,6 +149,7 @@ export type StackEffortManifest = {
   id: string
   slug: string
   title: string
+  short_title?: string
   template: string
   status: StackEffortStatus
   topic: string
@@ -123,6 +165,7 @@ export type StackEffortRegistryRecord = {
   id: string
   slug: string
   title: string
+  short_title?: string
   template: string
   status: StackEffortStatus
   folder_ref: string
@@ -145,6 +188,20 @@ export type StackEffortActivityRecord = {
   effort_id: string
   slug: string
   summary: string
+  payload: Record<string, unknown>
+}
+
+export type StackEffortSessionRecord = {
+  session_id: string
+  observed_at: string
+  effort_id: string
+  slug: string
+  title: string
+  actor: string
+  kind: string
+  summary: string
+  parent_session_id?: string
+  tags: string[]
   payload: Record<string, unknown>
 }
 
@@ -194,6 +251,7 @@ export type StackEffortAudit = {
   effort_id: string
   slug: string
   title: string
+  short_title?: string
   template: string
   folder_ref: string
   paths: StackEffortPathRefs
@@ -216,6 +274,7 @@ export type StackEffortSummary = {
   id: string
   slug: string
   title: string
+  short_title: string
   template: string
   status: StackEffortStatus
   folder_ref: string
@@ -230,6 +289,7 @@ export type StackEffortPathRefs = {
   playbook: string
   progress: string
   activity: string
+  effort_sessions: string
   handoff: string
   acceptance_summary?: string
   research_log?: string
@@ -415,6 +475,7 @@ export type CreateEffortInput = {
   appRoot?: string
   slug?: string
   title: string
+  shortTitle?: string
   template?: string
   topic?: string
   folderRef?: string
@@ -686,6 +747,7 @@ export type RecordEffortRepoInput = EffortLookupInput & {
 export type AppendEffortResearchLogInput = EffortLookupInput & {
   effortRef: string
   title: string
+  sessionId?: string
   operatorMessage?: string
   workSummary: string
   result?: string
@@ -693,6 +755,24 @@ export type AppendEffortResearchLogInput = EffortLookupInput & {
   paths?: string[]
   reproduceCommands?: string[]
   next?: string
+}
+
+export type RecordEffortSessionInput = EffortLookupInput & {
+  effortRef: string
+  sessionId?: string
+  title: string
+  actor?: string
+  kind?: string
+  summary?: string
+  parentSessionId?: string
+  tags?: string[]
+  payload?: Record<string, unknown>
+}
+
+export type RecordEffortSessionResult = {
+  effort: StackEffort
+  session: StackEffortSessionRecord
+  path: string
 }
 
 export type RecordEffortBlockerInput = EffortLookupInput & {
@@ -827,6 +907,11 @@ export function createEffort(input: CreateEffortInput): StackEffort {
   const title = input.title.trim()
   if (!title) throw new Error("effort title is required")
   const slug = safeSlug(input.slug ?? title)
+  const shortTitle = resolveEffortShortTitle({
+    title,
+    slug,
+    short_title: input.shortTitle,
+  })
   const id = `eff_${randomUUID()}`
   const folderPath = resolveEffortFolder(input.workspaceRoot, input.folderRef ?? join("efforts", slug))
   const folderRef = folderRefFor(input.workspaceRoot, folderPath)
@@ -851,6 +936,7 @@ export function createEffort(input: CreateEffortInput): StackEffort {
     id,
     slug,
     title,
+    short_title: shortTitle,
     template,
     status: "active",
     topic: input.topic?.trim() || title,
@@ -871,6 +957,7 @@ export function createEffort(input: CreateEffortInput): StackEffort {
     id,
     slug,
     title,
+    short_title: shortTitle,
     template,
     status: "active",
     folder_ref: folderRef,
@@ -895,6 +982,7 @@ export function listEfforts(input: EffortLookupInput): StackEffortSummary[] {
     id: record.id,
     slug: record.slug,
     title: record.title,
+    short_title: resolveEffortShortTitle(record),
     template: record.template,
     status: record.status,
     folder_ref: record.folder_ref,
@@ -921,6 +1009,7 @@ export function effortPathRefs(effort: StackEffort): StackEffortPathRefs {
     playbook: ref("PLAYBOOK.md"),
     progress: ref("PROGRESS.md"),
     activity: ref("ACTIVITY.jsonl"),
+    effort_sessions: ref("EFFORT_SESSIONS.jsonl"),
     handoff: ref("HANDOFF.md"),
     ideas: ref("ideas"),
     human: ref("human"),
@@ -947,6 +1036,7 @@ export function effortArtifactInventory(effort: StackEffort): StackEffortArtifac
   const paths = effortPathRefs(effort)
   const generated = {
     ...(existsSync(join(effort.folder_path, "HANDOFF.md")) ? { handoff: paths.handoff } : {}),
+    ...(existsSync(join(effort.folder_path, "EFFORT_SESSIONS.jsonl")) ? { effort_sessions: paths.effort_sessions } : {}),
     ...(paths.acceptance_summary ? { acceptance_summary: paths.acceptance_summary } : {}),
     ...(paths.research_log ? { research_log: paths.research_log } : {}),
   }
@@ -1579,7 +1669,8 @@ export function auditEffort(effort: StackEffort): StackEffortAudit {
   const benchmarks = readEffortBenchmarkSummaries(effort, 1)
   const releaseArtifacts = readEffortReleaseArtifactSummaries(effort, 1)
   if (!handoffText.includes("## Latest Activity")) handoffMissing.push("Latest Activity")
-  if (paths.research_log && !handoffText.includes("## Research Log")) handoffMissing.push("Research Log")
+  if (!handoffText.includes("## Effort Sessions")) handoffMissing.push("Effort Sessions")
+  if (!handoffText.includes("## Research Log")) handoffMissing.push("Research Log")
   if ((artifactInventory.ideas.length > 0 || artifactInventory.findings.ideas.length > 0) && !handoffText.includes("## Idea Graph")) handoffMissing.push("Idea Graph")
   if (benchmarks.length > 0 && !handoffText.includes("## Benchmark Intake")) handoffMissing.push("Benchmark Intake")
   if (runEvidence.length > 0 && !handoffText.includes("## Run Evidence")) handoffMissing.push("Run Evidence")
@@ -1726,6 +1817,26 @@ function readEffortActivityRecords(effort: StackEffort): StackEffortActivityReco
   return records
 }
 
+function readEffortSessionRecords(effort: StackEffort): StackEffortSessionRecord[] {
+  const path = join(effort.folder_path, "EFFORT_SESSIONS.jsonl")
+  if (!existsSync(path)) return []
+  const records: StackEffortSessionRecord[] = []
+  try {
+    for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
+      if (!line.trim()) continue
+      const parsed = JSON.parse(line) as StackEffortSessionRecord
+      if (parsed?.effort_id === effort.manifest.id) records.push(parsed)
+    }
+  } catch {
+    return []
+  }
+  return records
+}
+
+export function readEffortSessionTail(effort: StackEffort, limit = 20): StackEffortSessionRecord[] {
+  return readEffortSessionRecords(effort).slice(-Math.max(0, limit))
+}
+
 export function updateEffortStatus(input: EffortLookupInput & { effortRef: string; status: StackEffortStatus }): StackEffort {
   assertEffortStatus(input.status)
   const effort = requireEffort(input, input.effortRef)
@@ -1761,6 +1872,39 @@ export function appendEffortProgress(input: EffortLookupInput & { effortRef: str
   appendEffortProgressLine(effort.folder_path, message)
   appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.progress_updated", message, { message })
   return persistEffort(input, effort)
+}
+
+export function recordEffortSession(input: RecordEffortSessionInput): RecordEffortSessionResult {
+  const title = input.title.trim()
+  if (!title) throw new Error("session title is required")
+  const effort = requireEffort(input, input.effortRef)
+  const sessionId = normalizeEffortSessionId(input.sessionId) ?? `effsess_${randomUUID()}`
+  const observedAt = new Date().toISOString()
+  const session: StackEffortSessionRecord = {
+    session_id: sessionId,
+    observed_at: observedAt,
+    effort_id: effort.manifest.id,
+    slug: effort.manifest.slug,
+    title,
+    actor: input.actor?.trim() || "operator",
+    kind: input.kind?.trim() || "work",
+    summary: input.summary?.trim() || title,
+    ...(input.parentSessionId?.trim() ? { parent_session_id: input.parentSessionId.trim() } : {}),
+    tags: cleanStringList(input.tags),
+    payload: input.payload ?? {},
+  }
+  const path = join(effort.folder_path, "EFFORT_SESSIONS.jsonl")
+  appendEffortSessionRecord(effort.folder_path, session)
+  appendEffortProgressLine(effort.folder_path, `Started effort_session \`${sessionId}\`: ${title}.`)
+  appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.effort_session_recorded", `Started effort_session \`${sessionId}\`: ${title}.`, {
+    session_id: sessionId,
+    title,
+    actor: session.actor,
+    kind: session.kind,
+    ...(session.parent_session_id ? { parent_session_id: session.parent_session_id } : {}),
+    tags: session.tags,
+  })
+  return { effort: persistEffort(input, effort), session, path }
 }
 
 export function recordEffortBlocker(input: RecordEffortBlockerInput): StackEffort {
@@ -1825,6 +1969,7 @@ export function appendEffortResearchLog(input: AppendEffortResearchLogInput): { 
   appendEffortActivityLine(effort.folder_path, effort.manifest, "effort.research_log_recorded", `Appended research log entry: ${title}.`, {
     title,
     path: relative(effort.folder_path, path),
+    ...(input.sessionId?.trim() ? { session_id: input.sessionId.trim() } : {}),
   })
   return { effort: persistEffort(input, effort), path }
 }
@@ -2622,6 +2767,7 @@ export function readEffortManifest(path: string): StackEffortManifest | undefine
     id: requireString(parsed.id, "effort.toml id"),
     slug: requireString(parsed.slug, "effort.toml slug"),
     title: requireString(parsed.title, "effort.toml title"),
+    short_title: readString(parsed.short_title) ?? undefined,
     template: requireString(parsed.template, "effort.toml template"),
     status,
     topic: readString(parsed.topic) ?? "",
@@ -2877,6 +3023,7 @@ function persistEffort(input: EffortLookupInput, effort: StackEffort): StackEffo
   const now = new Date().toISOString()
   effort.registry.updated_at = now
   effort.registry.title = effort.manifest.title
+  effort.registry.short_title = resolveEffortShortTitle(effort.manifest)
   effort.registry.slug = effort.manifest.slug
   effort.registry.template = effort.manifest.template
   effort.registry.status = effort.manifest.status
@@ -2934,6 +3081,7 @@ function effortManifestToml(manifest: StackEffortManifest): string {
     `id = ${tomlString(manifest.id)}`,
     `slug = ${tomlString(manifest.slug)}`,
     `title = ${tomlString(manifest.title)}`,
+    `short_title = ${tomlString(manifest.short_title ?? resolveEffortShortTitle(manifest))}`,
     `template = ${tomlString(manifest.template)}`,
     `status = ${tomlString(manifest.status)}`,
     `topic = ${tomlString(manifest.topic)}`,
@@ -2990,6 +3138,7 @@ function registryToManifest(record: StackEffortRegistryRecord): StackEffortManif
     id: record.id,
     slug: record.slug,
     title: record.title,
+    short_title: record.short_title,
     template: record.template,
     status: record.status,
     topic: record.title,
@@ -3205,9 +3354,28 @@ function appendEffortActivityRecord(folderPath: string, record: StackEffortActiv
   appendFileSync(path, `${JSON.stringify(record)}\n`, "utf8")
 }
 
+function appendEffortSessionRecord(folderPath: string, record: StackEffortSessionRecord): void {
+  const path = join(folderPath, "EFFORT_SESSIONS.jsonl")
+  mkdirSync(dirname(path), { recursive: true })
+  appendFileSync(path, `${JSON.stringify(record)}\n`, "utf8")
+}
+
+function normalizeEffortSessionId(value: string | undefined): string | undefined {
+  const trimmed = value?.trim()
+  if (!trimmed) return undefined
+  if (!/^[A-Za-z0-9_.:-]+$/.test(trimmed)) {
+    throw new Error("session id may only contain letters, numbers, _, ., :, or -")
+  }
+  return trimmed
+}
+
 function researchLogEntryMarkdown(input: AppendEffortResearchLogInput): string {
   const date = new Date().toISOString().slice(0, 10)
   const lines = [`## ${date} - ${input.title.trim()}`, ""]
+  const sessionId = input.sessionId?.trim()
+  if (sessionId) {
+    lines.push(`Session: \`${sessionId}\``, "")
+  }
   const operatorMessage = input.operatorMessage
   if (operatorMessage?.trim()) {
     lines.push("**You:**")
@@ -3260,7 +3428,8 @@ function effortHandoffMarkdown(
   const findingFiles = artifactInventory.findings
   const acceptancePacket = findingFiles.results.find((path) => path.endsWith("/findings/results/acceptance-summary.md"))
   const parsedAcceptance = readEffortAcceptancePacket(effort)
-  const researchLogLines = paths.research_log ? effortHandoffResearchLogLines(effort) : []
+  const sessionLines = effortHandoffSessionLines(effort)
+  const researchLogLines = effortHandoffResearchLogLines(effort)
   const benchmarkLines = effortHandoffBenchmarkLines(effort)
   const runEvidenceLines = effortHandoffRunEvidenceLines(effort)
   const releaseArtifactLines = effortHandoffReleaseArtifactLines(effort)
@@ -3285,6 +3454,7 @@ function effortHandoffMarkdown(
     `- Playbook: ${paths.playbook}`,
     `- Progress: ${paths.progress}`,
     `- Activity: ${paths.activity}`,
+    `- Effort sessions: ${paths.effort_sessions}`,
     ...(paths.research_log ? [`- Research log: ${paths.research_log}`] : []),
     `- Ideas: ${paths.ideas}`,
     `- Human context: ${paths.human}`,
@@ -3313,12 +3483,14 @@ function effortHandoffMarkdown(
     ...(activity.length > 0
       ? activity.map((entry) => `- ${entry.observed_at} - ${entry.type}: ${entry.summary}`)
       : ["- No activity entries recorded."]),
-    ...(paths.research_log ? [
-      "",
-      "## Research Log",
-      "",
-      ...researchLogLines,
-    ] : []),
+    "",
+    "## Effort Sessions",
+    "",
+    ...sessionLines,
+    "",
+    "## Research Log",
+    "",
+    ...researchLogLines,
     ...(artifactInventory.ideas.length > 0 || artifactInventory.findings.ideas.length > 0 ? [
       "",
       "## Idea Graph",
@@ -3526,6 +3698,25 @@ function effortHandoffAcceptanceLines(
   for (const level of parsed.levels) {
     const required = level.required_for_v1 ? " required-v1" : ""
     lines.push(`- ${level.label}: ${acceptanceLevelStateLabel(level.state)}${required} - ${level.title} - ${level.status}`)
+  }
+  return lines
+}
+
+function effortHandoffSessionLines(effort: StackEffort): string[] {
+  const lines = [`- Ledger: ${joinPathRef(effort.registry.folder_ref, "EFFORT_SESSIONS.jsonl")}`]
+  const sessions = readEffortSessionTail(effort, 5)
+  if (sessions.length === 0) {
+    lines.push("- No effort sessions recorded.")
+    return lines
+  }
+  for (const session of sessions) {
+    const details = [
+      session.kind,
+      session.actor,
+      session.tags.length > 0 ? `tags=${session.tags.join(",")}` : "",
+      session.parent_session_id ? `parent=${session.parent_session_id}` : "",
+    ].filter(Boolean)
+    lines.push(`- ${session.observed_at} - ${session.session_id} - ${session.title}${details.length > 0 ? ` (${details.join("; ")})` : ""}`)
   }
   return lines
 }

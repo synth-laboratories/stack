@@ -47,6 +47,34 @@ pub struct CreateMetaThreadRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct CreateWorkerMetaThreadRequest {
+    pub title: String,
+    pub workspace_root: String,
+    pub codex_command: String,
+    pub role: Option<String>,
+    pub model: String,
+    pub reasoning_effort: String,
+    pub harness: String,
+    pub source: Option<String>,
+    pub source_ref: Option<String>,
+    pub effort_ref: Option<String>,
+    #[serde(default)]
+    pub repo_refs: Vec<String>,
+    #[serde(default)]
+    pub worktree_refs: Vec<String>,
+    pub gardener_thread_id: Option<String>,
+    pub monitor_profile: Option<String>,
+    pub active_goal: Option<MetaThreadActiveGoal>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct CreateWorkerMetaThreadResponse {
+    pub manifest: MetaThreadManifest,
+    pub session: StackLocalSession,
+    pub session_path: String,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct SealSegmentRequest {
     pub summary: Option<String>,
     pub artifact_type: Option<String>,
@@ -599,6 +627,124 @@ pub async fn create_meta_thread(
         .await?;
     }
     Ok(Json(manifest))
+}
+
+pub async fn create_worker_meta_thread(
+    State(state): State<Arc<AppState>>,
+    Json(request): Json<CreateWorkerMetaThreadRequest>,
+) -> Result<Json<CreateWorkerMetaThreadResponse>, ApiError> {
+    let title = clamped_title(&request.title);
+    let now = now();
+    let role = request.role.unwrap_or_else(|| "research".to_string());
+    let meta_thread_id = format!("mt_{}", unique_suffix());
+    let segment_id = format!("seg_{}", unique_suffix());
+    let mut session = StackLocalSession {
+        id: format!("thread_{}", unique_suffix()),
+        workspace_root: request.workspace_root,
+        started_at: now.clone(),
+        codex_command: request.codex_command,
+        codex_model: Some(request.model.clone()),
+        codex_thread_id: None,
+        harness: Some(request.harness.clone()),
+        harness_model: Some(request.model.clone()),
+        role: Some("worker".to_string()),
+        display_name: Some(title.clone()),
+        meta_thread_id: None,
+        segment_id: None,
+        segment_role: Some(role.clone()),
+        predecessor_thread_id: None,
+        usage_summary: None,
+        turns: Vec::new(),
+    };
+    bind_session(
+        &mut session,
+        &meta_thread_id,
+        &segment_id,
+        &role,
+        &request.harness,
+        &request.model,
+        None,
+    );
+    let session_path = write_session(&state.paths.session_log_dir, &session).await?;
+
+    let segment = MetaThreadSegment {
+        segment_id: segment_id.clone(),
+        thread_id: session.id.clone(),
+        role: role.clone(),
+        agent_role: "worker".to_string(),
+        model: request.model.clone(),
+        reasoning_effort: request.reasoning_effort.clone(),
+        harness: request.harness.clone(),
+        status: "active".to_string(),
+        handoff_out: None,
+        handoff_in: Vec::new(),
+        predecessor_segment_id: None,
+        started_at: now.clone(),
+        sealed_at: None,
+        usage_summary: None,
+    };
+    let mut manifest = MetaThreadManifest {
+        schema: META_THREAD_SCHEMA.to_string(),
+        id: meta_thread_id.clone(),
+        title,
+        lifecycle_status: "live".to_string(),
+        archived_at: None,
+        archived_by: None,
+        archive_reason: None,
+        source: request.source,
+        source_ref: request.source_ref,
+        effort_ref: normalize_optional_string(request.effort_ref.as_deref()),
+        repo_refs: request.repo_refs,
+        worktree_refs: if request.worktree_refs.is_empty() {
+            vec![session.workspace_root.clone()]
+        } else {
+            request.worktree_refs
+        },
+        created_at: now.clone(),
+        updated_at: now,
+        segments: vec![segment],
+        head_segment_id: segment_id.clone(),
+        head_thread_id: session.id.clone(),
+        artifacts: Vec::new(),
+        handoffs: Vec::new(),
+        decisions: Vec::new(),
+        gardener_thread_id: request.gardener_thread_id,
+        monitor_profile: request.monitor_profile,
+        monitor_headline: None,
+        active_goal: request.active_goal,
+        smr_run_id: None,
+        remote_bindings: Vec::new(),
+        usage_summary: None,
+    };
+    manifest.usage_summary = build_meta_thread_usage_summary(&manifest);
+    write_manifest(&state.paths.stack_dir, &manifest)
+        .await
+        .map_err(ApiError::from)?;
+    append_meta_event(
+        &state,
+        &manifest.id,
+        "meta_thread.created",
+        &session.id,
+        Some(&segment_id),
+        None,
+        json!({"title": manifest.title, "created_session": true}),
+    )
+    .await?;
+    append_meta_event(
+        &state,
+        &manifest.id,
+        "meta_thread.segment_started",
+        &session.id,
+        Some(&segment_id),
+        None,
+        json!({"role": role, "model": request.model, "harness": request.harness}),
+    )
+    .await?;
+    Ok(Json(CreateWorkerMetaThreadResponse {
+        manifest,
+        session,
+        session_path: session_path.to_string_lossy().to_string(),
+    }))
 }
 
 pub async fn update_goal(
