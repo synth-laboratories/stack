@@ -119,6 +119,10 @@ separate unassociated-workers debug section.
 - `GET /assembly-lines/:id` — record plus full event log
 - `GET /assembly-lines/:id/snapshot` — projection: current station, open gate, owner, age, bindings, last event, next action
 - `POST /assembly-lines/:id/events` — append one typed transition event
+- `PATCH /assembly-lines/:id/bindings` — merge a typed bindings update: list
+  fields append (deduplicated, order preserved), `ship_bundle_path` replaces,
+  and an empty update is rejected as `invalid_field`. Bindings link records —
+  the update never touches the event log or process state.
 
 ## MCP surface (Stack MCP)
 
@@ -126,6 +130,31 @@ separate unassociated-workers debug section.
 - `stack_assembly_list`
 - `stack_assembly_get`
 - `stack_assembly_transition`
+- `stack_assembly_bind`
+
+## Cockpit surface (TUI)
+
+`/assembly` opens the Assembly Lines panel: a lane view (one row per line —
+id, title, preset, current station, owner, age, open gate, next action) and a
+detail view (stations walked with timestamps, bindings, gate history with
+`next_owner`/`next_safe_action`, standards verdicts, recent events). Panel
+actions — create, start/complete station, bind the ON Effort, attach ship
+bundle path or evidence, route to gardener, request quality review, generate a
+markdown handback under `.stack/assembly/handbacks/<line-id>/` — are typed
+calls against the surfaces above. See `docs/USAGE.md` for keys.
+
+## Actor integration
+
+- **Gardener** — `stack_assembly_list` and `stack_assembly_get` are in the
+  default gardener tool allow-list, and the garden workspace doc carries an
+  `assembly_lines: N` counter plus a compact `## Assembly lines` section so
+  routing can key off station and gate state.
+- **Monitor** — when the monitored worker's meta-thread or Effort is bound to
+  a line, `monitor.summary` and the human `monitor.goal_status` payloads carry
+  a typed `assembly_line` object (`line_id`, `title`, `preset`,
+  `current_station`, `next_action`) and the monitor rail renders
+  `line <id> · station <station>`. Monitors audit and recommend; they never
+  write gate verdicts or advance stations.
 
 ## CLI surface
 

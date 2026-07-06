@@ -455,6 +455,17 @@ export function gardenerWorkspaceDocPath(stackRoot: string): string {
   return join(stackRoot, ".stack", "garden", "workspace.md")
 }
 
+// One compact assembly-line row for the garden workspace doc — mirrors the
+// lane view: id, preset, current station, owner, open gate, next action.
+export type GardenerAssemblyLineRow = {
+  lineId: string
+  preset: string
+  station: string
+  owner: string
+  gate?: string
+  nextAction: string
+}
+
 export function rewriteWorkspaceGardenDoc(input: {
   stackRoot: string
   gardenerThreadId: string
@@ -465,6 +476,7 @@ export function rewriteWorkspaceGardenDoc(input: {
   workerStatus?: string
   workerQueueCount?: number
   codexAccountEmail?: string
+  assemblyLines?: readonly GardenerAssemblyLineRow[]
 }): string {
   const path = gardenerWorkspaceDocPath(input.stackRoot)
   const workers = input.workerSummaries.filter((summary) => summary.id !== input.gardenerThreadId).slice(0, 12)
@@ -479,6 +491,7 @@ export function rewriteWorkspaceGardenDoc(input: {
     `inbox_pending: ${input.inboxPending}`,
     ...(input.workerStatus ? [`worker_status: ${input.workerStatus}`] : []),
     ...(input.workerQueueCount !== undefined ? [`worker_queue: ${input.workerQueueCount}`] : []),
+    ...(input.assemblyLines !== undefined ? [`assembly_lines: ${input.assemblyLines.length}`] : []),
   ]
   if (input.codexAccountEmail) lines.push(`codex_email: ${input.codexAccountEmail}`)
   if (workers.length > 0) {
@@ -486,6 +499,14 @@ export function rewriteWorkspaceGardenDoc(input: {
     for (const summary of workers) {
       const prompt = resolveThreadDisplayLabel(summary, { maxLength: 48 })
       lines.push(`- ${summary.id.slice(0, 8)} · ${summary.turnCount} turns · ${prompt}`)
+    }
+  }
+  if (input.assemblyLines && input.assemblyLines.length > 0) {
+    lines.push("", "## Assembly lines")
+    for (const line of input.assemblyLines.slice(0, 12)) {
+      lines.push(
+        `- ${line.lineId} · ${line.preset} · station ${line.station} · owner ${line.owner} · gate ${line.gate ?? "none"} · next ${line.nextAction}`,
+      )
     }
   }
   const authLines = codexAuthLedgerSummaryLines(input.stackRoot, 3)

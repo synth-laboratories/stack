@@ -199,6 +199,13 @@ const GARDENER_EFFORT_TOOLS = [
   "stack_effort_update_status",
 ]
 
+// Assembly Lines read surface for gardeners: list snapshots and read one
+// line's record + typed event log so routing can key off station and gate
+// state. Gardeners may propose, queue, and route station actions; typed
+// station completion still requires evidence plus an explicit transition
+// (enforced server-side).
+const GARDENER_ASSEMBLY_TOOLS = ["stack_assembly_list", "stack_assembly_get"]
+
 const GARDENER_TAGGED_EFFORT_PROMPT =
   'Exactly one Effort may be ON (active) at a time — separate from how many are running. Top-right shows `active: …` or `active: none`. Lights ▸ Efforts shows `◉ ON` for the active effort. Use stack_tagged_effort_get to read the ON effort; stack_tagged_effort_set with effort_ref to turn one on, or effort_ref="none" to turn all off. During EffortBench evals the session effort is auto-set ON at start.'
 
@@ -278,6 +285,7 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
       "stack_memory_record",
       "stack_memory_kinds",
       "stack_memory_list",
+      ...GARDENER_ASSEMBLY_TOOLS,
       "jsk.papercut",
       "handoff.force",
       "handoff.seal",
@@ -351,6 +359,7 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V2 = [
 const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
   (tool) =>
     !GARDENER_EFFORT_TOOLS.includes(tool) &&
+    !GARDENER_ASSEMBLY_TOOLS.includes(tool) &&
     tool !== "stack_remote_gardener_handoff" &&
     tool !== "stack_ui_close_panel" &&
     tool !== "stack_meta_thread_create" &&
@@ -361,6 +370,7 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3 = DEFAULT_GARDENER_CONFIG.tools
 const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
   (tool) =>
     !GARDENER_EFFORT_TOOLS.includes(tool) &&
+    !GARDENER_ASSEMBLY_TOOLS.includes(tool) &&
     tool !== "stack_ui_close_panel" &&
     tool !== "stack_meta_thread_create" &&
     tool !== "stack_worker_thread_create" &&
@@ -370,6 +380,7 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4 = DEFAULT_GARDENER_CONFIG.tools
 const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V5 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
   (tool) =>
     !GARDENER_EFFORT_TOOLS.includes(tool) &&
+    !GARDENER_ASSEMBLY_TOOLS.includes(tool) &&
     tool !== "stack_meta_thread_create" &&
     tool !== "stack_worker_thread_create" &&
     tool !== "stack_meta_thread_update_goal",
@@ -402,6 +413,7 @@ export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
   if (profile === "default") backfillGeneratedDefaultGardenerTools(config, parsed)
   backfillGardenerLightsThreadViewTool(config)
   backfillGardenerEffortTools(config)
+  backfillGardenerAssemblyTools(config)
   const enabledOverride = process.env.STACK_GARDENER_ENABLED?.trim()
   if (enabledOverride === "0" || enabledOverride === "false") config.enabled = false
   if (enabledOverride === "1" || enabledOverride === "true") config.enabled = true
@@ -501,6 +513,13 @@ function backfillGardenerLightsThreadViewTool(config: StackGardenerConfig): void
 function backfillGardenerEffortTools(config: StackGardenerConfig): void {
   if (!config.tools.allow.some((tool) => tool.startsWith("stack_"))) return
   const missing = GARDENER_EFFORT_TOOLS.filter((tool) => !config.tools.allow.includes(tool))
+  if (missing.length === 0) return
+  config.tools.allow = [...config.tools.allow, ...missing]
+}
+
+function backfillGardenerAssemblyTools(config: StackGardenerConfig): void {
+  if (!config.tools.allow.some((tool) => tool.startsWith("stack_"))) return
+  const missing = GARDENER_ASSEMBLY_TOOLS.filter((tool) => !config.tools.allow.includes(tool))
   if (missing.length === 0) return
   config.tools.allow = [...config.tools.allow, ...missing]
 }

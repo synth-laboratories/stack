@@ -23,6 +23,7 @@ import { runMonitorCodexSidecarChatTurn, runMonitorCodexSidecarTurn } from "./mo
 import { runMonitorSynthAuxTurn, runMonitorSynthInferenceTurn } from "./monitor-synth-aux.js"
 import type { StackCodexTurn, StackLocalSession } from "./session.js"
 import { readMetaThreadManifest } from "./meta-thread-goal.js"
+import { resolveAssemblyContextForWorker, type StackAssemblyWorkerContext } from "./assembly-context.js"
 import {
   parseThreadNameFromAgentResponse,
   setThreadDisplayName,
@@ -160,6 +161,8 @@ export type StackMonitorSnapshot = {
   threadSpendUsd?: number
   focusResults: Partial<Record<MonitorFocusName, MonitorFocusStatus>>
   modeSource: "config" | "thread"
+  assemblyLineId?: string
+  assemblyStation?: string
 }
 
 type FocusCheck = {
@@ -985,6 +988,7 @@ export async function runMonitorForNewEvents(input: {
   }
 
   const monitorSummary = normalizedMonitorSummary(pass.summary)
+  const assemblyContext = await workerAssemblyContext(input.config, input.session)
 
   appendThreadMetaEvent(runtimeRoot, {
     event_id: stackEventId("monitor_summary"),
@@ -995,6 +999,7 @@ export async function runMonitorForNewEvents(input: {
     actor_role: "monitor",
     payload: {
       wake_id: wakeId,
+      assembly_line: assemblyContext ?? null,
       model: monitorConfig.model.model,
       reasoning_effort: monitorConfig.model.reasoningEffort,
       strictness: monitorConfig.strictness,
@@ -1063,6 +1068,7 @@ export async function runMonitorForNewEvents(input: {
           evidence_event_ids: candidate.triggerEventIds,
           wake_id: wakeId,
           source: "sidecar_codex_directive_guard",
+          assembly_line: assemblyContext ?? null,
         },
       })
     }
@@ -1547,6 +1553,26 @@ export function recentSidecarSteerIsSimilar(
   return false
 }
 
+// Assembly context for the monitored worker: the line + current station its
+// meta-thread/effort is bound to. Monitors AUDIT and RECOMMEND — this context
+// rides status payloads only; monitors never write gate verdicts or advance
+// stations. Absence (no binding, or stackd unreachable) is typed absence.
+async function workerAssemblyContext(
+  config: StackConfig,
+  session: StackLocalSession,
+): Promise<StackAssemblyWorkerContext | undefined> {
+  if (!session.metaThreadId) return undefined
+  try {
+    const manifest = await readMetaThreadManifest(config.stackDataRoot, session.metaThreadId)
+    return await resolveAssemblyContextForWorker({
+      metaThreadId: session.metaThreadId,
+      effortRef: manifest?.effort_ref,
+    })
+  } catch {
+    return undefined
+  }
+}
+
 export function monitorRailLines(snapshot: StackMonitorSnapshot, columns: number): string[] {
   const width = Math.max(24, columns - 2)
   const strictness =
@@ -1579,6 +1605,9 @@ export function monitorRailLines(snapshot: StackMonitorSnapshot, columns: number
   }
   lines.push(truncate(`runtime ${formatRuntime(snapshot.runtime)}`, width))
   lines.push(truncate(`model ${snapshot.model} · effort ${formatEffort(snapshot.reasoningEffort)}`, width))
+  if (snapshot.assemblyLineId && snapshot.assemblyStation) {
+    lines.push(truncate(`line ${snapshot.assemblyLineId} · station ${snapshot.assemblyStation}`, width))
+  }
   lines.push(truncate(`thread spend ${formatEstimatedSpend(snapshot.threadSpendUsd) ?? "~$0"} · M cycles`, width))
   if (snapshot.lastWakeReason || snapshot.lastSeverity !== "none") {
     lines.push(truncate(`last ${snapshot.lastWakeReason ?? "summary"} · ${snapshot.lastSeverity}`, width))
@@ -3292,6 +3321,9 @@ function snapshotFromEvents(
   const latestSummary = summaries.at(-1)
   const usage = monitorUsageSummary(events, actorState?.model.model ?? config.model.model)
   const focus = asRecord(latestSummary?.payload.focus_results)
+  const assemblyLine = asRecord(latestSummary?.payload.assembly_line)
+  const assemblyLineId = readString(assemblyLine?.line_id)
+  const assemblyStation = readString(assemblyLine?.current_station)
   return {
     enabled: effective.enabled,
     actorId: monitorActorId(config),
@@ -3316,6 +3348,8 @@ function snapshotFromEvents(
     threadSpendUsd: usage.spendUsd,
     focusResults: focusResultsFromRecord(focus),
     modeSource: effective.source,
+    ...(assemblyLineId ? { assemblyLineId } : {}),
+    ...(assemblyStation ? { assemblyStation } : {}),
   }
 }
 

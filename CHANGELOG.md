@@ -19,6 +19,33 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ### Added
 
+- **Workers cockpit panel.** `/workers` lists the current gardener's live
+  workers by manifest authority (`gardener_thread_id` + lifecycle, narrowed to
+  the ON Effort's `effort_ref` when one is ON). The Effort reverse index is a
+  consistency check only — disagreement shows a quiet `⚠ index drift` marker;
+  workers without `gardener_thread_id` live in a collapsed unassociated debug
+  section. Rows show short thread id, title, model, Effort binding, source,
+  lifecycle, and monitor status; `enter` opens the selected worker thread.
+- **Assembly Lines cockpit panel.** `/assembly` renders the lane view (line,
+  preset, station, owner, age, open gate, next action) and a per-line detail
+  view (stations walked with timestamps, bindings, gate history with
+  `next_owner`/`next_safe_action`, standards verdicts, recent events). Typed
+  actions: create line, start/complete station (evidence required per the
+  station schema, typed errors surfaced), bind the ON Effort, attach ship
+  bundle path/evidence, route to gardener, request quality review, and
+  generate a markdown handback under `.stack/assembly/handbacks/<line-id>/`.
+- **Assembly bindings update endpoint.** `PATCH /assembly-lines/:id/bindings`
+  merges a typed bindings update (list fields append deduplicated,
+  `ship_bundle_path` replaces, empty updates rejected as `invalid_field`),
+  with a matching TS client function and `stack_assembly_bind` MCP tool.
+- **Assembly integration for gardener + monitor.** `stack_assembly_list` and
+  `stack_assembly_get` joined the default gardener tool allow-list, the garden
+  workspace doc gained `assembly_lines: N` plus a compact `## Assembly lines`
+  section, and monitor status payloads (`monitor.summary`, human
+  `monitor.goal_status`) plus the monitor rail now carry the bound line +
+  current station when the worker's meta-thread/Effort is bound to a line.
+  Monitors audit and recommend; they never write gate verdicts or advance
+  stations.
 - **Assembly Lines v0.** New AssemblyLine primitive — the process layer above
   Efforts. One station schema with `ship` and `effort` presets, typed
   transition events (`assembly.created` … `assembly.follow_up_due`), standards

@@ -11,8 +11,10 @@ import {
   readGardenerThreadRegistry,
   rewriteThreadGardenDoc,
   rewriteWorkspaceGardenDoc,
+  type GardenerAssemblyLineRow,
   type GardenerInboxItem,
 } from "./gardener.js"
+import { stackdAssemblyList } from "./client/stackd.js"
 import {
   listSessionHistoryFromDirs,
   readSessionLog,
@@ -138,6 +140,7 @@ export async function runGardenerMaintenancePass(input: GardenerMaintenanceInput
       ? input.workerSummaries
       : await listWorkerThreadSummaries(input.config, input.gardenerThreadId)
   const liveMetaThreadCount = (await readMetaThreadManifests(input.config.stackDataRoot, "live")).length
+  const assemblyLines = await readAssemblyGardenRows()
 
   const workspaceGardenPath = rewriteWorkspaceGardenDoc({
     stackRoot: input.config.stackDataRoot,
@@ -149,6 +152,7 @@ export async function runGardenerMaintenancePass(input: GardenerMaintenanceInput
     workerStatus: input.workerStatus,
     workerQueueCount: input.workerQueueCount,
     codexAccountEmail: input.codexAccountEmail,
+    assemblyLines,
   })
 
   let gardenerGardenPath: string | undefined
@@ -171,6 +175,25 @@ export async function runGardenerMaintenancePass(input: GardenerMaintenanceInput
   }
 
   return { workspaceGardenPath, gardenerGardenPath, inboxPending: inbox.length }
+}
+
+// Assembly lane rows for the garden workspace doc. When stackd is not
+// reachable the section is omitted (the doc line `assembly_lines: N` only
+// appears when the read succeeded, so the gardener never sees a stale zero).
+async function readAssemblyGardenRows(): Promise<GardenerAssemblyLineRow[] | undefined> {
+  try {
+    const { lines } = await stackdAssemblyList()
+    return lines.map((line) => ({
+      lineId: line.line_id,
+      preset: line.preset,
+      station: line.current_station,
+      owner: line.owner,
+      gate: line.open_gate ? `${line.open_gate.station}:${line.open_gate.verdict}` : undefined,
+      nextAction: line.next_action,
+    }))
+  } catch {
+    return undefined
+  }
 }
 
 export function workerSessionStatusFromSummary(summary: StackSessionSummary | undefined): string {

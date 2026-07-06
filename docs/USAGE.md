@@ -70,6 +70,8 @@ matching, aliases, and tab completion.
 | `/monitor on\|off\|show\|hide\|chat\|stream\|message` / `/m` | Toggle, show, hide, focus, or message the monitor |
 | `/lights on\|off` | Open or close the Lights status panel |
 | `/efforts` | Open the Efforts workstream panel |
+| `/workers` | Open the gardener workers panel |
+| `/assembly` | Open the Assembly Lines panel; subcommands act on the selected line |
 | `/threads` / `/p` | Open thread navigation; `/threads new` starts a new thread |
 | `/mode eng\|research` / `/work_mode` | Record the future work-mode flag |
 | `/feedback [kind] [text]` / `/eval-feedback` | In eval mode, open or prefill the human feedback modal |
@@ -113,6 +115,77 @@ Filters include `all`, `live`, `active`, `goal`, `paused`, `done`, `archived`,
 Selecting a worker thread opens it in the worker/aux lane; selecting a gardener
 thread opens the gardener in the core panel. Viewed/unviewed markers persist
 under `.stack/config/lights-thread-view.json`.
+
+### Workers panel
+
+`/workers` opens the right-panel Workers view: the current gardener's live
+workers by manifest authority. A worker appears iff its meta-thread manifest
+carries `gardener_thread_id` equal to the current gardener and its lifecycle is
+live; when an Effort is ON the list narrows to workers whose `effort_ref`
+matches that Effort. The Effort reverse index
+(`links.meta_thread_refs`) is a consistency check only — when the manifest and
+the reverse index disagree the row shows a quiet `⚠ index drift` marker and
+stays listed. Workers with no `gardener_thread_id` (manual or pre-metadata
+threads) are excluded from the main list and live in a collapsed
+"unassociated workers" debug section.
+
+Each row shows the short thread id and title, then model, Effort binding
+(short Effort title or ref), source, lifecycle status, and the latest monitor
+status when a snapshot is available. With the panel focused, `j`/`k` select a
+worker, `enter` opens (resumes) the selected worker thread, `u` toggles the
+unassociated debug section, and `r` refreshes thread history.
+
+### Assembly Lines panel
+
+`/assembly` opens the right-panel Assembly Lines view over the stackd Assembly
+Lines backend (`docs/ASSEMBLY_LINES.md`). The lane view renders one row per
+line: line id, title, preset, current station, owner, age, open gate, and next
+action. `enter` opens the detail view for the selected line: stations walked
+with started/completed timestamps, bindings (linked Efforts, meta-threads,
+actor ids, evidence artifact paths, Jstack ship bundle path), gate history
+including `gate_failed` rows with `next_owner`/`next_safe_action`, standards
+verdicts, and the recent typed event log. `enter` again returns to lanes; the
+panel refreshes from stackd every 5 seconds while open, or immediately with
+`r`.
+
+Every action is a typed stackd call and failures surface the server's typed
+error (`unknown_station`, `invalid_transition`, `missing_evidence`,
+`invalid_gate_event`, `not_found`):
+
+- `n` / `/assembly new <title> [--preset ship|effort]` — create a line
+  (preset defaults to `ship`).
+- `s` / `/assembly start` — start the current station.
+- `c` / `/assembly complete [--evidence <p1,p2>]` — complete the current
+  station; evidence-bearing stations seed the slash form so evidence paths are
+  explicit, and a completion without required evidence is rejected with
+  `missing_evidence`.
+- `b` / `/assembly effort` — bind the ON Effort to the selected line.
+- `u` / `/assembly bundle <path>` — link the external Jstack markdown ship
+  bundle path (a linked record, never a second source of truth).
+- `e` / `/assembly evidence <path>` — attach an evidence artifact path to the
+  line.
+- `g` / `/assembly route` — route the line to the gardener inbox with station,
+  open gate, and next action, and bind the gardener id to the line.
+- `q` / `/assembly review` — request quality review: starts the preset's
+  review station (`quality_review` for ship, `review` for effort) when it is
+  the current pending station and queues the review request to the gardener;
+  any other station is a typed refusal.
+- `H` / `/assembly handback` — write a markdown handback artifact
+  (stations, bindings, standards verdicts, event log) under
+  `.stack/assembly/handbacks/<line-id>/` and reference it on the line's
+  evidence bindings.
+
+Bindings updates ride `PATCH /assembly-lines/:id/bindings` (also exposed as
+the `stack_assembly_bind` MCP tool): list fields append with deduplication,
+`ship_bundle_path` replaces, and an empty update is rejected as
+`invalid_field`.
+
+Gardeners read line state through `stack_assembly_list`/`stack_assembly_get`
+(in the default gardener tool allow-list) and through a compact
+"Assembly lines" section in the garden workspace doc. Monitors include the
+bound line + current station in their status payloads and the monitor rail
+(`line <id> · station <station>`); monitors audit and recommend — they never
+write gate verdicts or advance stations.
 
 ### Efforts
 
