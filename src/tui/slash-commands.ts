@@ -190,6 +190,10 @@ export function slashMenuVisible(buffer: string): boolean {
   return slashMenuQuery(buffer) !== null
 }
 
+export function slashMenuEditNeedsRemount(previous: string, next: string): boolean {
+  return slashMenuQuery(previous) !== slashMenuQuery(next) || slashMenuVisible(previous) || slashMenuVisible(next)
+}
+
 export function filterSlashCommands(query: string): SlashCommandSpec[] {
   return SLASH_COMMAND_SPECS.filter((spec) => matchesQuery(spec, query))
 }

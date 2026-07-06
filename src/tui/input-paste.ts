@@ -76,6 +76,16 @@ export function isRawNewlineSequence(sequence: string): boolean {
   return sequence === "\n" || sequence === "\x0a"
 }
 
+export function agentPromptOwnsEditableInput(focusMode: string, status: string): boolean {
+  return focusMode === "agent" && status === "idle"
+}
+
+export function shouldUseNativeAgentInput(sequence: string, focusMode: string, status: string): boolean {
+  if (!agentPromptOwnsEditableInput(focusMode, status)) return false
+  if (sequence === "\t") return false
+  return sequence === "\x7f" || sequence === "\b" || isRawEnterSequence(sequence) || isEditableInputChunk(sequence)
+}
+
 export type RawTextInputOptions = {
   sequence: string
   readBuffer: () => string
