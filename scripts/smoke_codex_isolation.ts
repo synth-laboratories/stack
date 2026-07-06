@@ -143,6 +143,24 @@ try {
 }
 check(ephemeralGuardThrew, "guard rejects background codex exec without --ephemeral")
 
+// Relocated $CODEX_HOME: auth seeding must read from the user's real Codex
+// home wherever it lives — a user with CODEX_HOME set gets unauthenticated
+// Stack launches if seeding assumes ~/.codex.
+const relocatedCodex = join(scratch, "relocated-codex")
+mkdirSync(relocatedCodex, { recursive: true })
+writeFileSync(join(relocatedCodex, "auth.json"), JSON.stringify({ tokens: { relocated: true } }))
+process.env.CODEX_HOME = relocatedCodex
+const { ensureStackCodexHome } = await import("../src/codex/isolation.js")
+check(personalCodexHome() === relocatedCodex, "personalCodexHome honors a relocated $CODEX_HOME")
+const relocatedStackHome = join(scratch, "workspace-relocated", ".stack", "codex-home")
+ensureStackCodexHome(relocatedStackHome)
+check(
+  readFileSync(join(relocatedStackHome, "auth.json"), "utf8").includes("relocated"),
+  "auth.json seeds from the relocated $CODEX_HOME",
+)
+delete process.env.CODEX_HOME
+check(personalCodexHome() === personalCodex, "personalCodexHome falls back to ~/.codex when $CODEX_HOME is unset")
+
 if (failures.length > 0) {
   console.error(`\ncodex isolation smoke FAILED (${failures.length})`)
   process.exit(1)
