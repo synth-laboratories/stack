@@ -1,4 +1,6 @@
-use crate::assembly_store::{AssemblyStore, AssemblyStoreError, CreateAssemblyLine};
+use crate::assembly_store::{
+    AssemblyBindingsUpdate, AssemblyStore, AssemblyStoreError, CreateAssemblyLine,
+};
 use crate::handlers::ApiError;
 use crate::server::AppState;
 use axum::extract::{Path, State};
@@ -124,6 +126,21 @@ pub async fn get_assembly_line_snapshot(
     Ok(Json(serde_json::to_value(snapshot).map_err(|error| {
         ApiError::internal(error.to_string())
     })?))
+}
+
+pub async fn patch_assembly_bindings(
+    State(state): State<Arc<AppState>>,
+    Path(line_id): Path<String>,
+    Json(update): Json<AssemblyBindingsUpdate>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let store = open_store(&state)?;
+    let record = store.update_bindings(&line_id, &update)?;
+    let (record, events) = store.get_line(&record.id)?;
+    let snapshot = project_snapshot(&record, &events, chrono::Utc::now());
+    Ok(Json(json!({
+        "record": record,
+        "snapshot": snapshot,
+    })))
 }
 
 pub async fn post_assembly_transition(

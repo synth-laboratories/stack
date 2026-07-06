@@ -231,6 +231,10 @@ fn router(state: Arc<AppState>) -> Router {
             post(assembly::post_assembly_transition),
         )
         .route(
+            "/assembly-lines/:id/bindings",
+            patch(assembly::patch_assembly_bindings),
+        )
+        .route(
             "/memories",
             get(memories::list_memories_handler).post(memories::record_memory_handler),
         )

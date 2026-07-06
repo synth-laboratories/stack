@@ -1412,6 +1412,30 @@ export async function stackdAssemblySnapshot(
   return requestJson(baseUrl, `/assembly-lines/${encodeURIComponent(lineId)}/snapshot`)
 }
 
+// Typed bindings update — list fields append (deduplicated server-side),
+// `ship_bundle_path` replaces. An empty update is rejected as invalid_field.
+export type StackdAssemblyBindingsUpdate = {
+  effort_ids?: string[]
+  meta_thread_ids?: string[]
+  worker_ids?: string[]
+  gardener_ids?: string[]
+  monitor_ids?: string[]
+  evidence_paths?: string[]
+  ship_bundle_path?: string
+}
+
+export async function stackdAssemblyUpdateBindings(
+  lineId: string,
+  update: StackdAssemblyBindingsUpdate,
+  baseUrl = stackdBaseUrl(),
+): Promise<{ record: StackdAssemblyLineRecord; snapshot: StackdAssemblyLineSnapshot }> {
+  return requestJson(
+    baseUrl,
+    `/assembly-lines/${encodeURIComponent(lineId)}/bindings`,
+    jsonPatch(update),
+  )
+}
+
 export async function stackdAssemblyTransition(
   lineId: string,
   transition: StackdAssemblyTransitionRequest,

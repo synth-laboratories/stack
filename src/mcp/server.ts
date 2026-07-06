@@ -120,6 +120,8 @@ import {
   stackdAssemblyGet,
   stackdAssemblyList,
   stackdAssemblyTransition,
+  stackdAssemblyUpdateBindings,
+  type StackdAssemblyBindingsUpdate,
   stackdBindMetaThreadRemoteSmrRun,
   stackdAssertMetaThreadEffortRefRoute,
   stackdCreateMetaThread,
@@ -7027,6 +7029,42 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         const lineId = requiredString(args, "line_id")
         const transition = assemblyTransitionFromArgs(args)
         return toJsonValue(await stackdAssemblyTransition(lineId, transition)) ?? null
+      },
+    },
+    {
+      name: "stack_assembly_bind",
+      description:
+        "Merge a typed bindings update into one AssemblyLine: link Efforts, meta-threads, actor ids, evidence artifact paths, or set the external Jstack ship bundle path. List fields append (deduplicated); ship_bundle_path replaces. An empty update is rejected as invalid_field.",
+      inputSchema: objectSchema(
+        {
+          line_id: stringProperty("AssemblyLine id."),
+          effort_ids: arrayProperty("Stack Effort ids to link."),
+          meta_thread_ids: arrayProperty("Meta-thread ids to link."),
+          worker_ids: arrayProperty("Worker actor ids to link (manifest-associated workers only)."),
+          gardener_ids: arrayProperty("Gardener actor ids to link."),
+          monitor_ids: arrayProperty("Monitor actor ids to link (monitors audit and recommend; they do not own gate verdicts)."),
+          evidence_paths: arrayProperty("Evidence artifact paths to declare on the line."),
+          ship_bundle_path: stringProperty("External Jstack markdown ship bundle path (linked record, not a second source of truth)."),
+        },
+        ["line_id"],
+      ),
+      handler: async (args) => {
+        const update: StackdAssemblyBindingsUpdate = {}
+        const effortIds = optionalStringArray(args, "effort_ids")
+        if (effortIds) update.effort_ids = effortIds
+        const metaThreadIds = optionalStringArray(args, "meta_thread_ids")
+        if (metaThreadIds) update.meta_thread_ids = metaThreadIds
+        const workerIds = optionalStringArray(args, "worker_ids")
+        if (workerIds) update.worker_ids = workerIds
+        const gardenerIds = optionalStringArray(args, "gardener_ids")
+        if (gardenerIds) update.gardener_ids = gardenerIds
+        const monitorIds = optionalStringArray(args, "monitor_ids")
+        if (monitorIds) update.monitor_ids = monitorIds
+        const evidencePaths = optionalStringArray(args, "evidence_paths")
+        if (evidencePaths) update.evidence_paths = evidencePaths
+        const shipBundlePath = optionalString(args, "ship_bundle_path")
+        if (shipBundlePath) update.ship_bundle_path = shipBundlePath
+        return toJsonValue(await stackdAssemblyUpdateBindings(requiredString(args, "line_id"), update)) ?? null
       },
     },
     {

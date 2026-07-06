@@ -55,6 +55,51 @@ pub struct CreateAssemblyLine {
     pub actor_id: String,
 }
 
+/// Typed bindings update for one line. Every list field appends; only
+/// `ship_bundle_path` replaces. An empty update is rejected as
+/// `invalid_field` — there is exactly one way to change nothing: don't call.
+#[derive(Debug, Default, serde::Deserialize)]
+pub struct AssemblyBindingsUpdate {
+    #[serde(default)]
+    pub effort_ids: Vec<String>,
+    #[serde(default)]
+    pub meta_thread_ids: Vec<String>,
+    #[serde(default)]
+    pub worker_ids: Vec<String>,
+    #[serde(default)]
+    pub gardener_ids: Vec<String>,
+    #[serde(default)]
+    pub monitor_ids: Vec<String>,
+    #[serde(default)]
+    pub evidence_paths: Vec<String>,
+    #[serde(default)]
+    pub ship_bundle_path: Option<String>,
+}
+
+impl AssemblyBindingsUpdate {
+    pub fn is_empty(&self) -> bool {
+        self.effort_ids.is_empty()
+            && self.meta_thread_ids.is_empty()
+            && self.worker_ids.is_empty()
+            && self.gardener_ids.is_empty()
+            && self.monitor_ids.is_empty()
+            && self.evidence_paths.is_empty()
+            && self.ship_bundle_path.is_none()
+    }
+}
+
+fn append_unique(target: &mut Vec<String>, additions: &[String]) {
+    for addition in additions {
+        let trimmed = addition.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if !target.iter().any(|existing| existing == trimmed) {
+            target.push(trimmed.to_string());
+        }
+    }
+}
+
 impl AssemblyStore {
     pub fn open(paths: &StackPaths) -> anyhow::Result<Self> {
         let runtime_dir = paths.stack_dir.join("runtime");
@@ -153,6 +198,49 @@ impl AssemblyStore {
         let record = load_record(&conn, line_id)?;
         let events = load_events(&conn, line_id)?;
         Ok((record, events))
+    }
+
+    /// Merge a typed bindings update into one line's record. Id and path
+    /// lists append (deduplicated, order preserved); `ship_bundle_path`
+    /// replaces when provided. The event log is untouched — bindings link
+    /// records, they are not process state.
+    pub fn update_bindings(
+        &self,
+        line_id: &str,
+        update: &AssemblyBindingsUpdate,
+    ) -> Result<AssemblyLineRecord, AssemblyStoreError> {
+        if update.is_empty() {
+            return Err(AssemblyLineError::InvalidField(
+                "bindings update must set at least one field".to_string(),
+            )
+            .into());
+        }
+        if let Some(path) = &update.ship_bundle_path {
+            if path.trim().is_empty() {
+                return Err(AssemblyLineError::InvalidField(
+                    "ship_bundle_path must be non-empty".to_string(),
+                )
+                .into());
+            }
+        }
+        let mut conn = self.connect()?;
+        let tx = conn.transaction().map_err(anyhow::Error::from)?;
+        let mut record = load_record(&tx, line_id)?;
+        append_unique(&mut record.bindings.effort_ids, &update.effort_ids);
+        append_unique(&mut record.bindings.meta_thread_ids, &update.meta_thread_ids);
+        append_unique(&mut record.bindings.worker_ids, &update.worker_ids);
+        append_unique(&mut record.bindings.gardener_ids, &update.gardener_ids);
+        append_unique(&mut record.bindings.monitor_ids, &update.monitor_ids);
+        append_unique(&mut record.bindings.evidence_paths, &update.evidence_paths);
+        if let Some(path) = &update.ship_bundle_path {
+            record.bindings.ship_bundle_path = Some(path.trim().to_string());
+        }
+        tx.execute(
+            "UPDATE assembly_lines SET record_json = ?1 WHERE id = ?2",
+            params![serde_json::to_string(&record)?, record.id],
+        )?;
+        tx.commit().map_err(anyhow::Error::from)?;
+        Ok(record)
     }
 
     pub fn apply_transition(
