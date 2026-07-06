@@ -3,11 +3,13 @@ import {
   clearEnvCache,
   createCliRenderer,
   decodePasteBytes,
+  Input,
   StyledText,
   Text,
   dim,
   fg,
   type CliRenderer,
+  type InputRenderable,
   type PasteEvent,
   type TextChunk,
 } from "@opentui/core"
@@ -109,6 +111,7 @@ import {
   type CodexRateLimitsSnapshot,
 } from "../codex/rate-limits.js"
 import { isChatGptAuthPlan, readCodexAccountSnapshot } from "../codex/account.js"
+import { stackCodexEnv } from "../codex/isolation.js"
 import {
   formatAccountTokenTotal,
   formatCodexUsageActivityLines,
@@ -156,6 +159,15 @@ import {
   type LightsPanelSectionId,
   writeStackUxSettings,
 } from "../ux-settings.js"
+import {
+  applyEvalTaggedEffortFromEnv,
+  activeEffortBarLabel,
+  effortIsActiveOn,
+  listTaggedEffortOptions,
+  readTaggedEffortSlug,
+  taggedEffortDisplayLabel,
+  writeTaggedEffortSlug,
+} from "../tagged-effort.js"
 import {
   lightsThreadViewDiskUpdatedAtMs,
   markLightsThreadsUnviewed,
@@ -422,11 +434,19 @@ import { agentInputRenderedLineCount, renderWorkerAgentInputStyled } from "./age
 import { agentChatPauseEligible } from "./agent-chat-pause.js"
 import { sidecarAgentActive } from "./sidecar-queue.js"
 import {
+  associatedGardenerWorkersForEffort,
+  resolveAssociatedGardenerWorkerTargetIdFromAssociations,
+  resolveGardenerWorkerTargetIdFromAssociations,
+  type AssociatedGardenerWorker,
+} from "./gardener-worker-association.js"
+import {
   consumeBracketedPasteSequences,
   ENABLE_BRACKETED_PASTE,
+  agentPromptOwnsEditableInput,
   handleRawTextInputSequence,
   isRawEnterSequence,
   normalizePasteText,
+  shouldUseNativeAgentInput,
   splitSubmitLines,
 } from "./input-paste.js"
 import {
@@ -438,6 +458,7 @@ import {
   renderSlashCommandMenuStyled,
   resolveSlashSubmitPrompt,
   selectedSlashCommandSpec,
+  slashMenuEditNeedsRemount,
   slashMenuQuery,
   slashMenuVisible,
   clampSlashMenuIndex,
@@ -511,6 +532,8 @@ type FocusMode =
   | "subagent-effort"
   | "subagents"
   | "config"
+  | "tagged-effort"
+  | "eval-info"
   | "monitor"
   | "gardener"
   | "harness"
@@ -537,9 +560,12 @@ type LightsPanelSection = {
   id: LightsPanelSectionId
   header: string
   lines: string[]
+  lineKinds?: Array<LightsEffortLineKind | undefined>
   threadIds?: Array<string | undefined>
   threadRowKinds?: Array<LightsThreadPanelRowKind | undefined>
 }
+
+type LightsEffortLineKind = "active-effort-on" | "active-effort-hint" | "default"
 
 type LightsThreadPanelRowKind = "primary" | "detail" | "view" | "unview"
 
@@ -616,8 +642,11 @@ type AppState = {
   turnStartedAt?: string
   blocks: TranscriptBlock[]
   inputBuffer: string
+  inputFastPathNeedsRemount: boolean
   monitorInputBuffer: string
   configSelectedIndex: number
+  taggedEffortSelectedIndex: number
+  taggedEffortReturnFocus?: FocusMode
   configNotice?: string
   rawCommandTail: string
   sidecarQueuedMessages: string[]
@@ -642,8 +671,10 @@ type AppState = {
   threadGoalMetrics: Map<string, ThreadGoalLightsMetrics>
   threadLifecycleStatus: Map<string, ThreadLifecycleStatus>
   threadMetaThreadIds: Map<string, string>
+  threadMetaThreadManifests: Map<string, StackdMetaThreadManifest>
   threadMetaThreadTitles: Map<string, string>
   threadLightsPreviews: Map<string, ThreadLightsPreview>
+  activeEffortWorkerFilter?: ActiveEffortWorkerFilter
   lastSessionLogPath?: string
   optimizerSnapshot: OptimizerSnapshot
   selectedOptimizerRunIndex: number
@@ -767,11 +798,19 @@ type AppState = {
   lastOperatorSidePanelClosedAtMs?: number
 }
 
+type ActiveEffortWorkerFilter = {
+  slug: string | null
+  effortId?: string
+  metaThreadRefs?: string[]
+  checkedAtMs: number
+}
+
 type MountedView = {
   root: ReturnType<typeof Box>
 }
 
 let stackRootInstance = 0
+const AGENT_INPUT_NATIVE_ID = "stack-agent-input-native"
 
 type StackKeyEvent = {
   name?: string
@@ -888,6 +927,8 @@ function isSelectorPanelFocusMode(focusMode: FocusMode): boolean {
     focusMode === "environment" ||
     focusMode === "account" ||
     focusMode === "config" ||
+    focusMode === "tagged-effort" ||
+    focusMode === "eval-info" ||
     focusMode === "experimental"
   )
 }
@@ -1001,8 +1042,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const defaultWorker = history.find((summary) => summary.id !== gardenerEnsured.threadId)
   const initialMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
   const uxSettings = readStackUxSettings(options.config.stackDataRoot)
+  applyEvalTaggedEffortFromEnv(options.config.stackDataRoot)
   const lightsViewState = readLightsThreadViewState(options.config.stackDataRoot)
   const evalUiHandleSettings = readEvalUiHandleSettings()
+  const initialLightsPanelOpen = uxSettings.lightsPanelOpen || evalUiHandleSettings.evalModeEnabled
   const state: AppState = {
     // First-launch approval must own key focus: with the agent input focused, printable
     // keys never reach the global telemetry key handler, so the modal's a/d/l keys go dead.
@@ -1012,8 +1055,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     railsVisible: false,
     leftPanelOpen: false,
     leftPanelRailsVisible: false,
-    rightPanelOpen: uxSettings.lightsPanelOpen,
-    rightPanelContent: uxSettings.lightsPanelOpen ? "lights" : "default",
+    rightPanelOpen: initialLightsPanelOpen,
+    rightPanelContent: initialLightsPanelOpen ? "lights" : "default",
     rightPanelWidthFraction: uxSettings.rightPanelWidthFraction,
     rightPanelResizeDragging: false,
     showDetails: false,
@@ -1028,8 +1071,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     emaTokensPerSecond: seedEmaFromTurns(options.session.turns),
     blocks: [],
     inputBuffer: readInitialPrompt(options.config),
+    inputFastPathNeedsRemount: false,
     monitorInputBuffer: "",
     configSelectedIndex: 0,
+    taggedEffortSelectedIndex: 0,
     rawCommandTail: "",
     sidecarQueuedMessages: [],
     sidecarChatInFlight: false,
@@ -1051,6 +1096,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     threadGoalMetrics: new Map(),
     threadLifecycleStatus: new Map(),
     threadMetaThreadIds: new Map(),
+    threadMetaThreadManifests: new Map(),
     threadMetaThreadTitles: new Map(),
     threadLightsPreviews: new Map(),
     optimizerSnapshot: localStackBoot.optimizer ?? optimizerSnapshot,
@@ -1167,6 +1213,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   if (options.resumeCheckpoint) {
     applyStackCliResumeUi(options, state, options.session.id)
   }
+  if (process.env.STACK_EFFORT_OPEN_GARDENER === "1") {
+    closeSidePanelsForGardenerFocus(state)
+    state.gardenerPanelMode = "chat"
+    state.focusMode = "gardener"
+  }
   if (state.focusMode === "gardener") syncGardenerLeftPanel(state)
   syncMonitorRightPanel(state)
   state.rightPanelOpsVisible = !isMonitorOn(state.monitorSnapshot)
@@ -1265,6 +1316,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     const latest = await readCodexRateLimits({
       codexCommand: options.config.codexCommand,
       codexArgs: options.config.codexArgs,
+      env: stackCodexEnv(options.config),
+      sessionsRoot: options.config.codexSessionsRoot,
     })
     await observeCodexAuth(latest)
   }
@@ -1277,6 +1330,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     const latest = await readCodexRateLimits({
       codexCommand: options.config.codexCommand,
       codexArgs: options.config.codexArgs,
+      env: stackCodexEnv(options.config),
+      sessionsRoot: options.config.codexSessionsRoot,
     })
     await observeCodexAuth(latest)
   }
@@ -2224,6 +2279,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
+    if (state.focusMode === "tagged-effort" && handleTaggedEffortKey(key, options, state, remount)) {
+      return
+    }
+
     if (state.focusMode === "subagents") {
       handleSubagentsKey(key, options.config)
       remount()
@@ -2283,6 +2342,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       exitStack,
     )
     renderer.root.add(nextView.root)
+    setupNativeAgentInput(renderer, state, submitFromCurrentInput, remount)
     nextView.root.requestRender()
     return nextView
   }
@@ -2301,6 +2361,8 @@ function createView(
 ): MountedView {
   syncGoalModeDefaults(options, state)
   const switcher = switcherPanel(options, state, refresh, applyStackEnvironmentFromUi)
+  const taggedEffortSettings = taggedEffortPanel(options, state, refresh)
+  const evalInfoSettings = evalInfoPanel(options, state)
   const configSettings = configPanel(options, state, refresh, applyStackEnvironmentFromUi, codexSessionHandle)
   const experimentalSettings = experimentalPanel(state)
   const permissionsSettings = permissionsPanel(options, state, refresh)
@@ -2310,7 +2372,9 @@ function createView(
   const showRightLightsPanel = state.rightPanelOpen && state.rightPanelContent === "lights"
   const showRightEffortsPanel = state.rightPanelOpen && state.rightPanelContent === "efforts"
   const showDefaultRightPanel = state.rightPanelOpen && state.rightPanelContent === "default"
-  const showCoreGardenerPanel = state.focusMode === "gardener"
+  const showCoreGardenerPanel =
+    state.focusMode === "gardener" ||
+    (state.focusMode === "tagged-effort" && state.taggedEffortReturnFocus === "gardener")
   const showCenterPanels =
     !showRightThreadsPanel &&
     (state.focusMode === "projects" || state.focusMode === "history" || state.focusMode === "harness")
@@ -2339,8 +2403,9 @@ function createView(
   const leftPanelLayout = leftGardenerPanelLayout(state)
   const leftColumns = gardenerPanelColumns(renderer, leftPanelLayout.fraction)
   const centerColumns = centerPanelColumns(renderer)
-  const activeThreadIds = resolveActiveThreadIds(options.session.id, state.gardenerWorkerTargetId)
-  const visibleThreadIds = resolveVisibleThreadIds(options.session.id, state.gardenerWorkerTargetId, {
+  const gardenerWorkerTargetId = resolveAssociatedGardenerWorkerTargetId(options, state)
+  const activeThreadIds = resolveActiveThreadIds(options.session.id, gardenerWorkerTargetId)
+  const visibleThreadIds = resolveVisibleThreadIds(options.session.id, gardenerWorkerTargetId, {
     lifecycle: "live",
     history: state.history,
     threadLifecycleStatus: state.threadLifecycleStatus,
@@ -2511,15 +2576,20 @@ function createView(
     ),
     gardenerControlRow(options, state, refresh, transcriptViewport.columns),
   ]
+  if (state.focusMode === "tagged-effort" && taggedEffortSettings) {
+    gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, taggedEffortSettings)
+  }
   const evalFeedbackModal = renderEvalFeedbackModal(state)
   const agentChildren = showCoreGardenerPanel ? gardenerCoreChildren : [
-    agentPanelIdsCopyIcon(renderer, options, state, refresh),
+    workerPanelTopBar(renderer, options, state, refresh),
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
     ...(workerGoalTabs ? [workerPanelModeBar(state, refresh)] : []),
     agentMainPane,
     ...(state.focusMode === "goal" ? [renderGoalPanel(state)] : []),
     ...(switcher ? [switcher] : []),
     ...(configSettings ? [configSettings] : []),
+    ...(taggedEffortSettings ? [taggedEffortSettings] : []),
+    ...(evalInfoSettings ? [evalInfoSettings] : []),
     ...(experimentalSettings ? [experimentalSettings] : []),
     ...(permissionsSettings ? [permissionsSettings] : []),
     ...(evalFeedbackModal ? [evalFeedbackModal] : []),
@@ -2748,6 +2818,8 @@ function createView(
             state.focusMode === "effort" ||
             state.focusMode === "environment" ||
             state.focusMode === "account" ||
+            state.focusMode === "tagged-effort" ||
+            state.focusMode === "config" ||
             state.focusMode === "gardener"
               ? theme.borderActive
               : theme.borderInactive,
@@ -3386,6 +3458,7 @@ type ConfigRowId =
   | "subagents"
   | "subagent-model"
   | "subagent-effort"
+  | "tagged-effort"
   | "voice"
   | "telemetry"
 
@@ -3430,6 +3503,134 @@ function configPanel(
         },
       ),
     ),
+  )
+}
+
+function syncTaggedEffortSelectedIndex(options: StackAppOptions, state: AppState): void {
+  const items = listTaggedEffortOptions(options.config)
+  const current = readTaggedEffortSlug(options.config.stackDataRoot)
+  const index = items.findIndex((item) => item.slug === current)
+  state.taggedEffortSelectedIndex = index >= 0 ? index : 0
+}
+
+function taggedEffortPanel(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): ReturnType<typeof Box> | undefined {
+  if (state.focusMode !== "tagged-effort") return undefined
+  const items = listTaggedEffortOptions(options.config)
+  state.taggedEffortSelectedIndex = clampIndex(state.taggedEffortSelectedIndex, items.length)
+  const current = readTaggedEffortSlug(options.config.stackDataRoot)
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.borderActive,
+      title: "Active Effort (on)",
+      padding: stackTuiLayout.panelPadding,
+      flexDirection: "column",
+      width: "100%",
+      flexShrink: 0,
+      gap: 0,
+    },
+    switcherLine("j/k select · Enter apply · Esc close · one effort ON at a time (or none)", false),
+    ...items.map((item, index) =>
+      switcherLine(
+        `${index === state.taggedEffortSelectedIndex ? ">" : " "} ${item.slug === current ? "◉ ON · " : "       "}${item.label}`,
+        item.slug === current,
+        () => {
+          state.taggedEffortSelectedIndex = index
+          writeTaggedEffortSlug(options.config.stackDataRoot, item.slug)
+          state.activeEffortWorkerFilter = undefined
+          restoreFocusAfterActiveEffortPicker(state)
+          appendStackBlock(
+            state.blocks,
+            item.slug ? `active effort on: ${item.label}` : "active effort off (none)",
+          )
+          refresh()
+        },
+      ),
+    ),
+  )
+}
+
+function handleTaggedEffortKey(
+  key: { name?: string },
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): boolean {
+  const items = listTaggedEffortOptions(options.config)
+  if (items.length === 0) {
+    restoreFocusAfterActiveEffortPicker(state)
+    refresh()
+    return true
+  }
+  if (key.name === "escape") {
+    restoreFocusAfterActiveEffortPicker(state)
+    refresh()
+    return true
+  }
+  if (key.name === "j" || key.name === "down") {
+    state.taggedEffortSelectedIndex = (state.taggedEffortSelectedIndex + 1) % items.length
+    refresh()
+    return true
+  }
+  if (key.name === "k" || key.name === "up") {
+    state.taggedEffortSelectedIndex = (state.taggedEffortSelectedIndex - 1 + items.length) % items.length
+    refresh()
+    return true
+  }
+  if (isEnterKey(key) || key.name === "space") {
+    const selected = items[clampIndex(state.taggedEffortSelectedIndex, items.length)]
+    writeTaggedEffortSlug(options.config.stackDataRoot, selected.slug)
+    state.activeEffortWorkerFilter = undefined
+    restoreFocusAfterActiveEffortPicker(state)
+    appendStackBlock(
+      state.blocks,
+      selected.slug ? `active effort on: ${selected.label}` : "active effort off (none)",
+    )
+    refresh()
+    return true
+  }
+  return false
+}
+
+function formatEvalElapsed(startedAtIso: string): string {
+  const startedMs = Date.parse(startedAtIso)
+  if (Number.isNaN(startedMs)) return "unknown"
+  const totalSec = Math.max(0, Math.floor((Date.now() - startedMs) / 1000))
+  const hours = Math.floor(totalSec / 3600)
+  const minutes = Math.floor((totalSec % 3600) / 60)
+  const seconds = totalSec % 60
+  if (hours > 0) return `${hours}h${minutes}m`
+  if (minutes > 0) return `${minutes}m${seconds}s`
+  return `${seconds}s`
+}
+
+function evalInfoPanel(options: StackAppOptions, state: AppState): ReturnType<typeof Box> | undefined {
+  if (state.focusMode !== "eval-info") return undefined
+  const slug = readTaggedEffortSlug(options.config.stackDataRoot)
+  const effortLabel = taggedEffortDisplayLabel(options.config, slug)
+  return Box(
+    {
+      border: true,
+      borderStyle: "single",
+      borderColor: theme.borderActive,
+      title: "Eval Mode",
+      padding: stackTuiLayout.panelPadding,
+      flexDirection: "column",
+      width: "100%",
+      flexShrink: 0,
+      gap: 0,
+    },
+    switcherLine("this session is driven by an automated evaluator · Esc close", false),
+    switcherLine(`running for · ${formatEvalElapsed(options.session.startedAt)} (started ${options.session.startedAt})`, false),
+    switcherLine(`effort · ${effortLabel}${slug ? ` (${slug})` : ""}`, false),
+    switcherLine(`ui handle · ${state.evalUiHandleEnabled ? "on" : "off"}`, false),
+    switcherLine(`voice input · ${state.evalVoiceInputEnabled ? "on" : "off"}`, false),
+    switcherLine(`human input file · ${state.evalHumanInputFile ?? "none"}`, false),
   )
 }
 
@@ -3543,6 +3744,16 @@ function configRows(
         config.voice.enabled = !config.voice.enabled
         state.voiceStatus = readVoiceStatus(config)
         persistStackConfig(options, state, refresh)
+      },
+    },
+    {
+      id: "tagged-effort",
+      text: `active effort: ${taggedEffortDisplayLabel(config, readTaggedEffortSlug(config.stackDataRoot))}`,
+      onSelect: () => {
+        syncTaggedEffortSelectedIndex(options, state)
+        state.taggedEffortReturnFocus = state.focusMode
+        state.focusMode = "tagged-effort"
+        refresh()
       },
     },
     {
@@ -3943,6 +4154,7 @@ function goalWorkerChatFocused(state: AppState): boolean {
 }
 
 function focusedInputEditing(state: AppState): boolean {
+  if (agentPromptOwnsEditableInput(state.focusMode, state.status)) return true
   return activeInputBuffer(state).length > 0
 }
 
@@ -3960,6 +4172,38 @@ function noteInputBufferEdit(state: AppState, previous: string, next: string): v
   } else {
     state.slashMenuIndex = clampSlashMenuIndex(next, state.slashMenuIndex)
   }
+  if (slashMenuEditNeedsRemount(previous, next)) {
+    state.inputFastPathNeedsRemount = true
+  }
+}
+
+function setupNativeAgentInput(
+  renderer: CliRenderer,
+  state: AppState,
+  submit: () => boolean,
+  refresh: () => void,
+): void {
+  const input = renderer.root.findDescendantById(AGENT_INPUT_NATIVE_ID) as unknown as InputRenderable | undefined
+  if (!input) return
+  input.on("input", (value: string) => {
+    noteInputBufferEdit(state, state.inputBuffer, value)
+    state.inputBuffer = value
+    if (state.inputFastPathNeedsRemount) {
+      state.inputFastPathNeedsRemount = false
+      refresh()
+    }
+  })
+  input.on("enter", (value: string) => {
+    noteInputBufferEdit(state, state.inputBuffer, value)
+    state.inputBuffer = value
+    if (state.inputFastPathNeedsRemount) {
+      state.inputFastPathNeedsRemount = false
+      refresh()
+    }
+    input.value = ""
+    submit()
+  })
+  if (state.focusMode === "agent") input.focus()
 }
 
 function slashMenuElements(
@@ -4030,11 +4274,34 @@ function agentControlRow(
           }),
         ]
       : []),
-    Text({
-      content: renderAgentInputStyled(options, state, columns),
-      bg: agentInputBackground(state),
-      width: "100%",
-    }),
+    state.status === "idle"
+      ? Box(
+          {
+            flexDirection: "row",
+            width: "100%",
+            flexShrink: 0,
+            backgroundColor: agentInputBackground(state),
+          },
+          Text({ content: "› ", fg: onGardenerSession ? "#3fb950" : theme.synth.amber, flexShrink: 0 }),
+          Input({
+            id: AGENT_INPUT_NATIVE_ID,
+            value: state.inputBuffer,
+            placeholder: onGardenerSession ? "Message gardener · /help" : "Build anything · /help",
+            backgroundColor: agentInputBackground(state),
+            textColor: theme.fgInput,
+            focusedBackgroundColor: agentInputBackground(state),
+            focusedTextColor: theme.fgInput,
+            placeholderColor: theme.fgMuted,
+            width: "100%",
+            flexGrow: 1,
+            flexShrink: 1,
+          }),
+        )
+      : Text({
+          content: renderAgentInputStyled(options, state, columns),
+          bg: agentInputBackground(state),
+          width: "100%",
+        }),
     ...slashMenuElements(state.inputBuffer, state.slashMenuIndex, slashCtx, columns, state.focusMode === "agent"),
     ...(goalMode && !onGardenerSession
       ? [compactGoalWorkerControlRow(options, state, workerHarness, cursorHarness, refresh)]
@@ -4331,6 +4598,7 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
     if (state.threadGoalMetrics.size > 0) state.threadGoalMetrics = new Map()
     if (state.threadLifecycleStatus.size > 0) state.threadLifecycleStatus = new Map()
     if (state.threadMetaThreadIds.size > 0) state.threadMetaThreadIds = new Map()
+    if (state.threadMetaThreadManifests.size > 0) state.threadMetaThreadManifests = new Map()
     if (state.threadMetaThreadTitles.size > 0) state.threadMetaThreadTitles = new Map()
     if (state.threadLightsPreviews.size > 0) state.threadLightsPreviews = new Map()
     return
@@ -4347,6 +4615,7 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
   const nextMetrics = new Map<string, ThreadGoalLightsMetrics>()
   const nextLifecycle = new Map<string, ThreadLifecycleStatus>()
   const nextMetaThreadIds = new Map<string, string>()
+  const nextMetaThreadManifests = new Map<string, StackdMetaThreadManifest>()
   const nextMetaThreadTitles = new Map<string, string>()
   const nextPreviews = new Map<string, ThreadLightsPreview>(state.threadLightsPreviews)
   for (const summary of state.history) {
@@ -4354,6 +4623,7 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
     const manifest = manifests.get(summary.metaThreadId)
     if (manifest) {
       nextMetaThreadIds.set(summary.id, manifest.id)
+      nextMetaThreadManifests.set(summary.id, manifest)
       nextLifecycle.set(summary.id, manifest.lifecycle_status === "archived" ? "archived" : "live")
       const title = manifest.title?.trim() || manifest.active_goal?.objective?.trim()
       if (title) nextMetaThreadTitles.set(summary.id, title)
@@ -4406,6 +4676,7 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
   state.threadGoalMetrics = nextMetrics
   state.threadLifecycleStatus = nextLifecycle
   state.threadMetaThreadIds = nextMetaThreadIds
+  state.threadMetaThreadManifests = nextMetaThreadManifests
   state.threadMetaThreadTitles = nextMetaThreadTitles
   state.threadLightsPreviews = nextPreviews
 }
@@ -5668,25 +5939,27 @@ async function submitGardenerInputValue(
       userMessage: intent.body || parsed.displayText,
       imagePaths: parsed.imagePaths,
       workerSession: options.session,
-      workerSummaries: state.history,
-      workerTargetId: resolveGardenerWorkerTargetId(options, state),
+      workerSummaries: associatedGardenerWorkerSummaries(options, state),
+      workerTargetId: resolveAssociatedGardenerWorkerTargetId(options, state),
       onOutput: liveSink.write,
     })
     liveSink.flush()
     if (response) {
-      const targetThreadId = resolveGardenerWorkerTargetId(options, state)
-      const named = await tryApplyThreadNameFromAgentResponse({
-        stackRoot: options.config.stackDataRoot,
-        sessionLogDir: options.config.sessionLogDir,
-        threadId: targetThreadId,
-        text: response,
-        namedBy: "gardener",
-        codexModel: options.config.codexModel,
-        pricingRows: options.config.codexPricing,
-      })
-      if (named) {
-        syncSessionDisplayName(options.session, targetThreadId, named)
-        await refreshHistory()
+      const targetThreadId = resolveAssociatedGardenerWorkerTargetId(options, state)
+      if (targetThreadId) {
+        const named = await tryApplyThreadNameFromAgentResponse({
+          stackRoot: options.config.stackDataRoot,
+          sessionLogDir: options.config.sessionLogDir,
+          threadId: targetThreadId,
+          text: response,
+          namedBy: "gardener",
+          codexModel: options.config.codexModel,
+          pricingRows: options.config.codexPricing,
+        })
+        if (named) {
+          syncSessionDisplayName(options.session, targetThreadId, named)
+          await refreshHistory()
+        }
       }
     }
     refreshMetaEvents()
@@ -6691,6 +6964,7 @@ async function appendUsageSummaryFresh(
         readCodexAccountUsage({
           codexCommand: options.config.codexCommand,
           codexArgs: options.config.codexArgs,
+          env: stackCodexEnv(options.config),
         }),
         8_000,
       )
@@ -7947,6 +8221,7 @@ function handleRawInputInner(
   }
 
   if (state.focusMode === "agent") {
+    if (shouldUseNativeAgentInput(sequence, state.focusMode, state.status)) return false
     return handleRawAgentInput(sequence, state, submit, refresh)
   }
 
@@ -8083,6 +8358,11 @@ function handleRawInputInner(
     return true
   }
 
+  if (state.focusMode === "tagged-effort") {
+    handleTaggedEffortKey({ name: keyName }, options, state, refresh)
+    return true
+  }
+
   if (state.focusMode === "subagents") {
     handleSubagentsKey({ name: keyName }, options.config)
     refresh()
@@ -8188,15 +8468,82 @@ function buildGardenerArchiveFilterTargets(
   })
 }
 
-function resolveGardenerWorkerTargetId(options: StackAppOptions, state: AppState): string {
-  if (state.gardenerWorkerTargetId) {
-    const match = state.history.find(
-      (summary) => summary.id === state.gardenerWorkerTargetId && summary.id !== state.gardenerThreadId,
-    )
-    if (match) return match.id
+function activeEffortWorkerFilter(options: StackAppOptions, state: AppState): ActiveEffortWorkerFilter {
+  const slug = readTaggedEffortSlug(options.config.stackDataRoot)
+  const cached = state.activeEffortWorkerFilter
+  const now = Date.now()
+  if (cached && cached.slug === slug && (cached.effortId || now - cached.checkedAtMs < 2000)) return cached
+  let effort: StackEffortSummary | undefined
+  try {
+    effort = slug ? readEffortsPanelSummaries(options).find((entry) => entry.slug === slug) : undefined
+  } catch {
+    effort = undefined
   }
-  const latestWorker = state.history.find((summary) => summary.id !== state.gardenerThreadId)
-  return latestWorker?.id ?? options.session.id
+  const next = {
+    slug,
+    checkedAtMs: now,
+    ...(effort?.id ? { effortId: effort.id } : {}),
+    ...(effort?.meta_thread_refs ? { metaThreadRefs: effort.meta_thread_refs } : {}),
+  }
+  state.activeEffortWorkerFilter = next
+  return next
+}
+
+function manifestForThreadSummary(
+  options: StackAppOptions,
+  state: AppState,
+  summary: StackSessionSummary,
+): StackdMetaThreadManifest | undefined {
+  const cached = state.threadMetaThreadManifests.get(summary.id)
+  if (cached) return cached
+  const metaThreadId = state.threadMetaThreadIds.get(summary.id) ?? summary.metaThreadId
+  if (!metaThreadId) return undefined
+  const manifest = readEffortMetaThreadManifestSync(options.config.stackDataRoot, metaThreadId)
+  if (manifest) state.threadMetaThreadManifests.set(summary.id, manifest)
+  return manifest
+}
+
+function associatedGardenerWorkers(options: StackAppOptions, state: AppState): AssociatedGardenerWorker[] {
+  const gardenerId = gardenerThreadId(state)
+  const activeEffort = activeEffortWorkerFilter(options, state)
+  const manifestsByThreadId = new Map<string, StackdMetaThreadManifest>()
+  for (const summary of state.history) {
+    const manifest = manifestForThreadSummary(options, state, summary)
+    if (manifest) manifestsByThreadId.set(summary.id, manifest)
+  }
+  return associatedGardenerWorkersForEffort({
+    summaries: state.history,
+    manifestsByThreadId,
+    gardenerThreadId: gardenerId,
+    activeEffort: activeEffort.slug
+      ? { effortId: activeEffort.effortId, metaThreadRefs: activeEffort.metaThreadRefs }
+      : undefined,
+  })
+}
+
+function associatedGardenerWorkerSummaries(options: StackAppOptions, state: AppState): StackSessionSummary[] {
+  return associatedGardenerWorkers(options, state).map((worker) => worker.summary)
+}
+
+function resolveGardenerWorkerTargetId(options: StackAppOptions, state: AppState): string {
+  return resolveGardenerWorkerTargetIdFromAssociations({
+    workers: associatedGardenerWorkers(options, state),
+    gardenerThreadId: gardenerThreadId(state),
+    rememberedTargetId: state.gardenerWorkerTargetId,
+    currentSessionId: options.session.id,
+  })
+}
+
+function resolveAssociatedGardenerWorkerTargetId(
+  options: StackAppOptions,
+  state: AppState,
+): string | undefined {
+  return resolveAssociatedGardenerWorkerTargetIdFromAssociations({
+    workers: associatedGardenerWorkers(options, state),
+    gardenerThreadId: gardenerThreadId(state),
+    rememberedTargetId: state.gardenerWorkerTargetId,
+    currentSessionId: options.session.id,
+  })
 }
 
 function gardenerWorkerTargetSummary(
@@ -8204,6 +8551,7 @@ function gardenerWorkerTargetSummary(
   state: AppState,
 ): StackSessionSummary | undefined {
   const targetId = resolveGardenerWorkerTargetId(options, state)
+  if (targetId === state.gardenerThreadId) return undefined
   return state.history.find((summary) => summary.id === targetId)
 }
 
@@ -8214,12 +8562,15 @@ function gardenerWorkerTargetLabel(options: StackAppOptions, state: AppState): s
   return `${summary.id.slice(0, 8)} · ${label}`
 }
 
-function cycleGardenerWorkerTarget(state: AppState): void {
-  const workers = state.history.filter((summary) => summary.id !== state.gardenerThreadId)
-  if (workers.length === 0) return
+function cycleGardenerWorkerTarget(options: StackAppOptions, state: AppState): void {
+  const workers = associatedGardenerWorkerSummaries(options, state)
+  if (workers.length === 0) {
+    state.gardenerWorkerTargetId = undefined
+    return
+  }
   const currentId = state.gardenerWorkerTargetId
   const currentIndex = workers.findIndex((summary) => summary.id === currentId)
-  const next = workers[(currentIndex + 1) % workers.length]
+  const next = workers[(Math.max(0, currentIndex) + 1) % workers.length]
   state.gardenerWorkerTargetId = next.id
 }
 
@@ -8280,7 +8631,7 @@ async function resumeMonitorWorkerTarget(
 function gardenerPassContext(options: StackAppOptions, state: AppState) {
   return {
     gardenerThreadId: state.gardenerThreadId,
-    workerSummaries: state.history,
+    workerSummaries: associatedGardenerWorkerSummaries(options, state),
     workerTargetId: resolveGardenerWorkerTargetId(options, state),
   }
 }
@@ -8302,7 +8653,7 @@ async function refreshGardenerMaintenance(
     config: options.config,
     gardenerThreadId: state.gardenerThreadId,
     workerTargetId: resolveGardenerWorkerTargetId(options, state),
-    workerSummaries: state.history,
+    workerSummaries: associatedGardenerWorkerSummaries(options, state),
     workerStatus: state.status,
     workerQueueCount: state.queuedMessages.length,
     goalContext: state.goalContext,
@@ -8373,16 +8724,99 @@ function agentPanelIdsCopyIcon(
   })
 }
 
+function globalConnectionBarRightColumns(columns: number): number {
+  return Math.max(34, Math.min(64, Math.floor(columns * 0.52)))
+}
+
+function globalConnectionBarLeftColumns(columns: number): number {
+  return Math.max(22, columns - globalConnectionBarRightColumns(columns) - 2)
+}
+
+function taggedEffortBarChip(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  maxColumns: number,
+): ReturnType<typeof Text> {
+  const slug = readTaggedEffortSlug(options.config.stackDataRoot)
+  const label = activeEffortBarLabel(options.config, slug)
+  const selected = state.focusMode === "tagged-effort"
+  return Text({
+    content: oneLine(label, Math.max(16, maxColumns)),
+    fg: selected ? theme.fgOnAccent : slug ? theme.synth.amber : theme.fgMuted,
+    bg: selected ? theme.bgChipActive : slug ? theme.bgSubtle : undefined,
+    flexShrink: 0,
+    onMouseDown(event: PanelMouseEvent) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      syncTaggedEffortSelectedIndex(options, state)
+      state.taggedEffortReturnFocus = state.focusMode
+      state.focusMode = "tagged-effort"
+      refresh()
+    },
+  })
+}
+
+function evalModeBarChip(state: AppState, refresh: () => void): ReturnType<typeof Text> | undefined {
+  if (!state.evalModeEnabled) return undefined
+  const selected = state.focusMode === "eval-info"
+  return Text({
+    content: " EVAL MODE ",
+    fg: selected ? theme.fgOnAccent : theme.bgCanvas,
+    bg: selected ? theme.bgChipActive : theme.synth.amber,
+    flexShrink: 0,
+    onMouseDown(event: PanelMouseEvent) {
+      event.preventDefault?.()
+      event.stopPropagation?.()
+      state.focusMode = state.focusMode === "eval-info" ? "agent" : "eval-info"
+      refresh()
+    },
+  })
+}
+
+function restoreFocusAfterActiveEffortPicker(state: AppState): void {
+  if (state.taggedEffortReturnFocus === "gardener" || process.env.STACK_EFFORT_OPEN_GARDENER === "1") {
+    state.focusMode = "gardener"
+  } else if (state.taggedEffortReturnFocus) {
+    state.focusMode = state.taggedEffortReturnFocus
+  } else {
+    state.focusMode = "agent"
+  }
+  state.taggedEffortReturnFocus = undefined
+}
+
+function workerPanelTopBar(
+  renderer: CliRenderer,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): ReturnType<typeof Box> {
+  return Box(
+    {
+      flexDirection: "row",
+      width: "100%",
+      flexShrink: 0,
+      alignItems: "center",
+      gap: stackTuiLayout.panelGap,
+    },
+    Box({ flexGrow: 1, flexShrink: 1 }),
+    taggedEffortBarChip(options, state, refresh, 120),
+    agentPanelIdsCopyIcon(renderer, options, state, refresh),
+  )
+}
+
 function gardenerPanelTitle(options: StackAppOptions, state: AppState): string {
   const summary = state.history.find((entry) => entry.id === state.gardenerThreadId)
-  return roleChatPanelTitle(
+  const onSlug = readTaggedEffortSlug(options.config.stackDataRoot)
+  const onLabel = onSlug ? taggedEffortDisplayLabel(options.config, onSlug) : "none"
+  return `${roleChatPanelTitle(
     resolveThreadDisplayLabel(summary, {
-      maxLength: 28,
+      maxLength: 22,
       fallbackId: state.gardenerThreadId,
       isGardener: true,
     }),
     "gardener",
-  )
+  )} · on: ${oneLine(onLabel, 28)}`
 }
 
 function monitorPanelTitle(options: StackAppOptions, state: AppState): string {
@@ -8423,6 +8857,9 @@ function globalConnectionBar(
     (cursorHarness ? isCursorAuthPlan(authPlan) : isChatGptAuthPlan(authPlan))
       ? oneLine(state.codexAccountEmail, columns - 12)
       : undefined
+  const rightBarColumns = globalConnectionBarRightColumns(columns)
+  const leftBarColumns = globalConnectionBarLeftColumns(columns)
+  const evalModeChip = evalModeBarChip(state, refresh)
   const selectProvider = (harness: StackHarnessKind) => {
     state.focusMode = "account"
     if (config.harness === harness) {
@@ -8443,10 +8880,12 @@ function globalConnectionBar(
       {
         flexDirection: "column",
         flexGrow: 1,
+        flexShrink: 1,
+        minWidth: 0,
         gap: 0,
       },
       Text({
-        content: ` ${oneLine(connection.label, Math.max(24, columns - 32))} `,
+        content: ` ${oneLine(connection.label, leftBarColumns)} `,
         fg: accountSelected ? theme.fgOnAccent : connection.fg,
         bg: accountSelected ? theme.bgChipActive : theme.bgSubtle,
         onMouseDown(event) {
@@ -8459,7 +8898,7 @@ function globalConnectionBar(
       ...(connection.detail
         ? [
             Text({
-              content: oneLine(connection.detail, Math.max(28, columns - 32)),
+              content: oneLine(connection.detail, leftBarColumns),
               fg: connection.detailFg ?? theme.fgMuted,
               onMouseDown(event) {
                 event.preventDefault?.()
@@ -8510,9 +8949,34 @@ function globalConnectionBar(
         gap: 0,
         flexShrink: 0,
         alignItems: "flex-end",
+        width: rightBarColumns,
       },
-      exitButtonChip(exitStack),
-      stackVersionAndUpdateRow(options, state, refresh, columns),
+      ...(evalModeChip
+        ? [
+            Box(
+              {
+                flexDirection: "row",
+                justifyContent: "flex-end",
+                flexShrink: 0,
+                width: rightBarColumns,
+              },
+              evalModeChip,
+            ),
+          ]
+        : []),
+      taggedEffortBarChip(options, state, refresh, rightBarColumns),
+      Box(
+        {
+          flexDirection: "row",
+          gap: stackTuiLayout.panelGap,
+          flexShrink: 0,
+          alignItems: "center",
+          justifyContent: "flex-end",
+          width: rightBarColumns,
+        },
+        stackVersionAndUpdateRow(options, state, refresh, rightBarColumns),
+        exitButtonChip(exitStack),
+      ),
       Box(
         {
           flexDirection: "row",
@@ -9840,6 +10304,7 @@ type LightsPanelRow = {
   sectionId: LightsPanelSectionId
   isHeader: boolean
   isFilter?: boolean
+  lineKind?: LightsEffortLineKind
   threadId?: string
   threadRowKind?: LightsThreadPanelRowKind
 }
@@ -10021,7 +10486,7 @@ function lightsThreadDetailStatusLine(
   summary: StackSessionSummary,
   preview: ThreadLightsPreview | undefined,
 ): string | undefined {
-  const activeIds = resolveActiveThreadIds(options.session.id, state.gardenerWorkerTargetId)
+  const activeIds = resolveActiveThreadIds(options.session.id, resolveAssociatedGardenerWorkerTargetId(options, state))
   const parts: string[] = []
   if (summary.id === options.session.id) parts.push("focused here")
   else if (activeIds.has(summary.id)) parts.push("active target")
@@ -10128,7 +10593,7 @@ function lightsThreadFilterMatches(
 ): boolean {
   const needle = state.lightsThreadFilter.trim().toLowerCase()
   if (!needle) return true
-  const activeIds = resolveActiveThreadIds(options.session.id, state.gardenerWorkerTargetId)
+  const activeIds = resolveActiveThreadIds(options.session.id, resolveAssociatedGardenerWorkerTargetId(options, state))
   const lifecycle = state.threadLifecycleStatus.get(summary.id) ?? "live"
   const goal = state.threadGoalStatus.get(summary.id)
   const role = summary.id === state.gardenerThreadId ? "gardener" : "worker"
@@ -10155,7 +10620,7 @@ function lightsThreadSummariesForView(
   columns: number,
 ): StackSessionSummary[] {
   const filter = state.lightsThreadFilter.trim().toLowerCase()
-  const liveIds = resolveVisibleThreadIds(options.session.id, state.gardenerWorkerTargetId, {
+  const liveIds = resolveVisibleThreadIds(options.session.id, resolveAssociatedGardenerWorkerTargetId(options, state), {
     lifecycle: "live",
     history: state.history,
     threadLifecycleStatus: state.threadLifecycleStatus,
@@ -10194,6 +10659,7 @@ function buildLightsPanelRows(
           text: line,
           sectionId: section.id,
           isHeader: false,
+          lineKind: section.lineKinds?.[index],
           threadId: section.threadIds?.[index],
           threadRowKind: section.threadRowKinds?.[index],
         })
@@ -10237,16 +10703,22 @@ function renderLightsPanel(
     const isPrimary = row.threadRowKind === "primary"
     const selectedPrimary =
       isPrimary && rowThreadId !== undefined && state.lightsSelectedThreadId === rowThreadId
+    const isActiveEffortOn = row.lineKind === "active-effort-on"
+    const isActiveEffortHint = row.lineKind === "active-effort-hint"
     children.push(
       Text({
         content: row.text || " ",
         fg:
-          row.isHeader || row.isFilter || isViewAction
+          isActiveEffortOn
             ? theme.synth.amber
-            : row.threadRowKind === "detail"
+            : row.isHeader || row.isFilter || isViewAction
+            ? theme.synth.amber
+            : isActiveEffortHint
               ? theme.fgMuted
-              : theme.fgPrimary,
-        bg: filterFocused || selectedPrimary ? theme.bgInputFocused : undefined,
+              : row.threadRowKind === "detail"
+                ? theme.fgMuted
+                : theme.fgPrimary,
+        bg: filterFocused || selectedPrimary || isActiveEffortOn ? theme.bgInputFocused : undefined,
         width: "100%",
         flexShrink: 0,
         ...(row.isHeader
@@ -10401,12 +10873,13 @@ function lightsThreadsSection(
   columns: number,
   threadWindowRows: number,
 ): LightsPanelSection {
-  const liveIds = resolveVisibleThreadIds(options.session.id, state.gardenerWorkerTargetId, {
+  const gardenerWorkerTargetId = resolveAssociatedGardenerWorkerTargetId(options, state)
+  const liveIds = resolveVisibleThreadIds(options.session.id, gardenerWorkerTargetId, {
     lifecycle: "live",
     history: state.history,
     threadLifecycleStatus: state.threadLifecycleStatus,
   })
-  const activeIds = resolveActiveThreadIds(options.session.id, state.gardenerWorkerTargetId)
+  const activeIds = resolveActiveThreadIds(options.session.id, gardenerWorkerTargetId)
   const filteredSummaries = lightsThreadSummariesForView(options, state, columns)
   const panelRows = buildLightsThreadPanelRows(options, state, columns)
   const windowRows = threadWindowRows
@@ -10443,41 +10916,74 @@ function lightsEffortsSection(options: StackAppOptions, state: AppState, columns
   } catch (error) {
     return {
       id: "efforts",
-      header: "Efforts · unavailable",
+      header: "Efforts · on: unavailable",
       lines: [`  ${oneLine(errorMessage(error), Math.max(20, columns - 2))}`],
     }
   }
 
-  const active = efforts.filter((effort) => effort.status !== "archived")
+  const activeSlug = readTaggedEffortSlug(options.config.stackDataRoot)
+  const onLabel = activeSlug ? taggedEffortDisplayLabel(options.config, activeSlug) : "none"
+  const running = efforts.filter((effort) => effort.status !== "archived")
   const archived = efforts.filter((effort) => effort.status === "archived")
-  const header = `Efforts · ${active.length} active · ${archived.length} archived`
-  if (efforts.length === 0) {
-    return { id: "efforts", header, lines: ["  (none)"] }
-  }
-  if (active.length === 0) {
-    const latestArchived = archived[0]
-    return {
-      id: "efforts",
-      header,
-      lines: latestArchived
-        ? [`  archived latest · ${oneLine(latestArchived.title || latestArchived.slug, Math.max(20, columns - 22))}`]
-        : ["  (none)"],
-    }
-  }
-
+  const header = `Efforts · on: ${oneLine(onLabel, Math.max(12, columns - 14))} · ${running.length} running`
   const lines: string[] = []
-  for (const effort of active.slice(0, 3)) {
-    const metaCount = effort.meta_thread_refs.length
-    const metaLabel = `${metaCount} thread${metaCount === 1 ? "" : "s"}`
-    const primary = `${effort.title || effort.slug} · ${effort.template} · ${metaLabel} · updated ${effortAgeLabel(effort)}`
-    lines.push(`  ${oneLine(primary, Math.max(20, columns - 2))}`)
+  const lineKinds: Array<LightsEffortLineKind | undefined> = []
 
-    for (const signal of effortLightsSignals(effort, options.config.workspaceRoot, options.config.stackDataRoot).slice(0, 2)) {
-      lines.push(`  ${oneLine(signal, Math.max(20, columns - 2))}`)
+  if (activeSlug) {
+    const onEffort = running.find((effort) => effort.slug === activeSlug)
+    if (onEffort) {
+      lines.push(
+        rightAlignedLightsLine(
+          "  ◉ ON",
+          `${onEffort.short_title} · ${onEffort.template}`,
+          columns,
+        ),
+      )
+      lineKinds.push("active-effort-on")
+      for (const signal of effortLightsSignals(onEffort, options.config.workspaceRoot, options.config.stackDataRoot).slice(0, 2)) {
+        lines.push(`    ${oneLine(signal, Math.max(16, columns - 6))}`)
+        lineKinds.push("active-effort-on")
+      }
+    } else {
+      lines.push(`  ◉ ON · ${oneLine(activeSlug, Math.max(16, columns - 10))} (record missing)`)
+      lineKinds.push("active-effort-on")
+    }
+  } else {
+    lines.push(`  ◉ ON · none - click active: top-right or /config`)
+    lineKinds.push("active-effort-hint")
+  }
+
+  if (running.length === 0) {
+    if (archived.length > 0) {
+      const latestArchived = archived[0]
+      lines.push(`  running · (none) · latest archived ${oneLine(latestArchived?.title || latestArchived?.slug || "", Math.max(12, columns - 24))}`)
+      lineKinds.push("default")
+    }
+    return { id: "efforts", header, lines, lineKinds }
+  }
+
+  const otherRunning = running.filter((effort) => effort.slug !== activeSlug)
+  if (otherRunning.length > 0) {
+    lines.push(`  ─ other running (${otherRunning.length})`)
+    lineKinds.push("default")
+    for (const effort of otherRunning.slice(0, 2)) {
+      lines.push(`  · ${oneLine(`${effort.short_title} · ${effort.template}`, Math.max(16, columns - 4))}`)
+      lineKinds.push("default")
+    }
+    if (otherRunning.length > 2) {
+      lines.push(`  ... +${otherRunning.length - 2} more running`)
+      lineKinds.push("default")
     }
   }
-  if (active.length > 3) lines.push(`  ... +${active.length - 3} active efforts`)
-  return { id: "efforts", header, lines }
+  return { id: "efforts", header, lines, lineKinds }
+}
+
+function rightAlignedLightsLine(left: string, right: string, columns: number): string {
+  if (columns <= left.length + 1) return oneLine(left, columns)
+  const rightColumns = Math.max(1, columns - left.length - 1)
+  const rightText = oneLine(right, rightColumns)
+  const gap = Math.max(1, columns - left.length - rightText.length)
+  return `${left}${" ".repeat(gap)}${rightText}`
 }
 
 function effortLightsSignals(effort: StackEffortSummary, workspaceRoot: string, stackDataRoot: string): string[] {
@@ -10503,8 +11009,9 @@ function lightsGardenersSection(options: StackAppOptions, state: AppState, colum
   const inboxCount = readGardenerInbox(options.config.stackDataRoot, state.gardenerThreadId).length
   const status = state.gardenerChatRunning ? "running" : inboxCount > 0 ? "queued" : "idle"
   const header = `Gardeners · ${status} · inbox ${inboxCount}`
+  const targetId = resolveAssociatedGardenerWorkerTargetId(options, state)
   const lines = [
-    `  default ${state.gardenerThreadId.slice(0, 8)} · target ${resolveGardenerWorkerTargetId(options, state).slice(0, 8)}`,
+    `  default ${state.gardenerThreadId.slice(0, 8)} · target ${targetId ? targetId.slice(0, 8) : "none"}`,
   ]
   if (state.gardenerWorkspacePath) lines.push(`  workspace ${oneLine(state.gardenerWorkspacePath, Math.max(20, columns - 12))}`)
   if (state.gardenerNotice) lines.push(`  notice ${oneLine(state.gardenerNotice, Math.max(20, columns - 10))}`)
@@ -10889,6 +11396,8 @@ function buildOpsPanelInput(options: StackAppOptions, state: AppState) {
       synthWorkerInferenceEnabled: options.config.synthWorkerInferenceEnabled,
       synthWorkerInferenceModel: options.config.synthWorkerInferenceModel,
       codexArgs: options.config.codexArgs,
+      codexHome: options.config.codexHome,
+      codexIsolationMode: options.config.codexIsolationMode,
       subagents: state.subagentLogs,
     },
     metaEvents: visualMetaEvents(state.metaEvents),
@@ -11206,12 +11715,20 @@ function renderEffortsPanelStyled(options: StackAppOptions, state: AppState, col
   }
 
   const selected = efforts[state.selectedEffortIndex]
-  const active = efforts.filter((effort) => effort.status !== "archived")
+  const activeSlug = readTaggedEffortSlug(options.config.stackDataRoot)
+  const running = efforts.filter((effort) => effort.status !== "archived")
   const archived = efforts.filter((effort) => effort.status === "archived")
   const lines: Array<{ text: string; color: string }> = []
   lines.push({
-    text: oneLine(`Efforts ${active.length} active - ${archived.length} archived`, columns),
-    color: theme.synth.amber,
+    text: oneLine(
+      `ON: ${activeSlug ? taggedEffortDisplayLabel(options.config, activeSlug) : "none"} · ${running.length} running · ${archived.length} archived`,
+      columns,
+    ),
+    color: activeSlug ? theme.synth.amber : theme.fgMuted,
+  })
+  lines.push({
+    text: oneLine("turn on/off: click active: top-right · many can run, one ON at a time", columns),
+    color: theme.fgMuted,
   })
   const templates = effortTemplatesPanelLine(options.config.stackDataRoot, options.config.appRoot, columns)
   if (templates) {
@@ -11244,8 +11761,8 @@ function renderEffortsPanelStyled(options: StackAppOptions, state: AppState, col
   if (efforts.length === 0) {
     lines.push({ text: "No Efforts yet.", color: theme.fgMuted })
   } else {
-    pushEffortSectionLines(lines, "Active", active, columns, options.config, selected?.id)
-    pushEffortSectionLines(lines, "Archived", archived, columns, options.config, selected?.id)
+    pushEffortSectionLines(lines, "Running", running, columns, options.config, selected?.id, activeSlug)
+    pushEffortSectionLines(lines, "Archived", archived, columns, options.config, selected?.id, activeSlug)
   }
 
   const rendered = lines.slice(0, Math.max(1, visibleRows))
@@ -11293,6 +11810,7 @@ function pushEffortSectionLines(
   columns: number,
   config: StackConfig,
   selectedEffortId?: string,
+  activeEffortSlug?: string | null,
 ): void {
   if (efforts.length === 0) return
   const { workspaceRoot, stackDataRoot } = config
@@ -11300,9 +11818,10 @@ function pushEffortSectionLines(
   lines.push({ text: `${title} (${efforts.length})`, color: theme.fgSecondary })
   for (const effort of efforts) {
     const selected = effort.id === selectedEffortId
+    const isOn = effortIsActiveOn(activeEffortSlug ?? null, effort.slug)
     lines.push({
-      text: oneLine(`${selected ? ">" : " "} ${effort.title || effort.slug}`, columns),
-      color: selected ? theme.synth.amber : theme.fgPrimary,
+      text: oneLine(`${selected ? ">" : " "} ${isOn ? "◉ ON · " : "       "}${effort.short_title}`, columns),
+      color: isOn ? theme.synth.amber : selected ? theme.synth.amber : theme.fgPrimary,
     })
     const metaCount = effort.meta_thread_refs.length
     const metaLabel = `${metaCount} thread${metaCount === 1 ? "" : "s"}`
@@ -13280,6 +13799,11 @@ async function activateWorkerSessionForGardener(
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
 ): Promise<boolean> {
+  if (targetId === gardenerThreadId(state)) {
+    appendStackBlock(state.blocks, "gardener has no associated live worker for this effort")
+    refresh()
+    return false
+  }
   if (targetId === options.session.id) return true
   const summary = state.history.find((entry) => entry.id === targetId)
   if (!summary) {
@@ -13500,7 +14024,7 @@ async function handleGardenerKey(
   const inbox = readGardenerInbox(options.config.stackDataRoot, gardenerThreadId(state))
   state.gardenerInboxSelectedIndex = clampIndex(state.gardenerInboxSelectedIndex, inbox.length)
   if (key.name === "w") {
-    cycleGardenerWorkerTarget(state)
+    cycleGardenerWorkerTarget(options, state)
     refresh()
     return
   }
@@ -16073,15 +16597,20 @@ async function submitPrompt(
 
   const selectedFiles = options.workspace.files.filter((file) => file.selected)
   let refreshPending = false
+  let lastLiveRefreshAt = 0
   let monitorQueue: Promise<StackMonitorSnapshot | undefined> = Promise.resolve(undefined)
   const refreshIfScrollStable = () => {
     if (isRecentAgentScroll(state)) return
     if (refreshPending) return
     refreshPending = true
-    queueMicrotask(() => {
+    const now = Date.now()
+    const delayMs = Math.max(0, 100 - (now - lastLiveRefreshAt))
+    setTimeout(() => {
       refreshPending = false
-      if (!isRecentAgentScroll(state)) refresh()
-    })
+      if (isRecentAgentScroll(state)) return
+      lastLiveRefreshAt = Date.now()
+      refresh()
+    }, delayMs)
   }
   const queueMonitorRun = (input: Parameters<typeof runMonitorForNewEvents>[0]) => {
     state.monitorSnapshot = { ...state.monitorSnapshot, status: "running" }
