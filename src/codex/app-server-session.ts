@@ -288,7 +288,7 @@ export class CodexAppServerSession {
     })
     if (this.threadId) {
       try {
-        await this.client.request("thread/resume", { threadId: this.threadId })
+        await this.client.request("thread/resume", { threadId: this.threadId, ...this.threadSandboxOverrides() })
         return
       } catch (error) {
         // Namespace cutover: thread ids recorded before Codex isolation point
@@ -423,26 +423,42 @@ export class CodexAppServerSession {
 
   private threadStartParams(config: StackConfig): Record<string, unknown> {
     // App-server threads take their sandbox from thread/start params, NOT from
-    // CODEX_HOME config.toml writable_roots — without this, workers in eval
-    // harnesses EPERM on every write outside cwd (e.g. the EffortBench packet)
-    // and CLI wrappers that swallow the error never trigger escalation.
-    const writableRoots = (process.env.STACK_CODEX_WRITABLE_ROOTS ?? "")
-      .split(":")
-      .map((value) => value.trim())
-      .filter(Boolean)
-    const threadSandbox = (process.env.STACK_CODEX_THREAD_SANDBOX ?? "").trim()
-    const sandboxPolicy = threadSandbox === "danger-full-access"
-      ? { type: "danger-full-access" }
-      : writableRoots.length > 0
-        ? { type: "workspace-write", writableRoots }
-        : undefined
+    // CODEX_HOME config.toml writable_roots. thread/start uses the `sandbox`
+    // mode field; `sandboxPolicy` is only accepted by turn/start/command exec.
     return {
       model: config.codexModel,
       cwd: config.workspaceRoot,
       developerInstructions: stackHarnessInstructions(config),
       serviceName: "stack",
       approvalPolicy: "on-failure",
-      ...(sandboxPolicy ? { sandboxPolicy } : {}),
+      ...this.threadSandboxOverrides(),
+    }
+  }
+
+  private threadSandboxOverrides(): Record<string, unknown> {
+    const writableRoots = (process.env.STACK_CODEX_WRITABLE_ROOTS ?? "")
+      .split(":")
+      .map((value) => value.trim())
+      .filter(Boolean)
+    const threadSandbox = (process.env.STACK_CODEX_THREAD_SANDBOX ?? "").trim()
+    const sandbox = threadSandbox === "danger-full-access"
+      ? "danger-full-access"
+      : writableRoots.length > 0
+        ? "workspace-write"
+        : undefined
+    const workspaceWriteConfig = sandbox === "workspace-write"
+      ? {
+          sandbox_workspace_write: {
+            writable_roots: writableRoots,
+            network_access: true,
+            exclude_tmpdir_env_var: false,
+            exclude_slash_tmp: false,
+          },
+        }
+      : undefined
+    return {
+      ...(sandbox ? { sandbox } : {}),
+      ...(workspaceWriteConfig ? { config: workspaceWriteConfig } : {}),
     }
   }
 
