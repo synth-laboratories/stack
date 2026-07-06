@@ -430,15 +430,19 @@ export class CodexAppServerSession {
       .split(":")
       .map((value) => value.trim())
       .filter(Boolean)
+    const threadSandbox = (process.env.STACK_CODEX_THREAD_SANDBOX ?? "").trim()
+    const sandboxPolicy = threadSandbox === "danger-full-access"
+      ? { type: "danger-full-access" }
+      : writableRoots.length > 0
+        ? { type: "workspace-write", writableRoots }
+        : undefined
     return {
       model: config.codexModel,
       cwd: config.workspaceRoot,
       developerInstructions: stackHarnessInstructions(config),
       serviceName: "stack",
       approvalPolicy: "on-failure",
-      ...(writableRoots.length > 0
-        ? { sandboxPolicy: { type: "workspace-write", writableRoots } }
-        : {}),
+      ...(sandboxPolicy ? { sandboxPolicy } : {}),
     }
   }
 
