@@ -1,3 +1,4 @@
+pub mod assembly_line;
 pub mod checkpoint;
 pub mod codex_isolation;
 pub mod codex_path;
