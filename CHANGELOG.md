@@ -17,6 +17,24 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+### Added
+
+- **Generic hosted optimizer submit.** `stack_submit_hosted_optimizer_run` MCP
+  tool and `submitHostedOptimizerRun` client post to the backend optimizer
+  owner route (`POST /api/v1/optimizers/runs`) for `gepa`, `go-ex`, `mapo`,
+  and `online-reflexion`, with idempotency key, project binding, JSON/TOML
+  config, container-pool target, and lever-event receipts.
+- **Online Reflexion effort launch capability.**
+  `optimizer.online_reflexion.hosted` is a wired Effort launch capability;
+  launch configs come from `--request-json` or a JSON/TOML `--config` path.
+- **Online Reflexion receipt audits + evidence packet.**
+  `stack_audit_online_reflexion_receipt`,
+  `stack_audit_online_reflexion_receipts`, and
+  `stack_build_online_reflexion_evidence_packet` read owner-route receipt
+  audits and compose a release-readiness packet gated on five evidence lanes;
+  `public_copy_allowed` stays false until the human blog/release owner
+  approves. All three are in the default gardener read allow-list.
+
 ## [0.2.0-dev.20260706.1] - 2026-07-06
 
 Efforts serious-work cockpit dev release.
