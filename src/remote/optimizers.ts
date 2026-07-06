@@ -96,6 +96,30 @@ export type HostedGepaSubmitResult = {
   finishedAt: string
 }
 
+export type HostedOptimizerSubmitOptions = {
+  algorithm: "gepa" | "go-ex" | "mapo" | "online-reflexion"
+  runId?: string
+  idempotencyKey?: string
+  projectId?: string
+  configToml?: string
+  configJson?: Record<string, unknown>
+  containerPool?: Record<string, unknown>
+  timeoutSeconds?: number
+}
+
+export type HostedOptimizerSubmitResult = {
+  ok: boolean
+  status: number
+  message: string
+  environmentName: string
+  apiBaseUrl: string
+  algorithm: string
+  runId?: string
+  response?: Record<string, unknown>
+  submittedAt: string
+  finishedAt: string
+}
+
 type CommandInvocation = {
   command: string
   args: string[]
@@ -123,6 +147,49 @@ export type HostedOptimizerArtifactDownload = {
   bytes: number
   downloadedAt: string
 }
+
+export type OnlineReflexionReceiptAuditOptions = {
+  runId: string
+  strict?: boolean
+}
+
+export type OnlineReflexionReceiptAuditSetOptions = {
+  runIds?: string[]
+  layerId?: string
+  projectId?: string
+  strict?: boolean
+  limit?: number
+}
+
+export type OnlineReflexionEvidencePacketOptions = OnlineReflexionReceiptAuditSetOptions & {
+  evidenceNotes?: Record<string, unknown>
+  blogDecisionOwner?: string
+  blogApprovedByOwner?: boolean
+  includeReceiptSummaries?: boolean
+}
+
+const ONLINE_REFLEXION_RELEASE_LANES: { key: string; label: string }[] = [
+  {
+    key: "craftax_rotated_121_125",
+    label: "Craftax rotated 121-125 heldout repeats 2+3",
+  },
+  {
+    key: "alfworld_6x6_x3",
+    label: "ALFWorld 6/6 matched compare repeated three times",
+  },
+  {
+    key: "ebr_first_scale_compare",
+    label: "EBR first scale compare",
+  },
+  {
+    key: "harvey_lab_pilot",
+    label: "Harvey LAB pilot",
+  },
+  {
+    key: "hosted_staging_smoke",
+    label: "Hosted staging smoke with terminal receipt chain",
+  },
+]
 
 export async function readHostedOptimizerSnapshot(config: StackConfig): Promise<HostedOptimizerSnapshot> {
   const auth = environmentAuthStatus(config.environment)
@@ -245,6 +312,54 @@ export async function submitHostedGepaRun(
   }
 }
 
+export async function submitHostedOptimizerRun(
+  config: StackConfig,
+  options: HostedOptimizerSubmitOptions,
+): Promise<HostedOptimizerSubmitResult> {
+  const submittedAt = new Date().toISOString()
+  if (!options.configToml && !options.configJson) {
+    return {
+      ok: false,
+      status: 0,
+      message: "config_toml or config_json is required",
+      environmentName: config.environmentName,
+      apiBaseUrl: config.environment.apiBaseUrl,
+      algorithm: options.algorithm,
+      submittedAt,
+      finishedAt: new Date().toISOString(),
+    }
+  }
+  const body: Record<string, unknown> = {
+    algorithm: options.algorithm,
+  }
+  if (options.runId) body.run_id = options.runId
+  if (options.idempotencyKey) body.idempotency_key = options.idempotencyKey
+  if (options.projectId) body.project_id = options.projectId
+  if (options.configToml) body.config_toml = options.configToml
+  if (options.configJson) body.config_json = options.configJson
+  if (options.containerPool) body.container_pool = options.containerPool
+
+  const result = await postJsonBodyResult(config, "/api/v1/optimizers/runs", body, {
+    timeoutSeconds: options.timeoutSeconds,
+  })
+  const response = result.data
+  const runId = readString(response?.run_id) ?? readString(response?.id)
+  return {
+    ok: result.ok,
+    status: result.status,
+    message: result.ok
+      ? `submitted hosted ${options.algorithm}${runId ? ` run ${runId}` : ""}`
+      : result.message,
+    environmentName: config.environmentName,
+    apiBaseUrl: config.environment.apiBaseUrl,
+    algorithm: options.algorithm,
+    ...(runId ? { runId } : {}),
+    ...(response ? { response } : {}),
+    submittedAt,
+    finishedAt: new Date().toISOString(),
+  }
+}
+
 function hostedGepaCommandInvocation(config: StackConfig, args: string[]): CommandInvocation {
   if (config.optimizerCommand !== "synth-optimizers" || commandSupportsHostedSubmit(config.optimizerCommand)) {
     return { command: config.optimizerCommand, args }
@@ -353,6 +468,100 @@ export async function downloadHostedOptimizerArtifact(
     status: result.status,
     message: `saved ${bytes.length} bytes to ${outputPath}`,
     data: payload,
+  }
+}
+
+export async function auditOnlineReflexionReceipt(
+  config: StackConfig,
+  options: OnlineReflexionReceiptAuditOptions,
+): Promise<HostedOptimizerActionResult> {
+  const params = new URLSearchParams()
+  if (options.strict) params.set("strict", "true")
+  const suffix = params.size > 0 ? `?${params.toString()}` : ""
+  const result = await getJsonResult(
+    config,
+    `/api/v1/optimizers/runs/${encodeURIComponent(options.runId)}/online-reflexion/receipt-audit${suffix}`,
+  )
+  const payload = result.data
+  const report = asRecord(payload?.detail) ?? payload
+  const auditStatus = readString(report?.status)
+  return {
+    ...result,
+    message: result.ok
+      ? `online Reflexion receipt audit ${auditStatus ?? "read"} for ${options.runId}`
+      : result.message,
+    ...(report ? { data: report } : {}),
+  }
+}
+
+export async function auditOnlineReflexionReceiptSet(
+  config: StackConfig,
+  options: OnlineReflexionReceiptAuditSetOptions,
+): Promise<HostedOptimizerActionResult> {
+  const params = new URLSearchParams()
+  const runIds = (options.runIds ?? []).map((runId) => runId.trim()).filter(Boolean)
+  if (runIds.length > 0) params.set("run_ids", runIds.join(","))
+  if (options.layerId) params.set("layer_id", options.layerId)
+  if (options.projectId) params.set("project_id", options.projectId)
+  if (options.strict) params.set("strict", "true")
+  if (options.limit !== undefined) params.set("limit", String(options.limit))
+  const suffix = params.size > 0 ? `?${params.toString()}` : ""
+  const result = await getJsonResult(config, `/api/v1/optimizers/online-reflexion/receipt-audits${suffix}`)
+  const payload = result.data
+  const report = asRecord(payload?.detail) ?? payload
+  const auditStatus = readString(report?.status)
+  return {
+    ...result,
+    message: result.ok
+      ? `online Reflexion receipt audit set ${auditStatus ?? "read"}`
+      : result.message,
+    ...(report ? { data: report } : {}),
+  }
+}
+
+export async function buildOnlineReflexionEvidencePacket(
+  config: StackConfig,
+  options: OnlineReflexionEvidencePacketOptions,
+): Promise<HostedOptimizerActionResult> {
+  const auditResult = await auditOnlineReflexionReceiptSet(config, { ...options, strict: false })
+  const audit = asRecord(auditResult.data)
+  if (!auditResult.ok || !audit) {
+    return {
+      ...auditResult,
+      message: auditResult.ok ? "online Reflexion evidence packet missing audit payload" : auditResult.message,
+    }
+  }
+  let receiptSummaries: Record<string, unknown>[] = []
+  const runIds = (options.runIds ?? []).map((runId) => runId.trim()).filter(Boolean)
+  const shouldReadReceiptSummaries = options.includeReceiptSummaries !== false
+    && (Boolean(options.layerId) || Boolean(options.projectId) || runIds.length === 0)
+  if (shouldReadReceiptSummaries) {
+    const params = new URLSearchParams()
+    params.set("include_summary", "true")
+    if (options.layerId) params.set("layer_id", options.layerId)
+    if (options.projectId) params.set("project_id", options.projectId)
+    if (options.limit !== undefined) params.set("limit", String(options.limit))
+    const receiptsResult = await getJsonResult(config, `/api/v1/optimizers/online-reflexion/receipts?${params.toString()}`)
+    const receiptsPayload = asRecord(receiptsResult.data)
+    if (receiptsResult.ok && receiptsPayload) {
+      receiptSummaries = asArray(receiptsPayload.receipts).flatMap((item) => {
+        const record = asRecord(item)
+        return record ? [record] : []
+      })
+    }
+  }
+  const packet = onlineReflexionEvidencePacket({
+    audit,
+    receiptSummaries,
+    evidenceNotes: options.evidenceNotes ?? {},
+    blogDecisionOwner: options.blogDecisionOwner ?? "Josh",
+    blogApprovedByOwner: options.blogApprovedByOwner ?? false,
+  })
+  return {
+    ok: true,
+    status: auditResult.status,
+    message: `online Reflexion evidence packet ${readString(packet.status) ?? "built"}`,
+    data: packet,
   }
 }
 
@@ -617,8 +826,160 @@ function latestEventSeq(events: { seq?: number }[]): number | undefined {
   }, undefined)
 }
 
+function onlineReflexionEvidencePacket(input: {
+  audit: Record<string, unknown>
+  receiptSummaries: Record<string, unknown>[]
+  evidenceNotes: Record<string, unknown>
+  blogDecisionOwner: string
+  blogApprovedByOwner: boolean
+}): Record<string, unknown> {
+  const requiredEvidence = ONLINE_REFLEXION_RELEASE_LANES.map((lane) => {
+    const evidence = input.evidenceNotes[lane.key]
+    return {
+      ...lane,
+      state: onlineReflexionEvidenceLaneState(evidence),
+      evidence,
+    }
+  })
+  const remaining = requiredEvidence
+    .filter((lane) => lane.state !== "complete")
+    .map((lane) => `attach complete evidence for ${lane.label}`)
+  const reports = asArray(input.audit.reports)
+  const missingRunIds = asArray(input.audit.missing_run_ids)
+  const attentionRequiredRunIds = asArray(input.audit.attention_required_run_ids)
+  const publishCandidateCount = reports.length
+  const receiptAuditPassed = readString(input.audit.status) === "pass"
+  const noMissingRuns = missingRunIds.length === 0
+  const noAttentionRequiredRuns = attentionRequiredRunIds.length === 0
+  const hasPublishCandidates = publishCandidateCount > 0
+  const evidenceLanesComplete = requiredEvidence.every((lane) => lane.state === "complete")
+  if (!hasPublishCandidates) remaining.push("select at least one hosted online Reflexion publish-candidate run")
+  if (!receiptAuditPassed) remaining.push("clear online Reflexion receipt-completeness audit")
+  if (!noMissingRuns) remaining.push("resolve missing online Reflexion run receipts")
+  if (!noAttentionRequiredRuns) remaining.push("resolve attention-required receipt audits")
+  if (!input.blogApprovedByOwner) {
+    remaining.push(`obtain ${input.blogDecisionOwner} blog/release approval before public copy`)
+  }
+  const technicalReady = receiptAuditPassed
+    && noMissingRuns
+    && noAttentionRequiredRuns
+    && hasPublishCandidates
+    && evidenceLanesComplete
+  const status = technicalReady && input.blogApprovedByOwner
+    ? "ready"
+    : technicalReady
+      ? "ready_for_owner_review"
+      : "not_ready"
+  return {
+    schema_version: "online_reflexion_evidence_packet.v1",
+    status,
+    public_copy_allowed: status === "ready",
+    blog_decision_owner: input.blogDecisionOwner,
+    built_at: new Date().toISOString(),
+    selection: asRecord(input.audit.selection) ?? {},
+    claim_gate: {
+      receipt_audit_passed: receiptAuditPassed,
+      no_missing_runs: noMissingRuns,
+      no_attention_required_runs: noAttentionRequiredRuns,
+      has_publish_candidates: hasPublishCandidates,
+      publish_candidate_count: publishCandidateCount,
+      evidence_lanes_complete: evidenceLanesComplete,
+      blog_owner_review_passed: input.blogApprovedByOwner,
+    },
+    required_evidence: requiredEvidence,
+    remaining,
+    audit: input.audit,
+    receipt_summaries: input.receiptSummaries,
+  }
+}
+
+function onlineReflexionEvidenceLaneState(value: unknown): "missing" | "attached" | "complete" {
+  if (value === undefined || value === null) return "missing"
+  if (value === true) return "complete"
+  const record = asRecord(value)
+  if (record) {
+    if (readBoolean(record.ok) === true) return "complete"
+    const status = readString(record.status)?.trim().toLowerCase()
+    if (status && ["pass", "passed", "complete", "completed", "ready", "succeeded"].includes(status)) {
+      return "complete"
+    }
+    return "attached"
+  }
+  return "attached"
+}
+
 async function getJson(config: StackConfig, path: string): Promise<unknown> {
   return sanitizeHostedOptimizerValue(JSON.parse(await getText(config, path)) as unknown)
+}
+
+async function getJsonResult(config: StackConfig, path: string): Promise<HostedOptimizerActionResult> {
+  const token = process.env[config.environment.authEnv]
+  if (!token) {
+    return { ok: false, status: 0, message: environmentAuthStatus(config.environment).message }
+  }
+  try {
+    const response = await fetch(`${config.environment.apiBaseUrl.replace(/\/+$/, "")}${path}`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+      },
+      signal: AbortSignal.timeout(15000),
+    })
+    const text = await response.text()
+    const parsed = text.trim()
+      ? sanitizeHostedOptimizerValue(JSON.parse(text) as unknown)
+      : {}
+    const data = asRecord(parsed) ?? { value: parsed }
+    return {
+      ok: response.ok,
+      status: response.status,
+      message: response.ok
+        ? "ok"
+        : (readString(data.detail) ?? redactHostedOptimizerText(text)) || response.statusText,
+      data,
+    }
+  } catch (error) {
+    return { ok: false, status: 0, message: hostedOptimizerErrorMessage(error) }
+  }
+}
+
+async function postJsonBodyResult(
+  config: StackConfig,
+  path: string,
+  body: Record<string, unknown>,
+  options: { timeoutSeconds?: number } = {},
+): Promise<HostedOptimizerActionResult> {
+  const token = process.env[config.environment.authEnv]
+  if (!token) {
+    return { ok: false, status: 0, message: environmentAuthStatus(config.environment).message }
+  }
+  try {
+    const response = await fetch(`${config.environment.apiBaseUrl.replace(/\/+$/, "")}${path}`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${token}`,
+        Accept: "application/json",
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(clampInteger(options.timeoutSeconds, 300, 30, 86400) * 1000),
+    })
+    const text = await response.text()
+    const parsed = text.trim()
+      ? sanitizeHostedOptimizerValue(JSON.parse(text) as unknown)
+      : {}
+    const data = asRecord(parsed) ?? { value: parsed }
+    return {
+      ok: response.ok,
+      status: response.status,
+      message: response.ok
+        ? "ok"
+        : (readString(data.detail) ?? redactHostedOptimizerText(text)) || response.statusText,
+      data,
+    }
+  } catch (error) {
+    return { ok: false, status: 0, message: hostedOptimizerErrorMessage(error) }
+  }
 }
 
 async function getText(config: StackConfig, path: string): Promise<string> {
