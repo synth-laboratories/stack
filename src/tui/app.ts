@@ -731,6 +731,7 @@ type AppState = {
   selectedWorkersPanelIndex: number
   workersPanelShowUnassociated: boolean
   selectedAssemblyIndex: number
+  experimentalSelectedIndex: number
   assemblyPanelView: AssemblyPanelView
   assemblyLinesSnapshot: AssemblyLinesSnapshot
   assemblyDetail?: AssemblyPanelDetail
@@ -1167,6 +1168,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     selectedWorkersPanelIndex: 0,
     workersPanelShowUnassociated: false,
     selectedAssemblyIndex: 0,
+    experimentalSelectedIndex: 0,
     assemblyPanelView: "lanes",
     assemblyLinesSnapshot: { status: "idle", lines: [] },
     lightsThreadScrollOffset: 0,
@@ -2084,6 +2086,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       return
     }
 
+    if (state.focusMode === "experimental" && handleExperimentalKey(key, options, state, remount)) {
+      return
+    }
+
     if (key.name === "escape") {
       if (state.focusMode === "goal") {
         state.focusMode = "agent"
@@ -2419,7 +2425,7 @@ function createView(
   const taggedEffortSettings = taggedEffortPanel(options, state, refresh)
   const evalInfoSettings = evalInfoPanel(options, state)
   const configSettings = configPanel(options, state, refresh, applyStackEnvironmentFromUi, codexSessionHandle)
-  const experimentalSettings = experimentalPanel(state)
+  const experimentalSettings = experimentalPanel(options, state, refresh)
   const permissionsSettings = permissionsPanel(options, state, refresh)
   const goalModeActive = isGoalMode(state)
   const showRightGardenerPanel = state.rightPanelOpen && state.rightPanelContent === "gardener"
@@ -3729,8 +3735,41 @@ function evalInfoPanel(options: StackAppOptions, state: AppState): ReturnType<ty
   )
 }
 
-function experimentalPanel(state: AppState): ReturnType<typeof Box> | undefined {
+type ExperimentalRow = {
+  id: "assembly-lines"
+  text: string
+  active: boolean
+  onSelect: () => void
+}
+
+function experimentalRows(options: StackAppOptions, state: AppState, refresh: () => void): ExperimentalRow[] {
+  const config = options.config
+  return [
+    {
+      id: "assembly-lines",
+      text: `assembly lines: ${config.experimental.assemblyLines ? "on" : "off"}`,
+      active: config.experimental.assemblyLines,
+      onSelect: () => {
+        config.experimental.assemblyLines = !config.experimental.assemblyLines
+        appendStackBlock(
+          state.blocks,
+          `experimental assembly lines ${config.experimental.assemblyLines ? "on" : "off"} — MCP tool and gardener changes apply to new actor sessions`,
+        )
+        persistStackConfig(options, state, refresh)
+      },
+    },
+  ]
+}
+
+function experimentalPanel(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): ReturnType<typeof Box> | undefined {
   if (state.focusMode !== "experimental") return undefined
+  const rows = experimentalRows(options, state, refresh)
+  state.experimentalSelectedIndex = clampIndex(state.experimentalSelectedIndex, rows.length)
+  const help = state.configNotice ?? "j/k select · Enter toggle · persisted to stack.config.json · Esc close"
   return Box(
     {
       border: true,
@@ -3743,8 +3782,47 @@ function experimentalPanel(state: AppState): ReturnType<typeof Box> | undefined 
       flexShrink: 0,
       gap: 0,
     },
-    Text({ content: "Toggle experimental features.", fg: theme.fgMuted }),
+    switcherLine(help, false),
+    ...rows.map((row, index) =>
+      switcherLine(
+        `${index === state.experimentalSelectedIndex ? ">" : " "} ${row.text}`,
+        index === state.experimentalSelectedIndex || row.active,
+        () => {
+          state.experimentalSelectedIndex = index
+          row.onSelect()
+        },
+      ),
+    ),
   )
+}
+
+function handleExperimentalKey(
+  key: { name?: string },
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): boolean {
+  const rows = experimentalRows(options, state, refresh)
+  if (key.name === "escape") {
+    state.focusMode = "agent"
+    refresh()
+    return true
+  }
+  if (key.name === "j" || key.name === "down") {
+    state.experimentalSelectedIndex = (state.experimentalSelectedIndex + 1) % rows.length
+    refresh()
+    return true
+  }
+  if (key.name === "k" || key.name === "up") {
+    state.experimentalSelectedIndex = (state.experimentalSelectedIndex - 1 + rows.length) % rows.length
+    refresh()
+    return true
+  }
+  if (isEnterKey(key) || key.name === "space") {
+    rows[clampIndex(state.experimentalSelectedIndex, rows.length)]?.onSelect()
+    return true
+  }
+  return false
 }
 
 function configRows(
@@ -3874,6 +3952,7 @@ function persistStackConfig(options: StackAppOptions, state: AppState, refresh: 
       codexSubagentModel: config.codexSubagentModel,
       codexSubagentReasoningEffort: config.codexSubagentReasoningEffort,
       voice: { enabled: config.voice.enabled },
+      experimental: { assembly_lines: config.experimental.assemblyLines },
     })
     state.configNotice = `saved ${relative(config.appRoot, path)}`
   } catch (error) {
@@ -5693,6 +5772,11 @@ function handleAssemblySlash(
   state: AppState,
   refresh: () => void,
 ): void {
+  if (!options.config.experimental.assemblyLines) {
+    appendStackBlock(state.blocks, "assembly lines are experimental — enable in /experimental")
+    refresh()
+    return
+  }
   const trimmed = args.trim()
   if (!trimmed) {
     openAssemblyPanel(options, state, refresh, "slash")

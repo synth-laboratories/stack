@@ -140,7 +140,7 @@ export async function runGardenerMaintenancePass(input: GardenerMaintenanceInput
       ? input.workerSummaries
       : await listWorkerThreadSummaries(input.config, input.gardenerThreadId)
   const liveMetaThreadCount = (await readMetaThreadManifests(input.config.stackDataRoot, "live")).length
-  const assemblyLines = await readAssemblyGardenRows()
+  const assemblyLines = await readAssemblyGardenRows(input.config)
 
   const workspaceGardenPath = rewriteWorkspaceGardenDoc({
     stackRoot: input.config.stackDataRoot,
@@ -177,10 +177,13 @@ export async function runGardenerMaintenancePass(input: GardenerMaintenanceInput
   return { workspaceGardenPath, gardenerGardenPath, inboxPending: inbox.length }
 }
 
-// Assembly lane rows for the garden workspace doc. When stackd is not
-// reachable the section is omitted (the doc line `assembly_lines: N` only
-// appears when the read succeeded, so the gardener never sees a stale zero).
-async function readAssemblyGardenRows(): Promise<GardenerAssemblyLineRow[] | undefined> {
+// Assembly lane rows for the garden workspace doc. Assembly Lines are
+// experimental: the section only renders while `experimental.assembly_lines`
+// is on in stack.config.json. When stackd is not reachable the section is
+// omitted (the doc line `assembly_lines: N` only appears when the read
+// succeeded, so the gardener never sees a stale zero).
+async function readAssemblyGardenRows(config: StackConfig): Promise<GardenerAssemblyLineRow[] | undefined> {
+  if (!config.experimental.assemblyLines) return undefined
   try {
     const { lines } = await stackdAssemblyList()
     return lines.map((line) => ({

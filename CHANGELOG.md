@@ -17,6 +17,10 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260706.2] - 2026-07-06
+
+Workers panel and experimental Assembly Lines dev release.
+
 ### Added
 
 - **Workers cockpit panel.** `/workers` lists the current gardener's live
@@ -26,7 +30,12 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   workers without `gardener_thread_id` live in a collapsed unassociated debug
   section. Rows show short thread id, title, model, Effort binding, source,
   lifecycle, and monitor status; `enter` opens the selected worker thread.
-- **Assembly Lines cockpit panel.** `/assembly` renders the lane view (line,
+- **Experimental features toggle.** `/experimental` now hosts typed feature
+  toggles persisted to `stack.config.json`; the first is `assembly lines`
+  (`experimental.assembly_lines`, default off), which gates the Assembly Lines
+  operator surface below.
+- **Assembly Lines cockpit panel (experimental — enable the `assembly lines`
+  toggle in `/experimental`).** `/assembly` renders the lane view (line,
   preset, station, owner, age, open gate, next action) and a per-line detail
   view (stations walked with timestamps, bindings, gate history with
   `next_owner`/`next_safe_action`, standards verdicts, recent events). Typed
@@ -37,15 +46,18 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 - **Assembly bindings update endpoint.** `PATCH /assembly-lines/:id/bindings`
   merges a typed bindings update (list fields append deduplicated,
   `ship_bundle_path` replaces, empty updates rejected as `invalid_field`),
-  with a matching TS client function and `stack_assembly_bind` MCP tool.
-- **Assembly integration for gardener + monitor.** `stack_assembly_list` and
-  `stack_assembly_get` joined the default gardener tool allow-list, the garden
-  workspace doc gained `assembly_lines: N` plus a compact `## Assembly lines`
-  section, and monitor status payloads (`monitor.summary`, human
-  `monitor.goal_status`) plus the monitor rail now carry the bound line +
-  current station when the worker's meta-thread/Effort is bound to a line.
-  Monitors audit and recommend; they never write gate verdicts or advance
-  stations.
+  with a matching TS client function and `stack_assembly_bind` MCP tool
+  (experimental — registered only with the `assembly lines` toggle on in
+  `/experimental`).
+- **Assembly integration for gardener + monitor (experimental — enable the
+  `assembly lines` toggle in `/experimental`).** With the toggle on,
+  `stack_assembly_list` and `stack_assembly_get` join the default gardener
+  tool allow-list, the garden workspace doc gains `assembly_lines: N` plus a
+  compact `## Assembly lines` section, and monitor status payloads
+  (`monitor.summary`, human `monitor.goal_status`) plus the monitor rail carry
+  the bound line + current station when the worker's meta-thread/Effort is
+  bound to a line. Monitors audit and recommend; they never write gate
+  verdicts or advance stations.
 - **Assembly Lines v0.** New AssemblyLine primitive — the process layer above
   Efforts. One station schema with `ship` and `effort` presets, typed
   transition events (`assembly.created` … `assembly.follow_up_due`), standards
@@ -54,23 +66,16 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   Core types and transition rules in `stack_core::assembly_line`, SQLite
   persistence + `/assembly-lines` routes in stackd, thin TS client, MCP tools
   (`stack_assembly_create/list/get/transition`), and a `stack assembly`
-  read+transition CLI. Spec: `docs/ASSEMBLY_LINES.md`.
+  read+transition CLI. The stackd endpoints and core types are always on; the
+  operator surface (panel, CLI, MCP tools, gardener/monitor integration) is
+  experimental behind the `assembly lines` toggle in `/experimental`. Spec:
+  `docs/ASSEMBLY_LINES.md`.
 
 - **Generic hosted optimizer submit.** `stack_submit_hosted_optimizer_run` MCP
   tool and `submitHostedOptimizerRun` client post to the backend optimizer
-  owner route (`POST /api/v1/optimizers/runs`) for `gepa`, `go-ex`, `mapo`,
-  and `online-reflexion`, with idempotency key, project binding, JSON/TOML
-  config, container-pool target, and lever-event receipts.
-- **Online Reflexion effort launch capability.**
-  `optimizer.online_reflexion.hosted` is a wired Effort launch capability;
-  launch configs come from `--request-json` or a JSON/TOML `--config` path.
-- **Online Reflexion receipt audits + evidence packet.**
-  `stack_audit_online_reflexion_receipt`,
-  `stack_audit_online_reflexion_receipts`, and
-  `stack_build_online_reflexion_evidence_packet` read owner-route receipt
-  audits and compose a release-readiness packet gated on five evidence lanes;
-  `public_copy_allowed` stays false until the human blog/release owner
-  approves. All three are in the default gardener read allow-list.
+  owner route (`POST /api/v1/optimizers/runs`) for `gepa`, `go-ex`, and
+  `mapo`, with idempotency key, project binding, JSON/TOML config,
+  container-pool target, and lever-event receipts.
 
 ## [0.2.0-dev.20260706.1] - 2026-07-06
 
