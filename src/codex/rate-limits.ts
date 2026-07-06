@@ -96,12 +96,14 @@ export async function readCodexRateLimitsFromSession(
 export async function readCodexRateLimitsFromAppServer(
   codexCommand: string,
   codexArgs: readonly string[] = [],
+  env?: Record<string, string | undefined>,
 ): Promise<CodexRateLimitsSnapshot | undefined> {
   const client = await CodexAppServerClient.start({
     launch: {
       command: codexCommand,
       args: codexAppServerArgs(codexArgs),
       cwd: process.cwd(),
+      env,
     },
     clientName: "stack",
     clientTitle: "Stack",
@@ -117,17 +119,20 @@ export async function readCodexRateLimitsFromAppServer(
 export async function readCodexRateLimits(options: {
   codexCommand: string
   codexArgs?: readonly string[]
+  env?: Record<string, string | undefined>
+  sessionsRoot?: string
 }): Promise<CodexRateLimitsSnapshot | undefined> {
   try {
     const fromAppServer = await readCodexRateLimitsFromAppServer(
       options.codexCommand,
       options.codexArgs ?? [],
+      options.env,
     )
     if (fromAppServer) return fromAppServer
   } catch {
     // Fall back to the latest Codex session JSONL snapshot.
   }
-  return readLatestCodexRateLimits()
+  return readLatestCodexRateLimits(options.sessionsRoot ?? defaultCodexSessionsRoot())
 }
 
 export async function readLatestCodexRateLimits(

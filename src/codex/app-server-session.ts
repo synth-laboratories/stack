@@ -28,6 +28,14 @@ import {
   formatHarnessImageContext,
   parseChannelInput,
 } from "../image-input.js"
+import {
+  assertStackCodexIsolation,
+  isBackgroundCodexActor,
+  stackCodexEnv,
+  withEphemeralExecArgs,
+  withExecSandboxMode,
+  type StackCodexActorRole,
+} from "./isolation.js"
 
 export type CodexRunOptions = {
   config: StackConfig
@@ -37,6 +45,9 @@ export type CodexRunOptions = {
   goalContext?: CodexGoalSnapshot
   imagePaths?: string[]
   timeoutMs?: number
+  // Which Stack actor this turn runs for; background actors (gardener,
+  // monitor, wakeup, eval) are forced onto `codex exec --ephemeral`.
+  actorRole?: StackCodexActorRole
   onOutput: (chunk: string) => void
 }
 
@@ -44,9 +55,21 @@ export async function runCodexTurn(options: CodexRunOptions): Promise<StackCodex
   const startedAt = new Date().toISOString()
   void emitFirstAgentTurn("codex")
   const prompt = await buildStackHarnessPrompt(options)
-  const args = [...options.config.codexArgs, "-C", options.config.workspaceRoot, "-"]
+  const actorRole = options.actorRole ?? "worker"
+  let baseArgs = isBackgroundCodexActor(actorRole)
+    ? withEphemeralExecArgs(options.config.codexArgs)
+    : options.config.codexArgs
+  if (isBackgroundCodexActor(actorRole) && options.config.stackMcpEnabled && options.config.stackMcpCommand) {
+    // Noninteractive `codex exec` cancels MCP calls unless the exec sandbox is
+    // fully open. CODEX_HOME isolation still keeps these background turns out
+    // of the operator's personal Codex namespace.
+    baseArgs = withExecSandboxMode(baseArgs, "danger-full-access")
+  }
+  const args = [...baseArgs, "-C", options.config.workspaceRoot, "-"]
+  assertStackCodexIsolation(options.config, actorRole, { transport: "exec", args })
   const proc = Bun.spawn([options.config.codexCommand, ...args], {
     cwd: options.config.workspaceRoot,
+    env: stackCodexEnv(options.config),
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
@@ -249,11 +272,13 @@ export class CodexAppServerSession {
   async ensureReady(): Promise<void> {
     if (this.client || this.closed) return
     const { config } = this.options
+    assertStackCodexIsolation(config, "worker", { transport: "app_server" })
     this.client = await CodexAppServerClient.start({
       launch: {
         command: config.codexCommand,
         args: codexAppServerArgs(config.codexArgs),
         cwd: config.workspaceRoot,
+        env: stackCodexEnv(config),
       },
       clientName: "stack",
       clientTitle: STACK_HARNESS_NAME,
@@ -262,8 +287,22 @@ export class CodexAppServerSession {
       onServerRequest: (message) => this.handleServerRequest(message),
     })
     if (this.threadId) {
-      await this.client.request("thread/resume", { threadId: this.threadId })
-      return
+      try {
+        await this.client.request("thread/resume", { threadId: this.threadId })
+        return
+      } catch (error) {
+        // Namespace cutover: thread ids recorded before Codex isolation point
+        // at rollouts in the personal ~/.codex, which Stack no longer reads.
+        // Start a fresh Stack-owned thread instead of failing the session.
+        const detail = error instanceof Error ? error.message : String(error)
+        this.emitExecLine(
+          JSON.stringify({
+            type: "stack",
+            message: `codex thread/resume ${this.threadId} failed (${detail}); starting fresh isolated thread`,
+          }),
+        )
+        this.threadId = undefined
+      }
     }
     const response = await this.client.request("thread/start", this.threadStartParams(config))
     const threadId = extractThreadIdFromResult(response)
@@ -383,12 +422,23 @@ export class CodexAppServerSession {
   }
 
   private threadStartParams(config: StackConfig): Record<string, unknown> {
+    // App-server threads take their sandbox from thread/start params, NOT from
+    // CODEX_HOME config.toml writable_roots — without this, workers in eval
+    // harnesses EPERM on every write outside cwd (e.g. the EffortBench packet)
+    // and CLI wrappers that swallow the error never trigger escalation.
+    const writableRoots = (process.env.STACK_CODEX_WRITABLE_ROOTS ?? "")
+      .split(":")
+      .map((value) => value.trim())
+      .filter(Boolean)
     return {
       model: config.codexModel,
       cwd: config.workspaceRoot,
       developerInstructions: stackHarnessInstructions(config),
       serviceName: "stack",
       approvalPolicy: "on-failure",
+      ...(writableRoots.length > 0
+        ? { sandboxPolicy: { type: "workspace-write", writableRoots } }
+        : {}),
     }
   }
 
@@ -449,12 +499,14 @@ export async function runCodexAppServerTurn(
 
 export async function probeCodexAppServerAvailability(config: StackConfig): Promise<boolean> {
   try {
+    assertStackCodexIsolation(config, "probe", { transport: "app_server" })
     const client = await Promise.race([
       CodexAppServerClient.start({
         launch: {
           command: config.codexCommand,
           args: codexAppServerArgs(config.codexArgs),
           cwd: config.workspaceRoot,
+          env: stackCodexEnv(config),
         },
         clientName: "stack",
         clientTitle: STACK_HARNESS_NAME,
