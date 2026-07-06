@@ -13,7 +13,17 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+/// The user's real Codex home. Single resolution rule (matches the TS
+/// implementation): `$CODEX_HOME` when the user relocated their Codex home,
+/// else `~/.codex`. Stack only READS auth material from this home; it never
+/// writes to it.
 pub fn personal_codex_home() -> PathBuf {
+    if let Ok(relocated) = env::var("CODEX_HOME") {
+        let trimmed = relocated.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
     let home = env::var("HOME").unwrap_or_else(|_| ".".to_string());
     PathBuf::from(home).join(".codex")
 }
@@ -115,6 +125,39 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn personal_codex_home_honors_relocated_codex_home_env() {
+        let root = temp_dir("env-relocated");
+        let relocated = root.join("my-codex");
+        fs::create_dir_all(&relocated).unwrap();
+
+        env::set_var("CODEX_HOME", &relocated);
+        assert_eq!(personal_codex_home(), relocated);
+
+        // Blank/whitespace CODEX_HOME is treated as unset.
+        env::set_var("CODEX_HOME", "   ");
+        assert!(personal_codex_home().ends_with(".codex"));
+
+        env::remove_var("CODEX_HOME");
+        assert!(personal_codex_home().ends_with(".codex"));
+    }
+
+    #[test]
+    fn prepare_seeds_auth_from_relocated_personal_home() {
+        // Users who relocate their Codex home ($CODEX_HOME) keep auth there,
+        // not in ~/.codex. Seeding must read from wherever the real home is.
+        let root = temp_dir("relocated");
+        let relocated = root.join("relocated-codex");
+        fs::create_dir_all(&relocated).unwrap();
+        fs::write(relocated.join("auth.json"), "{\"tokens\":{\"relocated\":true}}").unwrap();
+
+        let stack_home = root.join("workspace/.stack/codex-home");
+        prepare_stack_codex_home(&stack_home, &relocated).unwrap();
+
+        let seeded = fs::read_to_string(stack_home.join("auth.json")).unwrap();
+        assert!(seeded.contains("relocated"));
     }
 
     #[test]
