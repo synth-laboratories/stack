@@ -43,6 +43,7 @@ export async function runArtifactsCli(config: StackConfig, argv: string[]): Prom
         console.log(`artifacts: ${status.manifestEntries}`)
         console.log(`site: ${status.siteDir}`)
         console.log(`log: ${status.logPath}`)
+        if (status.running) console.log("auto-stop: set STACK_ARTIFACT_SITE_TTL_SECONDS=0 to disable")
         console.log(status.message)
       }
       return status.ok ? 0 : 1
@@ -155,6 +156,7 @@ function printServeResult(result: Awaited<ReturnType<typeof serveArtifactSite>>,
   }
   console.log(`${result.running ? "running" : "stopped"} ${result.url}`)
   console.log(result.message)
+  if (result.ttlSeconds) console.log(`auto-stop: ${result.ttlSeconds}s`)
   console.log(`site: ${result.siteDir}`)
   console.log(`log: ${result.logPath}`)
 }
@@ -241,6 +243,7 @@ function usageError(message: string): number {
 function printArtifactsUsage(): void {
   console.error("Usage:")
   console.error("  stack artifacts serve [--json]")
+  console.error("    Auto-stops after 30m by default; set STACK_ARTIFACT_SITE_TTL_SECONDS=0 to disable.")
   console.error("  stack artifacts status [--json]")
   console.error("  stack artifacts stop [--json]")
   console.error("  stack artifacts create <slug> --title <title> [--kind result|analysis|bloglet|blog] [--effort <slug>] (--page <tsx-file> | --html <file>) [--data <json>] [--json]")
