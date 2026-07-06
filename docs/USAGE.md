@@ -1009,6 +1009,9 @@ The server reads `stack.config.json` and supports both JSONL and
   project/run hints
 - `stack_list_hosted_optimizer_runs`: list hosted optimizer runs with selected
   detail, artifact names, events, and cancellation hints
+- `stack_submit_hosted_optimizer_run`: submit a hosted optimizer run through
+  the backend owner route; use `algorithm=online-reflexion` for online
+  Reflexion row-native runs
 - `stack_list_remote_projects`: list hosted projects from the stackd runtime
   snapshot when available, including linked runs, Factories, deployments, and
   remote-sync receipt summaries
@@ -1031,6 +1034,15 @@ The server reads `stack.config.json` and supports both JSONL and
 - `stack_cancel_hosted_optimizer`: cancel a hosted optimizer run
 - `stack_preview_hosted_optimizer_artifact`: preview bounded text from a hosted
   optimizer artifact through the optimizer owner route
+- `stack_audit_online_reflexion_receipt`: audit receipt completeness for one
+  hosted online Reflexion optimizer run
+- `stack_audit_online_reflexion_receipts`: audit receipt completeness for a
+  hosted online Reflexion publish-candidate run set by run IDs or recent
+  layer/project receipts
+- `stack_build_online_reflexion_evidence_packet`: compose receipt audits and
+  explicit eval-lane evidence into a release-readiness packet. The packet does
+  not approve public copy; `public_copy_allowed` remains false until the human
+  blog/release owner approval is supplied.
 - `stack_download_hosted_optimizer_artifact`: download a hosted optimizer
   artifact through the optimizer owner route into Stack download state
 - `stack_download_run_output`: download a run WorkProduct or artifact through
@@ -1218,8 +1230,18 @@ confirmation in the TUI:
   `POST <api>/smr/runs/{run_id}/files:upload`
 - hosted optimizer cancel:
   `POST <api>/api/v1/optimizers/runs/{run_id}/cancel`
+- hosted optimizer submit:
+  `POST <api>/api/v1/optimizers/runs`
 - hosted optimizer artifact preview/download:
   `GET <api>/api/v1/optimizers/runs/{run_id}/artifacts/{artifact_name}`
+- online Reflexion receipt audits:
+  `GET <api>/api/v1/optimizers/runs/{run_id}/online-reflexion/receipt-audit`
+  and `GET <api>/api/v1/optimizers/online-reflexion/receipt-audits`
+- online Reflexion evidence packet:
+  `stack_build_online_reflexion_evidence_packet` composes those owner-route
+  audits with attached evidence for Craftax rotated 121-125 repeats, ALFWorld
+  6/6 ×3, EBR first scale compare, Harvey LAB pilot, and hosted staging smoke.
+  It is a release/growth readiness packet, not public blog approval.
 
 Current push order is intentionally staged: improve local job UX first, then
 remote SMR run UX, then remote Factory UX, then authenticated remote actions

@@ -73,6 +73,7 @@ export const EFFORT_LAUNCH_CAPABILITIES = [
   "optimizer.gepa.local",
   "optimizer.gepa.hosted",
   "optimizer.gelo.hosted",
+  "optimizer.online_reflexion.hosted",
   "smr.hosted",
   "project.hosted",
   "factory.hosted",
@@ -86,6 +87,7 @@ export type StackEffortLaunchCapability = (typeof EFFORT_LAUNCH_CAPABILITIES)[nu
 export const EFFORT_WIRED_LAUNCH_CAPABILITIES = [
   "optimizer.gepa.local",
   "optimizer.gepa.hosted",
+  "optimizer.online_reflexion.hosted",
   "smr.hosted",
   "project.hosted",
   "factory.hosted",
