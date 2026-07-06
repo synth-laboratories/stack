@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs"
+import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 import type { StackConfig } from "./config.js"
 import {
@@ -13,12 +13,12 @@ import {
 import { launchLocalGepaRun } from "./local/optimizers.js"
 import { createRemoteFactory, createRemoteLaunch, createRemoteRunnableProject, type RemoteFactoryCreateRequest, type RemoteLaunchRequest, type RemoteProjectCreateRequest } from "./remote/actions.js"
 import { deployContainerPoolRuntimeImage, executeContainerPoolRollout, type ContainerPoolRuntimeImageReleaseRequest } from "./remote/containers.js"
-import { submitHostedGepaRun, submitHostedOptimizerRun } from "./remote/optimizers.js"
+import { submitHostedGepaRun } from "./remote/optimizers.js"
 
 export const EFFORT_LAUNCH_KINDS = ["optimizer", "smr", "container", "project", "factory", "training", "artifact"] as const
 export type EffortLaunchKind = (typeof EFFORT_LAUNCH_KINDS)[number]
 
-export const EFFORT_LAUNCH_OPTIMIZERS = ["gepa", "gelo", "online_reflexion"] as const
+export const EFFORT_LAUNCH_OPTIMIZERS = ["gepa", "gelo"] as const
 export type EffortLaunchOptimizer = (typeof EFFORT_LAUNCH_OPTIMIZERS)[number]
 
 export type EffortLaunchInput = {
@@ -96,13 +96,6 @@ export const EFFORT_LAUNCH_CAPABILITY_METADATA: Partial<Record<StackEffortLaunch
     lane: "hosted",
     wired: false,
     optimizer: "gelo",
-  },
-  "optimizer.online_reflexion.hosted": {
-    capability: "optimizer.online_reflexion.hosted",
-    kind: "optimizer",
-    lane: "hosted",
-    wired: true,
-    optimizer: "online_reflexion",
   },
   "smr.hosted": {
     capability: "smr.hosted",
@@ -263,27 +256,6 @@ async function executeEffortLaunch(
         environment: result.environmentName,
         api_base_url: result.apiBaseUrl,
         timed_out: result.timedOut,
-      },
-    }
-  }
-  if (capability === "optimizer.online_reflexion.hosted") {
-    const optimizerConfig = readHostedOptimizerOwnerRouteConfig(config, input, capability)
-    const result = await submitHostedOptimizerRun(config, {
-      algorithm: "online-reflexion",
-      ...(input.projectId ? { projectId: input.projectId } : {}),
-      ...optimizerConfig,
-    })
-    return {
-      ok: result.ok,
-      message: result.message,
-      system: "optimizer",
-      ...(result.runId ? { id: result.runId } : {}),
-      detail: {
-        status: result.status,
-        environment: result.environmentName,
-        api_base_url: result.apiBaseUrl,
-        algorithm: result.algorithm,
-        ...(result.response ? { response: result.response } : {}),
       },
     }
   }
@@ -459,31 +431,6 @@ function requireLaunchConfigPath(config: StackConfig, input: EffortLaunchInput, 
   const configPath = resolve(config.workingDir, raw)
   if (!existsSync(configPath)) throw new Error(`config error: launch config does not exist: ${configPath}`)
   return configPath
-}
-
-function readHostedOptimizerOwnerRouteConfig(
-  config: StackConfig,
-  input: EffortLaunchInput,
-  capability: StackEffortLaunchCapability,
-): { configJson?: Record<string, unknown>; configToml?: string } {
-  if (input.request && Object.keys(input.request).length > 0) {
-    return { configJson: input.request }
-  }
-  const raw = input.configPath?.trim()
-  if (!raw) {
-    throw new Error(`config error: launch capability "${capability}" requires --request-json config or --config <json|toml path>`)
-  }
-  const configPath = resolve(config.workingDir, raw)
-  if (!existsSync(configPath)) throw new Error(`config error: launch config does not exist: ${configPath}`)
-  const text = readFileSync(configPath, "utf8")
-  if (configPath.toLowerCase().endsWith(".json")) {
-    const parsed = JSON.parse(text) as unknown
-    if (!isLaunchRecord(parsed)) {
-      throw new Error(`config error: online Reflexion config JSON must be an object: ${configPath}`)
-    }
-    return { configJson: parsed }
-  }
-  return { configToml: text }
 }
 
 function remoteLaunchId(data: Record<string, unknown> | undefined): string | undefined {

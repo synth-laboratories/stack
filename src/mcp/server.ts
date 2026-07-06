@@ -189,9 +189,6 @@ import {
   type RemoteProjectCreateRequest,
 } from "../remote/actions.js"
 import {
-  auditOnlineReflexionReceipt,
-  auditOnlineReflexionReceiptSet,
-  buildOnlineReflexionEvidencePacket,
   cancelHostedOptimizerRun,
   downloadHostedOptimizerArtifact,
   previewHostedOptimizerArtifact,
@@ -3753,7 +3750,7 @@ export class StackMcpServer {
       ? this.recordOptionalCloudActionEffortRef(config, effortRef, {
         system: "optimizer",
         id: result.runId,
-        role: algorithm === "online-reflexion" ? "hosted-online-reflexion" : `hosted-${algorithm}`,
+        role: `hosted-${algorithm}`,
       })
       : null
     const runtimeEvent = await recordRuntimeLeverEvent({
@@ -4044,222 +4041,6 @@ export class StackMcpServer {
       run_id: runId,
       artifact_name: artifactName,
       ...(result.data ? { preview_result: toJsonValue(result.data) ?? null } : {}),
-    }
-  }
-
-  async auditOnlineReflexionReceipt(args: JsonObject): Promise<JsonValue> {
-    const config = await this.config(args)
-    const effortRef = optionalString(args, "effort_ref")
-    this.optionalEffort(config, effortRef)
-    const runId = requiredString(args, "run_id")
-    const strict = optionalBoolean(args, "strict") ?? false
-    const result = await auditOnlineReflexionReceipt(config, { runId, strict })
-    const auditStatus = hostedOptimizerAuditStatus(result.data)
-    const effortEvidence = result.ok && effortRef
-      ? recordStackEffortRunEvidence({
-        stackDataRoot: config.stackDataRoot,
-        workspaceRoot: config.workspaceRoot,
-        effortRef,
-        runKind: "optimizer",
-        title: "Online Reflexion receipt audit",
-        runId,
-        metric: `receipt-audit:${auditStatus ?? "unknown"}`,
-        body: hostedOptimizerAuditEvidenceBody(
-          `Online Reflexion receipt audit for hosted optimizer run ${runId}.`,
-          result.data,
-        ),
-      })
-      : null
-    const runtimeEvent = await recordRuntimeLeverEvent({
-      event_type: "lever.hosted_optimizer.online_reflexion_receipt_audit_read",
-      source: "lever.stack_mcp",
-      subject: { kind: "hosted_optimizer_run", id: runId },
-      correlation: { optimizer_run_id: runId },
-      payload: {
-        environment: config.environmentName,
-        api_base_url: config.environment.apiBaseUrl,
-        strict,
-        ok: result.ok,
-        status: result.status,
-        audit_status: auditStatus ?? null,
-        message: result.message,
-      },
-    })
-    return {
-      ok: result.ok,
-      status: result.status,
-      message: result.message,
-      run_id: runId,
-      strict,
-      audit_status: auditStatus ?? null,
-      effort_evidence: effortEvidence ? {
-        effort_id: effortEvidence.effort.manifest.id,
-        slug: effortEvidence.effort.manifest.slug,
-        path: relative(effortEvidence.effort.folder_path, effortEvidence.path),
-        run_kind: effortEvidence.runKind,
-        run_id: effortEvidence.runId ?? null,
-        metric: effortEvidence.metric ?? null,
-      } : null,
-      runtime_event: toJsonValue(runtimeEvent) ?? null,
-      ...(result.data ? { audit: toJsonValue(result.data) ?? null } : {}),
-    }
-  }
-
-  async auditOnlineReflexionReceiptSet(args: JsonObject): Promise<JsonValue> {
-    const config = await this.config(args)
-    const effortRef = optionalString(args, "effort_ref")
-    this.optionalEffort(config, effortRef)
-    const runIds = optionalStringArray(args, "run_ids")?.map((runId) => runId.trim()).filter(Boolean)
-    if (runIds && runIds.length > 100) throw new RpcError(-32602, "run_ids must contain at most 100 items")
-    const limit = optionalInteger(args, "limit")
-    if (limit !== undefined && (limit < 1 || limit > 100)) {
-      throw new RpcError(-32602, "limit must be between 1 and 100")
-    }
-    const strict = optionalBoolean(args, "strict") ?? false
-    const layerId = optionalString(args, "layer_id")
-    const projectId = optionalString(args, "project_id")
-    const result = await auditOnlineReflexionReceiptSet(config, {
-      runIds,
-      layerId,
-      projectId,
-      strict,
-      limit,
-    })
-    const auditStatus = hostedOptimizerAuditStatus(result.data)
-    const effortEvidence = result.ok && effortRef
-      ? recordStackEffortFinding({
-        stackDataRoot: config.stackDataRoot,
-        workspaceRoot: config.workspaceRoot,
-        effortRef,
-        kind: "proof",
-        title: "Online Reflexion aggregate receipt audit",
-        body: hostedOptimizerAuditEvidenceBody(
-          "Online Reflexion aggregate receipt audit for a hosted optimizer publish-candidate set.",
-          result.data,
-        ),
-      })
-      : null
-    const runtimeEvent = await recordRuntimeLeverEvent({
-      event_type: "lever.hosted_optimizer.online_reflexion_receipt_audit_set_read",
-      source: "lever.stack_mcp",
-      subject: { kind: "hosted_optimizer_receipt_set", id: runIds?.join(",") || layerId || projectId || "recent" },
-      correlation: {
-        optimizer_run_id: runIds?.[0],
-        project_id: projectId ?? undefined,
-      },
-      payload: {
-        environment: config.environmentName,
-        api_base_url: config.environment.apiBaseUrl,
-        run_ids: runIds ?? [],
-        layer_id: layerId ?? null,
-        project_id: projectId ?? null,
-        strict,
-        limit: limit ?? null,
-        ok: result.ok,
-        status: result.status,
-        audit_status: auditStatus ?? null,
-        message: result.message,
-      },
-    })
-    return {
-      ok: result.ok,
-      status: result.status,
-      message: result.message,
-      run_ids: runIds ?? [],
-      layer_id: layerId ?? null,
-      project_id: projectId ?? null,
-      strict,
-      limit: limit ?? null,
-      audit_status: auditStatus ?? null,
-      effort_evidence: effortEvidence ? {
-        effort_id: effortEvidence.effort.manifest.id,
-        slug: effortEvidence.effort.manifest.slug,
-        path: relative(effortEvidence.effort.folder_path, effortEvidence.path),
-      } : null,
-      runtime_event: toJsonValue(runtimeEvent) ?? null,
-      ...(result.data ? { audit: toJsonValue(result.data) ?? null } : {}),
-    }
-  }
-
-  async buildOnlineReflexionEvidencePacket(args: JsonObject): Promise<JsonValue> {
-    const config = await this.config(args)
-    const effortRef = optionalString(args, "effort_ref")
-    this.optionalEffort(config, effortRef)
-    const runIds = optionalStringArray(args, "run_ids")?.map((runId) => runId.trim()).filter(Boolean)
-    if (runIds && runIds.length > 100) throw new RpcError(-32602, "run_ids must contain at most 100 items")
-    const limit = optionalInteger(args, "limit")
-    if (limit !== undefined && (limit < 1 || limit > 100)) {
-      throw new RpcError(-32602, "limit must be between 1 and 100")
-    }
-    const layerId = optionalString(args, "layer_id")
-    const projectId = optionalString(args, "project_id")
-    const evidenceNotes = optionalJsonObject(args, "evidence_notes")
-    const blogDecisionOwner = optionalString(args, "blog_decision_owner")
-    const blogApprovedByOwner = optionalBoolean(args, "blog_approved_by_owner") ?? false
-    const includeReceiptSummaries = optionalBoolean(args, "include_receipt_summaries")
-    const result = await buildOnlineReflexionEvidencePacket(config, {
-      runIds,
-      layerId,
-      projectId,
-      evidenceNotes,
-      blogDecisionOwner,
-      blogApprovedByOwner,
-      includeReceiptSummaries,
-      limit,
-    })
-    const packet = result.data
-    const packetRecord = packet
-    const packetStatus = hostedOptimizerAuditStatus(packetRecord)
-    const effortEvidence = result.ok && effortRef
-      ? recordStackEffortFinding({
-        stackDataRoot: config.stackDataRoot,
-        workspaceRoot: config.workspaceRoot,
-        effortRef,
-        kind: "proof",
-        title: "Online Reflexion release evidence packet",
-        body: hostedOptimizerAuditEvidenceBody(
-          "Online Reflexion release evidence packet for hosted optimizer claim review.",
-          packetRecord,
-        ),
-      })
-      : null
-    const runtimeEvent = await recordRuntimeLeverEvent({
-      event_type: "lever.hosted_optimizer.online_reflexion_evidence_packet_read",
-      source: "lever.stack_mcp",
-      subject: { kind: "hosted_optimizer_evidence_packet", id: runIds?.join(",") || layerId || projectId || "recent" },
-      correlation: {
-        optimizer_run_id: runIds?.[0],
-        project_id: projectId ?? undefined,
-      },
-      payload: {
-        environment: config.environmentName,
-        api_base_url: config.environment.apiBaseUrl,
-        run_ids: runIds ?? [],
-        layer_id: layerId ?? null,
-        project_id: projectId ?? null,
-        limit: limit ?? null,
-        packet_status: packetStatus ?? null,
-        public_copy_allowed: packetRecord?.public_copy_allowed === true,
-        ok: result.ok,
-        status: result.status,
-        message: result.message,
-      },
-    })
-    return {
-      ok: result.ok,
-      status: result.status,
-      message: result.message,
-      run_ids: runIds ?? [],
-      layer_id: layerId ?? null,
-      project_id: projectId ?? null,
-      packet_status: packetStatus ?? null,
-      effort_evidence: effortEvidence ? {
-        effort_id: effortEvidence.effort.manifest.id,
-        slug: effortEvidence.effort.manifest.slug,
-        path: relative(effortEvidence.effort.folder_path, effortEvidence.path),
-      } : null,
-      runtime_event: toJsonValue(runtimeEvent) ?? null,
-      ...(packet ? { evidence_packet: toJsonValue(packet) ?? null } : {}),
     }
   }
 
@@ -6499,12 +6280,12 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_submit_hosted_optimizer_run",
-      description: "Submit a hosted optimizer run through the backend optimizer owner route. Use algorithm=online-reflexion for the row-native online Reflexion run kind.",
+      description: "Submit a hosted optimizer run through the backend optimizer owner route.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
           effort_ref: stringProperty("Optional Effort id or slug. When supplied, records the hosted optimizer run ref after successful submit."),
-          algorithm: enumProperty(["gepa", "go-ex", "mapo", "online-reflexion"], "Hosted optimizer algorithm."),
+          algorithm: enumProperty(["gepa", "go-ex", "mapo"], "Hosted optimizer algorithm."),
           run_id: stringProperty("Optional hosted optimizer run id."),
           idempotency_key: stringProperty("Optional idempotency key for submit retries."),
           project_id: stringProperty("Optional Synth project id."),
@@ -7509,57 +7290,6 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.previewHostedOptimizerArtifact(args),
     },
     {
-      name: "stack_audit_online_reflexion_receipt",
-      description: "Audit receipt completeness for one hosted online Reflexion optimizer run through the optimizer owner route. Use this before citing a run in release/blog evidence.",
-      inputSchema: objectSchema(
-        {
-          environment: environmentProperty(),
-          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records run evidence for the audit result."),
-          run_id: stringProperty("Hosted online Reflexion optimizer run id."),
-          strict: { type: "boolean", description: "If true, the backend returns a non-2xx status unless the audit passes." },
-        },
-        ["run_id"],
-      ),
-      handler: (args) => server.auditOnlineReflexionReceipt(args),
-    },
-    {
-      name: "stack_audit_online_reflexion_receipts",
-      description: "Audit receipt completeness for a hosted online Reflexion publish-candidate run set through the optimizer owner route. Select by explicit run_ids or recent layer/project receipts.",
-      inputSchema: objectSchema(
-        {
-          environment: environmentProperty(),
-          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records a proof finding for the aggregate audit result."),
-          run_ids: arrayProperty("Optional explicit hosted online Reflexion optimizer run ids, max 100."),
-          layer_id: stringProperty("Optional online Reflexion layer id for recent receipt selection."),
-          project_id: stringProperty("Optional Synth project id for recent receipt selection."),
-          strict: { type: "boolean", description: "If true, the backend returns a non-2xx status unless every selected run passes." },
-          limit: numberProperty("Maximum recent receipts to audit when run_ids is omitted. Defaults to backend behavior, max 100."),
-        },
-        [],
-      ),
-      handler: (args) => server.auditOnlineReflexionReceiptSet(args),
-    },
-    {
-      name: "stack_build_online_reflexion_evidence_packet",
-      description: "Build a read-only online Reflexion release evidence packet from receipt audits plus explicit eval-lane evidence. Does not approve public copy; public_copy_allowed stays false until owner approval is supplied.",
-      inputSchema: objectSchema(
-        {
-          environment: environmentProperty(),
-          effort_ref: stringProperty("Optional Effort id or slug. When supplied, records a proof finding for the evidence packet."),
-          run_ids: arrayProperty("Optional explicit hosted online Reflexion optimizer run ids, max 100."),
-          layer_id: stringProperty("Optional online Reflexion layer id for recent receipt selection."),
-          project_id: stringProperty("Optional Synth project id for recent receipt selection."),
-          evidence_notes: jsonObjectProperty("Optional lane evidence keyed by craftax_rotated_121_125, alfworld_6x6_x3, ebr_first_scale_compare, harvey_lab_pilot, and hosted_staging_smoke. A lane is complete only when its value is true, ok=true, or status is pass/complete/ready/succeeded."),
-          blog_decision_owner: stringProperty("Human owner for blog/release approval. Defaults to Josh."),
-          blog_approved_by_owner: booleanProperty("Set true only after the human owner has approved public release copy. Defaults false."),
-          include_receipt_summaries: booleanProperty("Whether to include recent receipt summaries when selecting by layer/project or recent receipts. Defaults true."),
-          limit: numberProperty("Maximum recent receipts to audit when run_ids is omitted. Defaults to backend behavior, max 100."),
-        },
-        [],
-      ),
-      handler: (args) => server.buildOnlineReflexionEvidencePacket(args),
-    },
-    {
       name: "stack_download_hosted_optimizer_artifact",
       description: "Download a hosted optimizer artifact through the optimizer owner route into Stack download state.",
       inputSchema: objectSchema(
@@ -8370,17 +8100,6 @@ function tailText(value: string, bytes: number): string {
   return encoded.length <= bytes ? value : encoded.subarray(encoded.length - bytes).toString("utf8")
 }
 
-function hostedOptimizerAuditStatus(data: Record<string, unknown> | undefined): string | undefined {
-  const status = data?.status
-  return typeof status === "string" && status.trim() ? status.trim() : undefined
-}
-
-function hostedOptimizerAuditEvidenceBody(summary: string, data: Record<string, unknown> | undefined): string {
-  const payload = JSON.stringify(data ?? {}, null, 2)
-  const bounded = payload.length > 12000 ? `${payload.slice(0, 12000)}\n... <truncated>` : payload
-  return `${summary}\n\n\`\`\`json\n${bounded}\n\`\`\``
-}
-
 function readEnvironmentName(value: string): StackEnvironmentName {
   if (value === "dev" || value === "staging" || value === "prod") return value
   throw new RpcError(-32602, "environment must be dev, staging, or prod")
@@ -8476,10 +8195,10 @@ function assemblyTransitionFromArgs(args: JsonObject): StackdAssemblyTransitionR
 function requiredHostedOptimizerAlgorithm(
   args: JsonObject,
   key: string,
-): "gepa" | "go-ex" | "mapo" | "online-reflexion" {
+): "gepa" | "go-ex" | "mapo" {
   const value = requiredString(args, key)
-  if (value === "gepa" || value === "go-ex" || value === "mapo" || value === "online-reflexion") return value
-  throw new RpcError(-32602, `${key} must be gepa, go-ex, mapo, or online-reflexion`)
+  if (value === "gepa" || value === "go-ex" || value === "mapo") return value
+  throw new RpcError(-32602, `${key} must be gepa, go-ex, or mapo`)
 }
 
 function optionalString(args: JsonObject, key: string): string | undefined {

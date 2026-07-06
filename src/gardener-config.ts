@@ -156,6 +156,12 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3 = LEGACY_GENERATED_DEFAULT_GAR
   "hand off to the remote gardener or require explicit operator intent",
 )
 
+// Current prompt base: V4 minus the removed online-Reflexion audit tools.
+const DEFAULT_GARDENER_PROMPT_BASE = LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4.replace(
+  "stack_list_hosted_optimizer_runs, stack_audit_online_reflexion_receipt, stack_audit_online_reflexion_receipts, stack_build_online_reflexion_evidence_packet, stack_pull_artifact",
+  "stack_list_hosted_optimizer_runs, stack_pull_artifact",
+)
+
 // B4 — the gardener owns portfolio orientation on screen: it pulls the gardener
 // (and per-worker monitor) side panels forward at review moments via stack_ui_*.
 const GARDENER_THREAD_CREATE_PROMPT =
@@ -221,8 +227,25 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V5 = [
   GARDENER_PANEL_CONTROL_PROMPT,
 ].join("\n")
 
-const DEFAULT_GARDENER_BUILTIN_PROMPT = [
+// The previously shipped builtin prompt (with the online-Reflexion audit
+// tools) — kept verbatim as a legacy fingerprint so generated
+// default.system.md files upgrade to the current builtin prompt.
+const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V6 = [
   LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4,
+  "",
+  GARDENER_THREAD_CREATE_PROMPT,
+  "",
+  GARDENER_PANEL_CONTROL_PROMPT,
+  "",
+  GARDENER_LIGHTS_THREAD_VIEW_PROMPT,
+  "",
+  GARDENER_EFFORT_PROMPT,
+  "",
+  GARDENER_TAGGED_EFFORT_PROMPT,
+].join("\n")
+
+const DEFAULT_GARDENER_BUILTIN_PROMPT = [
+  DEFAULT_GARDENER_PROMPT_BASE,
   "",
   GARDENER_THREAD_CREATE_PROMPT,
   "",
@@ -272,9 +295,6 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
       "stack_list_live_smrs",
       "stack_list_factories",
       "stack_list_hosted_optimizer_runs",
-      "stack_audit_online_reflexion_receipt",
-      "stack_audit_online_reflexion_receipts",
-      "stack_build_online_reflexion_evidence_packet",
       "stack_pull_artifact",
       "stack_inference_catalog",
       "stack_inference_usage",
@@ -356,35 +376,53 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V2 = [
   ...LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V1.slice(10),
 ]
 
-const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
-  (tool) =>
-    !GARDENER_EFFORT_TOOLS.includes(tool) &&
-    !GARDENER_ASSEMBLY_TOOLS.includes(tool) &&
-    tool !== "stack_remote_gardener_handoff" &&
-    tool !== "stack_ui_close_panel" &&
-    tool !== "stack_meta_thread_create" &&
-    tool !== "stack_worker_thread_create" &&
-    tool !== "stack_meta_thread_update_goal",
-)
+// The online-Reflexion audit tools were removed from the product; they stay
+// here only so legacy generated allow-list fingerprints keep matching files
+// written before the removal.
+const REMOVED_ONLINE_REFLEXION_TOOLS = [
+  "stack_audit_online_reflexion_receipt",
+  "stack_audit_online_reflexion_receipts",
+  "stack_build_online_reflexion_evidence_packet",
+]
 
-const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
-  (tool) =>
-    !GARDENER_EFFORT_TOOLS.includes(tool) &&
-    !GARDENER_ASSEMBLY_TOOLS.includes(tool) &&
-    tool !== "stack_ui_close_panel" &&
-    tool !== "stack_meta_thread_create" &&
-    tool !== "stack_worker_thread_create" &&
-    tool !== "stack_meta_thread_update_goal",
-)
+const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V3 = [
+  ...DEFAULT_GARDENER_CONFIG.tools.allow.filter(
+    (tool) =>
+      !GARDENER_EFFORT_TOOLS.includes(tool) &&
+      !GARDENER_ASSEMBLY_TOOLS.includes(tool) &&
+      tool !== "stack_remote_gardener_handoff" &&
+      tool !== "stack_ui_close_panel" &&
+      tool !== "stack_meta_thread_create" &&
+      tool !== "stack_worker_thread_create" &&
+      tool !== "stack_meta_thread_update_goal",
+  ),
+  ...REMOVED_ONLINE_REFLEXION_TOOLS,
+]
 
-const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V5 = DEFAULT_GARDENER_CONFIG.tools.allow.filter(
-  (tool) =>
-    !GARDENER_EFFORT_TOOLS.includes(tool) &&
-    !GARDENER_ASSEMBLY_TOOLS.includes(tool) &&
-    tool !== "stack_meta_thread_create" &&
-    tool !== "stack_worker_thread_create" &&
-    tool !== "stack_meta_thread_update_goal",
-)
+const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V4 = [
+  ...DEFAULT_GARDENER_CONFIG.tools.allow.filter(
+    (tool) =>
+      !GARDENER_EFFORT_TOOLS.includes(tool) &&
+      !GARDENER_ASSEMBLY_TOOLS.includes(tool) &&
+      tool !== "stack_ui_close_panel" &&
+      tool !== "stack_meta_thread_create" &&
+      tool !== "stack_worker_thread_create" &&
+      tool !== "stack_meta_thread_update_goal",
+  ),
+  ...REMOVED_ONLINE_REFLEXION_TOOLS,
+]
+
+const LEGACY_GENERATED_DEFAULT_GARDENER_ALLOW_V5 = [
+  ...DEFAULT_GARDENER_CONFIG.tools.allow.filter(
+    (tool) =>
+      !GARDENER_EFFORT_TOOLS.includes(tool) &&
+      !GARDENER_ASSEMBLY_TOOLS.includes(tool) &&
+      tool !== "stack_meta_thread_create" &&
+      tool !== "stack_worker_thread_create" &&
+      tool !== "stack_meta_thread_update_goal",
+  ),
+  ...REMOVED_ONLINE_REFLEXION_TOOLS,
+]
 
 export function ensureDefaultGardenerConfig(stackRoot: string): string {
   ensureStackDefaults(stackRoot, stackAppRoot())
@@ -413,6 +451,7 @@ export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
   if (profile === "default") backfillGeneratedDefaultGardenerTools(config, parsed)
   backfillGardenerLightsThreadViewTool(config)
   backfillGardenerEffortTools(config)
+  config.tools.allow = config.tools.allow.filter((tool) => !REMOVED_ONLINE_REFLEXION_TOOLS.includes(tool))
   backfillGardenerAssemblyTools(config)
   const enabledOverride = process.env.STACK_GARDENER_ENABLED?.trim()
   if (enabledOverride === "0" || enabledOverride === "false") config.enabled = false
@@ -571,7 +610,8 @@ function isLegacyGeneratedDefaultGardenerPrompt(prompt: string): boolean {
     normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V2) ||
     normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3) ||
     normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V4) ||
-    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V5)
+    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V5) ||
+    normalized === normalizeGeneratedPrompt(LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V6)
   )
 }
 
@@ -620,7 +660,7 @@ function defaultGardenerToml(): string {
     'worker = "auto"',
     "",
     "[tools]",
-    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_create", "stack_worker_thread_create", "stack_meta_thread_update_goal", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_effort_templates", "stack_effort_list", "stack_effort_get", "stack_effort_remaining", "stack_effort_audit", "stack_effort_activity", "stack_effort_refresh_receipts", "stack_effort_create", "stack_effort_bind_thread", "stack_effort_update_progress", "stack_effort_record_blocker", "stack_effort_resolve_blocker", "stack_effort_record_acceptance", "stack_effort_record_idea", "stack_effort_record_note", "stack_effort_record_research_log", "stack_effort_record_repo", "stack_effort_record_finding", "stack_effort_record_capture", "stack_effort_record_benchmark", "stack_effort_record_optimizer_candidate", "stack_effort_record_run_evidence", "stack_effort_write_engineering_packet", "stack_effort_write_handoff", "stack_effort_update_refs", "stack_effort_update_status", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_audit_online_reflexion_receipt", "stack_audit_online_reflexion_receipts", "stack_build_online_reflexion_evidence_packet", "stack_pull_artifact", "stack_inference_catalog", "stack_inference_usage", "stack_remote_gardener_handoff", "stack_ui_open_panel", "stack_ui_close_panel", "stack_lights_thread_view", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
+    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_create", "stack_worker_thread_create", "stack_meta_thread_update_goal", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_effort_templates", "stack_effort_list", "stack_effort_get", "stack_effort_remaining", "stack_effort_audit", "stack_effort_activity", "stack_effort_refresh_receipts", "stack_effort_create", "stack_effort_bind_thread", "stack_effort_update_progress", "stack_effort_record_blocker", "stack_effort_resolve_blocker", "stack_effort_record_acceptance", "stack_effort_record_idea", "stack_effort_record_note", "stack_effort_record_research_log", "stack_effort_record_repo", "stack_effort_record_finding", "stack_effort_record_capture", "stack_effort_record_benchmark", "stack_effort_record_optimizer_candidate", "stack_effort_record_run_evidence", "stack_effort_write_engineering_packet", "stack_effort_write_handoff", "stack_effort_update_refs", "stack_effort_update_status", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_pull_artifact", "stack_inference_catalog", "stack_inference_usage", "stack_remote_gardener_handoff", "stack_ui_open_panel", "stack_ui_close_panel", "stack_lights_thread_view", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
     'deny = ["codex.interrupt"]',
     "",
     "[handoff]",
