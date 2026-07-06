@@ -168,6 +168,8 @@ const GARDENER_LIGHTS_THREAD_VIEW_PROMPT =
   'For Lights thread orientation ("show this thread in Lights", mark viewed, expand dropdown), use stack_lights_thread_view with actor_role="gardener" and the worker thread_id — not panel="threads" (operator-only). viewed=true opens Lights, marks the thread viewed, and expands its dropdown; viewed=false clears the marker. Alternatively stack_ui_open_panel with panel="lights", view="threads", and the worker thread_id.'
 
 const GARDENER_EFFORT_TOOLS = [
+  "stack_tagged_effort_get",
+  "stack_tagged_effort_set",
   "stack_effort_templates",
   "stack_effort_list",
   "stack_effort_get",
@@ -183,6 +185,7 @@ const GARDENER_EFFORT_TOOLS = [
   "stack_effort_record_acceptance",
   "stack_effort_record_idea",
   "stack_effort_record_note",
+  "stack_effort_record_effort_session",
   "stack_effort_record_research_log",
   "stack_effort_record_repo",
   "stack_effort_record_finding",
@@ -196,8 +199,11 @@ const GARDENER_EFFORT_TOOLS = [
   "stack_effort_update_status",
 ]
 
+const GARDENER_TAGGED_EFFORT_PROMPT =
+  'Exactly one Effort may be ON (active) at a time — separate from how many are running. Top-right shows `active: …` or `active: none`. Lights ▸ Efforts shows `◉ ON` for the active effort. Use stack_tagged_effort_get to read the ON effort; stack_tagged_effort_set with effort_ref to turn one on, or effort_ref="none" to turn all off. During EffortBench evals the session effort is auto-set ON at start.'
+
 const GARDENER_EFFORT_PROMPT =
-  'Efforts are durable workstream containers across threads, runs, ideas, research logs, and proof artifacts. Use stack_effort_templates to choose the right playbook/template, then stack_effort_list, stack_effort_get, stack_effort_remaining, stack_effort_audit, and stack_effort_activity to orient the operator around active workstreams, open acceptance, coherence, and timeline. When the operator asks what remains, call stack_effort_remaining before proposing next actions. When stack_effort_audit reports finding_receipt_digests drift after local/ad-hoc artifact changes, call stack_effort_refresh_receipts before refreshing handoff. When the operator asks to start or organize a durable workstream, create one with stack_effort_create, bind working meta-threads with stack_effort_bind_thread, attach concrete Factory/Project/optimizer/SMR/Tinker ids with stack_effort_update_refs, record operator-origin ideas with stack_effort_record_idea origin="HUMAN", preserve operator context with stack_effort_record_note kind="human", append research log entries with stack_effort_record_research_log, attach local repo/worktree pointers with stack_effort_record_repo, record evidence with stack_effort_record_finding, use stack_effort_record_capture for terminal, browser, screenshot, video, local, monitor, memory, text, benchmark, or optimizer evidence when capture-oriented provenance helps, use stack_effort_record_benchmark when benchmark source, license, task shape, splits, metrics, and metadata intake must survive handoffs, use stack_effort_record_optimizer_candidate for GEPA/hosted optimizer candidates when candidate id, score, split, and source artifact provenance matter, use stack_effort_record_run_evidence for run proof from any run system (smr, tinker, local, ...) when run id, project/output ids, metric, claim label, and source receipt provenance matter, and use stack_effort_record_acceptance after proof artifacts exist to update declared acceptance claims; recorded claims are rejected until their declared needs_refs and needs_evidence requirements are satisfied. For Engineering Efforts or "what changed?" reviews, call stack_effort_write_engineering_packet to record changed files, diff stat, validation, skipped gates, risks, and next action under findings/results. Use path for local/ad-hoc evidence and stack_pull_artifact plus receipt_path when evidence comes from a hosted or saved artifact. Refresh handoff packets with stack_effort_write_handoff. Efforts never use blocked status; record external blockers with stack_effort_record_blocker so blocker, evidence, next owner, and next safe action are preserved while the Effort remains active or paused, then call stack_effort_resolve_blocker with resolution evidence once that blocker is cleared or superseded.'
+  'Efforts are durable workstream containers across threads, runs, ideas, research logs, and proof artifacts. Use stack_effort_templates to choose the right playbook/template, then stack_effort_list, stack_effort_get, stack_effort_remaining, stack_effort_audit, and stack_effort_activity to orient the operator around active workstreams, open acceptance, coherence, and timeline. When the operator asks what remains, call stack_effort_remaining before proposing next actions. When stack_effort_audit reports finding_receipt_digests drift after local/ad-hoc artifact changes, call stack_effort_refresh_receipts before refreshing handoff. When the operator asks to start or organize a durable workstream, create one with stack_effort_create, bind working meta-threads with stack_effort_bind_thread, attach concrete Factory/Project/optimizer/SMR/Tinker ids with stack_effort_update_refs, record operator-origin ideas with stack_effort_record_idea origin="HUMAN", preserve operator context with stack_effort_record_note kind="human", create an effort_session id with stack_effort_record_effort_session when gardener/worker/benchmark work needs one shared correlation tag, append research log entries with stack_effort_record_research_log, attach local repo/worktree pointers with stack_effort_record_repo, record evidence with stack_effort_record_finding, use stack_effort_record_capture for terminal, browser, screenshot, video, local, monitor, memory, text, benchmark, or optimizer evidence when capture-oriented provenance helps, use stack_effort_record_benchmark when benchmark source, license, task shape, splits, metrics, and metadata intake must survive handoffs, use stack_effort_record_optimizer_candidate for GEPA/hosted optimizer candidates when candidate id, score, split, and source artifact provenance matter, use stack_effort_record_run_evidence for run proof from any run system (smr, tinker, local, ...) when run id, project/output ids, metric, claim label, and source receipt provenance matter, and use stack_effort_record_acceptance after proof artifacts exist to update declared acceptance claims; recorded claims are rejected until their declared needs_refs and needs_evidence requirements are satisfied. For Engineering Efforts or "what changed?" reviews, call stack_effort_write_engineering_packet to record changed files, diff stat, validation, skipped gates, risks, and next action under findings/results. Use path for local/ad-hoc evidence and stack_pull_artifact plus receipt_path when evidence comes from a hosted or saved artifact. Refresh handoff packets with stack_effort_write_handoff. Efforts never use blocked status; record external blockers with stack_effort_record_blocker so blocker, evidence, next owner, and next safe action are preserved while the Effort remains active or paused, then call stack_effort_resolve_blocker with resolution evidence once that blocker is cleared or superseded.'
 
 const GARDENER_EFFORT_TEMPLATE_PROMPT =
   "Before creating an Effort, use stack_effort_templates to choose the right playbook/template and see whether it seeds a research log or acceptance criteria."
@@ -218,6 +224,8 @@ const DEFAULT_GARDENER_BUILTIN_PROMPT = [
   GARDENER_LIGHTS_THREAD_VIEW_PROMPT,
   "",
   GARDENER_EFFORT_PROMPT,
+  "",
+  GARDENER_TAGGED_EFFORT_PROMPT,
 ].join("\n")
 
 export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
@@ -264,6 +272,9 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
       "stack_ui_open_panel",
       "stack_ui_close_panel",
       "stack_lights_thread_view",
+      "stack_memory_record",
+      "stack_memory_kinds",
+      "stack_memory_list",
       "jsk.papercut",
       "handoff.force",
       "handoff.seal",
@@ -411,7 +422,8 @@ export function resolveGardenerSystemPrompt(stackRoot: string, config: StackGard
     prompt = DEFAULT_GARDENER_BUILTIN_PROMPT
   }
   prompt = ensureGardenerLightsViewPrompt(prompt)
-  return ensureGardenerEffortPrompt(prompt)
+  prompt = ensureGardenerEffortPrompt(prompt)
+  return ensureGardenerTaggedEffortPrompt(prompt)
 }
 
 export function gardenerToolAllowed(config: StackGardenerConfig, toolId: string): boolean {
@@ -494,6 +506,12 @@ function ensureGardenerLightsViewPrompt(prompt: string): string {
   if (prompt.includes("stack_lights_thread_view")) return prompt
   if (!prompt.includes("stack_ui_open_panel")) return prompt
   return `${prompt.trim()}\n\n${GARDENER_LIGHTS_THREAD_VIEW_PROMPT}`
+}
+
+function ensureGardenerTaggedEffortPrompt(prompt: string): string {
+  if (prompt.includes("stack_tagged_effort_get")) return prompt
+  if (!prompt.includes("stack_effort_list")) return prompt
+  return `${prompt.trim()}\n\n${GARDENER_TAGGED_EFFORT_PROMPT}`
 }
 
 function ensureGardenerEffortPrompt(prompt: string): string {

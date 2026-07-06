@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative, resolve } from "node:path"
 import {
@@ -71,6 +71,7 @@ import {
   recordEffortReleaseArtifact as recordStackEffortReleaseArtifact,
   recordEffortRepo as recordStackEffortRepo,
   recordEffortRunEvidence as recordStackEffortRunEvidence,
+  recordEffortSession as recordStackEffortSession,
   resolveEffortBlocker as resolveStackEffortBlocker,
   EFFORT_LAUNCH_CAPABILITIES,
   parseEffortLaunchCapability,
@@ -107,15 +108,24 @@ import {
   launchEffortRun as launchStackEffortRun,
   type EffortLaunchKind,
 } from "../effort-launch.js"
+import {
+  readTaggedEffortSlug,
+  writeTaggedEffortSlug,
+  taggedEffortDisplayLabel,
+} from "../tagged-effort.js"
 import { isUiPanelId, panelOpenAllowed, panelViewAllowed, UI_PANEL_IDS, UI_PANELS, type UiPanelOpener } from "../ui/vocabulary.js"
 import {
   stackdExport,
   stackdBindMetaThreadRemoteSmrRun,
   stackdAssertMetaThreadEffortRefRoute,
   stackdCreateMetaThread,
+  stackdCreateWorkerMetaThread,
+  stackdListMemories,
+  stackdMemoryKinds,
   stackdMissingEffortRefRouteMessage,
   stackdMetaThread,
   stackdMetaThreads,
+  stackdRecordMemory,
   stackdRuntimeAppendEvent,
   stackdRuntimeEvents,
   stackdRuntimeFactory,
@@ -129,12 +139,13 @@ import {
   stackdUpdateMetaThreadLifecycle,
   stackdUpdateMetaThreadTitle,
   type StackdFactorySnapshot,
+  type StackdMemorySeverity,
+  type StackdMemorySource,
   type StackdMetaThreadManifest,
   type StackdMetaThreadLifecycleStatus,
   type StackdRuntimeEventAppendRequest,
   type StackdRuntimeFactoryResponse,
 } from "../client/stackd.js"
-import { createSession, writeSessionLog } from "../session.js"
 import { projectLogDocumentToVictoriaLogs, queryStackLogs } from "../observability/victorialogs.js"
 import { readCrashReportsView } from "../crash-reports.js"
 import { launchLocalGepaRun, readOptimizerSnapshot } from "../local/optimizers.js"
@@ -928,6 +939,83 @@ export class StackMcpServer {
     return toJsonValue(await this.effortPayload(config, effort)) ?? null
   }
 
+  async getTaggedEffort(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const slug = readTaggedEffortSlug(config.stackDataRoot)
+    if (!slug) {
+      return toJsonValue({
+        ok: true,
+        active: false,
+        active_effort: null,
+        tagged_effort: null,
+        label: "none",
+        display_label: "none",
+      }) ?? null
+    }
+    const effort = readStackEffort(
+      {
+        stackDataRoot: config.stackDataRoot,
+        workspaceRoot: config.workspaceRoot,
+      },
+      slug,
+    )
+    if (!effort) {
+      return toJsonValue({
+        ok: true,
+        tagged_effort: slug,
+        label: slug,
+        display_label: slug,
+        missing: true,
+        message: "Tagged effort slug is set but the Effort folder was not found.",
+      }) ?? null
+    }
+    return toJsonValue({
+      ok: true,
+      active: true,
+      active_effort: effort.registry.slug,
+      tagged_effort: effort.registry.slug,
+      label: taggedEffortDisplayLabel(config, effort.registry.slug),
+      display_label: taggedEffortDisplayLabel(config, effort.registry.slug),
+      effort_id: effort.manifest.id,
+      status: effort.manifest.status,
+      title: effort.manifest.title,
+      folder_ref: effort.registry.folder_ref,
+    }) ?? null
+  }
+
+  async setTaggedEffort(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = optionalString(args, "effort_ref")?.trim()
+    if (!effortRef || effortRef === "none" || effortRef === "null") {
+      writeTaggedEffortSlug(config.stackDataRoot, null)
+      return toJsonValue({
+        ok: true,
+        tagged_effort: null,
+        label: "none",
+        display_label: "no effort",
+        cleared: true,
+      }) ?? null
+    }
+    const effort = readStackEffort(
+      {
+        stackDataRoot: config.stackDataRoot,
+        workspaceRoot: config.workspaceRoot,
+      },
+      effortRef,
+    )
+    if (!effort) throw new RpcError(-32602, `effort not found: ${effortRef}`)
+    writeTaggedEffortSlug(config.stackDataRoot, effort.registry.slug)
+    return toJsonValue({
+      ok: true,
+      tagged_effort: effort.registry.slug,
+      label: taggedEffortDisplayLabel(config, effort.registry.slug),
+      display_label: taggedEffortDisplayLabel(config, effort.registry.slug),
+      effort_id: effort.manifest.id,
+      status: effort.manifest.status,
+      title: effort.manifest.title,
+    }) ?? null
+  }
+
   async getEffortRemaining(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const effortRef = requiredString(args, "effort_ref")
@@ -1012,6 +1100,7 @@ export class StackMcpServer {
       appRoot: config.appRoot,
       slug: optionalString(args, "slug"),
       title,
+      shortTitle: optionalString(args, "short_title"),
       template: optionalString(args, "template"),
       topic: optionalString(args, "topic"),
       folderRef: optionalString(args, "folder_ref"),
@@ -1073,6 +1162,31 @@ export class StackMcpServer {
     })
     return toJsonValue(await this.effortPayload(config, effort, {
       receipt: "lever.stack_mcp effort.progress_updated",
+    })) ?? null
+  }
+
+  async recordEffortSession(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const effortRef = requiredString(args, "effort_ref")
+    const result = recordStackEffortSession({
+      stackDataRoot: config.stackDataRoot,
+      workspaceRoot: config.workspaceRoot,
+      effortRef,
+      sessionId: optionalString(args, "session_id"),
+      title: requiredString(args, "title"),
+      actor: optionalString(args, "actor"),
+      kind: optionalString(args, "kind"),
+      summary: optionalString(args, "summary"),
+      parentSessionId: optionalString(args, "parent_session_id"),
+      tags: optionalStringArray(args, "tags"),
+      payload: optionalJsonObject(args, "payload"),
+    })
+    return toJsonValue(await this.effortPayload(config, result.effort, {
+      session: result.session,
+      session_id: result.session.session_id,
+      path: result.path,
+      relative_path: relative(result.effort.folder_path, result.path),
+      receipt: "lever.stack_mcp effort_session.recorded",
     })) ?? null
   }
 
@@ -1144,6 +1258,7 @@ export class StackMcpServer {
       workspaceRoot: config.workspaceRoot,
       effortRef,
       title: requiredString(args, "title"),
+      sessionId: optionalString(args, "session_id"),
       operatorMessage: optionalString(args, "operator_message"),
       workSummary: requiredString(args, "work_summary"),
       result: optionalString(args, "result"),
@@ -1155,6 +1270,7 @@ export class StackMcpServer {
     return toJsonValue(await this.effortPayload(config, result.effort, {
       path: result.path,
       relative_path: relative(result.effort.folder_path, result.path),
+      session_id: optionalString(args, "session_id"),
       receipt: "lever.stack_mcp effort.research_log_recorded",
     })) ?? null
   }
@@ -1816,6 +1932,7 @@ export class StackMcpServer {
     const threadId = requiredString(args, "thread_id")
     const effort = this.optionalEffort(config, optionalString(args, "effort_ref"))
     if (effort) await this.preflightEffortBoundMetaThreadCreate(effort.manifest.id)
+    const gardenerThreadId = optionalString(args, "gardener_thread_id") ?? readCurrentGardenerThreadId(config.stackDataRoot)
     const manifest = await stackdCreateMetaThread({
       title,
       thread_id: threadId,
@@ -1824,11 +1941,11 @@ export class StackMcpServer {
       reasoning_effort: optionalString(args, "reasoning_effort") ?? config.codexReasoningEffort,
       harness: optionalString(args, "harness") ?? config.harness,
       source: optionalString(args, "source") ?? "gardener",
-      source_ref: optionalString(args, "source_ref"),
+      source_ref: optionalString(args, "source_ref") ?? gardenerThreadId,
       effort_ref: effort?.manifest.id,
       repo_refs: optionalStringArray(args, "repo_refs") ?? [],
       worktree_refs: optionalStringArray(args, "worktree_refs") ?? [config.workspaceRoot],
-      gardener_thread_id: optionalString(args, "gardener_thread_id"),
+      gardener_thread_id: gardenerThreadId,
       monitor_profile: optionalString(args, "monitor_profile"),
       active_goal: objective
         ? {
@@ -1873,28 +1990,22 @@ export class StackMcpServer {
     const effort = this.optionalEffort(config, optionalString(args, "effort_ref"))
     if (effort) await this.preflightEffortBoundMetaThreadCreate(effort.manifest.id)
     const title = optionalString(args, "title") ?? objective ?? "new worker thread"
-    const session = createSession(optionalString(args, "workspace_root") ?? config.workspaceRoot, harnessSessionCommand(config))
-    session.displayName = title
-    session.harness = config.harness
-    session.harnessModel = harnessModel(config)
-    session.segmentRole = "implement"
-    const sessionPath = await writeSessionLog(session, config.sessionLogDir, {
-      codexModel: harnessModel(config),
-      pricingRows: config.codexPricing,
-    })
-    const manifest = await stackdCreateMetaThread({
+    const workspaceRoot = optionalString(args, "workspace_root") ?? config.workspaceRoot
+    const gardenerThreadId = optionalString(args, "gardener_thread_id") ?? readCurrentGardenerThreadId(config.stackDataRoot)
+    const response = await stackdCreateWorkerMetaThread({
       title,
-      thread_id: session.id,
+      workspace_root: workspaceRoot,
+      codex_command: harnessSessionCommand(config),
       role: optionalString(args, "role") ?? "implement",
       model: optionalString(args, "model") ?? harnessModel(config),
       reasoning_effort: optionalString(args, "reasoning_effort") ?? config.codexReasoningEffort,
       harness: optionalString(args, "harness") ?? config.harness,
       source: optionalString(args, "source") ?? "gardener",
-      source_ref: optionalString(args, "source_ref"),
+      source_ref: optionalString(args, "source_ref") ?? gardenerThreadId,
       effort_ref: effort?.manifest.id,
       repo_refs: optionalStringArray(args, "repo_refs") ?? [],
-      worktree_refs: optionalStringArray(args, "worktree_refs") ?? [session.workspaceRoot],
-      gardener_thread_id: optionalString(args, "gardener_thread_id"),
+      worktree_refs: optionalStringArray(args, "worktree_refs") ?? [workspaceRoot],
+      gardener_thread_id: gardenerThreadId,
       monitor_profile: optionalString(args, "monitor_profile"),
       active_goal: objective
         ? {
@@ -1905,6 +2016,7 @@ export class StackMcpServer {
           }
         : undefined,
     })
+    const manifest = response.manifest
     const boundManifest = effort
       ? await this.ensureMetaThreadEffortRef(effort.manifest.id, manifest.id, manifest)
       : manifest
@@ -1913,8 +2025,8 @@ export class StackMcpServer {
       : null
     return toJsonValue({
       ok: true,
-      thread_id: session.id,
-      session_path: sessionPath,
+      thread_id: boundManifest.head_thread_id,
+      session_path: response.session_path,
       meta_thread_id: boundManifest.id,
       segment_id: boundManifest.head_segment_id,
       lifecycle_status: boundManifest.lifecycle_status ?? "live",
@@ -6123,6 +6235,23 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.getEffort(args),
     },
     {
+      name: "stack_tagged_effort_get",
+      description: "Read which Effort is ON (active). Only one effort can be ON at a time (or none). Shown top-right as active: … and in Lights as ◉ ON. Returns null when none is ON.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+      }),
+      handler: (args) => server.getTaggedEffort(args),
+    },
+    {
+      name: "stack_tagged_effort_set",
+      description: "Turn an Effort ON (active) or turn all OFF. Pass effort_ref as slug/id to turn one ON, or effort_ref=\"none\" to turn off. Running efforts are unchanged; this picks the single focus effort for evals and gardener.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        effort_ref: stringProperty('Effort slug/id to tag, or "none" to clear the tagged effort.'),
+      }),
+      handler: (args) => server.setTaggedEffort(args),
+    },
+    {
       name: "stack_effort_remaining",
       description: "Answer what remains for one Effort: parsed acceptance state, open acceptance levels, latest unresolved blocker, next safe actions, and key handoff/acceptance paths. Use this before handoff, resumption, or deciding whether A-level proof can be recorded.",
       inputSchema: objectSchema(
@@ -6217,6 +6346,46 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.updateEffortProgress(args),
     },
     {
+      name: "stack_effort_record_effort_session",
+      description: "Record a durable effort_session id in EFFORT_SESSIONS.jsonl so downstream gardener, worker, benchmark, and research-log records can share one correlation tag.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          session_id: stringProperty("Optional caller-provided session id. Defaults to a generated effsess_<uuid>."),
+          title: stringProperty("Human-readable session title."),
+          actor: stringProperty("Optional actor label, such as gardener, worker, effortbench, or operator. Defaults to operator."),
+          kind: stringProperty("Optional session kind, such as research, gardener, worker, or effortbench.live. Defaults to work."),
+          summary: stringProperty("Optional one-line session summary. Defaults to title."),
+          parent_session_id: stringProperty("Optional parent effort_session id for nested worker/gardener work."),
+          tags: arrayProperty("Optional tags to make downstream work grepable."),
+          payload: jsonObjectProperty("Optional structured metadata for this session."),
+        },
+        ["effort_ref", "title"],
+      ),
+      handler: (args) => server.recordEffortSession(args),
+    },
+    {
+      name: "stack_effort_record_session",
+      description: "Alias for stack_effort_record_effort_session.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          effort_ref: stringProperty("Effort id or slug."),
+          session_id: stringProperty("Optional caller-provided session id. Defaults to a generated effsess_<uuid>."),
+          title: stringProperty("Human-readable effort_session title."),
+          actor: stringProperty("Optional actor label, such as gardener, worker, effortbench, or operator. Defaults to operator."),
+          kind: stringProperty("Optional effort_session kind, such as research, gardener, worker, or effortbench.live. Defaults to work."),
+          summary: stringProperty("Optional one-line effort_session summary. Defaults to title."),
+          parent_session_id: stringProperty("Optional parent effort_session id for nested worker/gardener work."),
+          tags: arrayProperty("Optional tags to make downstream work grepable."),
+          payload: jsonObjectProperty("Optional structured metadata for this effort_session."),
+        },
+        ["effort_ref", "title"],
+      ),
+      handler: (args) => server.recordEffortSession(args),
+    },
+    {
       name: "stack_effort_record_blocker",
       description: "Record an external blocker on an Effort without changing status to blocked. The progress entry and activity receipt include the blocker, evidence, next owner, and next safe action.",
       inputSchema: objectSchema(
@@ -6276,6 +6445,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           environment: environmentProperty(),
           effort_ref: stringProperty("Effort id or slug."),
           title: stringProperty("Research-log session title."),
+          session_id: stringProperty("Optional effort_session id from stack_effort_record_effort_session."),
           operator_message: stringProperty("Optional verbatim operator message for the **You:** block."),
           work_summary: stringProperty("Summarized agent work, runs, artifacts, and result."),
           result: stringProperty("Optional result summary."),
@@ -6391,6 +6561,64 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["effort_ref", "kind", "title"],
       ),
       handler: (args) => server.recordEffortFinding(args),
+    },
+    {
+      name: "stack_memory_record",
+      description:
+        "Record a typed runtime memory into the Stack guidance ledgers via stackd. Kinds are the registered MLDP instances (papercut, mistake, learning, desire); entries land in .stack/guidance/records/<kind>/ and mirror into the eval packet when running in eval mode.",
+      inputSchema: objectSchema(
+        {
+          kind: enumProperty(["papercut", "mistake", "learning", "desire"], "Memory kind (registered instance)."),
+          summary: stringProperty("One-line memory summary."),
+          body: stringProperty("Optional markdown detail."),
+          file: stringProperty("Optional relevant source or workflow file, optionally with :line."),
+          severity: enumProperty(["LOW", "MED", "HIGH"], "Optional severity. Defaults per kind."),
+          source: enumProperty(["gardener", "monitor", "worker", "operator", "mcp"], "Who is recording. Defaults to mcp."),
+          thread_id: stringProperty("Optional thread id provenance."),
+          effort_ref: stringProperty("Optional Effort id or slug provenance."),
+        },
+        ["kind", "summary"],
+      ),
+      handler: async (args) => {
+        const context: Record<string, string> = {}
+        const threadId = optionalString(args, "thread_id")
+        if (threadId) context.thread_id = threadId
+        const effortRef = optionalString(args, "effort_ref")
+        if (effortRef) context.effort = effortRef
+        const receipt = await stackdRecordMemory({
+          kind: requiredString(args, "kind"),
+          summary: requiredString(args, "summary"),
+          body: optionalString(args, "body"),
+          file: optionalString(args, "file"),
+          severity: optionalString(args, "severity") as StackdMemorySeverity | undefined,
+          source: (optionalString(args, "source") as StackdMemorySource | undefined) ?? "mcp",
+          context,
+          packet_dir: process.env.STACKEVAL_PACKET?.trim() || undefined,
+        })
+        return toJsonValue(receipt) ?? null
+      },
+    },
+    {
+      name: "stack_memory_kinds",
+      description: "List the registered runtime memory kinds (the MLDP set) with descriptions and default severities.",
+      inputSchema: objectSchema({}),
+      handler: async () => toJsonValue(await stackdMemoryKinds()) ?? null,
+    },
+    {
+      name: "stack_memory_list",
+      description: "List recent runtime memory entries of one kind from the Stack guidance ledgers.",
+      inputSchema: objectSchema(
+        {
+          kind: enumProperty(["papercut", "mistake", "learning", "desire"], "Memory kind."),
+          recent: stringProperty("Optional max entries to return (default 20)."),
+        },
+        ["kind"],
+      ),
+      handler: async (args) => {
+        const recentRaw = optionalString(args, "recent")
+        const recent = recentRaw ? Number.parseInt(recentRaw, 10) : 20
+        return toJsonValue(await stackdListMemories(requiredString(args, "kind"), Number.isFinite(recent) && recent > 0 ? recent : 20)) ?? null
+      },
     },
     {
       name: "stack_effort_record_capture",
@@ -7662,6 +7890,18 @@ async function resolveLightsThreadTargetId(stackDataRoot: string, threadId: stri
   const manifest = await readMetaThreadManifest(stackDataRoot, trimmed)
   const head = manifest?.head_thread_id?.trim()
   return head || trimmed
+}
+
+function readCurrentGardenerThreadId(stackDataRoot: string): string | undefined {
+  const path = join(stackDataRoot, ".stack", "garden", "gardener-thread.json")
+  if (!existsSync(path)) return undefined
+  try {
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { thread_id?: unknown }
+    const threadId = typeof parsed.thread_id === "string" ? parsed.thread_id.trim() : ""
+    return threadId || undefined
+  } catch {
+    return undefined
+  }
 }
 
 function requiredString(args: JsonObject, key: string): string {

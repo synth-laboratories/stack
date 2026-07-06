@@ -1,5 +1,6 @@
 use crate::handlers::{
-    checkpoints, export, health, logs, mcp, meta, meta_threads, runtime, skills, telemetry, threads,
+    checkpoints, codex, export, health, logs, mcp, memories, meta, meta_threads, runtime, skills,
+    telemetry, threads,
 };
 use crate::mcp_sidecar::McpSidecar;
 use crate::monitor_scheduler;
@@ -103,6 +104,7 @@ async fn spawn_mcp_sidecar(
 fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health::health))
+        .route("/codex/isolation", get(codex::get_codex_isolation))
         .route("/status", get(threads::get_stack_status))
         .route("/runtime/factory", get(runtime::get_runtime_factory))
         .route(
@@ -172,6 +174,10 @@ fn router(state: Arc<AppState>) -> Router {
             "/meta-threads",
             get(meta_threads::list_meta_threads).post(meta_threads::create_meta_thread),
         )
+        .route(
+            "/meta-threads/worker",
+            post(meta_threads::create_worker_meta_thread),
+        )
         .route("/meta-threads/:id", get(meta_threads::get_meta_thread))
         .route("/meta-threads/:id/title", patch(meta_threads::update_title))
         .route(
@@ -211,6 +217,11 @@ fn router(state: Arc<AppState>) -> Router {
             "/meta-threads/:id/handoff/continue",
             post(meta_threads::continue_handoff),
         )
+        .route(
+            "/memories",
+            get(memories::list_memories_handler).post(memories::record_memory_handler),
+        )
+        .route("/memories/kinds", get(memories::list_memory_kinds_handler))
         .route(
             "/skills",
             get(skills::list_skills_handler).post(skills::register_skill_handler),
