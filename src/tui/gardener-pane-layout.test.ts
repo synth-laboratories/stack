@@ -5,12 +5,12 @@ import {
   gardenerTranscriptRowsWithReserve,
 } from "./gardener-pane-layout.js"
 
-test("gardenerAgentBlockHeight: header + up to 6 rows + overflow row", () => {
+test("gardenerAgentBlockHeight: separator + header + up to 6 rows + overflow row", () => {
   expect(gardenerAgentBlockHeight(0)).toBe(0)
-  expect(gardenerAgentBlockHeight(1)).toBe(2)
-  expect(gardenerAgentBlockHeight(3)).toBe(4)
-  expect(gardenerAgentBlockHeight(6)).toBe(7)
-  expect(gardenerAgentBlockHeight(8)).toBe(8) // header + 6 shown + 1 overflow
+  expect(gardenerAgentBlockHeight(1)).toBe(3)
+  expect(gardenerAgentBlockHeight(3)).toBe(5)
+  expect(gardenerAgentBlockHeight(6)).toBe(8)
+  expect(gardenerAgentBlockHeight(8)).toBe(9) // separator + header + 6 shown + 1 overflow
 })
 
 test("gardenerPlanBlockHeight: header + one row per step", () => {

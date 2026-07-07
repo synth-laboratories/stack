@@ -67,6 +67,9 @@ matching, aliases, and tab completion.
 | `/exit` / `/quit` | Quit Stack |
 | `/goal ...` | Show, set, pause, resume, clear, or edit goal criteria |
 | `/gardener [message]` / `/g` | Focus the gardener in the core panel or send it a message |
+
+Actor scope (gardener vs worker vs monitor visibility): [`stack_gardener.md`](./stack_gardener.md).
+
 | `/monitor on\|off\|show\|hide\|chat\|stream\|message` / `/m` | Toggle, show, hide, focus, or message the monitor |
 | `/lights on\|off` | Open or close the Lights status panel |
 | `/efforts` | Open the Efforts workstream panel |

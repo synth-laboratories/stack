@@ -70,7 +70,7 @@ Load order for Codex in Stack:
 
 Stack symlinks bundled skills on install/launch and bridges `optimizers/skills/gepa` when sibling checkout exists.
 
-**stackd registry (first-class):** on serve, stackd bootstraps preinstalled skills (`oss-gepa`, `hosted-gepa`, `synth-ai`) into `.stack/skills/registry.json` and exposes `GET/POST /skills`. Gardener can add custom skills via `skills.register` / `skill register …` in chat. See Jstack note `stack_skill.md`.
+**stackd registry (first-class):** on serve, stackd bootstraps preinstalled skills (`oss-gepa`, `hosted-gepa`, `synth-ai`) into `.stack/skills/registry.json` and exposes `GET/POST /skills`. Gardener can add custom skills via `skills.register` / `skill register …` in chat. Gardener vs worker vs monitor visibility (no monitor spawn; passive `monitor_headline` only): [`stack_gardener.md`](./stack_gardener.md). See Jstack note `stack_skill.md`.
 
 ---
 
@@ -114,6 +114,7 @@ These are P0 for “Stack is hyper-productive with Synth” claims:
 ## Related
 
 - Skills: `.codex/skills/synth-stack-productivity/`, `oss-gepa`, `synth-via-stack`, `stack-agent-bridge`
+- Gardener actor (worker progress, monitor): [`stack_gardener.md`](./stack_gardener.md)
 - Launch prep: `Jstack/.jstack/daily_notes/2026-06-29/stack_synth_productivity_north_star.md`
 - Public docs: `docs/docs/stack/overview.mdx`
 - Acceptance: `Jstack/.jstack/product/specs/stack_acceptance.md`

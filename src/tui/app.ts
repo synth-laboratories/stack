@@ -6641,9 +6641,17 @@ function gardenerAgentsWidget(
   if (agents.length === 0) return undefined
   const live = agents.filter((agent) => agent.phase === "live").length
   const done = agents.filter((agent) => agent.phase === "done").length
+  // Clamp to one line, leaving room for the pane border so rows never wrap onto a second line (a
+  // wrapped row would overflow the reserved height and overlap the control row). See
+  // gardenerAgentBlockHeight, which must count one row per line produced here.
+  const clampLine = (text: string): string => {
+    const width = Math.max(8, columns - 2)
+    return text.length <= width ? text : `${text.slice(0, width - 1)}…`
+  }
   const rows: ReturnType<typeof Text>[] = [
+    Text({ content: " ", width: "100%" }),
     Text({
-      content: oneLine(`Agents · ${live} live · ${done} done`, columns),
+      content: clampLine(`Agents · ${live} live · ${done} done`),
       fg: theme.transcript.subagentLabel,
       width: "100%",
     }),
@@ -6653,14 +6661,14 @@ function gardenerAgentsWidget(
     const tokens = agent.tokensLabel ? ` · ${agent.tokensLabel}` : ""
     rows.push(
       Text({
-        content: oneLine(`  ${glyph} ${agent.kind} · ${agent.label} · ${agent.statusLabel}${tokens}`, columns),
+        content: clampLine(`  ${glyph} ${agent.kind} · ${agent.label} · ${agent.statusLabel}${tokens}`),
         fg: gardenerAgentPhaseColor(agent.phase),
         width: "100%",
       }),
     )
   }
   if (agents.length > 6) {
-    rows.push(Text({ content: `  … +${agents.length - 6}`, fg: theme.fgMuted, width: "100%" }))
+    rows.push(Text({ content: clampLine(`  … +${agents.length - 6}`), fg: theme.fgMuted, width: "100%" }))
   }
   return Box({ flexDirection: "column", flexShrink: 0, width: "100%" }, ...rows)
 }

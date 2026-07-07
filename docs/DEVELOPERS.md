@@ -82,7 +82,7 @@ harness into `stack` to make that easier.
 | Product source | `src/`, `crates/stackd/`, `crates/stack-core/` |
 | Operator/runtime scripts | install, release, bump, daemon, wake policy — not verification |
 | Packaging | Homebrew formulae, installer assets |
-| Product docs | `README.md`, `docs/USAGE.md`, `docs/PERFORMANCE_TESTING.md`, `CHANGELOG.md`, actor scope notes |
+| Product docs | `README.md`, `docs/USAGE.md`, `docs/stack_gardener.md`, `docs/PERFORMANCE_TESTING.md`, `CHANGELOG.md`, actor scope notes |
 | Bundled operator guidance | `.codex/skills/`, `bundled/guidance/` (product norms, not eval tasks) |
 
 When in doubt: **if deleting it would not remove a feature the operator uses in the TUI or
