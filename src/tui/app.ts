@@ -6566,6 +6566,8 @@ type GardenerPaneAgent = {
   label: string
   statusLabel: string
   phase: "live" | "done" | "other"
+  /** Token total, workers only — codex spawn_agent runs in-process with the gardener (no per-agent usage). */
+  tokensLabel?: string
 }
 
 /**
@@ -6584,11 +6586,14 @@ function gardenerPaneAgents(options: StackAppOptions, state: AppState): Gardener
       worker.manifest.title?.trim() ||
       worker.manifest.active_goal?.objective?.trim() ||
       id.slice(0, 8)
+    const usage = threadUsageSummary(options, worker.summary)
+    const tokens = usage ? sessionTokenTotal(usage.totals) : 0
     return {
       kind: "worker" as const,
       label,
       statusLabel: done ? "done" : goal ? `goal ${goal}` : lifecycle,
       phase: done ? ("done" as const) : ("live" as const),
+      tokensLabel: tokens > 0 ? `${formatTokenTotal(tokens)}tok` : undefined,
     }
   })
   const codex: GardenerPaneAgent[] = gardenerSubagentsForLights(state).map((sub) => {
@@ -6631,9 +6636,10 @@ function gardenerAgentsWidget(
   ]
   for (const agent of agents.slice(0, 6)) {
     const glyph = agent.phase === "live" ? "✳" : agent.phase === "done" ? "✓" : "↳"
+    const tokens = agent.tokensLabel ? ` · ${agent.tokensLabel}` : ""
     rows.push(
       Text({
-        content: oneLine(`  ${glyph} ${agent.kind} · ${agent.label} · ${agent.statusLabel}`, columns),
+        content: oneLine(`  ${glyph} ${agent.kind} · ${agent.label} · ${agent.statusLabel}${tokens}`, columns),
         fg: gardenerAgentPhaseColor(agent.phase),
         width: "100%",
       }),
