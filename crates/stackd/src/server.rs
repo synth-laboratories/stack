@@ -10,11 +10,12 @@ use axum::{
     routing::{any, get, patch, post},
     Router,
 };
+use chrono::Utc;
 use stack_core::config::StackPaths;
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, Semaphore};
 
 #[derive(Debug)]
 pub struct AppState {
@@ -27,6 +28,7 @@ pub struct AppState {
     pub http_client: reqwest::Client,
     pub runtime_write_lock: Mutex<()>,
     pub meta_tick_lock: Mutex<()>,
+    pub worker_run_slots: Arc<Semaphore>,
 }
 
 pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
@@ -55,6 +57,7 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
         http_client: reqwest::Client::new(),
         runtime_write_lock: Mutex::new(()),
         meta_tick_lock: Mutex::new(()),
+        worker_run_slots: Arc::new(Semaphore::new(worker_run_global_cap())),
     });
 
     if let Err(error) = stack_core::seed::ensure_stack_defaults(&state.paths) {
@@ -67,6 +70,19 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
         tracing::info!("stackd skills registry ready");
     }
 
+    match stack_core::worker_run::cleanup_running_worker_run_records(
+        &state.paths.stack_dir,
+        &Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+    )
+    .await
+    {
+        Ok(count) if count > 0 => {
+            tracing::warn!("cleaned {count} stale running worker-run record(s) after stackd start")
+        }
+        Ok(_) => {}
+        Err(error) => tracing::warn!("worker-run stale-state cleanup failed: {error}"),
+    }
+
     monitor_scheduler::spawn_monitor_scheduler(state.clone());
     scheduler::spawn_runtime_scheduler(state.clone());
 
@@ -75,6 +91,14 @@ pub async fn serve(addr: SocketAddr) -> anyhow::Result<()> {
     tracing::info!("stackd listening on http://{}", listener.local_addr()?);
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+fn worker_run_global_cap() -> usize {
+    std::env::var("STACK_WORKER_RUN_GLOBAL_CAP")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value > 0)
+        .unwrap_or(2)
 }
 
 async fn spawn_mcp_sidecar(
@@ -121,6 +145,19 @@ fn router(state: Arc<AppState>) -> Router {
         .route("/threads", get(threads::list_threads))
         .route("/threads/:id", get(threads::get_thread))
         .route("/threads/:id/status", get(threads::get_status))
+        .route(
+            "/threads/:id/worker-run/status",
+            get(threads::get_worker_run_status),
+        )
+        .route("/threads/:id/worker-run", post(threads::run_worker_turn))
+        .route(
+            "/threads/:id/worker-run/continue",
+            post(threads::continue_worker_run),
+        )
+        .route(
+            "/threads/:id/worker-run/pause",
+            post(threads::pause_worker_run),
+        )
         .route(
             "/threads/:id/events",
             get(threads::get_events).post(threads::append_event),

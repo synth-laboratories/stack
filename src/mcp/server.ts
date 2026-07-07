@@ -143,6 +143,10 @@ import {
   stackdUpdateMetaThreadGoal,
   stackdUpdateMetaThreadLifecycle,
   stackdUpdateMetaThreadTitle,
+  stackdWorkerContinue,
+  stackdWorkerPause,
+  stackdWorkerRun,
+  stackdWorkerRunStatus,
   type StackdAssemblyBindings,
   type StackdAssemblyPreset,
   type StackdAssemblyTransitionRequest,
@@ -2069,6 +2073,62 @@ export class StackMcpServer {
       effort: effortBinding,
       manifest: boundManifest,
       receipt: "lever.stack_mcp worker_thread.created",
+    }) ?? null
+  }
+
+  async workerRun(args: JsonObject): Promise<JsonValue> {
+    await this.config(args)
+    const threadId = requiredString(args, "thread_id")
+    const maxTurns = optionalInteger(args, "max_turns")
+    if (maxTurns !== undefined && maxTurns < 1) {
+      throw new RpcError(-32602, "max_turns must be at least 1")
+    }
+    const result = await stackdWorkerRun(threadId, {
+      objective: optionalString(args, "objective"),
+      max_turns: maxTurns,
+      monitor_profile: optionalString(args, "monitor_profile"),
+    })
+    return toJsonValue({
+      ...result,
+      receipt: "lever.stack_mcp worker_run.started",
+    }) ?? null
+  }
+
+  async workerRunStatus(args: JsonObject): Promise<JsonValue> {
+    await this.config(args)
+    const threadId = requiredString(args, "thread_id")
+    const status = await stackdWorkerRunStatus(threadId)
+    return toJsonValue({
+      ...status,
+      receipt: "lever.stack_mcp worker_run.status",
+    }) ?? null
+  }
+
+  async workerContinue(args: JsonObject): Promise<JsonValue> {
+    await this.config(args)
+    const threadId = requiredString(args, "thread_id")
+    const maxTurns = optionalInteger(args, "max_turns")
+    if (maxTurns !== undefined && maxTurns < 1) {
+      throw new RpcError(-32602, "max_turns must be at least 1")
+    }
+    const result = await stackdWorkerContinue(threadId, {
+      note: optionalString(args, "note"),
+      max_turns: maxTurns,
+    })
+    return toJsonValue({
+      ...result,
+      receipt: "lever.stack_mcp worker_run.continued",
+    }) ?? null
+  }
+
+  async workerPause(args: JsonObject): Promise<JsonValue> {
+    await this.config(args)
+    const threadId = requiredString(args, "thread_id")
+    const reason = requiredString(args, "reason")
+    const status = await stackdWorkerPause(threadId, { reason })
+    return toJsonValue({
+      ...status,
+      receipt: "lever.stack_mcp worker_run.paused",
     }) ?? null
   }
 
@@ -7337,6 +7397,60 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         actor_role: enumProperty(["gardener", "operator"], "Actor role. Defaults to gardener."),
       }),
       handler: (args) => server.createWorkerThread(args),
+    },
+    {
+      name: "stack_worker_run",
+      description: "Start a background Codex run for a durable Stack worker through the Rust stackd runner. Returns worker_run.started immediately; the runner takes turns until the goal is done, a blocker is recorded, a pause is requested, an error, or the turn budget is reached (default 3, cap 25). Poll stack_worker_run_status for liveness — do not assume the worker finished when this returns.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Stack worker thread/session id."),
+          objective: stringProperty("Optional objective for the run. Defaults to the worker meta-thread active goal."),
+          max_turns: { type: "integer", description: "Optional turn budget for this run (default 3, hard cap 25)." },
+          monitor_profile: stringProperty("Optional monitor profile; auto-enables the sidecar and is recorded on the worker_run.started event."),
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.workerRun(args),
+    },
+    {
+      name: "stack_worker_run_status",
+      description: "Read authoritative worker execution liveness from stackd. A durable worker with turns=0 is idle even when its meta-thread goal is active.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Stack worker thread/session id."),
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.workerRunStatus(args),
+    },
+    {
+      name: "stack_worker_continue",
+      description: "Resume or nudge a paused/idle durable Stack worker run through the Rust stackd runner. Runs until done, blocker, pause, error, or the turn budget.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Stack worker thread/session id."),
+          note: stringProperty("Optional continuation note for the next worker turn."),
+          max_turns: { type: "integer", description: "Optional turn budget for this continuation." },
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.workerContinue(args),
+    },
+    {
+      name: "stack_worker_pause",
+      description: "Request that a background worker run stop after the current turn. Leaves the lane resumable with stack_worker_continue.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Stack worker thread/session id."),
+          reason: stringProperty("Short reason for pausing the worker run."),
+        },
+        ["thread_id", "reason"],
+      ),
+      handler: (args) => server.workerPause(args),
     },
     {
       name: "stack_meta_thread_update_goal",

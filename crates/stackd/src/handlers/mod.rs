@@ -45,6 +45,10 @@ impl ApiError {
             message: message.into(),
         }
     }
+
+    pub fn message(&self) -> &str {
+        &self.message
+    }
 }
 
 impl From<SessionError> for ApiError {
@@ -84,6 +88,18 @@ impl From<stack_core::meta_thread::MetaThreadError> for ApiError {
                 message: error.to_string(),
             },
             stack_core::meta_thread::MetaThreadError::InvalidPathSegment(_) => Self {
+                status: StatusCode::BAD_REQUEST,
+                message: error.to_string(),
+            },
+            _ => Self::internal(error.to_string()),
+        }
+    }
+}
+
+impl From<stack_core::worker_run::WorkerRunError> for ApiError {
+    fn from(error: stack_core::worker_run::WorkerRunError) -> Self {
+        match error {
+            stack_core::worker_run::WorkerRunError::InvalidThreadId(_) => Self {
                 status: StatusCode::BAD_REQUEST,
                 message: error.to_string(),
             },

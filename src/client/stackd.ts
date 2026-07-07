@@ -72,6 +72,50 @@ export type StackdThreadSummary = {
   usageSummary?: unknown
 }
 
+export type StackdWorkerRunStatus = {
+  thread_id: string
+  meta_thread_id?: string
+  state: "idle" | "running" | "paused" | "blocked" | "done" | "error"
+  turns: number
+  active_goal_status?: string
+  last_turn_exit_code?: number
+  last_agent_message?: string
+  latest_run_event_type?: string
+  latest_run_event_id?: string
+  latest_run_observed_at?: string
+  run_id?: string
+  completed_turns?: number
+  max_turns?: number
+  pause_reason?: string
+  stop_reason?: string
+}
+
+export type StackdWorkerRunRequest = {
+  objective?: string
+  max_turns?: number
+  monitor_profile?: string
+}
+
+export type StackdWorkerContinueRequest = {
+  note?: string
+  max_turns?: number
+}
+
+export type StackdWorkerPauseRequest = {
+  reason: string
+}
+
+export type StackdWorkerRunResponse = {
+  thread_id: string
+  meta_thread_id?: string
+  run_id: string
+  turn_id: string
+  turns: number
+  state: StackdWorkerRunStatus["state"]
+  status: StackdWorkerRunStatus
+  receipt: string
+}
+
 export type StackdTrace = {
   stack_session_id: string
   stack_session_path: string
@@ -871,6 +915,46 @@ export async function stackdThreads(baseUrl = stackdBaseUrl()): Promise<StackdTh
 
 export async function stackdThread(id: string, baseUrl = stackdBaseUrl()): Promise<unknown> {
   return requestJson<unknown>(baseUrl, `/threads/${encodeURIComponent(id)}`)
+}
+
+export async function stackdWorkerRunStatus(id: string, baseUrl = stackdBaseUrl()): Promise<StackdWorkerRunStatus> {
+  return requestJson<StackdWorkerRunStatus>(baseUrl, `/threads/${encodeURIComponent(id)}/worker-run/status`)
+}
+
+export async function stackdWorkerRun(
+  id: string,
+  request: StackdWorkerRunRequest = {},
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdWorkerRunResponse> {
+  return requestJson<StackdWorkerRunResponse>(
+    baseUrl,
+    `/threads/${encodeURIComponent(id)}/worker-run`,
+    jsonPost(request),
+  )
+}
+
+export async function stackdWorkerContinue(
+  id: string,
+  request: StackdWorkerContinueRequest = {},
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdWorkerRunResponse> {
+  return requestJson<StackdWorkerRunResponse>(
+    baseUrl,
+    `/threads/${encodeURIComponent(id)}/worker-run/continue`,
+    jsonPost(request),
+  )
+}
+
+export async function stackdWorkerPause(
+  id: string,
+  request: StackdWorkerPauseRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdWorkerRunStatus> {
+  return requestJson<StackdWorkerRunStatus>(
+    baseUrl,
+    `/threads/${encodeURIComponent(id)}/worker-run/pause`,
+    jsonPost(request),
+  )
 }
 
 export async function stackdTrace(id: string, baseUrl = stackdBaseUrl()): Promise<StackdTrace> {
