@@ -192,9 +192,11 @@ import {
   buildOnlineReflexionEvidencePacket,
   cancelHostedOptimizerRun,
   downloadHostedOptimizerArtifact,
+  getOptimizerStartupCatalog,
   previewHostedOptimizerArtifact,
   submitHostedGepaRun,
   submitHostedOptimizerRun,
+  validateOnlineReflexionEvidenceNotes,
   type HostedGepaTunnelProvider,
 } from "../remote/optimizers.js"
 import { readHostedOptimizerSnapshot } from "../remote/optimizers.js"
@@ -3582,6 +3584,46 @@ export class StackMcpServer {
     }) ?? null
   }
 
+  async getOptimizerStartupCatalog(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    void emitFeatureUsed("hosted_ops")
+    const requireOnlineReflexion = optionalBoolean(args, "require_online_reflexion") ?? false
+    const requireReleaseEvidenceMetadata =
+      optionalBoolean(args, "require_online_reflexion_release_metadata") ?? false
+    const result = await getOptimizerStartupCatalog(config, {
+      requireOnlineReflexion,
+      requireReleaseEvidenceMetadata,
+    })
+    const catalog = result.data
+    const stackPreflight = asRecord(toJsonValue(catalog?.stack_preflight))
+    const runtimeEvent = await recordRuntimeLeverEvent({
+      event_type: "lever.hosted_optimizer.startup_catalog_read",
+      source: "lever.stack_mcp",
+      subject: { kind: "hosted_optimizer_startup_catalog", id: config.environmentName },
+      payload: {
+        environment: config.environmentName,
+        api_base_url: config.environment.apiBaseUrl,
+        require_online_reflexion: requireOnlineReflexion,
+        require_online_reflexion_release_metadata: requireReleaseEvidenceMetadata,
+        online_reflexion_available: stackPreflight?.online_reflexion_available === true,
+        release_evidence_metadata_present:
+          stackPreflight?.release_evidence_metadata_present === true,
+        ok: result.ok,
+        status: result.status,
+        message: result.message,
+      },
+    })
+    return {
+      ok: result.ok,
+      status: result.status,
+      message: result.message,
+      environment: config.environmentName,
+      api_base_url: config.environment.apiBaseUrl,
+      runtime_event: toJsonValue(runtimeEvent) ?? null,
+      ...(catalog ? { startup_catalog: toJsonValue(catalog) ?? null } : {}),
+    }
+  }
+
   async launchLocalGepa(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const rawConfigPath = requiredString(args, "config_path")
@@ -4191,10 +4233,11 @@ export class StackMcpServer {
     }
     const layerId = optionalString(args, "layer_id")
     const projectId = optionalString(args, "project_id")
-    const evidenceNotes = optionalJsonObject(args, "evidence_notes")
+    const { evidenceNotes, evidenceNotesPath } = loadOnlineReflexionEvidenceNotes(config, args)
     const blogDecisionOwner = optionalString(args, "blog_decision_owner")
     const blogApprovedByOwner = optionalBoolean(args, "blog_approved_by_owner") ?? false
     const includeReceiptSummaries = optionalBoolean(args, "include_receipt_summaries")
+    const rawEvidencePacketPath = optionalString(args, "evidence_packet_path")
     const result = await buildOnlineReflexionEvidencePacket(config, {
       runIds,
       layerId,
@@ -4208,6 +4251,9 @@ export class StackMcpServer {
     const packet = result.data
     const packetRecord = packet
     const packetStatus = hostedOptimizerAuditStatus(packetRecord)
+    const evidencePacketPath = packet
+      ? writeJsonPayloadPath(config, rawEvidencePacketPath, packet)
+      : undefined
     const effortEvidence = result.ok && effortRef
       ? recordStackEffortFinding({
         stackDataRoot: config.stackDataRoot,
@@ -4235,6 +4281,8 @@ export class StackMcpServer {
         run_ids: runIds ?? [],
         layer_id: layerId ?? null,
         project_id: projectId ?? null,
+        evidence_notes_path: evidenceNotesPath ?? null,
+        evidence_packet_path: evidencePacketPath ?? null,
         limit: limit ?? null,
         packet_status: packetStatus ?? null,
         public_copy_allowed: packetRecord?.public_copy_allowed === true,
@@ -4250,6 +4298,8 @@ export class StackMcpServer {
       run_ids: runIds ?? [],
       layer_id: layerId ?? null,
       project_id: projectId ?? null,
+      evidence_notes_path: evidenceNotesPath ?? null,
+      evidence_packet_path: evidencePacketPath ?? null,
       packet_status: packetStatus ?? null,
       effort_evidence: effortEvidence ? {
         effort_id: effortEvidence.effort.manifest.id,
@@ -4258,6 +4308,20 @@ export class StackMcpServer {
       } : null,
       runtime_event: toJsonValue(runtimeEvent) ?? null,
       ...(packet ? { evidence_packet: toJsonValue(packet) ?? null } : {}),
+    }
+  }
+
+  async validateOnlineReflexionEvidenceNotes(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const { evidenceNotes, evidenceNotesPath } = loadOnlineReflexionEvidenceNotes(config, args)
+    const review = validateOnlineReflexionEvidenceNotes({ evidenceNotes })
+    const status = typeof review.status === "string" ? review.status : "attention_required"
+    return {
+      ok: status === "pass",
+      status: status === "pass" ? 200 : 409,
+      message: `online Reflexion evidence notes ${status}`,
+      evidence_notes_path: evidenceNotesPath ?? null,
+      review: toJsonValue(review) ?? null,
     }
   }
 
@@ -6458,6 +6522,16 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.listHostedOptimizerRuns(args),
     },
     {
+      name: "stack_get_optimizer_startup_catalog",
+      description: "Read the hosted optimizer startup catalog through the optimizer owner route. Use require_online_reflexion and require_online_reflexion_release_metadata before Online Reflexion W6 or release evidence work.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        require_online_reflexion: booleanProperty("If true, return not-ok unless the catalog advertises online-reflexion."),
+        require_online_reflexion_release_metadata: booleanProperty("If true, return not-ok unless the catalog advertises online_reflexion_release_evidence metadata."),
+      }),
+      handler: (args) => server.getOptimizerStartupCatalog(args),
+    },
+    {
       name: "stack_launch_gepa",
       description: "Submit a local GEPA job to the running synth-optimizers service, starting the service first by default. Uses POST /runs with config_path so the job appears in Local Research.",
       inputSchema: objectSchema(
@@ -7502,8 +7576,21 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.auditOnlineReflexionReceiptSet(args),
     },
     {
+      name: "stack_validate_online_reflexion_evidence_notes",
+      description: "Validate structured online Reflexion eval-lane and release_blog_growth evidence notes locally, without calling backend receipt routes. Use before stack_build_online_reflexion_evidence_packet.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          evidence_notes: jsonObjectProperty("Structured evidence keyed by craftax_rotated_121_125, alfworld_6x6_x3, ebr_first_scale_compare, harvey_lab_pilot, hosted_staging_smoke, and release_blog_growth. Complete lanes require lane-specific proof; bare true/status values are attached but not complete."),
+          evidence_notes_path: stringProperty("Optional local JSON file containing the same structured evidence. Relative paths resolve from Stack workingDir. Mutually exclusive with evidence_notes."),
+        },
+        [],
+      ),
+      handler: (args) => server.validateOnlineReflexionEvidenceNotes(args),
+    },
+    {
       name: "stack_build_online_reflexion_evidence_packet",
-      description: "Build a read-only online Reflexion release evidence packet from receipt audits plus explicit eval-lane evidence. Does not approve public copy; public_copy_allowed stays false until owner approval is supplied.",
+      description: "Build a read-only online Reflexion release evidence packet from receipt audits plus explicit eval-lane and release/blog/growth evidence. Does not approve public copy; public_copy_allowed stays false until all gates are complete and owner approval is supplied.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
@@ -7511,7 +7598,9 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           run_ids: arrayProperty("Optional explicit hosted online Reflexion optimizer run ids, max 100."),
           layer_id: stringProperty("Optional online Reflexion layer id for recent receipt selection."),
           project_id: stringProperty("Optional Synth project id for recent receipt selection."),
-          evidence_notes: jsonObjectProperty("Optional lane evidence keyed by craftax_rotated_121_125, alfworld_6x6_x3, ebr_first_scale_compare, harvey_lab_pilot, and hosted_staging_smoke. A lane is complete only when its value is true, ok=true, or status is pass/complete/ready/succeeded."),
+          evidence_notes: jsonObjectProperty("Optional structured evidence keyed by craftax_rotated_121_125, alfworld_6x6_x3, ebr_first_scale_compare, harvey_lab_pilot, hosted_staging_smoke, and release_blog_growth. Bare true/status values are attached but not complete. Complete eval lanes require lane-specific proof: Craftax heldout 121-125 plus repeats/CI/harm/zero-invalid proof; ALFWorld 6/6 x3 clean verdict; EBR scale compare verdict; Harvey Tax 25/9 criteria-signal proof; hosted staging terminal receipt-chain proof. Complete release_blog_growth requires docs/runbooks, SDK/CLI/Stack paths, changelog/release notes, blog claim-to-evidence mapping, launch/growth plan, EffortBench Chinese-wall review, and at least one artifact path."),
+          evidence_notes_path: stringProperty("Optional local JSON file containing the same structured evidence notes. Relative paths resolve from Stack workingDir. Mutually exclusive with evidence_notes."),
+          evidence_packet_path: stringProperty("Optional local path to write the assembled evidence packet JSON. Relative paths resolve from Stack workingDir."),
           blog_decision_owner: stringProperty("Human owner for blog/release approval. Defaults to Josh."),
           blog_approved_by_owner: booleanProperty("Set true only after the human owner has approved public release copy. Defaults false."),
           include_receipt_summaries: booleanProperty("Whether to include recent receipt summaries when selecting by layer/project or recent receipts. Defaults true."),
@@ -8483,6 +8572,53 @@ function optionalJsonObject(args: JsonObject, key: string): Record<string, unkno
     throw new RpcError(-32602, `${key} must be an object`)
   }
   return value as Record<string, unknown>
+}
+
+function loadOnlineReflexionEvidenceNotes(
+  config: StackConfig,
+  args: JsonObject,
+): { evidenceNotes?: Record<string, unknown>; evidenceNotesPath?: string } {
+  const inlineNotes = optionalJsonObject(args, "evidence_notes")
+  const rawPath = optionalString(args, "evidence_notes_path")
+  if (inlineNotes && rawPath) {
+    throw new RpcError(-32602, "evidence_notes and evidence_notes_path are mutually exclusive")
+  }
+  if (!rawPath) {
+    return { evidenceNotes: inlineNotes }
+  }
+
+  const evidenceNotesPath = resolve(config.workingDir, rawPath)
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(readFileSync(evidenceNotesPath, "utf8"))
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    throw new RpcError(-32602, `failed to read evidence_notes_path ${evidenceNotesPath}: ${message}`)
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new RpcError(-32602, "evidence_notes_path must contain a JSON object")
+  }
+  return {
+    evidenceNotes: parsed as Record<string, unknown>,
+    evidenceNotesPath,
+  }
+}
+
+function writeJsonPayloadPath(
+  config: StackConfig,
+  rawPath: string | undefined,
+  payload: unknown,
+): string | undefined {
+  if (!rawPath) return undefined
+  const resolvedPath = resolve(config.workingDir, rawPath)
+  const jsonPayload = toJsonValue(payload)
+  if (jsonPayload === undefined) {
+    throw new RpcError(-32602, "evidence packet payload is not JSON serializable")
+  }
+  mkdirSync(dirname(resolvedPath), { recursive: true })
+  writeFileSync(resolvedPath, `${JSON.stringify(jsonPayload, null, 2)}\n`, "utf8")
+  return resolvedPath
 }
 
 function requiredJsonObject(args: JsonObject, key: string): Record<string, unknown> {

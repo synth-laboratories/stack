@@ -1031,6 +1031,11 @@ The server reads `stack.config.json` and supports both JSONL and
   for remote gardener review
 - `stack_remote_gardener_pass`: record remote gardener sync narration and the
   next safe action in the local thread event stream
+- `stack_get_optimizer_startup_catalog`: read hosted optimizer startup metadata
+  through the optimizer owner route. For Online Reflexion W6/release work, set
+  `require_online_reflexion=true` and
+  `require_online_reflexion_release_metadata=true` before submit or evidence
+  packet generation.
 - `stack_cancel_hosted_optimizer`: cancel a hosted optimizer run
 - `stack_preview_hosted_optimizer_artifact`: preview bounded text from a hosted
   optimizer artifact through the optimizer owner route
@@ -1040,9 +1045,19 @@ The server reads `stack.config.json` and supports both JSONL and
   hosted online Reflexion publish-candidate run set by run IDs or recent
   layer/project receipts
 - `stack_build_online_reflexion_evidence_packet`: compose receipt audits and
-  explicit eval-lane evidence into a release-readiness packet. The packet does
-  not approve public copy; `public_copy_allowed` remains false until the human
-  blog/release owner approval is supplied.
+  explicit eval-lane and release/blog/growth evidence into a release-readiness
+  packet. The packet does not approve public copy; `public_copy_allowed`
+  remains false until all gates are complete and the human blog/release owner
+  approval is supplied. Lane evidence must be structured; bare `true` or
+  generic `status=pass` values are attached but not complete. Supply either
+  `evidence_notes` inline or `evidence_notes_path` pointing at a local JSON
+  evidence file. Use `evidence_packet_path` to write the assembled packet JSON
+  as a durable release/blog/growth artifact.
+- `stack_validate_online_reflexion_evidence_notes`: validate the same eval-lane
+  and `release_blog_growth` evidence notes locally, without backend receipt
+  reads. Use it while filling the evidence file, typically via
+  `evidence_notes_path`; it does not replace the receipt-backed evidence
+  packet.
 - `stack_download_hosted_optimizer_artifact`: download a hosted optimizer
   artifact through the optimizer owner route into Stack download state
 - `stack_download_run_output`: download a run WorkProduct or artifact through
@@ -1238,10 +1253,30 @@ confirmation in the TUI:
   `GET <api>/api/v1/optimizers/runs/{run_id}/online-reflexion/receipt-audit`
   and `GET <api>/api/v1/optimizers/online-reflexion/receipt-audits`
 - online Reflexion evidence packet:
+  first call `stack_get_optimizer_startup_catalog` with
+  `require_online_reflexion=true` and
+  `require_online_reflexion_release_metadata=true`. A stale backend that omits
+  `online-reflexion` or `online_reflexion_release_evidence` is not launch
+  evidence.
   `stack_build_online_reflexion_evidence_packet` composes those owner-route
   audits with attached evidence for Craftax rotated 121-125 repeats, ALFWorld
   6/6 ×3, EBR first scale compare, Harvey LAB pilot, and hosted staging smoke.
-  It is a release/growth readiness packet, not public blog approval.
+  It is a release/growth readiness packet, not public blog approval. Complete
+  lane evidence must carry the lane-specific proof fields: Craftax `121-125`
+  repeat/harm/CI/zero-invalid proof, ALFWorld three clean 6/6 verdicts, EBR
+  scale-compare verdict, Harvey Tax 25/9 criteria-signal proof, and staging
+  terminal receipt-chain proof. The `release_blog_growth` note must also prove
+  docs/runbooks, SDK/CLI/Stack operator paths, changelog/release notes, blog
+  claim-to-evidence mapping, launch/growth plan, and EffortBench Chinese-wall
+  review. Packet output includes `validation.missing_requirements` for
+  incomplete lanes and `release_gate.missing_requirements` for launch hygiene.
+  `stack_validate_online_reflexion_evidence_notes` returns the same local
+  lane/release-gate review before receipt audit assembly, so cockpit operators
+  can fix the evidence-notes object before calling backend owner routes. Both
+  evidence tools accept either inline `evidence_notes` or a local
+  `evidence_notes_path` JSON file; relative paths resolve from Stack
+  `workingDir`. The packet tool also accepts `evidence_packet_path` to save the
+  assembled JSON packet for release, blog, and growth review.
 
 Current push order is intentionally staged: improve local job UX first, then
 remote SMR run UX, then remote Factory UX, then authenticated remote actions

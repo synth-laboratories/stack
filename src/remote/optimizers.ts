@@ -107,6 +107,11 @@ export type HostedOptimizerSubmitOptions = {
   timeoutSeconds?: number
 }
 
+export type OptimizerStartupCatalogOptions = {
+  requireOnlineReflexion?: boolean
+  requireReleaseEvidenceMetadata?: boolean
+}
+
 export type HostedOptimizerSubmitResult = {
   ok: boolean
   status: number
@@ -168,6 +173,10 @@ export type OnlineReflexionEvidencePacketOptions = OnlineReflexionReceiptAuditSe
   includeReceiptSummaries?: boolean
 }
 
+export type OnlineReflexionEvidenceNotesReviewOptions = {
+  evidenceNotes?: Record<string, unknown>
+}
+
 const ONLINE_REFLEXION_RELEASE_LANES: { key: string; label: string }[] = [
   {
     key: "craftax_rotated_121_125",
@@ -190,6 +199,14 @@ const ONLINE_REFLEXION_RELEASE_LANES: { key: string; label: string }[] = [
     label: "Hosted staging smoke with terminal receipt chain",
   },
 ]
+const ONLINE_REFLEXION_COMPLETE_STATUSES = new Set([
+  "pass",
+  "passed",
+  "complete",
+  "completed",
+  "ready",
+  "succeeded",
+])
 
 export async function readHostedOptimizerSnapshot(config: StackConfig): Promise<HostedOptimizerSnapshot> {
   const auth = environmentAuthStatus(config.environment)
@@ -403,6 +420,49 @@ export async function cancelHostedOptimizerRun(
   }
 }
 
+export async function getOptimizerStartupCatalog(
+  config: StackConfig,
+  options: OptimizerStartupCatalogOptions = {},
+): Promise<HostedOptimizerActionResult> {
+  const result = await getJsonResult(config, "/api/v1/optimizers/startup")
+  if (!result.ok) return result
+  const catalog = result.data ?? {}
+  const algorithms = asArray(catalog.available_algorithms)
+    .flatMap((item) => {
+      const record = asRecord(item)
+      const algorithm = readString(record?.algorithm)
+      return algorithm ? [algorithm] : []
+    })
+  const onlineReflexionAvailable = algorithms.includes("online-reflexion")
+  const releaseEvidence = asRecord(catalog.online_reflexion_release_evidence)
+  const releaseEvidenceMetadataPresent =
+    readString(releaseEvidence?.schema_version) === "online_reflexion_release_evidence.v1"
+      && readString(releaseEvidence?.release_gate_key) === "release_blog_growth"
+  const missing: string[] = []
+  if (options.requireOnlineReflexion === true && !onlineReflexionAvailable) {
+    missing.push("online-reflexion algorithm is not advertised")
+  }
+  if (options.requireReleaseEvidenceMetadata === true && !releaseEvidenceMetadataPresent) {
+    missing.push("online_reflexion_release_evidence metadata is not advertised")
+  }
+  const ok = missing.length === 0
+  return {
+    ok,
+    status: ok ? result.status : 409,
+    message: ok
+      ? "optimizer startup catalog read"
+      : `optimizer startup catalog incomplete: ${missing.join("; ")}`,
+    data: {
+      ...catalog,
+      stack_preflight: {
+        online_reflexion_available: onlineReflexionAvailable,
+        release_evidence_metadata_present: releaseEvidenceMetadataPresent,
+        missing_requirements: missing,
+      },
+    },
+  }
+}
+
 export async function previewHostedOptimizerArtifact(
   config: StackConfig,
   run: HostedOptimizerRunSummary,
@@ -562,6 +622,38 @@ export async function buildOnlineReflexionEvidencePacket(
     status: auditResult.status,
     message: `online Reflexion evidence packet ${readString(packet.status) ?? "built"}`,
     data: packet,
+  }
+}
+
+export function validateOnlineReflexionEvidenceNotes(
+  options: OnlineReflexionEvidenceNotesReviewOptions,
+): Record<string, unknown> {
+  const evidenceNotes = options.evidenceNotes ?? {}
+  const releaseGate = onlineReflexionReleaseGateReview(evidenceNotes.release_blog_growth)
+  const requiredEvidence = ONLINE_REFLEXION_RELEASE_LANES.map((lane) => {
+    const evidence = evidenceNotes[lane.key]
+    const validation = onlineReflexionEvidenceLaneReview(lane.key, evidence)
+    return {
+      ...lane,
+      state: validation.state,
+      validation,
+      evidence,
+    }
+  })
+  const remaining = requiredEvidence
+    .filter((lane) => lane.state !== "complete")
+    .map((lane) => `attach complete evidence for ${lane.label}`)
+  if (releaseGate.state !== "complete") {
+    remaining.push("complete release/blog/growth readiness evidence")
+  }
+  return {
+    schema_version: "online_reflexion_evidence_notes_review.v1",
+    status: remaining.length === 0 ? "pass" : "attention_required",
+    evidence_lanes_complete: requiredEvidence.every((lane) => lane.state === "complete"),
+    release_gate_complete: releaseGate.state === "complete",
+    release_gate: releaseGate,
+    required_evidence: requiredEvidence,
+    remaining,
   }
 }
 
@@ -833,17 +925,23 @@ function onlineReflexionEvidencePacket(input: {
   blogDecisionOwner: string
   blogApprovedByOwner: boolean
 }): Record<string, unknown> {
+  const releaseGate = onlineReflexionReleaseGateReview(input.evidenceNotes.release_blog_growth)
   const requiredEvidence = ONLINE_REFLEXION_RELEASE_LANES.map((lane) => {
     const evidence = input.evidenceNotes[lane.key]
+    const validation = onlineReflexionEvidenceLaneReview(lane.key, evidence)
     return {
       ...lane,
-      state: onlineReflexionEvidenceLaneState(evidence),
+      state: validation.state,
+      validation,
       evidence,
     }
   })
   const remaining = requiredEvidence
     .filter((lane) => lane.state !== "complete")
     .map((lane) => `attach complete evidence for ${lane.label}`)
+  if (releaseGate.state !== "complete") {
+    remaining.push("complete release/blog/growth readiness evidence")
+  }
   const reports = asArray(input.audit.reports)
   const missingRunIds = asArray(input.audit.missing_run_ids)
   const attentionRequiredRunIds = asArray(input.audit.attention_required_run_ids)
@@ -853,6 +951,7 @@ function onlineReflexionEvidencePacket(input: {
   const noAttentionRequiredRuns = attentionRequiredRunIds.length === 0
   const hasPublishCandidates = publishCandidateCount > 0
   const evidenceLanesComplete = requiredEvidence.every((lane) => lane.state === "complete")
+  const releaseGateComplete = releaseGate.state === "complete"
   if (!hasPublishCandidates) remaining.push("select at least one hosted online Reflexion publish-candidate run")
   if (!receiptAuditPassed) remaining.push("clear online Reflexion receipt-completeness audit")
   if (!noMissingRuns) remaining.push("resolve missing online Reflexion run receipts")
@@ -865,6 +964,7 @@ function onlineReflexionEvidencePacket(input: {
     && noAttentionRequiredRuns
     && hasPublishCandidates
     && evidenceLanesComplete
+    && releaseGateComplete
   const status = technicalReady && input.blogApprovedByOwner
     ? "ready"
     : technicalReady
@@ -884,8 +984,10 @@ function onlineReflexionEvidencePacket(input: {
       has_publish_candidates: hasPublishCandidates,
       publish_candidate_count: publishCandidateCount,
       evidence_lanes_complete: evidenceLanesComplete,
+      release_gate_complete: releaseGateComplete,
       blog_owner_review_passed: input.blogApprovedByOwner,
     },
+    release_gate: releaseGate,
     required_evidence: requiredEvidence,
     remaining,
     audit: input.audit,
@@ -893,19 +995,393 @@ function onlineReflexionEvidencePacket(input: {
   }
 }
 
-function onlineReflexionEvidenceLaneState(value: unknown): "missing" | "attached" | "complete" {
-  if (value === undefined || value === null) return "missing"
-  if (value === true) return "complete"
-  const record = asRecord(value)
-  if (record) {
-    if (readBoolean(record.ok) === true) return "complete"
-    const status = readString(record.status)?.trim().toLowerCase()
-    if (status && ["pass", "passed", "complete", "completed", "ready", "succeeded"].includes(status)) {
-      return "complete"
+function onlineReflexionReleaseGateReview(
+  value: unknown,
+): {
+  state: "missing" | "attached" | "complete"
+  missing_requirements: string[]
+  checks: Record<string, unknown>
+  evidence?: Record<string, unknown>
+} {
+  if (value === undefined || value === null) {
+    return {
+      state: "missing",
+      missing_requirements: ["attach release_blog_growth readiness evidence"],
+      checks: {},
     }
-    return "attached"
   }
-  return "attached"
+  const record = asRecord(value)
+  if (!record) {
+    return {
+      state: "attached",
+      missing_requirements: ["replace release_blog_growth with a structured evidence object"],
+      checks: { structured_object: false },
+    }
+  }
+
+  const checks: Record<string, unknown> = {}
+  const missing: string[] = []
+  const status = readString(record.status)?.trim().toLowerCase()
+  const reviewComplete = readBoolean(record.ok) === true
+    || (status !== undefined && ONLINE_REFLEXION_COMPLETE_STATUSES.has(status))
+  onlineReflexionRequire(
+    reviewComplete,
+    "review_complete",
+    "set release_blog_growth ok=true or status=pass/complete/succeeded",
+    checks,
+    missing,
+  )
+  onlineReflexionRequire(
+    onlineReflexionTruthy(record, "public_docs_ready", "docs_ready"),
+    "public_docs_ready",
+    "prove public docs/runbook updates are ready",
+    checks,
+    missing,
+  )
+  onlineReflexionRequire(
+    onlineReflexionTruthy(record, "sdk_cli_stack_ready", "operator_paths_ready"),
+    "sdk_cli_stack_ready",
+    "prove SDK, CLI, and Stack operator paths are ready",
+    checks,
+    missing,
+  )
+  onlineReflexionRequire(
+    onlineReflexionTruthy(record, "changelog_ready", "release_notes_ready"),
+    "changelog_ready",
+    "prove changelog or release notes are ready",
+    checks,
+    missing,
+  )
+  onlineReflexionRequire(
+    onlineReflexionTruthy(record, "blog_claims_match_evidence", "blog_evidence_matched"),
+    "blog_claims_match_evidence",
+    "prove blog claims are matched to receipt-backed evidence",
+    checks,
+    missing,
+  )
+  onlineReflexionRequire(
+    onlineReflexionTruthy(record, "growth_plan_ready", "launch_growth_ready"),
+    "growth_plan_ready",
+    "prove launch/growth plan is ready",
+    checks,
+    missing,
+  )
+  onlineReflexionRequire(
+    onlineReflexionTruthy(
+      record,
+      "effortbench_chinese_wall_reviewed",
+      "no_effortbench_cookbook_leak",
+    ),
+    "effortbench_chinese_wall_reviewed",
+    "prove EffortBench cookbook/grader-only materials did not leak into claims",
+    checks,
+    missing,
+  )
+  onlineReflexionRequire(
+    onlineReflexionEvidenceCount(
+      record,
+      "doc_paths",
+      "release_note_paths",
+      "blog_paths",
+      "growth_paths",
+      "artifact_paths",
+    ) >= 1,
+    "release_artifact_reference_present",
+    "attach at least one release/blog/growth artifact path",
+    checks,
+    missing,
+  )
+
+  return {
+    state: missing.length === 0 ? "complete" : "attached",
+    missing_requirements: missing,
+    checks,
+    evidence: record,
+  }
+}
+
+function onlineReflexionEvidenceLaneReview(
+  laneKey: string,
+  value: unknown,
+): {
+  state: "missing" | "attached" | "complete"
+  missing_requirements: string[]
+  checks: Record<string, unknown>
+} {
+  if (value === undefined || value === null) {
+    return {
+      state: "missing",
+      missing_requirements: ["attach structured lane evidence"],
+      checks: {},
+    }
+  }
+  const record = asRecord(value)
+  if (!record) {
+    return {
+      state: "attached",
+      missing_requirements: ["replace loose evidence with a structured evidence object"],
+      checks: { structured_object: false },
+    }
+  }
+
+  const checks: Record<string, unknown> = {}
+  const missing: string[] = []
+  const status = readString(record.status)?.trim().toLowerCase()
+  const reviewComplete = readBoolean(record.ok) === true
+    || (status !== undefined && ONLINE_REFLEXION_COMPLETE_STATUSES.has(status))
+  onlineReflexionRequire(
+    reviewComplete,
+    "review_complete",
+    "set ok=true or status=pass/complete/succeeded after lane review",
+    checks,
+    missing,
+  )
+
+  if (laneKey === "craftax_rotated_121_125") {
+    onlineReflexionRequire(
+      onlineReflexionHeldoutWindowIs121125(record),
+      "heldout_window_121_125",
+      "prove heldout window is seeds 121-125",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionEvidenceCount(record, "run_ids", "artifact_dirs", "receipt_run_ids") >= 2
+        || onlineReflexionNumberAtLeast(record, 2, "repeat_count", "repeats", "repeats_passed"),
+      "repeats_2_and_3_present",
+      "attach Craftax repeat 2 and repeat 3 run/artifact ids",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionTruthy(record, "ci_excludes_zero", "bootstrap_ci_excludes_zero"),
+      "ci_excludes_zero",
+      "prove heldout bootstrap CI excludes zero",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionPercentAtMost(record, 15, "per_inject_harm_pct", "harm_pct", "per_inject_harm"),
+      "per_inject_harm_within_bound",
+      "prove per-inject harm is <= 15%",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionTruthy(
+        record,
+        "zero_invalid_injections",
+        "zero_ceiling_or_no_failure_injects",
+        "zero_injects_at_ceiling",
+      ),
+      "zero_invalid_injections",
+      "prove zero injections on no-failure/at-ceiling trials",
+      checks,
+      missing,
+    )
+  } else if (laneKey === "alfworld_6x6_x3") {
+    onlineReflexionRequire(
+      onlineReflexionNumberAtLeast(record, 6, "matched_tasks", "task_count", "tasks_matched"),
+      "six_of_six_matched",
+      "prove ALFWorld used the full 6/6 matched task set",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionEvidenceCount(record, "run_ids", "artifact_dirs", "receipt_run_ids") >= 3
+        || onlineReflexionNumberAtLeast(record, 3, "clean_repeats", "repeat_count", "repeats"),
+      "three_clean_repeats",
+      "attach three clean ALFWorld repeat run/artifact ids",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionTruthy(record, "no_truncated_runs", "truncated_runs_discarded", "clean_verdict"),
+      "no_truncated_runs_in_verdict",
+      "prove truncated ALFWorld runs were discarded from the verdict",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      Boolean(readString(record.verdict)?.trim()),
+      "verdict_recorded",
+      "record the ALFWorld verdict, even if task_success is flat",
+      checks,
+      missing,
+    )
+  } else if (laneKey === "ebr_first_scale_compare") {
+    onlineReflexionRequire(
+      onlineReflexionTruthy(record, "scale_compare", "scaled_compare", "first_scale_compare"),
+      "scale_compare_present",
+      "prove EBR ran a scale compare, not only a smoke",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionEvidenceCount(record, "run_ids", "artifact_dirs", "receipt_run_ids") >= 1,
+      "run_id_present",
+      "attach the EBR scale compare run/artifact id",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      Boolean(readString(record.verdict)?.trim()),
+      "verdict_recorded",
+      "record the EBR scale-compare verdict",
+      checks,
+      missing,
+    )
+  } else if (laneKey === "harvey_lab_pilot") {
+    onlineReflexionRequire(
+      readString(record.split)?.trim().toLowerCase() === "tax",
+      "tax_split",
+      "prove Harvey LAB pilot used the Tax split",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionNumberAtLeast(record, 25, "train_count", "train", "train_examples"),
+      "train_25",
+      "prove Harvey LAB pilot used 25 train examples",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionNumberAtLeast(record, 9, "heldout_count", "heldout", "heldout_examples"),
+      "heldout_9",
+      "prove Harvey LAB pilot used 9 heldout examples",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionTruthy(record, "criterion_signals_mapped", "judge_criteria_mapped"),
+      "criteria_to_failure_signals",
+      "prove LAB judge criteria were mapped to typed failure signals",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionEvidenceCount(record, "run_ids", "artifact_dirs", "receipt_run_ids") >= 1,
+      "run_id_present",
+      "attach the Harvey LAB pilot run/artifact id",
+      checks,
+      missing,
+    )
+  } else if (laneKey === "hosted_staging_smoke") {
+    onlineReflexionRequire(
+      (readString(record.environment) ?? readString(record.env) ?? "").trim().toLowerCase() === "staging",
+      "staging_environment",
+      "prove the hosted smoke ran against staging",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      ["succeeded", "success"].includes(
+        (readString(record.terminal_status) ?? readString(record.status) ?? "").trim().toLowerCase(),
+      ),
+      "terminal_success",
+      "prove the hosted run reached terminal success",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionEvidenceCount(record, "run_id", "run_ids", "receipt_run_ids") >= 1,
+      "run_id_present",
+      "attach the hosted staging smoke run id",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionTruthy(record, "receipt_audit_passed", "strict_receipt_audit_passed"),
+      "strict_receipt_audit_passed",
+      "prove strict receipt audit passed",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionTruthy(record, "standard_artifacts_present", "standard_bundle_present"),
+      "standard_artifacts_present",
+      "prove the standard artifact bundle is present",
+      checks,
+      missing,
+    )
+    onlineReflexionRequire(
+      onlineReflexionTruthy(record, "never_blocks_receipt_present", "policy_never_blocks_proven"),
+      "never_blocks_proven",
+      "prove policy-never-blocks with a receipt",
+      checks,
+      missing,
+    )
+  }
+
+  return {
+    state: missing.length === 0 ? "complete" : "attached",
+    missing_requirements: missing,
+    checks,
+  }
+}
+
+function onlineReflexionRequire(
+  condition: boolean,
+  checkName: string,
+  missingRequirement: string,
+  checks: Record<string, unknown>,
+  missing: string[],
+): void {
+  checks[checkName] = condition
+  if (!condition) missing.push(missingRequirement)
+}
+
+function onlineReflexionTruthy(record: Record<string, unknown>, ...keys: string[]): boolean {
+  return keys.some((key) => readBoolean(record[key]) === true)
+}
+
+function onlineReflexionNumberAtLeast(
+  record: Record<string, unknown>,
+  minimum: number,
+  ...keys: string[]
+): boolean {
+  return keys.some((key) => {
+    const value = readNumber(record[key])
+    return value !== undefined && value >= minimum
+  })
+}
+
+function onlineReflexionPercentAtMost(
+  record: Record<string, unknown>,
+  maximumPct: number,
+  ...keys: string[]
+): boolean {
+  return keys.some((key) => {
+    const value = readNumber(record[key])
+    if (value === undefined) return false
+    const pct = key.endsWith("_pct") || key === "harm_pct"
+      ? value
+      : value >= 0 && value <= 1
+        ? value * 100
+        : value
+    return pct <= maximumPct
+  })
+}
+
+function onlineReflexionEvidenceCount(record: Record<string, unknown>, ...keys: string[]): number {
+  let count = 0
+  for (const key of keys) {
+    const value = record[key]
+    if (typeof value === "string" && value.trim()) {
+      count += 1
+    } else if (Array.isArray(value)) {
+      count += value.filter((item) => String(item ?? "").trim()).length
+    }
+  }
+  return count
+}
+
+function onlineReflexionHeldoutWindowIs121125(record: Record<string, unknown>): boolean {
+  const window = (readString(record.heldout_window) ?? readString(record.window) ?? "").replace(/\s+/g, "")
+  if (["121-125", "121..125", "121:125"].includes(window)) return true
+  const seeds = Array.isArray(record.seeds) ? record.seeds : Array.isArray(record.heldout_seeds) ? record.heldout_seeds : []
+  return JSON.stringify(seeds.map((seed) => Number(seed))) === JSON.stringify([121, 122, 123, 124, 125])
 }
 
 async function getJson(config: StackConfig, path: string): Promise<unknown> {
