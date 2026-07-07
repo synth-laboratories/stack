@@ -2855,12 +2855,13 @@ function createView(
   if (gardenerPlan) {
     gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, gardenerPlan)
   }
-  const gardenerAgents = gardenerAgentsWidget(options, state, transcriptViewport.columns)
-  if (gardenerAgents) {
-    gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, gardenerAgents)
-  }
   if (state.focusMode === "tagged-effort" && taggedEffortSettings) {
     gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, taggedEffortSettings)
+  }
+  // Agents block sits BELOW the control row (model/effort/env info), not above the input.
+  const gardenerAgents = gardenerAgentsWidget(options, state, transcriptViewport.columns)
+  if (gardenerAgents) {
+    gardenerCoreChildren.push(gardenerAgents)
   }
   const evalFeedbackModal = renderEvalFeedbackModal(state)
   const agentChildren = showCoreGardenerPanel ? gardenerCoreChildren : [
