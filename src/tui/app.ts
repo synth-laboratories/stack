@@ -2855,6 +2855,10 @@ function createView(
   if (gardenerPlan) {
     gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, gardenerPlan)
   }
+  const gardenerAgents = gardenerAgentsWidget(options, state, transcriptViewport.columns)
+  if (gardenerAgents) {
+    gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, gardenerAgents)
+  }
   if (state.focusMode === "tagged-effort" && taggedEffortSettings) {
     gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, taggedEffortSettings)
   }
@@ -6553,6 +6557,90 @@ function gardenerPlanWidget(state: AppState, columns: number): ReturnType<typeof
         width: "100%",
       }),
     )
+  }
+  return Box({ flexDirection: "column", flexShrink: 0, width: "100%" }, ...rows)
+}
+
+type GardenerPaneAgent = {
+  kind: "worker" | "codex"
+  label: string
+  statusLabel: string
+  phase: "live" | "done" | "other"
+}
+
+/**
+ * The gardener's agents, for the pinned pane block: durable Stack workers (created via
+ * stack_worker_thread_create — tracked, own Effort work) tagged `worker`, and Codex spawn_agent
+ * collab agents (transient, from agents_states) tagged `codex`. Live first, then done, then other.
+ */
+function gardenerPaneAgents(options: StackAppOptions, state: AppState): GardenerPaneAgent[] {
+  const workers: GardenerPaneAgent[] = associatedGardenerWorkers(options, state).map((worker) => {
+    const id = worker.summary.id
+    const goal = state.threadGoalStatus.get(id)
+    const lifecycle = state.threadLifecycleStatus.get(id) ?? "live"
+    const done = goal === "done" || lifecycle === "archived"
+    const label =
+      state.threadMetaThreadTitles.get(id)?.trim() ||
+      worker.manifest.title?.trim() ||
+      worker.manifest.active_goal?.objective?.trim() ||
+      id.slice(0, 8)
+    return {
+      kind: "worker" as const,
+      label,
+      statusLabel: done ? "done" : goal ? `goal ${goal}` : lifecycle,
+      phase: done ? ("done" as const) : ("live" as const),
+    }
+  })
+  const codex: GardenerPaneAgent[] = gardenerSubagentsForLights(state).map((sub) => {
+    const live = sub.status === "running" || sub.status === "spawning" || sub.status === "pending_init"
+    return {
+      kind: "codex" as const,
+      label: sub.message?.trim() || sub.name || sub.id.slice(0, 8),
+      statusLabel: subagentStatusLabel(sub.status),
+      phase: sub.status === "completed" ? ("done" as const) : live ? ("live" as const) : ("other" as const),
+    }
+  })
+  return [...workers, ...codex]
+}
+
+function gardenerAgentPhaseColor(phase: GardenerPaneAgent["phase"]): string {
+  if (phase === "done") return theme.goalLifecycle.active
+  if (phase === "live") return theme.synth.orange
+  return theme.fgMuted
+}
+
+/**
+ * Pinned Claude-Code-style agents block above the gardener input: one row per agent, tagged
+ * worker vs codex so the operator can tell a durable Stack worker from a transient collab agent.
+ */
+function gardenerAgentsWidget(
+  options: StackAppOptions,
+  state: AppState,
+  columns: number,
+): ReturnType<typeof Box> | undefined {
+  const agents = gardenerPaneAgents(options, state)
+  if (agents.length === 0) return undefined
+  const live = agents.filter((agent) => agent.phase === "live").length
+  const done = agents.filter((agent) => agent.phase === "done").length
+  const rows: ReturnType<typeof Text>[] = [
+    Text({
+      content: oneLine(`Agents · ${live} live · ${done} done`, columns),
+      fg: theme.transcript.subagentLabel,
+      width: "100%",
+    }),
+  ]
+  for (const agent of agents.slice(0, 6)) {
+    const glyph = agent.phase === "live" ? "✳" : agent.phase === "done" ? "✓" : "↳"
+    rows.push(
+      Text({
+        content: oneLine(`  ${glyph} ${agent.kind} · ${agent.label} · ${agent.statusLabel}`, columns),
+        fg: gardenerAgentPhaseColor(agent.phase),
+        width: "100%",
+      }),
+    )
+  }
+  if (agents.length > 6) {
+    rows.push(Text({ content: `  … +${agents.length - 6}`, fg: theme.fgMuted, width: "100%" }))
   }
   return Box({ flexDirection: "column", flexShrink: 0, width: "100%" }, ...rows)
 }
