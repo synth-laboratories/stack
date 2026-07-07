@@ -423,7 +423,7 @@ import {
 } from "./transcript-layout.js"
 import { readRolloutTranscript, readRolloutTranscriptWithRetry } from "./rollout-transcript.js"
 import type { SubagentLog, SubagentStatus } from "./subagents.js"
-import { subagentDisplayName, subagentStatusLabel, upsertSubagentLog } from "./subagents.js"
+import { conciseAgentBrief, subagentDisplayName, subagentStatusLabel, upsertSubagentLog } from "./subagents.js"
 import {
   compactUsageWithThroughput,
   displayTokensPerSecond,
@@ -6595,7 +6595,7 @@ function gardenerPaneAgents(options: StackAppOptions, state: AppState): Gardener
     const live = sub.status === "running" || sub.status === "spawning" || sub.status === "pending_init"
     return {
       kind: "codex" as const,
-      label: sub.message?.trim() || sub.name || sub.id.slice(0, 8),
+      label: (sub.message ? conciseAgentBrief(sub.message) : "") || sub.name || sub.id.slice(0, 8),
       statusLabel: subagentStatusLabel(sub.status),
       phase: sub.status === "completed" ? ("done" as const) : live ? ("live" as const) : ("other" as const),
     }
@@ -12014,6 +12014,11 @@ function stackdThreadToSessionSummary(thread: StackdThreadSummary): StackSession
     updatedAt: thread.updatedAt,
     turnCount: thread.turnCount,
     lastPrompt: thread.lastPrompt,
+    // Carry the meta-thread link (and display name) so a stackd summary winning the merge doesn't
+    // strip a worker's manifest pointer — without it, gardener/worker association can't resolve the
+    // worker's manifest and silently drops a freshly-created durable worker.
+    metaThreadId: thread.metaThreadId,
+    displayName: thread.displayName,
     usageSummary: isSessionUsageSummary(thread.usageSummary) ? thread.usageSummary : undefined,
   }
 }

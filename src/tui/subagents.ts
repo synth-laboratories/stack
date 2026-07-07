@@ -147,6 +147,26 @@ export function parseCollabSpawnItem(item: Record<string, unknown>, startedAt: s
   }
 }
 
+/**
+ * Turn a spawn-agent brief into a concise task label for display. Spawn prompts open with a role
+ * declaration ("You are a worker thread for …"); we drop that and any "The operator asked to …"
+ * lead-in to surface the actual task. Falls back to the de-prefixed first paragraph.
+ */
+export function conciseAgentBrief(text: string): string {
+  const firstPara = (text.split(/\n\n/)[0] ?? text).trim()
+  const sentences = firstPara
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter(Boolean)
+  let candidate = sentences.find((sentence) => !/^you are\b/i.test(sentence)) ?? firstPara.replace(/^you are (a|an|the)\s+/i, "")
+  candidate = candidate
+    .replace(/^(the operator asked (you )?to|your task is to|you (will|should|must)|please)\s+/i, "")
+    .replace(/\s+/g, " ")
+    .trim()
+  if (!candidate) return firstPara.replace(/\s+/g, " ").trim()
+  return candidate.charAt(0).toUpperCase() + candidate.slice(1)
+}
+
 function collabStatusToSubagentStatus(raw: string | undefined): SubagentStatus | undefined {
   switch (raw) {
     case "pending_init":

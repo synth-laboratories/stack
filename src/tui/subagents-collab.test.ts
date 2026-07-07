@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { applyCollabAgentStates, parseCollabSpawnItem, type SubagentLog } from "./subagents.js"
+import { applyCollabAgentStates, conciseAgentBrief, parseCollabSpawnItem, type SubagentLog } from "./subagents.js"
 import { blocksFromTurnStdout } from "./transcript.js"
 
 const START = "2026-07-07T00:00:00.000Z"
@@ -94,6 +94,20 @@ test("agents_states drives status end-to-end: a waited-on spawn reflects pending
   const rich = blocksFromTurnStdout("", stdout)
   expect(rich.subagents.length).toBe(1)
   expect(rich.subagents[0]?.status).toBe("pending_init")
+})
+
+test("conciseAgentBrief drops role preamble and operator-ask lead-in", () => {
+  expect(
+    conciseAgentBrief(
+      "You are a worker thread for the Stack Banking77 effort. The operator asked to implement the first Banking77 lane: get a container built.",
+    ),
+  ).toBe("Implement the first Banking77 lane: get a container built.")
+  // Pure role sentence: strip "You are a" but keep the description.
+  expect(conciseAgentBrief("You are a Stack worker instance running against the Craftax goal.")).toBe(
+    "Stack worker instance running against the Craftax goal.",
+  )
+  // Only the first paragraph is considered (context after a blank line is dropped).
+  expect(conciseAgentBrief("Fix the flaky test.\n\nWorkspace root: /tmp")).toBe("Fix the flaky test.")
 })
 
 test("blocksFromTurnStdout extracts a collab spawn as a subagent (end-to-end)", () => {
