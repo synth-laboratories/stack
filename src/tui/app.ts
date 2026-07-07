@@ -335,6 +335,11 @@ import {
   writeSessionLog,
 } from "../session.js"
 import {
+  closeOperatorSession,
+  startOperatorSession,
+  type OperatorSessionRecord,
+} from "../operator-session.js"
+import {
   resumeCommandFromCheckpoint,
   writeResumeCheckpointSync,
   type StackResumeCheckpoint,
@@ -753,6 +758,7 @@ type AppState = {
   abortTurnLoop?: boolean
   talkToGardener: boolean
   talkToMonitor: boolean
+  operatorSession: OperatorSessionRecord
   gardenerThreadId: string
   gardenerWorkerTargetId?: string
   monitorWorkerTargetId?: string
@@ -1046,6 +1052,12 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const lightsViewState = readLightsThreadViewState(options.config.stackDataRoot)
   const evalUiHandleSettings = readEvalUiHandleSettings()
   const initialLightsPanelOpen = uxSettings.lightsPanelOpen || evalUiHandleSettings.evalModeEnabled
+  const operatorSession = startOperatorSession({
+    stackDataRoot: options.config.stackDataRoot,
+    workspaceRoot: options.config.workspaceRoot,
+    activeThreadId: options.session.id,
+    taggedEffortSlug: uxSettings.taggedEffortSlug,
+  })
   const state: AppState = {
     // First-launch approval must own key focus: with the agent input focused, printable
     // keys never reach the global telemetry key handler, so the modal's a/d/l keys go dead.
@@ -1167,6 +1179,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     queuedMessages: [],
     talkToGardener: false,
     talkToMonitor: false,
+    operatorSession,
     gardenerThreadId: gardenerEnsured.threadId,
     gardenerWorkerTargetId: defaultWorker?.id,
     monitorWorkerTargetId: options.session.id,
@@ -16406,6 +16419,18 @@ function persistSessionOnExit(
   codexSessionHandle: { session?: HarnessSession },
   shutdown?: StackAppShutdown,
 ): void {
+  try {
+    closeOperatorSession({
+      stackDataRoot: options.config.stackDataRoot,
+      operatorSessionId: state.operatorSession.operator_session_id,
+      activeThreadId: options.session.id,
+      captureCount: state.operatorSession.capture_count,
+      uploadStatus: state.operatorSession.upload_status,
+      status: "closed",
+    })
+  } catch {
+    // best-effort on exit
+  }
   try {
     syncSessionDisplayNameFromGoal(options, state)
     const payload = JSON.stringify(
