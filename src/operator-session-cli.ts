@@ -103,9 +103,16 @@ export async function runOperatorSessionCli(config: StackConfig, argv: string[])
       console.error("no active operator session; launch Stack first")
       return 1
     }
+    const display = parseFlagNumber(argv, "--display")
+    const device = parseFlagString(argv, "--device")
     if (recordAction === "start") {
       try {
-        const result = startOperatorSessionRecording({ session: active, kind: "fullscreen" })
+        const result = startOperatorSessionRecording({
+          session: active,
+          kind: "fullscreen",
+          ...(display !== undefined ? { display } : {}),
+          ...(device ? { device } : {}),
+        })
         if (json) {
           console.log(JSON.stringify(result, null, 2))
         } else {
@@ -120,7 +127,11 @@ export async function runOperatorSessionCli(config: StackConfig, argv: string[])
     }
     if (recordAction === "stop") {
       try {
-        const result = stopOperatorSessionRecording({ session: active })
+        const captureId = parseFlagString(argv, "--id")
+        const result = stopOperatorSessionRecording({
+          session: active,
+          ...(captureId ? { captureId } : {}),
+        })
         if (json) {
           console.log(JSON.stringify(result, null, 2))
         } else {
@@ -146,6 +157,20 @@ function printOperatorSessionUsage(): void {
   console.log("  stack session status [--json]")
   console.log("  stack session list [--json]")
   console.log("  stack session show <opesess_id> [--json]")
-  console.log("  stack session record start [--json]")
-  console.log("  stack session record stop [--json]")
+  console.log("  stack session record start [--display <n>] [--device <name>] [--json]")
+  console.log("  stack session record stop [--id <capture_id>] [--json]")
+}
+
+function parseFlagString(argv: string[], flag: string): string | undefined {
+  const index = argv.indexOf(flag)
+  if (index < 0) return undefined
+  const value = argv[index + 1]?.trim()
+  return value || undefined
+}
+
+function parseFlagNumber(argv: string[], flag: string): number | undefined {
+  const value = parseFlagString(argv, flag)
+  if (!value) return undefined
+  const parsed = Number.parseInt(value, 10)
+  return Number.isInteger(parsed) ? parsed : undefined
 }

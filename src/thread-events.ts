@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto"
 import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
 import { dirname, join } from "node:path"
+import { readOperatorSessionCorrelation } from "./operator-session.js"
 import { projectMetaEventToVictoriaLogs } from "./observability/victorialogs.js"
 
 export type StackThreadMetaEvent = {
@@ -22,6 +23,10 @@ export function threadEventLogPath(stackRoot: string, threadId: string): string 
 }
 
 export function appendThreadMetaEvent(stackRoot: string, event: StackThreadMetaEvent): string {
+  if (!event.operator_session_id) {
+    const correlation = readOperatorSessionCorrelation(stackRoot)
+    if (correlation) event.operator_session_id = correlation.operator_session_id
+  }
   const path = threadEventLogPath(stackRoot, event.thread_id)
   mkdirSync(dirname(path), { recursive: true })
   appendFileSync(path, `${JSON.stringify(event)}\n`)

@@ -12,6 +12,7 @@ export const LIGHTS_PANEL_SECTION_IDS = [
   "actors",
   "cloud",
   "local",
+  "sessions",
   "usage",
 ] as const
 

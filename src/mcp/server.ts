@@ -35,6 +35,7 @@ import {
   type StackGuidanceImpact,
 } from "../codex/guidance-events.js"
 import { appendThreadMetaEvent, readThreadMetaEvents, stackEventId } from "../thread-events.js"
+import { emitOperatorSessionEvent, readActiveOperatorSession } from "../operator-session.js"
 import { applyLightsThreadViewUpdate, readLightsThreadViewState } from "../lights-thread-view.js"
 import { readMetaThreadManifest } from "../meta-thread-goal.js"
 import {
@@ -452,6 +453,19 @@ export class StackMcpServer {
       },
     }
     const path = appendThreadMetaEvent(config.stackDataRoot, event)
+    const activeSession = readActiveOperatorSession(config.stackDataRoot)
+    if (activeSession) {
+      emitOperatorSessionEvent(config.stackDataRoot, activeSession, {
+        type: "operator_session.panel_opened",
+        thread_id: threadId,
+        payload: {
+          panel,
+          view: view ?? null,
+          reason,
+          source: "stack_ui_tool",
+        },
+      })
+    }
     if (panel === "lights") {
       applyLightsThreadViewUpdate(
         config.stackDataRoot,
@@ -460,7 +474,15 @@ export class StackMcpServer {
         true,
       )
     }
-    return { ok: true, event_id: event.event_id, panel, view: view ?? null, thread_id: threadId, path }
+    return {
+      ok: true,
+      event_id: event.event_id,
+      panel,
+      view: view ?? null,
+      thread_id: threadId,
+      path,
+      ...(activeSession ? { operator_session_id: activeSession.operator_session_id } : {}),
+    }
   }
 
   // B2 — bounded close: monitor/gardener may close only panels they opened; the

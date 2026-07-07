@@ -10,6 +10,7 @@ import {
 } from "node:fs"
 import { appendFile } from "node:fs/promises"
 import { join } from "node:path"
+import { recordEffortSession } from "./effort.js"
 import { stackVersion } from "./version.js"
 
 export const OPERATOR_SESSION_SCHEMA_VERSION = "stack.operator_session.v1" as const
@@ -90,6 +91,130 @@ export type CloseOperatorSessionInput = {
   activeThreadId?: string
   captureCount?: number
   uploadStatus?: OperatorSessionUploadStatus
+}
+
+export type OperatorSessionCorrelation = {
+  operator_session_id: string
+  effort_session_id?: string
+  effort_ref?: string
+}
+
+export type EmitOperatorSessionEventInput = {
+  type: string
+  thread_id?: string
+  meta_thread_id?: string
+  effort_ref?: string
+  effort_session_id?: string
+  payload?: Record<string, unknown>
+}
+
+export function readOperatorSessionCorrelation(
+  stackDataRoot: string,
+): OperatorSessionCorrelation | undefined {
+  const session = readActiveOperatorSession(stackDataRoot)
+  if (!session) return undefined
+  return {
+    operator_session_id: session.operator_session_id,
+    ...(session.effort_session_id ? { effort_session_id: session.effort_session_id } : {}),
+    ...(session.tagged_effort_slug ? { effort_ref: session.tagged_effort_slug } : {}),
+  }
+}
+
+export function emitOperatorSessionEvent(
+  stackDataRoot: string,
+  session: OperatorSessionRecord,
+  input: EmitOperatorSessionEventInput,
+): void {
+  appendOperatorSessionEventSync(stackDataRoot, {
+    event_id: newOperatorSessionEventId(),
+    type: input.type,
+    operator_session_id: session.operator_session_id,
+    observed_at: new Date().toISOString(),
+    ...(input.thread_id ? { thread_id: input.thread_id } : {}),
+    ...(input.meta_thread_id ? { meta_thread_id: input.meta_thread_id } : {}),
+    ...(input.effort_ref || session.tagged_effort_slug
+      ? { effort_ref: input.effort_ref ?? session.tagged_effort_slug }
+      : {}),
+    ...(input.effort_session_id || session.effort_session_id
+      ? { effort_session_id: input.effort_session_id ?? session.effort_session_id }
+      : {}),
+    payload: input.payload ?? {},
+  })
+}
+
+export function bindOperatorSessionEffort(input: {
+  stackDataRoot: string
+  workspaceRoot: string
+  session: OperatorSessionRecord
+  effortSlug: string
+}): OperatorSessionRecord {
+  try {
+    const result = recordEffortSession({
+      stackDataRoot: input.stackDataRoot,
+      workspaceRoot: input.workspaceRoot,
+      effortRef: input.effortSlug,
+      title: `Stack operator session ${input.session.operator_session_id}`,
+      actor: "operator",
+      kind: "operator_session",
+      summary: `Cockpit session ${input.session.operator_session_id}`,
+      tags: ["operator_session", "stack"],
+      payload: { operator_session_id: input.session.operator_session_id },
+    })
+    const patched = patchOperatorSessionRecord(input.stackDataRoot, input.session.operator_session_id, {
+      effort_session_id: result.session.session_id,
+      tagged_effort_slug: input.effortSlug,
+    })
+    if (!patched) return input.session
+    emitOperatorSessionEvent(input.stackDataRoot, patched, {
+      type: "operator_session.effort_bound",
+      thread_id: patched.active_thread_id,
+      effort_ref: input.effortSlug,
+      effort_session_id: result.session.session_id,
+      payload: { effort_session_id: result.session.session_id },
+    })
+    return patched
+  } catch {
+    return input.session
+  }
+}
+
+export function noteOperatorSessionThreadFocus(input: {
+  stackDataRoot: string
+  session: OperatorSessionRecord
+  threadId: string
+  metaThreadId?: string
+  reason?: string
+}): OperatorSessionRecord {
+  if (input.session.active_thread_id === input.threadId && input.reason === undefined) {
+    return input.session
+  }
+  const patched =
+    patchOperatorSessionRecord(input.stackDataRoot, input.session.operator_session_id, {
+      active_thread_id: input.threadId,
+    }) ?? input.session
+  emitOperatorSessionEvent(input.stackDataRoot, patched, {
+    type: "operator_session.thread_focused",
+    thread_id: input.threadId,
+    meta_thread_id: input.metaThreadId,
+    payload: { reason: input.reason ?? "thread_focus" },
+  })
+  return patched
+}
+
+export function noteOperatorSessionPanelOpened(
+  stackDataRoot: string,
+  session: OperatorSessionRecord,
+  input: { panel: string; view?: string; threadId: string; reason: string },
+): void {
+  emitOperatorSessionEvent(stackDataRoot, session, {
+    type: "operator_session.panel_opened",
+    thread_id: input.threadId,
+    payload: {
+      panel: input.panel,
+      ...(input.view ? { view: input.view } : {}),
+      reason: input.reason,
+    },
+  })
 }
 
 export function operatorSessionsRoot(stackDataRoot: string): string {

@@ -134,6 +134,15 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
   { command: "threads", aliases: ["p"], args: "[new]", description: "Toggle threads panel or start a new thread" },
   { command: "papercut", args: "[note]", description: "Capture a papercut with run context (ctrl+f)" },
   { command: "ops", description: "Open ops panel" },
+  {
+    command: "session",
+    description: "Show operator session id, counts, and recording status",
+  },
+  {
+    command: "record",
+    args: "start|stop",
+    description: "Start or stop fullscreen session recording",
+  },
   { command: "permissions", aliases: ["perm"], description: "Review telemetry and privacy choices" },
   { command: "settings", args: "telemetry", description: "Open permissions (alias)" },
   { command: "actors", description: "Toggle actors panel" },
@@ -389,6 +398,8 @@ export type SlashDispatchHooks = {
   toggleThreads: () => void
   startNewThread: () => void
   openOps: () => void
+  showSession: () => void
+  recordSession: (verb: string) => void
   openConfig: () => void
   openPermissions: () => void
   openTelemetrySettings: () => void
@@ -579,6 +590,18 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
     case "ops":
       hooks.openOps()
       return true
+    case "session":
+      hooks.showSession()
+      return true
+    case "record": {
+      const verb = args.trim().toLowerCase()
+      if (verb === "start" || verb === "stop") {
+        hooks.recordSession(verb)
+      } else {
+        hooks.feedback("record · use /record start or /record stop")
+      }
+      return true
+    }
     case "permissions":
     case "perm":
       hooks.openPermissions()

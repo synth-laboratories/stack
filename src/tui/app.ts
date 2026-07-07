@@ -335,10 +335,20 @@ import {
   writeSessionLog,
 } from "../session.js"
 import {
+  bindOperatorSessionEffort,
   closeOperatorSession,
+  noteOperatorSessionPanelOpened,
+  noteOperatorSessionThreadFocus,
+  operatorSessionCounts,
+  readOperatorSession,
   startOperatorSession,
   type OperatorSessionRecord,
 } from "../operator-session.js"
+import {
+  readActiveOperatorSessionCapture,
+  startOperatorSessionRecording,
+  stopOperatorSessionRecording,
+} from "../operator-session-recording.js"
 import {
   resumeCommandFromCheckpoint,
   writeResumeCheckpointSync,
@@ -1052,12 +1062,20 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const lightsViewState = readLightsThreadViewState(options.config.stackDataRoot)
   const evalUiHandleSettings = readEvalUiHandleSettings()
   const initialLightsPanelOpen = uxSettings.lightsPanelOpen || evalUiHandleSettings.evalModeEnabled
-  const operatorSession = startOperatorSession({
+  let operatorSession = startOperatorSession({
     stackDataRoot: options.config.stackDataRoot,
     workspaceRoot: options.config.workspaceRoot,
     activeThreadId: options.session.id,
     taggedEffortSlug: uxSettings.taggedEffortSlug,
   })
+  if (uxSettings.taggedEffortSlug) {
+    operatorSession = bindOperatorSessionEffort({
+      stackDataRoot: options.config.stackDataRoot,
+      workspaceRoot: options.config.workspaceRoot,
+      session: operatorSession,
+      effortSlug: uxSettings.taggedEffortSlug,
+    })
+  }
   const state: AppState = {
     // First-launch approval must own key focus: with the agent input focused, printable
     // keys never reach the global telemetry key handler, so the modal's a/d/l keys go dead.
@@ -5142,6 +5160,7 @@ function appendUiPanelOpened(
       observed_at: new Date().toISOString(),
       actor_id: openedBy,
       actor_role: openedBy === "operator" ? "primary" : openedBy,
+      operator_session_id: state.operatorSession.operator_session_id,
       payload: {
         panel,
         ...(view ? { view } : {}),
@@ -5149,6 +5168,12 @@ function appendUiPanelOpened(
         reason,
         source: "tui",
       },
+    })
+    noteOperatorSessionPanelOpened(options.config.stackDataRoot, state.operatorSession, {
+      panel,
+      view,
+      threadId: options.session.id,
+      reason,
     })
     void emitFeatureUsed("side_panel_open")
     for (const featureId of panelFeatureIds(panel, view)) {
@@ -6898,6 +6923,65 @@ function buildSlashDispatchHooks(
       state.opsScrollOffset = 0
       appendUiPanelOpened(options, state, "ops", state.liveOpsMode === "remote" ? "remote" : "local", "operator", "slash")
       refresh()
+    },
+    showSession: () => {
+      const counts = operatorSessionCounts(options.config.stackDataRoot)
+      const cloudLabel = counts.cloud > 0 ? String(counts.cloud) : "—"
+      const lines = [
+        `operator session ${state.operatorSession.operator_session_id}`,
+        `Sessions · local ${counts.local} · cloud ${cloudLabel}`,
+      ]
+      if (state.operatorSession.tagged_effort_slug) {
+        lines.push(`effort ${state.operatorSession.tagged_effort_slug}`)
+      }
+      if (state.operatorSession.effort_session_id) {
+        lines.push(`effort session ${state.operatorSession.effort_session_id}`)
+      }
+      const activeCapture = readActiveOperatorSessionCapture(
+        options.config.stackDataRoot,
+        state.operatorSession.operator_session_id,
+      )
+      if (activeCapture) {
+        lines.push(`recording ${activeCapture.capture_id} · ${activeCapture.device ?? "screen"}`)
+      } else {
+        lines.push(`captures ${state.operatorSession.capture_count}`)
+      }
+      appendSlashFeedback(options, state, lines.join("\n"), feedbackChannel, refresh)
+    },
+    recordSession: (verb) => {
+      try {
+        if (verb === "start") {
+          const result = startOperatorSessionRecording({ session: state.operatorSession, kind: "fullscreen" })
+          appendSlashFeedback(
+            options,
+            state,
+            `recording started · ${result.capture.capture_id}\n${result.capture.output_path}`,
+            feedbackChannel,
+            refresh,
+          )
+          return
+        }
+        const result = stopOperatorSessionRecording({ session: state.operatorSession })
+        const latest =
+          readOperatorSession(options.config.stackDataRoot, state.operatorSession.operator_session_id) ??
+          state.operatorSession
+        state.operatorSession = latest
+        appendSlashFeedback(
+          options,
+          state,
+          `recording stopped · ${result.capture.capture_id}\n${result.capture.output_path}`,
+          feedbackChannel,
+          refresh,
+        )
+      } catch (error) {
+        appendSlashFeedback(
+          options,
+          state,
+          error instanceof Error ? error.message : String(error),
+          feedbackChannel,
+          refresh,
+        )
+      }
     },
     openConfig: () => {
       state.focusMode = "config"
@@ -10283,6 +10367,7 @@ function lightsCompanionSections(
     lightsActorsSection(input, width),
     lightsCloudSection(state, input, width),
     lightsLocalSection(input, width),
+    lightsSessionsSection(options, state, width),
     lightsUsageSection(input, width),
   ]
 }
@@ -11089,6 +11174,31 @@ function lightsLocalSection(input: ReturnType<typeof buildOpsPanelInput>, column
   }
   if (input.containers.message) lines.push(`  ${oneLine(input.containers.message, Math.max(20, columns - 4))}`)
   return { id: "local", header, lines }
+}
+
+function lightsSessionsSection(options: StackAppOptions, state: AppState, columns: number): LightsPanelSection {
+  const counts = operatorSessionCounts(options.config.stackDataRoot)
+  const cloudLabel = counts.cloud > 0 ? String(counts.cloud) : "—"
+  const header = oneLine(`Sessions · local ${counts.local} · cloud ${cloudLabel}`, columns)
+  const lines = [
+    `  current ${oneLine(state.operatorSession.operator_session_id, Math.max(16, columns - 12))} · open`,
+  ]
+  if (state.operatorSession.tagged_effort_slug) {
+    lines.push(`  effort ${oneLine(state.operatorSession.tagged_effort_slug, Math.max(16, columns - 10))}`)
+  }
+  const activeCapture = readActiveOperatorSessionCapture(
+    options.config.stackDataRoot,
+    state.operatorSession.operator_session_id,
+  )
+  if (activeCapture) {
+    lines.push(`  recording ${oneLine(activeCapture.capture_id, 18)} · ${oneLine(activeCapture.device ?? "screen", 16)}`)
+  } else if (state.operatorSession.capture_count > 0) {
+    lines.push(`  captures ${state.operatorSession.capture_count}`)
+  }
+  if (state.operatorSession.upload_status === "disabled") {
+    lines.push("  cloud disabled")
+  }
+  return { id: "sessions", header, lines }
 }
 
 function lightsUsageSection(input: ReturnType<typeof buildOpsPanelInput>, columns: number): LightsPanelSection {
@@ -16111,6 +16221,13 @@ async function loadSelectedSession(
     const loaded = await readSessionLog(summary.path)
     const session = mode === "resume" ? loaded : forkSession(options.session, loaded)
     applySession(options, state, session, mode === "resume" ? summary.path : undefined)
+    state.operatorSession = noteOperatorSessionThreadFocus({
+      stackDataRoot: options.config.stackDataRoot,
+      session: state.operatorSession,
+      threadId: summary.id,
+      metaThreadId: summary.metaThreadId,
+      reason: mode === "fork" ? "fork" : "resume",
+    })
     syncLightsThreadViewFromDisk(options, state)
     if (mode === "resume") {
       await restoreWorkerSessionAfterResume(
@@ -16420,12 +16537,26 @@ function persistSessionOnExit(
   shutdown?: StackAppShutdown,
 ): void {
   try {
+    const activeCapture = readActiveOperatorSessionCapture(
+      options.config.stackDataRoot,
+      state.operatorSession.operator_session_id,
+    )
+    if (activeCapture) {
+      stopOperatorSessionRecording({ session: state.operatorSession })
+    }
+  } catch {
+    // best-effort on exit
+  }
+  const latestSession =
+    readOperatorSession(options.config.stackDataRoot, state.operatorSession.operator_session_id) ??
+    state.operatorSession
+  try {
     closeOperatorSession({
       stackDataRoot: options.config.stackDataRoot,
-      operatorSessionId: state.operatorSession.operator_session_id,
+      operatorSessionId: latestSession.operator_session_id,
       activeThreadId: options.session.id,
-      captureCount: state.operatorSession.capture_count,
-      uploadStatus: state.operatorSession.upload_status,
+      captureCount: latestSession.capture_count,
+      uploadStatus: latestSession.upload_status,
       status: "closed",
     })
   } catch {
