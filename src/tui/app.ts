@@ -128,6 +128,11 @@ import {
   readLatestAgentPlan,
 } from "../codex/plan-tool.js"
 import {
+  gardenerAgentBlockHeight,
+  gardenerPlanBlockHeight,
+  gardenerTranscriptRowsWithReserve,
+} from "./gardener-pane-layout.js"
+import {
   formatAccountTokenTotal,
   formatCodexUsageActivityLines,
   readCodexAccountUsage,
@@ -2691,8 +2696,16 @@ function createView(
     state.gardenerChatRunning,
     state.gardenerLiveThinking,
   )
+  // Reserve rows for the pinned plan + agents blocks so the fixed-height transcript content doesn't
+  // overflow onto them (which composites as garbled overlapping text). See gardener-pane-layout.test.
+  const gardenerPlanReserve = showCoreGardenerPanel
+    ? gardenerPlanBlockHeight(state.threadPlans.get(state.gardenerThreadId)?.steps.length ?? 0)
+    : 0
+  const gardenerAgentReserve = showCoreGardenerPanel
+    ? gardenerAgentBlockHeight(gardenerPaneAgents(options, state).length)
+    : 0
   const gardenerChatAreaRows = showCoreGardenerPanel
-    ? transcriptViewport.lines
+    ? gardenerTranscriptRowsWithReserve(transcriptViewport.lines, gardenerPlanReserve, gardenerAgentReserve)
     : gardenerChatVisibleRows(renderer, state)
   const gardenerChatColumns = showCoreGardenerPanel ? transcriptViewport.columns : leftColumns
   const coreEventStreamContext = resolveCoreEventStreamContext(state)
