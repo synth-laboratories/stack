@@ -1061,7 +1061,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const state: AppState = {
     // First-launch approval must own key focus: with the agent input focused, printable
     // keys never reach the global telemetry key handler, so the modal's a/d/l keys go dead.
-    focusMode: "agent",
+    focusMode: "gardener",
     workMode: "eng",
     liveOpsMode: "local",
     railsVisible: false,
@@ -16233,10 +16233,10 @@ function applyGoalUiAfterSessionResume(
   state.goalShutterScrollOffset = 0
   state.goalShutterScrollPinned = true
   state.monitorPanelMode = "chat"
-  if (checkpoint?.focusMode === "agent" || checkpoint?.focusMode === "monitor" || checkpoint?.focusMode === "goal") {
+  if (checkpoint?.focusMode === "monitor" || checkpoint?.focusMode === "goal") {
     state.focusMode = checkpoint.focusMode
   } else {
-    state.focusMode = "agent"
+    state.focusMode = "gardener"
   }
   state.talkToMonitor = state.focusMode === "monitor"
 }

@@ -126,7 +126,23 @@ function itemLifecycleLine(item: unknown, phase: "started" | "completed"): strin
 function readTurnUsage(value: unknown): Record<string, number | undefined> | undefined {
   const record = asRecord(value)
   if (!record) return undefined
-  const usage = asRecord(record.usage) ?? record
+  const payload = asRecord(record.payload)
+  if (payload) {
+    const payloadUsage = readTurnUsage(payload)
+    if (payloadUsage) return payloadUsage
+  }
+  const info = asRecord(record.info)
+  const usage =
+    asRecord(info?.last_token_usage) ??
+    asRecord(info?.lastTokenUsage) ??
+    asRecord(record.last_token_usage) ??
+    asRecord(record.lastTokenUsage) ??
+    asRecord(record.usage) ??
+    asRecord(info?.total_token_usage) ??
+    asRecord(info?.totalTokenUsage) ??
+    asRecord(record.total_token_usage) ??
+    asRecord(record.totalTokenUsage) ??
+    record
   const mapped = {
     input_tokens: readNumber(usage.inputTokens ?? usage.input_tokens),
     cached_input_tokens: readNumber(usage.cachedInputTokens ?? usage.cached_input_tokens),
