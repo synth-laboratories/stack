@@ -143,6 +143,11 @@ const SLASH_COMMAND_SPECS: SlashCommandSpec[] = [
     args: "start|stop",
     description: "Start or stop fullscreen session recording",
   },
+  {
+    command: "codex",
+    args: "status|login|logout|sync|use <account>|accounts",
+    description: "Manage Codex auth and rotate accounts",
+  },
   { command: "permissions", aliases: ["perm"], description: "Review telemetry and privacy choices" },
   { command: "settings", args: "telemetry", description: "Open permissions (alias)" },
   { command: "actors", description: "Toggle actors panel" },
@@ -400,6 +405,7 @@ export type SlashDispatchHooks = {
   openOps: () => void
   showSession: () => void
   recordSession: (verb: string) => void
+  codexAuth: (action: string, args: string) => void
   openConfig: () => void
   openPermissions: () => void
   openTelemetrySettings: () => void
@@ -600,6 +606,14 @@ export function dispatchSlashCommand(prompt: string, hooks: SlashDispatchHooks):
       } else {
         hooks.feedback("record · use /record start or /record stop")
       }
+      return true
+    }
+    case "codex": {
+      const trimmed = args.trim()
+      const space = trimmed.indexOf(" ")
+      const action = space >= 0 ? trimmed.slice(0, space) : trimmed
+      const rest = space >= 0 ? trimmed.slice(space + 1) : ""
+      hooks.codexAuth(action || "status", rest)
       return true
     }
     case "permissions":

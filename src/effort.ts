@@ -3039,7 +3039,46 @@ function persistEffort(input: EffortLookupInput, effort: StackEffort): StackEffo
 function writeRegistryRecord(stackDataRoot: string, record: StackEffortRegistryRecord): void {
   const dir = effortsRegistryDir(stackDataRoot)
   mkdirSync(dir, { recursive: true })
-  writeFileSync(join(dir, `${record.id}.json`), `${JSON.stringify(record, null, 2)}\n`, "utf8")
+  const path = join(dir, `${record.id}.json`)
+  writeFileSync(path, `${JSON.stringify(record, null, 2)}\n`, "utf8")
+  registryRecordFileCache.delete(path)
+}
+
+type CachedRegistryRecord = {
+  mtimeMs: number
+  size: number
+  record: StackEffortRegistryRecord
+}
+
+const registryRecordFileCache = new Map<string, CachedRegistryRecord>()
+
+function cloneRegistryRecord(record: StackEffortRegistryRecord): StackEffortRegistryRecord {
+  return {
+    ...record,
+    meta_thread_refs: [...record.meta_thread_refs],
+    refs: record.refs.map((ref) => ({ ...ref })),
+  }
+}
+
+function readRegistryRecordFile(path: string): StackEffortRegistryRecord | undefined {
+  try {
+    const stats = statSync(path)
+    const cached = registryRecordFileCache.get(path)
+    if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+      return cloneRegistryRecord(cached.record)
+    }
+    const record = JSON.parse(readFileSync(path, "utf8")) as StackEffortRegistryRecord
+    if (!record?.id) return undefined
+    registryRecordFileCache.set(path, {
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      record: cloneRegistryRecord(record),
+    })
+    return record
+  } catch {
+    registryRecordFileCache.delete(path)
+    return undefined
+  }
 }
 
 function readRegistryRecords(stackDataRoot: string): StackEffortRegistryRecord[] {
@@ -3047,13 +3086,7 @@ function readRegistryRecords(stackDataRoot: string): StackEffortRegistryRecord[]
   if (!existsSync(dir)) return []
   return readdirSync(dir, { withFileTypes: true })
     .filter((entry) => entry.isFile() && entry.name.endsWith(".json"))
-    .map((entry) => {
-      try {
-        return JSON.parse(readFileSync(join(dir, entry.name), "utf8")) as StackEffortRegistryRecord
-      } catch {
-        return undefined
-      }
-    })
+    .map((entry) => readRegistryRecordFile(join(dir, entry.name)))
     .filter((record): record is StackEffortRegistryRecord => Boolean(record?.id))
     .sort((left, right) => right.updated_at.localeCompare(left.updated_at))
 }
@@ -3063,11 +3096,7 @@ function findRegistryRecord(stackDataRoot: string, effortRef: string): StackEffo
   if (!ref) return undefined
   const directPath = join(effortsRegistryDir(stackDataRoot), `${ref}.json`)
   if (existsSync(directPath)) {
-    try {
-      return JSON.parse(readFileSync(directPath, "utf8")) as StackEffortRegistryRecord
-    } catch {
-      return undefined
-    }
+    return readRegistryRecordFile(directPath)
   }
   return readRegistryRecords(stackDataRoot).find((record) => record.slug === ref || record.id === ref)
 }

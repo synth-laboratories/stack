@@ -113,6 +113,40 @@ export function parseMultiAgentFunctionCall(
   }
 }
 
+/**
+ * Codex's app-server / `codex exec` stdout represents collaboration via `collab_tool_call` items
+ * (tool: spawn_agent | wait | close | …), which differ in shape from the `function_call`-style
+ * spawn_agent handled above: the spawned thread id is in `receiver_thread_ids`, the brief is in
+ * `prompt`, and `status` is the tool-call status. A completed spawn means the agent is now running.
+ * Returns a SubagentLog only for spawns; other collab tools (wait/close) update or ignore.
+ */
+export function parseCollabSpawnItem(item: Record<string, unknown>, startedAt: string): SubagentLog | undefined {
+  const tool = readString(item.tool)
+  if (tool !== "spawn_agent" && tool !== "spawn_agents_on_csv") return undefined
+  const receivers = item.receiver_thread_ids
+  const threadId = Array.isArray(receivers)
+    ? receivers.find((entry): entry is string => typeof entry === "string" && entry.length > 0)
+    : undefined
+  if (!threadId) return undefined
+  const itemStatus = readString(item.status)
+  const status: SubagentStatus =
+    itemStatus === "failed" || itemStatus === "errored"
+      ? "errored"
+      : itemStatus === "completed"
+        ? "running"
+        : "spawning"
+  const prompt = readString(item.prompt)
+  return {
+    id: threadId,
+    spawnCallId: readString(item.id) ?? threadId,
+    name: threadId.slice(0, 8),
+    agentType: "collab",
+    message: prompt ? prompt.split("\n")[0]?.slice(0, 140) : undefined,
+    status,
+    startedAt,
+  }
+}
+
 export function applyMultiAgentFunctionOutput(
   subagents: SubagentLog[],
   toolName: string,

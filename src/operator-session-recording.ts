@@ -1,14 +1,26 @@
 import { createHash, randomUUID } from "node:crypto"
 import { spawn, spawnSync, type ChildProcessWithoutNullStreams } from "node:child_process"
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync as nodeReaddirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { recordEffortCapture } from "./effort.js"
 import {
   emitOperatorSessionEvent,
   operatorSessionCapturesDir,
   patchOperatorSessionRecord,
+  readOperatorSessionEvents,
   type OperatorSessionRecord,
 } from "./operator-session.js"
+
+export type LinkOperatorSessionCaptureResult =
+  | { ok: true; effortPath: string; captureId: string }
+  | { ok: false; captureId: string; error: string; skipped?: boolean }
+
+export type ReconcileOperatorSessionCapturesResult = {
+  linked: number
+  failed: number
+  skipped: number
+  results: LinkOperatorSessionCaptureResult[]
+}
 
 export type OperatorSessionCaptureKind = "fullscreen" | "terminal"
 
@@ -216,7 +228,7 @@ export function stopOperatorSessionRecording(
       capture_count: input.session.capture_count + 1,
     })
     if (patched) session = patched
-    linkOperatorSessionCaptureToEffort(session, next)
+    reconcileOperatorSessionCapturesToEffort(session)
   }
 
   emitOperatorSessionEvent(stackDataRoot, session, {
@@ -241,6 +253,25 @@ export function stopOperatorSessionRecording(
   return { capture: next, manifestPath }
 }
 
+export function reconcileOperatorSessionCapturesToEffort(
+  session: OperatorSessionRecord,
+): ReconcileOperatorSessionCapturesResult {
+  const results: LinkOperatorSessionCaptureResult[] = []
+  let linked = 0
+  let failed = 0
+  let skipped = 0
+  for (const capture of listOperatorSessionCaptures(session.stack_data_root, session.operator_session_id)) {
+    if (capture.status !== "stopped") continue
+    const result = linkOperatorSessionCaptureToEffort(session, capture)
+    if (!result) continue
+    results.push(result)
+    if (result.ok) linked += 1
+    else if (result.skipped) skipped += 1
+    else failed += 1
+  }
+  return { linked, failed, skipped, results }
+}
+
 export function readActiveOperatorSessionCapture(
   stackDataRoot: string,
   operatorSessionId: string,
@@ -251,6 +282,57 @@ export function readActiveOperatorSessionCapture(
   return undefined
 }
 
+export function describeOperatorSessionRecordingStatus(input: {
+  stackDataRoot: string
+  operatorSessionId: string
+  localCount: number
+  cloudLabel: string
+  captureCount: number
+}): { recording: boolean; statusLine: string } {
+  const active = readActiveOperatorSessionCapture(input.stackDataRoot, input.operatorSessionId)
+  if (!active) {
+    const captures =
+      input.captureCount === 0
+        ? "no captures yet"
+        : `${input.captureCount} capture${input.captureCount === 1 ? "" : "s"}`
+    return {
+      recording: false,
+      statusLine: `not recording · local ${input.localCount} · cloud ${input.cloudLabel} · ${captures}`,
+    }
+  }
+
+  const elapsedMs = Math.max(0, Date.now() - Date.parse(active.started_at))
+  const byteSize = captureOutputByteSize(active.output_path)
+  const pidAlive = active.pid ? isProcessAlive(active.pid) : false
+  const staleNote = active.pid && !pidAlive ? " · ffmpeg not running" : ""
+  return {
+    recording: true,
+    statusLine: `● RECORDING ${formatRecordingElapsed(elapsedMs)} · ${formatCaptureBytes(byteSize)}${staleNote}`,
+  }
+}
+
+function captureOutputByteSize(path: string): number {
+  if (!existsSync(path)) return 0
+  try {
+    return statSync(path).size
+  } catch {
+    return 0
+  }
+}
+
+function formatRecordingElapsed(ms: number): string {
+  const totalSeconds = Math.floor(ms / 1000)
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes}:${String(seconds).padStart(2, "0")}`
+}
+
+function formatCaptureBytes(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
+}
+
 export function listOperatorSessionCaptures(
   stackDataRoot: string,
   operatorSessionId: string,
@@ -259,11 +341,39 @@ export function listOperatorSessionCaptures(
   if (!existsSync(root)) return []
 
   const captures: OperatorSessionCaptureRecord[] = []
-  for (const entry of readdirSync(root)) {
+  const entries = readCaptureDirEntries(root)
+  for (const entry of entries) {
     const capture = readOperatorSessionCapture(stackDataRoot, operatorSessionId, entry)
     if (capture) captures.push(capture)
   }
   return captures.sort((left, right) => right.started_at.localeCompare(left.started_at))
+}
+
+function readCaptureDirEntries(root: string): string[] {
+  try {
+    return retryTransientFs(() => nodeReaddirSync(root))
+  } catch (error) {
+    if (isTransientFsError(error)) return []
+    throw error
+  }
+}
+
+function retryTransientFs<T>(operation: () => T): T {
+  let lastError: unknown
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      return operation()
+    } catch (error) {
+      if (!isTransientFsError(error)) throw error
+      lastError = error
+    }
+  }
+  throw lastError
+}
+
+function isTransientFsError(error: unknown): boolean {
+  const code = (error as NodeJS.ErrnoException | undefined)?.code
+  return code === "EINTR" || code === "EAGAIN"
 }
 
 function readOperatorSessionCapture(
@@ -285,9 +395,13 @@ function readOperatorSessionCapture(
 function linkOperatorSessionCaptureToEffort(
   session: OperatorSessionRecord,
   capture: OperatorSessionCaptureRecord,
-): void {
+): LinkOperatorSessionCaptureResult | undefined {
   const effortSlug = session.tagged_effort_slug?.trim()
-  if (!effortSlug || capture.status !== "stopped") return
+  if (!effortSlug || capture.status !== "stopped") return undefined
+  if (isOperatorSessionCaptureLinked(session.stack_data_root, session.operator_session_id, capture.capture_id)) {
+    return { ok: false, captureId: capture.capture_id, error: "already linked", skipped: true }
+  }
+
   try {
     const result = recordEffortCapture({
       stackDataRoot: session.stack_data_root,
@@ -295,31 +409,18 @@ function linkOperatorSessionCaptureToEffort(
       effortRef: effortSlug,
       captureKind: "video",
       title: `Operator session capture ${capture.capture_id}`,
+      filename: effortCaptureFilename(capture),
       body: [
         `Operator session ${session.operator_session_id}`,
+        ...(session.effort_session_id ? [`Effort session ${session.effort_session_id}`] : []),
         capture.command ? `Command: ${formatCommand(capture.command)}` : "",
         capture.device ? `Device: ${capture.device}` : "",
+        capture.duration_ms !== undefined ? `Duration: ${capture.duration_ms}ms` : "",
       ]
         .filter(Boolean)
         .join("\n"),
       sourcePath: capture.output_path,
-      sourceReceipt: {
-        receipt_path: `operator_session:${session.operator_session_id}:${capture.capture_id}`,
-        artifact_kind: "local_file",
-        source_kind: "video_capture",
-        environment: "local",
-        label: capture.capture_id,
-        workspace_path: capture.output_path,
-        ...(capture.sha256 || capture.byte_size
-          ? {
-              digest: {
-                ...(capture.sha256 ? { sha256: capture.sha256 } : {}),
-                ...(capture.byte_size !== undefined ? { bytes: capture.byte_size } : {}),
-              },
-            }
-          : {}),
-        ...(capture.ended_at ? { pulled_at: capture.ended_at } : {}),
-      },
+      sourceReceipt: buildOperatorSessionCaptureReceipt(session, capture),
     })
     emitOperatorSessionEvent(session.stack_data_root, session, {
       type: "operator_session.capture_linked_to_effort",
@@ -331,9 +432,59 @@ function linkOperatorSessionCaptureToEffort(
         capture_kind: "video",
       },
     })
-  } catch {
-    // Effort missing or capture linkage failed — keep the operator-session artifact.
+    return { ok: true, effortPath: result.path, captureId: capture.capture_id }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    emitOperatorSessionEvent(session.stack_data_root, session, {
+      type: "operator_session.capture_link_failed",
+      effort_ref: effortSlug,
+      effort_session_id: session.effort_session_id,
+      payload: {
+        capture_id: capture.capture_id,
+        error: message,
+      },
+    })
+    return { ok: false, captureId: capture.capture_id, error: message }
   }
+}
+
+function buildOperatorSessionCaptureReceipt(
+  session: OperatorSessionRecord,
+  capture: OperatorSessionCaptureRecord,
+) {
+  return {
+    receipt_path: `operator_session:${session.operator_session_id}:${capture.capture_id}`,
+    artifact_kind: "local_file" as const,
+    source_kind: "video_capture" as const,
+    environment: "local" as const,
+    label: capture.capture_id,
+    workspace_path: capture.output_path,
+    ...(capture.sha256 || capture.byte_size
+      ? {
+          digest: {
+            ...(capture.sha256 ? { sha256: capture.sha256 } : {}),
+            ...(capture.byte_size !== undefined ? { bytes: capture.byte_size } : {}),
+          },
+        }
+      : {}),
+    ...(capture.ended_at ? { pulled_at: capture.ended_at } : {}),
+  }
+}
+
+function effortCaptureFilename(capture: OperatorSessionCaptureRecord): string {
+  return `${capture.capture_id}.mp4`
+}
+
+function isOperatorSessionCaptureLinked(
+  stackDataRoot: string,
+  operatorSessionId: string,
+  captureId: string,
+): boolean {
+  return readOperatorSessionEvents(stackDataRoot, operatorSessionId).some(
+    (event) =>
+      event.type === "operator_session.capture_linked_to_effort" &&
+      String(event.payload.capture_id ?? "") === captureId,
+  )
 }
 
 function operatorSessionCaptureDir(

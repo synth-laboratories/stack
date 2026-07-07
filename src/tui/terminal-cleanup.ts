@@ -32,6 +32,42 @@ export function resetTerminalAfterTui(): void {
   writeTerminalPayload(payload)
 }
 
+export async function gracefulTuiTeardown(renderer: CliRenderer): Promise<void> {
+  try {
+    renderer.stop()
+  } catch {
+    // ignore
+  }
+  try {
+    await renderer.destroy()
+  } catch {
+    // ignore
+  }
+  stopTerminalInputDrain()
+  try {
+    process.stdin.pause()
+  } catch {
+    // ignore
+  }
+  resetTerminalAfterTui()
+  await drainTerminalRepliesAfterTui()
+  resetTerminalAfterTui()
+}
+
+export async function drainTerminalRepliesAfterTui(): Promise<void> {
+  if (!process.stdin.isTTY) return
+  await new Promise<void>((resolve) => {
+    if (!startTerminalInputDrain()) {
+      resolve()
+      return
+    }
+    setTimeout(() => {
+      stopTerminalInputDrain()
+      resolve()
+    }, TERMINAL_REPLY_DRAIN_MS)
+  })
+}
+
 function installTerminalExitReset(): void {
   if (terminalExitResetInstalled) return
   terminalExitResetInstalled = true

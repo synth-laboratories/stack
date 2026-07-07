@@ -1,4 +1,5 @@
-import { mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises"
+import { mkdir, open, readdir, readFile, stat, writeFile } from "node:fs/promises"
+import type { Stats } from "node:fs"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
 import { buildSessionUsageSummary, type CodexModelPricing } from "./codex/usage-cost.js"
@@ -74,6 +75,11 @@ export type StackSessionSummary = {
   metaThreadId?: string
 }
 
+const LARGE_SESSION_SUMMARY_FAST_PATH_BYTES = 256 * 1024
+const LARGE_SESSION_SUMMARY_HEAD_BYTES = 64 * 1024
+const LARGE_SESSION_SUMMARY_TAIL_BYTES = 256 * 1024
+const DEFAULT_SESSION_HISTORY_LIMIT = 120
+
 export function createSession(workspaceRoot: string, codexCommand: string): StackLocalSession {
   return {
     id: randomUUID(),
@@ -104,29 +110,29 @@ export async function listSessionHistory(
     return []
   }
 
-  const summaries = await Promise.all(
-    entries
-      .filter((entry) => entry.endsWith(".json"))
-      .map(async (entry): Promise<StackSessionSummary | undefined> => {
-        const path = join(sessionLogDir, entry)
-        try {
-          const [session, info] = await Promise.all([readSessionLog(path), stat(path)])
-          const lastTurn = session.turns.at(-1)
-          const model = session.codexModel ?? inferCodexModel(session.codexCommand)
-          const usageSummary =
-            session.usageSummary ??
-            (model ? buildSessionUsageSummary(session.turns, model, pricingRows) : undefined)
-          return {
-            id: session.id,
-            path,
-            startedAt: session.startedAt,
-            updatedAt: info.mtime.toISOString(),
-            turnCount: session.turns.length,
-            lastPrompt: lastTurn?.prompt,
-            displayName: session.displayName,
-            usageSummary,
-            metaThreadId: session.metaThreadId,
+  const candidates = (
+    await Promise.all(
+      entries
+        .filter((entry) => entry.endsWith(".json"))
+        .map(async (entry): Promise<{ path: string; info: Stats } | undefined> => {
+          const path = join(sessionLogDir, entry)
+          try {
+            return { path, info: await stat(path) }
+          } catch {
+            return undefined
           }
+        }),
+    )
+  )
+    .filter((candidate): candidate is { path: string; info: Stats } => Boolean(candidate))
+    .sort((left, right) => right.info.mtimeMs - left.info.mtimeMs)
+    .slice(0, sessionHistoryLimit())
+
+  const summaries = await Promise.all(
+    candidates
+      .map(async ({ path, info }): Promise<StackSessionSummary | undefined> => {
+        try {
+          return await readSessionSummary(path, info, pricingRows)
         } catch {
           return undefined
         }
@@ -136,6 +142,110 @@ export async function listSessionHistory(
   return summaries
     .filter((summary): summary is StackSessionSummary => Boolean(summary))
     .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+}
+
+async function readSessionSummary(
+  path: string,
+  info: Stats,
+  pricingRows?: readonly CodexModelPricing[],
+): Promise<StackSessionSummary | undefined> {
+  if (info.size > LARGE_SESSION_SUMMARY_FAST_PATH_BYTES) {
+    return readLargeSessionSummary(path, info)
+  }
+  const text = await readFile(path, "utf8")
+  const session = JSON.parse(text) as StackLocalSession
+  const lastTurn = session.turns.at(-1)
+  const model = session.codexModel ?? inferCodexModel(session.codexCommand)
+  const usageSummary =
+    session.usageSummary ??
+    (model ? buildSessionUsageSummary(session.turns, model, pricingRows) : undefined)
+  return {
+    id: session.id,
+    path,
+    startedAt: session.startedAt,
+    updatedAt: info.mtime.toISOString(),
+    turnCount: session.turns.length,
+    lastPrompt: lastTurn?.prompt,
+    displayName: session.displayName,
+    usageSummary,
+    metaThreadId: session.metaThreadId,
+  }
+}
+
+async function readLargeSessionSummary(path: string, info: Stats): Promise<StackSessionSummary | undefined> {
+  const text = await readLargeSessionSummaryChunks(path, info.size)
+  const id = readJsonStringField(text, "id")
+  const startedAt = readJsonStringField(text, "startedAt")
+  if (!id || !startedAt) return undefined
+
+  let turnCount = 0
+  let lastPrompt: string | undefined
+  const promptPattern = /"prompt"\s*:\s*"((?:\\.|[^"\\])*)"/g
+  let match: RegExpExecArray | null
+  while ((match = promptPattern.exec(text)) !== null) {
+    turnCount += 1
+    lastPrompt = parseJsonString(match[1])
+  }
+  turnCount = readJsonNumberField(text, "turnCountWithUsage") ?? turnCount
+
+  return {
+    id,
+    path,
+    startedAt,
+    updatedAt: info.mtime.toISOString(),
+    turnCount,
+    lastPrompt,
+    displayName: readJsonStringField(text, "displayName"),
+    metaThreadId: readJsonStringField(text, "metaThreadId"),
+  }
+}
+
+async function readLargeSessionSummaryChunks(path: string, size: number): Promise<string> {
+  const file = await open(path, "r")
+  try {
+    const headLength = Math.min(size, LARGE_SESSION_SUMMARY_HEAD_BYTES)
+    const head = Buffer.alloc(headLength)
+    await file.read(head, 0, headLength, 0)
+
+    const remaining = Math.max(0, size - headLength)
+    const tailLength = Math.min(remaining, LARGE_SESSION_SUMMARY_TAIL_BYTES)
+    if (tailLength === 0) return head.toString("utf8")
+
+    const tail = Buffer.alloc(tailLength)
+    await file.read(tail, 0, tailLength, size - tailLength)
+    return `${head.toString("utf8")}\n${tail.toString("utf8")}`
+  } finally {
+    await file.close()
+  }
+}
+
+function readJsonStringField(text: string, field: string): string | undefined {
+  const pattern = new RegExp(`"${field}"\\s*:\\s*"((?:\\\\.|[^"\\\\])*)"`)
+  const match = pattern.exec(text)
+  return match ? parseJsonString(match[1]) : undefined
+}
+
+function readJsonNumberField(text: string, field: string): number | undefined {
+  const pattern = new RegExp(`"${field}"\\s*:\\s*(\\d+)`)
+  const match = pattern.exec(text)
+  if (!match) return undefined
+  const value = Number.parseInt(match[1], 10)
+  return Number.isFinite(value) ? value : undefined
+}
+
+function parseJsonString(value: string): string | undefined {
+  try {
+    return JSON.parse(`"${value}"`) as string
+  } catch {
+    return undefined
+  }
+}
+
+function sessionHistoryLimit(): number {
+  const raw = process.env.STACK_SESSION_HISTORY_LIMIT
+  if (!raw) return DEFAULT_SESSION_HISTORY_LIMIT
+  const parsed = Number.parseInt(raw, 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : DEFAULT_SESSION_HISTORY_LIMIT
 }
 
 export async function listSessionHistoryFromDirs(

@@ -161,6 +161,9 @@ const LEGACY_GENERATED_DEFAULT_GARDENER_PROMPT_V3 = LEGACY_GENERATED_DEFAULT_GAR
 const GARDENER_THREAD_CREATE_PROMPT =
   "To create real new work, use Stack owner tools: call stack_worker_thread_create to spawn a durable worker thread that appears in Threads/Lights, with objective when you want a goal assigned immediately. If a Stack session already exists and only needs a durable goal/meta-thread binding, call stack_meta_thread_create with its thread_id. If the meta-thread already exists and only its goal should change, call stack_meta_thread_update_goal. Never claim you created, spawned, or assigned a durable thread/goal unless one of those tools returns thread_id and meta_thread_id."
 
+const GARDENER_WORKER_CREATE_PROMPT =
+  'Two different tools create "workers", and they are NOT interchangeable. stack_worker_thread_create makes a DURABLE Stack worker thread: it appears in Threads/Lights, can own an Effort\'s work, and returns both thread_id and meta_thread_id — use it whenever the operator wants a worker to own and carry a lane (e.g. "spin up / have a new worker thread implement X"). spawn_agent (the Codex collab tool) spawns a TRANSIENT gardener subagent for delegated exploration or a quick sub-task: it shows under the gardener as a subagent, returns only a thread_id (no meta_thread_id), and does NOT create a durable Stack worker or own Effort work. Never claim you created, spawned, assigned, or handed off a durable worker/thread/goal — or that a worker "owns" a lane — unless stack_worker_thread_create or stack_meta_thread_create returned both thread_id and meta_thread_id. A spawn_agent thread_id alone is not a durable worker; describe it as a gardener subagent, not as the owner of the work.'
+
 const GARDENER_PANEL_CONTROL_PROMPT =
   "You control the operator's side panel through stack_ui_open_panel and stack_ui_close_panel. When portfolio orientation would help the operator SEE the answer — a routing decision, a handoff review, or a 'what is running / where should I look' question — call stack_ui_open_panel with actor_role=\"gardener\", panel=\"gardener\", view=\"portfolio\", and a one-sentence reason. To point the operator at one worker's live progress, open panel=\"monitor\" with that worker's thread_id instead. Open at most once per distinct moment — never for routine replies; the operator's Esc closes the panel and wins until your next open. When the moment has passed, close a panel you opened with stack_ui_close_panel (you may only close panels you opened)."
 
@@ -402,6 +405,7 @@ export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
   if (profile === "default") backfillGeneratedDefaultGardenerTools(config, parsed)
   backfillGardenerLightsThreadViewTool(config)
   backfillGardenerEffortTools(config)
+  backfillGardenerCoreOwnerTools(config)
   const enabledOverride = process.env.STACK_GARDENER_ENABLED?.trim()
   if (enabledOverride === "0" || enabledOverride === "false") config.enabled = false
   if (enabledOverride === "1" || enabledOverride === "true") config.enabled = true
@@ -426,6 +430,7 @@ export function resolveGardenerSystemPrompt(stackRoot: string, config: StackGard
   }
   prompt = ensureGardenerLightsViewPrompt(prompt)
   prompt = ensureGardenerEffortPrompt(prompt)
+  prompt = ensureGardenerWorkerCreatePrompt(prompt)
   return ensureGardenerTaggedEffortPrompt(prompt)
 }
 
@@ -505,6 +510,18 @@ function backfillGardenerEffortTools(config: StackGardenerConfig): void {
   config.tools.allow = [...config.tools.allow, ...missing]
 }
 
+// The durable-worker owner tools. A gardener that has stack_ MCP tools but drifted without these
+// cannot create a Stack-tracked worker and falls back to Codex's spawn_agent (an untracked collab
+// agent) — so we heal any such allowlist the same way effort/lights tools are backfilled.
+const GARDENER_CORE_OWNER_TOOLS = ["stack_meta_thread_create", "stack_worker_thread_create"]
+
+function backfillGardenerCoreOwnerTools(config: StackGardenerConfig): void {
+  if (!config.tools.allow.some((tool) => tool.startsWith("stack_"))) return
+  const missing = GARDENER_CORE_OWNER_TOOLS.filter((tool) => !config.tools.allow.includes(tool))
+  if (missing.length === 0) return
+  config.tools.allow = [...config.tools.allow, ...missing]
+}
+
 function ensureGardenerLightsViewPrompt(prompt: string): string {
   if (prompt.includes("stack_lights_thread_view")) return prompt
   if (!prompt.includes("stack_ui_open_panel")) return prompt
@@ -515,6 +532,15 @@ function ensureGardenerTaggedEffortPrompt(prompt: string): string {
   if (prompt.includes("stack_tagged_effort_get")) return prompt
   if (!prompt.includes("stack_effort_list")) return prompt
   return `${prompt.trim()}\n\n${GARDENER_TAGGED_EFFORT_PROMPT}`
+}
+
+function ensureGardenerWorkerCreatePrompt(prompt: string): string {
+  // Injected for every gardener: the spawn_agent-vs-worker distinction and the anti-over-claim
+  // guardrail apply whether or not the gardener can create durable workers. A gardener that lacks
+  // stack_worker_thread_create is exactly the one most likely to fall back to spawn_agent and then
+  // mislabel the result as a durable worker — which is the failure this text prevents.
+  if (prompt.includes("A spawn_agent thread_id alone is not a durable worker")) return prompt
+  return `${prompt.trim()}\n\n${GARDENER_WORKER_CREATE_PROMPT}`
 }
 
 function ensureGardenerEffortPrompt(prompt: string): string {

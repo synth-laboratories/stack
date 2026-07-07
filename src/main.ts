@@ -1,10 +1,8 @@
 #!/usr/bin/env bun
 
+import { appendFileSync } from "node:fs"
 import { hydrateCodexPricing, harnessSessionCommand, loadConfig } from "./config.js"
 import { ensureStackCodexSkills } from "./codex/install-skills.js"
-import { runLocalDemo } from "./demo.js"
-import { runDoctor } from "./doctor.js"
-import { runCrashReports } from "./crash-reports.js"
 import { detectWorkspace } from "./local/workspace.js"
 import { readMetaThreadManifest } from "./meta-thread-goal.js"
 import { createSession, type StackLocalSession } from "./session.js"
@@ -18,12 +16,32 @@ import {
 import { ensureStackDefaults } from "./seed/defaults.js"
 import { emitSessionEnded, emitSessionFunnel } from "./telemetry/funnel.js"
 import { resolveEnvironmentFromArgv, runTelemetryDigest } from "./telemetry-digest.js"
-import { runStackApp } from "./tui/app.js"
 import { resetTerminalAfterTui } from "./tui/terminal-cleanup.js"
 import { ensureStackdAutostart } from "./stackd-autostart.js"
-import { runUpdate } from "./update.js"
-import { runVoiceCheck, voiceStatusLine, writeVoiceStatus, resolveVoiceStatus } from "./voice/status.js"
+import { assertNoStackProcessPileup } from "./startup-process-guard.js"
 import { printStackVersion, stackAppRoot, stackVersion, wantsVersionFlag } from "./version.js"
+
+const startupProfileEnabled = process.env.STACK_STARTUP_PROFILE === "1"
+const startupProfileFile = process.env.STACK_STARTUP_PROFILE_FILE?.trim()
+const startupProfileStart = performance.now()
+let startupProfileLast = startupProfileStart
+
+function markStartup(label: string): void {
+  if (!startupProfileEnabled) return
+  const now = performance.now()
+  const line = `stack_startup_profile phase=${label} total_ms=${(now - startupProfileStart).toFixed(1)} delta_ms=${(now - startupProfileLast).toFixed(1)}`
+  console.error(line)
+  if (startupProfileFile) {
+    try {
+      appendFileSync(startupProfileFile, `${line}\n`, "utf8")
+    } catch {
+      // Profiling must not make startup brittle.
+    }
+  }
+  startupProfileLast = now
+}
+
+markStartup("main_loaded")
 
 if (wantsHelpFlag(process.argv)) {
   printStackHelp(process.argv)
@@ -42,7 +60,9 @@ try {
   }
 
   const config = await loadConfig(stackAppRoot())
+  markStartup("config_loaded")
   if (process.argv[2] === "doctor") {
+    const { runDoctor } = await import("./doctor.js")
     process.exit(await runDoctor(config, process.argv.slice(3)))
   }
   if (process.argv[2] === "auth") {
@@ -70,6 +90,14 @@ try {
     const { runOperatorSessionCli } = await import("./operator-session-cli.js")
     process.exit(await runOperatorSessionCli(config, process.argv.slice(2)))
   }
+  if (process.argv[2] === "codex") {
+    const { runCodexAuthCli } = await import("./codex/codex-auth-cli.js")
+    process.exit(await runCodexAuthCli(config, process.argv.slice(2)))
+  }
+  if (process.argv[2] === "tui-perf") {
+    const { runTuiPerfBenchmark } = await import("./tui/perf-benchmark.js")
+    process.exit(await runTuiPerfBenchmark(config, process.argv.slice(3)))
+  }
   if (process.argv[2] === "assembly") {
     const { runAssemblyCli } = await import("./assembly-cli.js")
     process.exit(await runAssemblyCli(config, process.argv.slice(2)))
@@ -83,18 +111,22 @@ try {
     process.exit(await runWatchCli(config, process.argv.slice(2)))
   }
   if (process.argv[2] === "crashes") {
+    const { runCrashReports } = await import("./crash-reports.js")
     process.exit(await runCrashReports(config, process.argv.slice(3)))
   }
   if (process.argv[2] === "telemetry" && process.argv[3] === "digest") {
     process.exit(await runTelemetryDigest(config, process.argv.slice(4)))
   }
   if (process.argv[2] === "demo") {
+    const { runLocalDemo } = await import("./demo.js")
     process.exit(await runLocalDemo(config, process.argv.slice(3)))
   }
   if (process.argv[2] === "update") {
+    const { runUpdate } = await import("./update.js")
     process.exit(await runUpdate(config, process.argv.slice(3)))
   }
   if (process.argv[2] === "voice" && process.argv[3] === "check") {
+    const { runVoiceCheck, voiceStatusLine } = await import("./voice/status.js")
     const threadArgIndex = process.argv.indexOf("--thread-id")
     const threadId = threadArgIndex >= 0 ? process.argv[threadArgIndex + 1] : undefined
     const status = await runVoiceCheck(config, { threadId })
@@ -104,6 +136,7 @@ try {
     process.exit(status.health === "READY" || status.health === "DEGRADED" ? 0 : 1)
   }
   if (process.argv[2] === "voice" && process.argv[3] === "status") {
+    const { voiceStatusLine, writeVoiceStatus, resolveVoiceStatus } = await import("./voice/status.js")
     const status = writeVoiceStatus(config, resolveVoiceStatus(config))
     console.log(voiceStatusLine(status))
     console.log(`status: ${status.statusPath}`)
@@ -111,6 +144,7 @@ try {
   }
   if (process.argv[2] === "resume") {
     const query = process.argv[3]
+    assertNoStackProcessPileup(config.appRoot)
     ensureStackDefaults(config.stackDataRoot, config.appRoot)
     ensureStackCodexSkills(config.appRoot)
     await hydrateCodexPricing(config)
@@ -132,6 +166,9 @@ try {
     }
     const workspace = await detectWorkspace(config.workingDir)
     void emitSessionFunnel()
+    prepareTuiImportEnv()
+    const { runStackApp } = await import("./tui/app.js")
+    markStartup("tui_import_done")
     let resumeManifest = bundle.manifest
     const metaThreadId = normalizeCheckpoint(bundle.checkpoint as StackResumeCheckpoint).metaThreadId
     if (metaThreadId && !resumeManifest?.active_goal?.objective?.trim()) {
@@ -146,17 +183,28 @@ try {
     })
     await new Promise<never>(() => {})
   }
+  assertNoStackProcessPileup(config.appRoot)
   ensureStackDefaults(config.stackDataRoot, config.appRoot)
+  markStartup("defaults_done")
   ensureStackCodexSkills(config.appRoot)
+  markStartup("skills_done")
   await hydrateCodexPricing(config)
-  await ensureStackdForTui(config)
+  markStartup("pricing_done")
+  void ensureStackdForTui(config)
+  markStartup("stackd_started")
   const workspace = await detectWorkspace(config.workingDir)
+  markStartup("workspace_done")
   const session = createSession(config.workspaceRoot, harnessSessionCommand(config))
+  markStartup("session_created")
   if (process.env.STACK_SESSION_ID?.trim()) {
     session.id = process.env.STACK_SESSION_ID.trim()
   }
 
   void emitSessionFunnel()
+  markStartup("before_run_stack_app")
+  prepareTuiImportEnv()
+  const { runStackApp } = await import("./tui/app.js")
+  markStartup("tui_import_done")
   await runStackApp({ config, workspace, session })
   await emitSessionEnded()
 } catch (error) {
@@ -167,6 +215,12 @@ try {
     console.error(`stack startup failed: ${String(error)}`)
   }
   process.exit(1)
+}
+
+function prepareTuiImportEnv(): void {
+  if (process.env.OPENTUI_GRAPHICS === undefined) {
+    process.env.OPENTUI_GRAPHICS = "0"
+  }
 }
 
 async function ensureStackdForTui(config: Awaited<ReturnType<typeof loadConfig>>): Promise<void> {
@@ -258,6 +312,8 @@ function printStackHelp(argv: string[]): void {
   console.log("  stack auth <command>           Manage optional Synth auth")
   console.log("  stack inference <list|usage> [--json]")
   console.log("  stack effort <command>          Create, inspect, and update Efforts")
+  console.log("  stack session <command>        Operator session ledger and recording")
+  console.log("  stack codex <command>          Codex login, logout, sync, and accounts")
   console.log("  stack assembly <list|get|transition>")
   console.log("                                Read Assembly Lines and append typed transitions")
   console.log("  stack artifacts <command>       Create and serve local Artifact Sites")

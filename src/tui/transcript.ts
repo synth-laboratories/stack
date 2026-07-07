@@ -8,6 +8,7 @@ import { stackTuiTheme as theme } from "./theme.js"
 import {
   applyMultiAgentFunctionOutput,
   isMultiAgentToolName,
+  parseCollabSpawnItem,
   parseMultiAgentFunctionCall,
   subagentDisplayName,
   subagentDurationSeconds,
@@ -92,6 +93,8 @@ export type CodexLineResult = {
   multiAgentCall?: MultiAgentCallMeta & { callId: string }
   multiAgentOutput?: { callId: string; output: string; finishedAt: string }
   subagent?: SubagentLog
+  /** A Codex collab spawn_agent (app-server `collab_tool_call` item) to upsert as a subagent. */
+  collabSpawn?: SubagentLog
 }
 
 export function parseCodexJsonLine(line: string): CodexLineResult | undefined {
@@ -142,6 +145,12 @@ export function applyCodexLine(
 
   if (rendered.thinking !== undefined) {
     updateLiveThinking(blocks, liveThinkingId.current, rendered.thinking, turnStartedAt.current)
+  }
+
+  if (rendered.collabSpawn) {
+    upsertSubagentLog(subagentLogs, rendered.collabSpawn)
+    noteSubagentInLiveGroup(blocks, liveSubagentGroupId, rendered.collabSpawn.id, turnStartedAt.current)
+    rendered.subagent = rendered.collabSpawn
   }
 
   if (rendered.multiAgentCall) {
@@ -1074,6 +1083,13 @@ function parseCodexEvent(event: unknown): CodexLineResult | undefined {
         exitCode: 0,
       },
     }
+  }
+
+  if (type === "collab_tool_call") {
+    // Codex collaboration items: spawn_agent becomes a subagent; wait/close/etc are control
+    // plumbing we drop rather than render as anonymous tool blocks.
+    const collabSpawn = parseCollabSpawnItem(record, new Date().toISOString())
+    return collabSpawn ? { collabSpawn } : {}
   }
 
   if (type.includes("command") || type.includes("tool") || type.includes("exec")) {

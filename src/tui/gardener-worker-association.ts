@@ -7,7 +7,7 @@ export type AssociatedGardenerWorker = {
 }
 
 export type ActiveGardenerEffortScope = {
-  effortId?: string
+  effortId: string
   metaThreadRefs?: readonly string[]
 }
 
@@ -28,7 +28,6 @@ export function associatedGardenerWorkersForEffort(input: {
     if ((manifest.lifecycle_status ?? "live") !== "live") continue
 
     if (input.activeEffort) {
-      if (!input.activeEffort.effortId) continue
       if (manifest.effort_ref === input.activeEffort.effortId) {
         primary.push({ summary, manifest })
         continue

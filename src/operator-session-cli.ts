@@ -7,9 +7,15 @@ import {
   summarizeOperatorSessions,
 } from "./operator-session.js"
 import {
+  reconcileOperatorSessionCapturesToEffort,
   startOperatorSessionRecording,
   stopOperatorSessionRecording,
 } from "./operator-session-recording.js"
+import {
+  extractOperatorSessionScreencaps,
+  formatScreencapSummary,
+  parseAtSecondsFlag,
+} from "./operator-session-screencaps.js"
 
 function wantsJson(argv: string[]): boolean {
   return argv.includes("--json")
@@ -148,6 +154,79 @@ export async function runOperatorSessionCli(config: StackConfig, argv: string[])
     return 2
   }
 
+  if (action === "screencaps" || action === "frames") {
+    const operatorSessionId = subaction && !subaction.startsWith("--") ? subaction : undefined
+    const session =
+      (operatorSessionId ? readOperatorSession(config.stackDataRoot, operatorSessionId) : undefined) ??
+      readActiveOperatorSession(config.stackDataRoot)
+    if (!session) {
+      console.error("no operator session; pass <opesess_id> or launch Stack")
+      return 1
+    }
+    const captureId = parseFlagString(argv, "--capture") ?? parseFlagString(argv, "--id")
+    const outputDir = parseFlagString(argv, "--output") ?? parseFlagString(argv, "--out")
+    const intervalSec = parseFlagNumber(argv, "--interval")
+    const maxFrames = parseFlagNumber(argv, "--max")
+    let atSeconds: number[] | undefined
+    try {
+      atSeconds = parseAtSecondsFlag(parseFlagString(argv, "--at"))
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      return 2
+    }
+    try {
+      const result = extractOperatorSessionScreencaps({
+        stackDataRoot: config.stackDataRoot,
+        operatorSessionId: session.operator_session_id,
+        ...(captureId ? { captureId } : {}),
+        ...(outputDir ? { outputDir } : {}),
+        ...(intervalSec !== undefined ? { intervalSec } : {}),
+        ...(maxFrames !== undefined ? { maxFrames } : {}),
+        ...(atSeconds ? { atSeconds } : {}),
+      })
+      if (json) {
+        console.log(JSON.stringify(result, null, 2))
+      } else {
+        console.log(formatScreencapSummary(result))
+      }
+      return 0
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error))
+      return 1
+    }
+  }
+
+  if (action === "link-captures" || action === "link") {
+    const operatorSessionId = subaction
+    const session =
+      (operatorSessionId ? readOperatorSession(config.stackDataRoot, operatorSessionId) : undefined) ??
+      readActiveOperatorSession(config.stackDataRoot)
+    if (!session) {
+      console.error("no operator session; pass <opesess_id> or launch Stack")
+      return 1
+    }
+    if (!session.tagged_effort_slug) {
+      console.error(`operator session ${session.operator_session_id} has no tagged effort`)
+      return 1
+    }
+    const result = reconcileOperatorSessionCapturesToEffort(session)
+    if (json) {
+      console.log(JSON.stringify(result, null, 2))
+      return result.failed > 0 ? 1 : 0
+    }
+    console.log(
+      `linked ${result.linked} · skipped ${result.skipped} · failed ${result.failed} · effort ${session.tagged_effort_slug}`,
+    )
+    for (const entry of result.results) {
+      if (entry.ok) {
+        console.log(`  ✓ ${entry.captureId} → ${entry.effortPath}`)
+      } else if (!entry.skipped) {
+        console.log(`  ✗ ${entry.captureId} · ${entry.error}`)
+      }
+    }
+    return result.failed > 0 ? 1 : 0
+  }
+
   printOperatorSessionUsage()
   return 2
 }
@@ -159,6 +238,8 @@ function printOperatorSessionUsage(): void {
   console.log("  stack session show <opesess_id> [--json]")
   console.log("  stack session record start [--display <n>] [--device <name>] [--json]")
   console.log("  stack session record stop [--id <capture_id>] [--json]")
+  console.log("  stack session link-captures [<opesess_id>] [--json]")
+  console.log("  stack session screencaps [<opesess_id>] [--capture <opcap_id>] [--interval <sec>] [--at 0,6,12] [--max <n>] [--output <dir>] [--json]")
 }
 
 function parseFlagString(argv: string[], flag: string): string | undefined {

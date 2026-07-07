@@ -111,7 +111,22 @@ import {
   type CodexRateLimitsSnapshot,
 } from "../codex/rate-limits.js"
 import { isChatGptAuthPlan, readCodexAccountSnapshot } from "../codex/account.js"
+import {
+  activateCodexAccount,
+  codexAuthAttentionLabel,
+  formatCodexAuthStatusLines,
+  readCodexAuthStatus,
+  runCodexLogout,
+  syncCodexAuthToIsolatedHome,
+} from "../codex/auth-sync.js"
 import { stackCodexEnv } from "../codex/isolation.js"
+import {
+  type AgentPlan,
+  formatPlanDots,
+  formatPlanHeader,
+  planStepGlyph,
+  readLatestAgentPlan,
+} from "../codex/plan-tool.js"
 import {
   formatAccountTokenTotal,
   formatCodexUsageActivityLines,
@@ -250,13 +265,17 @@ import {
 } from "../cursor/account.js"
 import {
   createStackAppShutdown,
+  gracefulTuiTeardown,
   prepareTerminalForTui,
+  resetTerminalAfterTui,
   type StackAppShutdown,
   registerFatalProcessHandlers,
   registerRendererShutdown,
 } from "./terminal-cleanup.js"
 import { createRemountCoordinator } from "./remount-coordinator.js"
+import { tuiPerfBenchEnabled } from "./perf-harness.js"
 import {
+  emptyLocalBootstrapSnapshot,
   ensureLocalStackBootstrap,
   isOptimizerCliAvailable,
   refreshLocalBootstrapSnapshot,
@@ -345,6 +364,7 @@ import {
   type OperatorSessionRecord,
 } from "../operator-session.js"
 import {
+  describeOperatorSessionRecordingStatus,
   readActiveOperatorSessionCapture,
   startOperatorSessionRecording,
   stopOperatorSessionRecording,
@@ -402,7 +422,7 @@ import {
   transcriptViewportForEstimatedContent,
 } from "./transcript-layout.js"
 import { readRolloutTranscript, readRolloutTranscriptWithRetry } from "./rollout-transcript.js"
-import type { SubagentLog } from "./subagents.js"
+import type { SubagentLog, SubagentStatus } from "./subagents.js"
 import { subagentDisplayName, subagentStatusLabel, upsertSubagentLog } from "./subagents.js"
 import {
   compactUsageWithThroughput,
@@ -459,6 +479,7 @@ import {
   ENABLE_BRACKETED_PASTE,
   agentPromptOwnsEditableInput,
   handleRawTextInputSequence,
+  isEditableInputChunk,
   isRawEnterSequence,
   normalizePasteText,
   shouldUseNativeAgentInput,
@@ -576,11 +597,20 @@ type LightsPanelSection = {
   header: string
   lines: string[]
   lineKinds?: Array<LightsEffortLineKind | undefined>
+  sessionLineKinds?: Array<LightsSessionLineKind | undefined>
   threadIds?: Array<string | undefined>
   threadRowKinds?: Array<LightsThreadPanelRowKind | undefined>
 }
 
 type LightsEffortLineKind = "active-effort-on" | "active-effort-hint" | "default"
+
+type LightsSessionLineKind =
+  | "session-id"
+  | "session-record-start"
+  | "session-record-stop"
+  | "session-record-start-disabled"
+  | "session-record-stop-disabled"
+  | "session-info"
 
 type LightsThreadPanelRowKind = "primary" | "detail" | "view" | "unview"
 
@@ -658,6 +688,7 @@ type AppState = {
   blocks: TranscriptBlock[]
   inputBuffer: string
   inputFastPathNeedsRemount: boolean
+  rawAgentInputSuppression?: string
   monitorInputBuffer: string
   configSelectedIndex: number
   taggedEffortSelectedIndex: number
@@ -689,6 +720,7 @@ type AppState = {
   threadMetaThreadManifests: Map<string, StackdMetaThreadManifest>
   threadMetaThreadTitles: Map<string, string>
   threadLightsPreviews: Map<string, ThreadLightsPreview>
+  threadPlans: Map<string, AgentPlan>
   activeEffortWorkerFilter?: ActiveEffortWorkerFilter
   lastSessionLogPath?: string
   optimizerSnapshot: OptimizerSnapshot
@@ -749,6 +781,7 @@ type AppState = {
   harnessCommand: string
   codexRateLimits?: CodexRateLimitsSnapshot
   codexAccountEmail?: string
+  codexAuthAttention?: string
   cursorAccount?: CursorAccountSnapshot
   updateCheck?: UpdateCheckReport
   updateChecking?: boolean
@@ -795,12 +828,15 @@ type AppState = {
   evalModalNotice?: string
   gardenerNotice?: string
   monitorNotice?: string
+  gardenerTranscriptHydrated: boolean
   gardenerChatRunning: boolean
   gardenerChatStartedAt?: string
   gardenerQueuedMessages: string[]
   gardenerLiveBlocks: TranscriptBlock[]
   gardenerLiveTools: ToolLog[]
   gardenerLiveSubagents: SubagentLog[]
+  /** Full set of gardener spawn_agent (collab) subagents for this session, surfaced in Lights. */
+  gardenerSubagents: SubagentLog[]
   gardenerLiveThinking?: string
   workerHarnessSnapshot?: WorkerHarnessSnapshot
   lastSteerHint?: string
@@ -827,6 +863,21 @@ type MountedView = {
 
 let stackRootInstance = 0
 const AGENT_INPUT_NATIVE_ID = "stack-agent-input-native"
+
+type GardenerSessionTurnsCacheEntry = {
+  mtimeMs: number
+  size: number
+  turns: StackCodexTurn[]
+}
+
+type GardenerChatTranscriptCacheEntry = {
+  events: StackThreadMetaEvent[]
+  turns: StackCodexTurn[]
+  transcript: GardenerChatTranscript
+}
+
+const gardenerSessionTurnsCache = new Map<string, GardenerSessionTurnsCacheEntry>()
+const gardenerChatTranscriptCache = new Map<string, GardenerChatTranscriptCacheEntry>()
 
 type StackKeyEvent = {
   name?: string
@@ -1012,37 +1063,72 @@ const HARNESS_PROVIDER_CHOICES: ReadonlyArray<{ label: string; harness: StackHar
   { label: "Cursor", harness: "cursor" },
 ]
 
+const stackStartupProfileEnabled = process.env.STACK_STARTUP_PROFILE === "1"
+const stackStartupProfileFile = process.env.STACK_STARTUP_PROFILE_FILE?.trim()
+
+function createStackStartupProfiler(scope: string): (label: string) => void {
+  if (!stackStartupProfileEnabled) return () => {}
+  const start = performance.now()
+  let last = start
+  return (label: string) => {
+    const now = performance.now()
+    const line = `stack_startup_profile scope=${scope} phase=${label} total_ms=${(now - start).toFixed(1)} delta_ms=${(now - last).toFixed(1)}`
+    console.error(line)
+    if (stackStartupProfileFile) {
+      try {
+        appendFileSync(stackStartupProfileFile, `${line}\n`, "utf8")
+      } catch {
+        // Profiling must not make startup brittle.
+      }
+    }
+    last = now
+  }
+}
+
 export async function runStackApp(options: StackAppOptions): Promise<void> {
+  const markStartup = createStackStartupProfiler("run_stack_app")
+  markStartup("start")
   if (!isCursorHarness(options.config)) {
     syncStackSubagentAgentFiles(options.config)
   }
-  const runtimeFactory = await readRuntimeFactory()
-  const runtimeFactorySnapshot = runtimeFactory.snapshot
-  const optimizerSnapshot =
-    localOptimizerSnapshotFromRuntime(runtimeFactorySnapshot, options.config) ??
-    await readOptimizerSnapshot(options.config)
-  const optimizerCliAvailable = isOptimizerCliAvailable(options.config.optimizerCommand)
-  const localStackBoot = await ensureLocalStackBootstrap(options.config)
+  markStartup("subagent_files_done")
+  const runtimeFactorySnapshot: StackdFactorySnapshot | null = null
+  const runtimeFactoryEventsAppended: number | null = null
+  const optimizerSnapshot = emptyOptimizerSnapshot(options.config)
+  markStartup("runtime_factory_deferred")
+  const optimizerCliAvailable = false
+  const startLocalStackBoot = () => ensureLocalStackBootstrap(options.config).catch(() => undefined)
+  markStartup("local_bootstrap_deferred")
   const remoteAccountSnapshot = await readRemoteAccountSnapshot(options.config)
+  markStartup("remote_account_done")
   const remoteUsageSnapshot = await readRemoteUsageSnapshot(options.config)
+  markStartup("remote_usage_done")
   const remoteResearchFromApi = await readRemoteResearchSnapshot(options.config)
+  markStartup("remote_research_done")
   const remoteResearchSnapshot =
     remoteResearchSnapshotFromRuntime(runtimeFactorySnapshot, options.config, remoteResearchFromApi) ??
     remoteResearchFromApi
   const remoteProjectsSnapshot =
     remoteProjectsPanelFromRuntime(runtimeFactorySnapshot, options.config) ??
     await readRemoteProjectsPanelSnapshot(options.config)
+  markStartup("remote_projects_done")
   const containersSnapshot = await readContainersPanelSnapshot(options.config)
+  markStartup("containers_done")
   const hostedOptimizerSnapshot =
     hostedOptimizerSnapshotFromRuntime(runtimeFactorySnapshot, options.config) ??
     await readHostedOptimizerSnapshot(options.config)
-  const telemetrySnapshot = await stackdTelemetryStatus().catch(() => undefined)
+  markStartup("hosted_optimizer_done")
+  const telemetrySnapshot: StackdTelemetryStatus | undefined = undefined
+  markStartup("telemetry_deferred")
   const recentRemoteDownloads = await readRemoteDownloadHistory(options.config)
+  markStartup("remote_downloads_done")
   await writeSessionLog(options.session, options.config.sessionLogDir, {
     codexModel: harnessModel(options.config),
     pricingRows: options.config.codexPricing,
   })
-  let history = await loadThreadHistory(options.config, options.session)
+  markStartup("session_log_written")
+  let history = await loadThreadHistory(options.config, options.session, { includeStackd: false })
+  markStartup("history_loaded")
   const gardenerEnsured = await ensureGardenerThread({
     stackRoot: options.config.stackDataRoot,
     sessionLogDir: options.config.sessionLogDir,
@@ -1051,8 +1137,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     codexModel: harnessModel(options.config),
     pricingRows: options.config.codexPricing,
   })
+  markStartup("gardener_ensured")
   if (gardenerEnsured.created) {
-    history = await loadThreadHistory(options.config, options.session)
+    history = await loadThreadHistory(options.config, options.session, { includeStackd: false })
+    markStartup("history_reloaded_after_gardener")
   }
   history = pinGardenerThreadToTop(history, gardenerEnsured.threadId)
   const defaultWorker = history.find((summary) => summary.id !== gardenerEnsured.threadId)
@@ -1129,16 +1217,17 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     threadMetaThreadManifests: new Map(),
     threadMetaThreadTitles: new Map(),
     threadLightsPreviews: new Map(),
-    optimizerSnapshot: localStackBoot.optimizer ?? optimizerSnapshot,
+    threadPlans: new Map(),
+    optimizerSnapshot,
     optimizerCliAvailable,
-    localBootstrapSnapshot: localStackBoot.bootstrap,
+    localBootstrapSnapshot: emptyLocalBootstrapSnapshot(options.config),
     selectedOptimizerRunIndex: 0,
     remoteAccountSnapshot,
     remoteUsageSnapshot,
     remoteResearchSnapshot,
     remoteProjectsSnapshot,
     runtimeFactorySnapshot,
-    runtimeFactoryEventsAppended: runtimeFactory.eventsAppended,
+    runtimeFactoryEventsAppended,
     containersSnapshot,
     rightPanelMode: "actors",
     rightPanelOpsVisible: true,
@@ -1188,7 +1277,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     codexTransport: isCursorHarness(options.config) ? "acp" : resolveCodexTransport(),
     codexAccountEmail: isCursorHarness(options.config)
       ? (await readCursorAccountSnapshot(options.config.cursorCommand)).email
-      : (await readCodexAccountSnapshot()).email,
+      : (await readCodexAccountSnapshot(options.config.codexHome)).email,
     cursorAccount: isCursorHarness(options.config)
       ? await readCursorAccountSnapshot(options.config.cursorCommand)
       : undefined,
@@ -1214,11 +1303,13 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     evalModalBuffer: "",
     evalModalKind: "note",
     evalModalVoiceUsed: false,
+    gardenerTranscriptHydrated: false,
     gardenerChatRunning: false,
     gardenerQueuedMessages: [],
     gardenerLiveBlocks: [],
     gardenerLiveTools: [],
     gardenerLiveSubagents: [],
+    gardenerSubagents: [],
     monitorSnapshot: refreshMonitorSnapshot(options.config.stackDataRoot, options.session.id),
     metaEvents: initialMetaEvents,
     monitorFeedDeliveredEventIds: existingMonitorInterventionEventIds(initialMetaEvents),
@@ -1256,7 +1347,16 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   if (options.session.id === gardenerEnsured.threadId) {
     applyGardenerHarnessToConfig(options.config)
   }
-  await openHarnessSession(options, state, codexSessionHandle, options.session.codexThreadId, { probe: true })
+  markStartup("state_ready")
+  let harnessOpenPromise: Promise<void | undefined> | undefined
+  const startHarnessOpen = () => {
+    harnessOpenPromise ??= openHarnessSession(options, state, codexSessionHandle, options.session.codexThreadId, {
+      probe: true,
+    }).catch(() => undefined)
+    markStartup("harness_open_started")
+    return harnessOpenPromise
+  }
+  markStartup("harness_open_deferred")
   refreshSessionThroughput(state, options.session.turns)
   const currentThreadIndex = state.history.findIndex((summary) => summary.id === options.session.id)
   state.selectedHistoryIndex =
@@ -1690,46 +1790,85 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const exitStack = () => shutdown.run(0)
 
   let renderer: CliRenderer
-  prepareTerminalForTui()
-  process.env.OTUI_USE_ALTERNATE_SCREEN = "true"
+  const perfBench = tuiPerfBenchEnabled()
+  if (!perfBench) {
+    prepareTerminalForTui()
+    process.env.OTUI_USE_ALTERNATE_SCREEN = "true"
+  } else {
+    delete process.env.OTUI_USE_ALTERNATE_SCREEN
+  }
   clearEnvCache()
   renderer = await createCliRenderer({
     exitOnCtrlC: false,
-    screenMode: "alternate-screen",
-    externalOutputMode: "passthrough",
-    useKittyKeyboard: {
-      events: true,
-      disambiguate: true,
-      alternateKeys: true,
-    },
-    prependInputHandlers: [
-      (sequence: string) => {
-        return handleRawInput(
-          sequence,
-          options,
-          state,
-          renderer,
-          submitFromCurrentInput,
-          submitFromMonitorInput,
-          submitFromGardenerInput,
-          remount,
-          refreshHistory,
-          refreshMetaEvents,
-          codexSessionHandle,
-          refreshHarnessAccount,
-          refreshOptimizers,
-          refreshRemoteAccount,
-          refreshRemoteUsage,
-          refreshRemoteResearch,
-          refreshRemoteProjects,
-          refreshHostedOptimizers,
-          refreshRemoteOpsPanel,
-          cycleStackEnvironmentFromUi,
-          exitStack,
-        )
-      },
-    ],
+    screenMode: perfBench ? "split-footer" : "alternate-screen",
+    externalOutputMode: perfBench ? "capture-stdout" : "passthrough",
+    useMouse: !perfBench,
+    ...(perfBench
+      ? {}
+      : {
+          useKittyKeyboard: {
+            events: true,
+            disambiguate: true,
+            alternateKeys: true,
+          },
+        }),
+    prependInputHandlers: perfBench
+      ? []
+      : [
+          (sequence: string) => {
+            return handleRawInput(
+              sequence,
+              options,
+              state,
+              renderer,
+              submitFromCurrentInput,
+              submitFromMonitorInput,
+              submitFromGardenerInput,
+              remount,
+              refreshHistory,
+              refreshMetaEvents,
+              codexSessionHandle,
+              refreshHarnessAccount,
+              refreshOptimizers,
+              refreshRemoteAccount,
+              refreshRemoteUsage,
+              refreshRemoteResearch,
+              refreshRemoteProjects,
+              refreshHostedOptimizers,
+              refreshRemoteOpsPanel,
+              cycleStackEnvironmentFromUi,
+              exitStack,
+            )
+          },
+        ],
   })
+  markStartup("renderer_created")
+  const onLiveScrollData = (chunk: Buffer | string) => {
+    if (state.focusMode !== "agent") return
+    const sequence = Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk)
+    const directAgentText =
+      state.status === "running" &&
+      (sequence === "w" || state.inputBuffer.length > 0) &&
+      isEditableInputChunk(sequence)
+    if (directAgentText) {
+      state.rawAgentInputSuppression = sequence
+      handleRawAgentInput(sequence, state, () => submitFromCurrentInput(), remount)
+      return
+    }
+    if (state.status !== "running") return
+    const viewport = agentTranscriptViewport(renderer, state, options)
+    const keyName = rawSequenceKeyName(sequence)
+    if (keyName && handleAgentScrollKey({ name: keyName }, state, renderer, options)) {
+      remount()
+      return
+    }
+    const wheelDirection = rawMouseWheelDirection(sequence)
+    if (wheelDirection === "up" || wheelDirection === "down") {
+      scrollAgentTranscript(state, 3, viewport, wheelDirection)
+      remount()
+    }
+  }
+  renderer.stdin.prependListener("data", onLiveScrollData)
 
   const onPaste = (event: PasteEvent) => {
     const paste = normalizePasteText(decodePasteBytes(event.bytes))
@@ -1756,6 +1895,65 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   scheduleRender = () => remountCoordinator.scheduleRender()
 
   view = mountView(renderer, options, state, undefined)
+  markStartup("mounted")
+  if (!perfBench) {
+    markStartup("background_refresh_deferred")
+    setTimeout(() => {
+      if (!state.gardenerTranscriptHydrated) {
+        markStartup("gardener_transcript_deferred")
+        state.gardenerTranscriptHydrated = true
+        scheduleRemount()
+      }
+      void startLocalStackBoot().then((booted) => {
+        if (!booted) return
+        state.localBootstrapSnapshot = booted.bootstrap
+        if (booted.optimizer) state.optimizerSnapshot = booted.optimizer
+      }).finally(scheduleRemount)
+      void Promise.resolve().then(() => {
+        state.optimizerCliAvailable = isOptimizerCliAvailable(options.config.optimizerCommand)
+      }).finally(scheduleRemount)
+      void refreshOptimizers().finally(scheduleRemount)
+      void refreshTelemetryStatus(state, scheduleRemount)
+      void startHarnessOpen().finally(scheduleRemount)
+      void refreshHistory().finally(scheduleRemount)
+    }, 100)
+  }
+
+  if (tuiPerfBenchEnabled()) {
+    const {
+      storeTuiPerfBenchResults,
+      writeBenchReportIfConfigured,
+    } = await import("./perf-harness.js")
+    const bench = await runEmbeddedTuiPerfBench({
+      renderer,
+      options,
+      state,
+      remount,
+      scheduleRender,
+      submitFromCurrentInput,
+      submitFromMonitorInput,
+      submitFromGardenerInput,
+      refreshHistory,
+      refreshMetaEvents,
+      codexSessionHandle,
+      refreshHarnessAccount,
+      refreshOptimizers,
+      refreshRemoteAccount,
+      refreshRemoteUsage,
+      refreshRemoteResearch,
+      refreshRemoteProjects,
+      refreshHostedOptimizers,
+      refreshRemoteOpsPanel,
+      cycleStackEnvironmentFromUi,
+      exitStack,
+    })
+    storeTuiPerfBenchResults(bench.rows, bench.meta)
+    writeBenchReportIfConfigured(bench.rows)
+    remountCoordinator.dispose()
+    await gracefulTuiTeardown(renderer)
+    return
+  }
+
   void refreshStackUpdateStatus(options, state, scheduleRemount)
 
   if (options.config.autoSubmitInitialPrompt && state.inputBuffer.trim().length > 0) {
@@ -1865,6 +2063,14 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   void refreshStackdMetaStatusUi()
   metaStatusInterval = setInterval(() => {
     void refreshStackdMetaStatusUi()
+    if (
+      readActiveOperatorSessionCapture(
+        options.config.stackDataRoot,
+        state.operatorSession.operator_session_id,
+      )
+    ) {
+      scheduleRender()
+    }
   }, 1_000)
 
   registerFatalProcessHandlers(shutdown)
@@ -1882,6 +2088,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     } catch {
       // ignore
     }
+  })
+  shutdown.register(() => {
+    renderer.stdin.off("data", onLiveScrollData)
   })
   registerRendererShutdown(
     shutdown,
@@ -1908,6 +2117,16 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   })
 
   renderer._internalKeyInput.onInternal("keypress", (key: StackKeyEvent) => {
+    if (
+      state.status === "running" &&
+      state.focusMode === "agent" &&
+      handleAgentScrollKey(key, state, renderer, options)
+    ) {
+      key.preventDefault?.()
+      key.stopPropagation?.()
+      remount()
+      return
+    }
     if (
       state.evalModalOpen &&
       (isEnterKey(key) || key.name === "escape" || key.name === "tab" || /^[1-6]$/.test(key.name ?? "")) &&
@@ -2371,6 +2590,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       refreshHistory,
       refreshMetaEvents,
       exitStack,
+      markStartup,
     )
     renderer.root.add(nextView.root)
     setupNativeAgentInput(renderer, state, submitFromCurrentInput, remount)
@@ -2389,6 +2609,7 @@ function createView(
   refreshHistory: () => Promise<void>,
   refreshMetaEvents: () => void,
   exitStack: () => void,
+  markStartup?: (label: string) => void,
 ): MountedView {
   syncGoalModeDefaults(options, state)
   const switcher = switcherPanel(options, state, refresh, applyStackEnvironmentFromUi)
@@ -2397,6 +2618,7 @@ function createView(
   const configSettings = configPanel(options, state, refresh, applyStackEnvironmentFromUi, codexSessionHandle)
   const experimentalSettings = experimentalPanel(state)
   const permissionsSettings = permissionsPanel(options, state, refresh)
+  markStartup?.("view_settings_done")
   const goalModeActive = isGoalMode(state)
   const showRightGardenerPanel = state.rightPanelOpen && state.rightPanelContent === "gardener"
   const showRightThreadsPanel = state.rightPanelOpen && state.rightPanelContent === "threads"
@@ -2409,6 +2631,11 @@ function createView(
   const showCenterPanels =
     !showRightThreadsPanel &&
     (state.focusMode === "projects" || state.focusMode === "history" || state.focusMode === "harness")
+  const needsGardenerChat =
+    showCoreGardenerPanel ||
+    showRightGardenerPanel ||
+    state.leftPanelOpen
+  const needsGardenerEvents = needsGardenerChat || showCenterPanels
   const metaThreadTitle =
     state.metaThreadManifest?.title?.trim() ||
     state.metaThreadManifest?.active_goal?.objective?.trim() ||
@@ -2441,13 +2668,24 @@ function createView(
     history: state.history,
     threadLifecycleStatus: state.threadLifecycleStatus,
   })
-  const gardenerEvents = readThreadMetaEvents(options.config.stackDataRoot, state.gardenerThreadId)
+  const gardenerEvents = needsGardenerEvents
+    ? readThreadMetaEvents(options.config.stackDataRoot, state.gardenerThreadId)
+    : []
+  markStartup?.("view_gardener_events_done")
   const workerMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, options.session.id)
+  markStartup?.("view_worker_events_done")
   const workerGoalTabs = showWorkerGoalTabs(state, workerMetaEvents)
-  const gardenerChat = buildGardenerChatTranscriptView(options, state, gardenerEvents)
+  const gardenerChatBuilt = needsGardenerChat && state.gardenerTranscriptHydrated
+  const gardenerChat = gardenerChatBuilt
+    ? stripPlanToolNoise(buildGardenerChatTranscriptView(options, state, gardenerEvents))
+    : emptyGardenerChatTranscript()
+  markStartup?.("view_gardener_chat_done")
   const gardenerChatBlocks = gardenerChat.blocks
   const gardenerChatTools = gardenerChat.tools
   const gardenerChatSubagents = gardenerChat.subagents
+  // Keep the last real subagent list when the gardener transcript isn't the active view, so the
+  // Lights section doesn't blank the gardener's subagents while the operator looks at a worker.
+  if (gardenerChatBuilt) state.gardenerSubagents = gardenerChatSubagents
   const gardenerTranscriptOptions = gardenerTranscriptRenderOptions(
     transcriptRenderOptions(state),
     state.gardenerChatRunning,
@@ -2479,7 +2717,9 @@ function createView(
   const projectsRows = opsVisibleRows(renderer, state)
   const monitorTargetId = resolveMonitorWorkerTargetId(options, state)
   const monitorTargetMetaEvents = readThreadMetaEvents(options.config.stackDataRoot, monitorTargetId)
+  markStartup?.("view_monitor_events_done")
   const monitorPanelSnapshot = refreshMonitorSnapshot(options.config.stackDataRoot, monitorTargetId)
+  markStartup?.("view_monitor_snapshot_done")
   const monitorWatchLive = monitorTargetId === options.session.id
   const monitorRows = monitorThreadVisibleRows(renderer, state)
   const rightColumns = monitorPanelColumns(renderer, state)
@@ -2495,6 +2735,7 @@ function createView(
           state.monitorSnapshot.actorId,
         )
       : undefined
+  markStartup?.("view_monitor_sidecar_done")
   const monitorSidecarChat =
     (sidecarTranscript?.turns?.length ?? 0) > 0
       ? buildMonitorSidecarChatBlocks(sidecarTranscript?.turns, monitorTargetMetaEvents)
@@ -2522,6 +2763,7 @@ function createView(
     pageLines: 6,
   }, monitorTranscriptEstimatedLines)
   const showOpsPanel = showDefaultRightPanel && (!isMonitorOn(state.monitorSnapshot) || state.rightPanelOpsVisible)
+  markStartup?.("view_data_done")
   if (showMonitorRightPanel) {
     tailMonitorThreadScroll(
       state,
@@ -2551,6 +2793,7 @@ function createView(
     state.subagentLogs,
     transcriptViewport.columns,
   )
+  markStartup?.("view_agent_transcript_estimated")
   const { viewport: agentTranscriptRenderViewport } = transcriptViewportForEstimatedContent(
     transcriptViewport,
     agentTranscriptEstimatedLines,
@@ -2589,6 +2832,7 @@ function createView(
               }),
         )
       : transcriptPane(renderTranscriptPanel(state, agentTranscriptRenderViewport), transcriptPaneFlexGrowForContent())
+  markStartup?.("view_agent_pane_done")
   const gardenerCoreChildren = [
     transcriptPane(
       renderRoleChatTranscriptStyled(
@@ -2607,6 +2851,10 @@ function createView(
     ),
     gardenerControlRow(options, state, refresh, transcriptViewport.columns),
   ]
+  const gardenerPlan = gardenerPlanWidget(state, transcriptViewport.columns)
+  if (gardenerPlan) {
+    gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, gardenerPlan)
+  }
   if (state.focusMode === "tagged-effort" && taggedEffortSettings) {
     gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, taggedEffortSettings)
   }
@@ -2626,6 +2874,7 @@ function createView(
     ...(evalFeedbackModal ? [evalFeedbackModal] : []),
     agentControlRow(options, state, transcriptViewport.columns, refresh),
   ]
+  markStartup?.("view_agent_children_done")
 
   const root = Box(
     {
@@ -2878,7 +3127,6 @@ function createView(
               )
               return
             }
-            state.lastAgentScrollAt = Date.now()
             const direction = event.scroll?.direction
             if (workerGoalTabs && state.workerPanelView === "goal") {
               if (direction === "up" || direction === "down") {
@@ -2897,6 +3145,7 @@ function createView(
                       visibleRows: workerPanelContentRows,
                     })
                 handleWorkerGoalViewScroll(direction, state, maxOffset, refresh)
+                noteAgentManualScroll(state)
               }
               return
             }
@@ -4237,6 +4486,15 @@ function setupNativeAgentInput(
   if (state.focusMode === "agent") input.focus()
 }
 
+function focusNativeAgentInput(renderer: CliRenderer, state: AppState): boolean {
+  if (state.focusMode !== "agent") return false
+  const input = renderer.root.findDescendantById(AGENT_INPUT_NATIVE_ID) as unknown as InputRenderable | undefined
+  if (!input) return false
+  if (input.value !== state.inputBuffer) input.value = state.inputBuffer
+  if (!input.focused) input.focus()
+  return true
+}
+
 function slashMenuElements(
   buffer: string,
   menuIndex: number,
@@ -4624,6 +4882,22 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
     state.history.map((summary) => summary.metaThreadId).filter((id): id is string => Boolean(id)),
   )
   if (options.session.metaThreadId) metaThreadIds.add(options.session.metaThreadId)
+
+  // Latest Codex `update_plan` per thread, read from each thread's own rollout. Populated
+  // independent of the meta-thread early-return below so the gardener's plan renders even when
+  // no worker meta-threads exist yet.
+  const planThreadIds = new Set<string>(state.history.map((summary) => summary.id))
+  planThreadIds.add(options.session.id)
+  if (state.gardenerThreadId) planThreadIds.add(state.gardenerThreadId)
+  const planEntries = await Promise.all(
+    [...planThreadIds].map(async (id) => [id, await readLatestAgentPlan(id)] as const),
+  )
+  const nextPlans = new Map<string, AgentPlan>()
+  for (const [id, plan] of planEntries) {
+    if (plan) nextPlans.set(id, plan)
+  }
+  state.threadPlans = nextPlans
+
   if (metaThreadIds.size === 0) {
     if (state.threadGoalStatus.size > 0) state.threadGoalStatus = new Map()
     if (state.threadGoalMetrics.size > 0) state.threadGoalMetrics = new Map()
@@ -6060,7 +6334,7 @@ function buildGardenerChatTranscriptView(
   events: StackThreadMetaEvent[],
 ): GardenerChatTranscript {
   const turns = readGardenerSessionTurns(options, state.gardenerThreadId)
-  const persisted = buildGardenerChatTranscript(events, turns)
+  const persisted = readCachedGardenerChatTranscript(state.gardenerThreadId, events, turns)
   if (!state.gardenerChatRunning) return persisted
   return {
     blocks: mergeRoleChatBlocks(persisted.blocks, state.gardenerLiveBlocks),
@@ -6069,12 +6343,80 @@ function buildGardenerChatTranscriptView(
   }
 }
 
+function readCachedGardenerChatTranscript(
+  gardenerThreadId: string,
+  events: StackThreadMetaEvent[],
+  turns: StackCodexTurn[],
+): GardenerChatTranscript {
+  const cached = gardenerChatTranscriptCache.get(gardenerThreadId)
+  if (cached && cached.events === events && cached.turns === turns) {
+    return cached.transcript
+  }
+  const transcript = buildGardenerChatTranscript(events, turns)
+  gardenerChatTranscriptCache.set(gardenerThreadId, {
+    events,
+    turns,
+    transcript,
+  })
+  return transcript
+}
+
+function emptyGardenerChatTranscript(): GardenerChatTranscript {
+  return {
+    blocks: [],
+    tools: [],
+    subagents: [],
+  }
+}
+
+/**
+ * Drop `update_plan` tool calls from the gardener transcript: the pinned plan widget already
+ * renders that state, so the raw tool block would be redundant noise. The call and its output
+ * merge into a single ToolLog per call id, so filtering by name leaves no orphaned output block.
+ * (The monitor/worker transcripts keep the raw tool call — a reviewer wants that visibility.)
+ */
+function stripPlanToolNoise(view: GardenerChatTranscript): GardenerChatTranscript {
+  const planToolIds = new Set(view.tools.filter((tool) => tool.name === "update_plan").map((tool) => tool.id))
+  if (planToolIds.size === 0) return view
+  const blocks: TranscriptBlock[] = []
+  for (const block of view.blocks) {
+    if (block.kind === "tool") {
+      if (planToolIds.has(block.toolId)) continue
+      blocks.push(block)
+      continue
+    }
+    if (block.kind === "tool_group") {
+      const toolIds = block.toolIds.filter((id) => !planToolIds.has(id))
+      if (toolIds.length === 0) continue
+      blocks.push({ ...block, toolIds })
+      continue
+    }
+    blocks.push(block)
+  }
+  return {
+    blocks,
+    tools: view.tools.filter((tool) => !planToolIds.has(tool.id)),
+    subagents: view.subagents,
+  }
+}
+
 function readGardenerSessionTurns(options: StackAppOptions, gardenerThreadId: string): StackCodexTurn[] {
   const path = join(options.config.sessionLogDir, `${gardenerThreadId}.json`)
   if (!existsSync(path)) return []
   try {
+    const stats = statSync(path)
+    const cached = gardenerSessionTurnsCache.get(path)
+    if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+      return cached.turns
+    }
     const session = JSON.parse(readFileSync(path, "utf8")) as StackLocalSession
-    return session.turns ?? []
+    const turns = session.turns ?? []
+    gardenerSessionTurnsCache.set(path, {
+      mtimeMs: stats.mtimeMs,
+      size: stats.size,
+      turns,
+    })
+    return turns
   } catch {
     return []
   }
@@ -6182,6 +6524,39 @@ function gardenerControlRow(
   )
 }
 
+function planStepColor(status: AgentPlan["steps"][number]["status"]): string {
+  if (status === "completed") return theme.goalLifecycle.active
+  if (status === "in_progress") return theme.synth.orange
+  return theme.fgMuted
+}
+
+/**
+ * Pinned Codex-style checklist for the gardener's own plan, shown just above the input. Reads the
+ * latest `update_plan` state (populated into `state.threadPlans` from the rollout) and re-renders
+ * in place — never injected into transcript history — so it always reflects the current plan.
+ */
+function gardenerPlanWidget(state: AppState, columns: number): ReturnType<typeof Box> | undefined {
+  const plan = state.gardenerThreadId ? state.threadPlans.get(state.gardenerThreadId) : undefined
+  if (!plan) return undefined
+  const rows: ReturnType<typeof Text>[] = [
+    Text({
+      content: oneLine(formatPlanHeader(plan), columns),
+      fg: theme.transcript.planningLabel,
+      width: "100%",
+    }),
+  ]
+  for (const step of plan.steps) {
+    rows.push(
+      Text({
+        content: oneLine(`  ${planStepGlyph(step.status, "check")} ${step.step}`, columns),
+        fg: planStepColor(step.status),
+        width: "100%",
+      }),
+    )
+  }
+  return Box({ flexDirection: "column", flexShrink: 0, width: "100%" }, ...rows)
+}
+
 function gardenerInputBackground(state: AppState): string {
   if (state.focusMode === "gardener" || state.gardenerInputBuffer.length > 0) return theme.bgInputFocused
   return theme.bgPanel
@@ -6189,7 +6564,7 @@ function gardenerInputBackground(state: AppState): string {
 
 function renderGardenerInputStyled(options: StackAppOptions, state: AppState, columns?: number): StyledText {
   const idleHint = isLightsPanelOpen(state)
-    ? "viewed/unviewed · archive · filter · /usage · /help"
+    ? "click Record/Stop at top of Lights · /help"
     : "Message gardener · /usage · /help"
   return renderWorkerAgentInputStyled(
     {
@@ -6949,39 +7324,14 @@ function buildSlashDispatchHooks(
       appendSlashFeedback(options, state, lines.join("\n"), feedbackChannel, refresh)
     },
     recordSession: (verb) => {
-      try {
-        if (verb === "start") {
-          const result = startOperatorSessionRecording({ session: state.operatorSession, kind: "fullscreen" })
-          appendSlashFeedback(
-            options,
-            state,
-            `recording started · ${result.capture.capture_id}\n${result.capture.output_path}`,
-            feedbackChannel,
-            refresh,
-          )
-          return
-        }
-        const result = stopOperatorSessionRecording({ session: state.operatorSession })
-        const latest =
-          readOperatorSession(options.config.stackDataRoot, state.operatorSession.operator_session_id) ??
-          state.operatorSession
-        state.operatorSession = latest
-        appendSlashFeedback(
-          options,
-          state,
-          `recording stopped · ${result.capture.capture_id}\n${result.capture.output_path}`,
-          feedbackChannel,
-          refresh,
-        )
-      } catch (error) {
-        appendSlashFeedback(
-          options,
-          state,
-          error instanceof Error ? error.message : String(error),
-          feedbackChannel,
-          refresh,
-        )
+      if (verb === "start") {
+        startOperatorSessionRecordingFromUi(options, state, refresh)
+        return
       }
+      stopOperatorSessionRecordingFromUi(options, state, refresh)
+    },
+    codexAuth: (action, args) => {
+      void handleCodexAuthSlash(action, args, options, state, refresh, feedbackChannel)
     },
     openConfig: () => {
       state.focusMode = "config"
@@ -8106,6 +8456,11 @@ function handleRawInputInner(
   cycleStackEnvironmentFromUi: (direction: number) => Promise<void>,
   exitStack: () => void,
 ): boolean {
+  if (state.rawAgentInputSuppression === sequence) {
+    state.rawAgentInputSuppression = undefined
+    return true
+  }
+
   const telemetryKey = telemetryKeyFromRawSequence(sequence)
   if (telemetryKey && handlePermissionsKey(telemetryKey, options, state, refresh)) return true
   if (telemetryModalCapturesRawInput(state)) {
@@ -8318,7 +8673,10 @@ function handleRawInputInner(
   }
 
   if (state.focusMode === "agent") {
-    if (shouldUseNativeAgentInput(sequence, state.focusMode, state.status)) return false
+    if (shouldUseNativeAgentInput(sequence, state.focusMode, state.status)) {
+      if (focusNativeAgentInput(renderer, state)) return false
+      return handleRawAgentInput(sequence, state, submit, refresh)
+    }
     return handleRawAgentInput(sequence, state, submit, refresh)
   }
 
@@ -8352,7 +8710,7 @@ function handleRawInputInner(
     if (
       state.focusMode === "gardener" &&
       !state.gardenerInputBuffer &&
-      (sequence === "w" || sequence === "j" || sequence === "k" || sequence === "d" || sequence === "a")
+      (sequence === "j" || sequence === "k" || sequence === "d" || sequence === "a")
     ) {
       return false
     }
@@ -8507,10 +8865,19 @@ function rawSequenceKeyName(sequence: string): string | undefined {
   if (sequence === "\x1b[B") return "down"
   if (sequence === "\x1b[C") return "right"
   if (sequence === "\x1b[D") return "left"
-  if (sequence === "\x1b[5~") return "pageup"
-  if (sequence === "\x1b[6~") return "pagedown"
-  if (sequence === "\x1b[H" || sequence === "\x1b[1~") return "home"
-  if (sequence === "\x1b[F" || sequence === "\x1b[4~") return "end"
+  if (/\x1b\[5(?:;\d+)?~/.test(sequence)) return "pageup"
+  if (/\x1b\[6(?:;\d+)?~/.test(sequence)) return "pagedown"
+  if (/\x1b\[(?:1(?:;\d+)?~|H)/.test(sequence)) return "home"
+  if (/\x1b\[(?:4(?:;\d+)?~|F)/.test(sequence)) return "end"
+  return undefined
+}
+
+function rawMouseWheelDirection(sequence: string): "up" | "down" | undefined {
+  const match = sequence.match(/\x1b\[<(\d+);\d+;\d+M/)
+  if (!match) return undefined
+  const button = Number(match[1])
+  if (button === 64) return "up"
+  if (button === 65) return "down"
   return undefined
 }
 
@@ -8612,9 +8979,10 @@ function associatedGardenerWorkers(options: StackAppOptions, state: AppState): A
     summaries: state.history,
     manifestsByThreadId,
     gardenerThreadId: gardenerId,
-    activeEffort: activeEffort.slug
-      ? { effortId: activeEffort.effortId, metaThreadRefs: activeEffort.metaThreadRefs }
-      : undefined,
+    activeEffort:
+      activeEffort.slug && activeEffort.effortId
+        ? { effortId: activeEffort.effortId, metaThreadRefs: activeEffort.metaThreadRefs }
+        : undefined,
   })
 }
 
@@ -8930,7 +9298,11 @@ function harnessAccountBudgetLabel(config: StackConfig, state: AppState): string
   const budget = isCursorHarness(config)
     ? formatCursorBudgetSuffix(config.cursorAuthPlan, state.cursorAccount, config.cursorModel)
     : formatCodexBudgetSuffix(config.codexAuthPlan, state.codexRateLimits)
-  return budget ? `${authPlan} · ${budget}` : authPlan
+  const base = budget ? `${authPlan} · ${budget}` : authPlan
+  if (!isCursorHarness(config) && state.codexAuthAttention) {
+    return `${base} · ${state.codexAuthAttention}`
+  }
+  return base
 }
 
 function globalConnectionBar(
@@ -10367,7 +10739,6 @@ function lightsCompanionSections(
     lightsActorsSection(input, width),
     lightsCloudSection(state, input, width),
     lightsLocalSection(input, width),
-    lightsSessionsSection(options, state, width),
     lightsUsageSection(input, width),
   ]
 }
@@ -10403,6 +10774,7 @@ type LightsPanelRow = {
   isHeader: boolean
   isFilter?: boolean
   lineKind?: LightsEffortLineKind
+  sessionLineKind?: LightsSessionLineKind
   threadId?: string
   threadRowKind?: LightsThreadPanelRowKind
 }
@@ -10534,14 +10906,19 @@ function lightsThreadPrimaryLine(
   const current = summary.id === options.session.id ? "*" : " "
   const viewed = lightsThreadIsViewed(state, summary.id)
   const newMarker = viewed ? " " : "·"
-  const titleMax = Math.max(8, columns - 8)
+  const plan = state.threadPlans.get(summary.id)
+  const dots = plan ? formatPlanDots(plan) : ""
+  const glyphReserve = dots ? dots.length + 1 : 0
+  const titleMax = Math.max(8, columns - 8 - glyphReserve)
   const title = resolveThreadDisplayLabel(summary, {
     isGardener: summary.id === state.gardenerThreadId,
     maxLength: titleMax,
     fallbackId: summary.id,
     metaThreadTitle: state.threadMetaThreadTitles.get(summary.id),
   })
-  return oneLine(`  ${chevron}${current}${newMarker} ${title}`, columns)
+  const left = `  ${chevron}${current}${newMarker} ${title}`
+  if (!dots) return oneLine(left, columns)
+  return rightAlignedLightsLine(left, dots, columns)
 }
 
 function lightsThreadDetailLines(
@@ -10570,6 +10947,14 @@ function lightsThreadDetailLines(
 
   const statusLine = lightsThreadDetailStatusLine(options, state, summary, preview)
   if (statusLine) lines.push(oneLine(`    ${statusLine}`, columns))
+
+  const plan = state.threadPlans.get(summary.id)
+  if (plan) {
+    lines.push(oneLine(`    ${formatPlanHeader(plan)}`, columns))
+    for (const step of plan.steps) {
+      lines.push(oneLine(`      ${planStepGlyph(step.status, "check")} ${step.step}`, columns))
+    }
+  }
 
   if (summary.id !== options.session.id) {
     const resume = threadResumeHint(summary)
@@ -10758,6 +11143,7 @@ function buildLightsPanelRows(
           sectionId: section.id,
           isHeader: false,
           lineKind: section.lineKinds?.[index],
+          sessionLineKind: section.sessionLineKinds?.[index],
           threadId: section.threadIds?.[index],
           threadRowKind: section.threadRowKinds?.[index],
         })
@@ -10767,6 +11153,8 @@ function buildLightsPanelRows(
   }
   return rows
 }
+
+const LIGHTS_SESSION_BAR_ROWS = 4
 
 function renderLightsPanel(
   options: StackAppOptions,
@@ -10780,10 +11168,13 @@ function renderLightsPanel(
   refreshMetaEvents: () => void,
 ): ReturnType<typeof Box> {
   const rows = buildLightsPanelRows(options, state, input, columns, visibleRows)
-  const maxOffset = Math.max(0, rows.length - visibleRows)
+  const scrollVisibleRows = Math.max(1, visibleRows - LIGHTS_SESSION_BAR_ROWS)
+  const maxOffset = Math.max(0, rows.length - scrollVisibleRows)
   const offset = Math.min(state.opsScrollOffset, maxOffset)
-  const window = rows.slice(offset, offset + visibleRows)
-  const children: Array<ReturnType<typeof Text>> = []
+  const window = rows.slice(offset, offset + scrollVisibleRows)
+  const children: Array<ReturnType<typeof Text>> = [
+    ...renderLightsSessionBar(options, state, columns, refresh),
+  ]
   if (maxOffset > 0) {
     children.push(
       Text({
@@ -10803,20 +11194,26 @@ function renderLightsPanel(
       isPrimary && rowThreadId !== undefined && state.lightsSelectedThreadId === rowThreadId
     const isActiveEffortOn = row.lineKind === "active-effort-on"
     const isActiveEffortHint = row.lineKind === "active-effort-hint"
+    const isSessionAction =
+      row.sessionLineKind === "session-record-start" || row.sessionLineKind === "session-record-stop"
+    const isSessionId = row.sessionLineKind === "session-id"
+    const isSessionDisabled =
+      row.sessionLineKind === "session-record-start-disabled" ||
+      row.sessionLineKind === "session-record-stop-disabled"
     children.push(
       Text({
         content: row.text || " ",
         fg:
-          isActiveEffortOn
+          isActiveEffortOn || isSessionAction || isSessionId
             ? theme.synth.amber
             : row.isHeader || row.isFilter || isViewAction
             ? theme.synth.amber
-            : isActiveEffortHint
+            : isActiveEffortHint || isSessionDisabled
               ? theme.fgMuted
               : row.threadRowKind === "detail"
                 ? theme.fgMuted
                 : theme.fgPrimary,
-        bg: filterFocused || selectedPrimary || isActiveEffortOn ? theme.bgInputFocused : undefined,
+        bg: filterFocused || selectedPrimary || isActiveEffortOn || isSessionAction ? theme.bgInputFocused : undefined,
         width: "100%",
         flexShrink: 0,
         ...(row.isHeader
@@ -10837,6 +11234,49 @@ function renderLightsPanel(
                   refresh()
                 },
               }
+            : row.sessionLineKind === "session-record-start"
+              ? {
+                  onMouseDown(event: PanelMouseEvent) {
+                    event.preventDefault?.()
+                    event.stopPropagation?.()
+                    startOperatorSessionRecordingFromUi(options, state, refresh)
+                  },
+                }
+              : row.sessionLineKind === "session-record-stop"
+                ? {
+                    onMouseDown(event: PanelMouseEvent) {
+                      event.preventDefault?.()
+                      event.stopPropagation?.()
+                      stopOperatorSessionRecordingFromUi(options, state, refresh)
+                    },
+                  }
+                : row.sessionLineKind === "session-record-start-disabled"
+                  ? {
+                      onMouseDown(event: PanelMouseEvent) {
+                        event.preventDefault?.()
+                        event.stopPropagation?.()
+                        appendStackBlock(state.blocks, "stop the active recording before starting another")
+                        refresh()
+                      },
+                    }
+                  : row.sessionLineKind === "session-record-stop-disabled"
+                    ? {
+                        onMouseDown(event: PanelMouseEvent) {
+                          event.preventDefault?.()
+                          event.stopPropagation?.()
+                          appendStackBlock(state.blocks, "no active recording · click Record screen")
+                          refresh()
+                        },
+                      }
+                    : row.sessionLineKind === "session-id"
+                      ? {
+                          onMouseDown(event: PanelMouseEvent) {
+                            event.preventDefault?.()
+                            event.stopPropagation?.()
+                            appendStackBlock(state.blocks, `operator session ${state.operatorSession.operator_session_id}`)
+                            refresh()
+                          },
+                        }
             : row.threadRowKind === "unview" && rowThreadId
               ? {
                   onMouseDown(event: PanelMouseEvent) {
@@ -11106,14 +11546,38 @@ function effortLightsSignals(effort: StackEffortSummary, workspaceRoot: string, 
 function lightsGardenersSection(options: StackAppOptions, state: AppState, columns: number): LightsPanelSection {
   const inboxCount = readGardenerInbox(options.config.stackDataRoot, state.gardenerThreadId).length
   const status = state.gardenerChatRunning ? "running" : inboxCount > 0 ? "queued" : "idle"
-  const header = `Gardeners · ${status} · inbox ${inboxCount}`
+  const subagents = gardenerSubagentsForLights(state)
+  const activeSubagents = subagents.filter(
+    (agent) => agent.status === "running" || agent.status === "spawning" || agent.status === "pending_init",
+  ).length
+  const subagentSuffix = subagents.length > 0 ? ` · subagents ${activeSubagents}/${subagents.length}` : ""
+  const header = `Gardeners · ${status} · inbox ${inboxCount}${subagentSuffix}`
   const targetId = resolveAssociatedGardenerWorkerTargetId(options, state)
   const lines = [
     `  default ${state.gardenerThreadId.slice(0, 8)} · target ${targetId ? targetId.slice(0, 8) : "none"}`,
   ]
   if (state.gardenerWorkspacePath) lines.push(`  workspace ${oneLine(state.gardenerWorkspacePath, Math.max(20, columns - 12))}`)
   if (state.gardenerNotice) lines.push(`  notice ${oneLine(state.gardenerNotice, Math.max(20, columns - 10))}`)
+  for (const agent of subagents.slice(0, 4)) {
+    lines.push(oneLine(`  ↳ ${subagentDisplayName(agent)} · ${subagentStatusLabel(agent.status)}`, columns))
+  }
+  if (subagents.length > 4) lines.push(`  ... +${subagents.length - 4} subagents`)
   return { id: "gardeners", header, lines }
+}
+
+/**
+ * Gardener spawn_agent (collab) subagents to surface in Lights, active first. These are transient
+ * Codex collab agents the gardener spawned — distinct from durable Stack worker threads (which have
+ * meta-thread manifests and appear under Threads). Terminal/cleanup states are dropped so the
+ * section reflects what the gardener currently has out, not its whole history.
+ */
+function gardenerSubagentsForLights(state: AppState): SubagentLog[] {
+  const visible = state.gardenerSubagents.filter(
+    (agent) => agent.status !== "closed" && agent.status !== "shutdown" && agent.status !== "not_found",
+  )
+  const rank = (status: SubagentStatus): number =>
+    status === "running" || status === "spawning" || status === "pending_init" ? 0 : status === "errored" || status === "interrupted" ? 1 : 2
+  return [...visible].sort((a, b) => rank(a.status) - rank(b.status))
 }
 
 function lightsActorsSection(input: ReturnType<typeof buildOpsPanelInput>, columns: number): LightsPanelSection {
@@ -11176,29 +11640,154 @@ function lightsLocalSection(input: ReturnType<typeof buildOpsPanelInput>, column
   return { id: "local", header, lines }
 }
 
-function lightsSessionsSection(options: StackAppOptions, state: AppState, columns: number): LightsPanelSection {
+function lightsSessionBarText(
+  content: string,
+  kind: LightsSessionLineKind,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): ReturnType<typeof Text> {
+  const isAction = kind === "session-record-start" || kind === "session-record-stop"
+  const isDisabled =
+    kind === "session-record-start-disabled" || kind === "session-record-stop-disabled"
+  return Text({
+    content,
+    fg: kind === "session-id" || isAction ? theme.synth.amber : isDisabled ? theme.fgMuted : theme.fgPrimary,
+    bg: isAction ? theme.bgInputFocused : undefined,
+    width: "100%",
+    flexShrink: 0,
+    ...(kind === "session-record-start"
+      ? {
+          onMouseDown(event: PanelMouseEvent) {
+            event.preventDefault?.()
+            event.stopPropagation?.()
+            startOperatorSessionRecordingFromUi(options, state, refresh)
+          },
+        }
+      : kind === "session-record-stop"
+        ? {
+            onMouseDown(event: PanelMouseEvent) {
+              event.preventDefault?.()
+              event.stopPropagation?.()
+              stopOperatorSessionRecordingFromUi(options, state, refresh)
+            },
+          }
+        : kind === "session-record-start-disabled"
+          ? {
+              onMouseDown(event: PanelMouseEvent) {
+                event.preventDefault?.()
+                event.stopPropagation?.()
+                appendStackBlock(state.blocks, "stop the active recording before starting another")
+                refresh()
+              },
+            }
+          : kind === "session-record-stop-disabled"
+            ? {
+                onMouseDown(event: PanelMouseEvent) {
+                  event.preventDefault?.()
+                  event.stopPropagation?.()
+                  appendStackBlock(state.blocks, "no active recording · click Record screen")
+                  refresh()
+                },
+              }
+            : kind === "session-id"
+              ? {
+                  onMouseDown(event: PanelMouseEvent) {
+                    event.preventDefault?.()
+                    event.stopPropagation?.()
+                    appendStackBlock(state.blocks, `operator session ${state.operatorSession.operator_session_id}`)
+                    refresh()
+                  },
+                }
+              : {}),
+  })
+}
+
+function renderLightsSessionBar(
+  options: StackAppOptions,
+  state: AppState,
+  columns: number,
+  refresh: () => void,
+): Array<ReturnType<typeof Text>> {
   const counts = operatorSessionCounts(options.config.stackDataRoot)
   const cloudLabel = counts.cloud > 0 ? String(counts.cloud) : "—"
-  const header = oneLine(`Sessions · local ${counts.local} · cloud ${cloudLabel}`, columns)
-  const lines = [
-    `  current ${oneLine(state.operatorSession.operator_session_id, Math.max(16, columns - 12))} · open`,
+  const sessionId = state.operatorSession.operator_session_id
+  const recordingStatus = describeOperatorSessionRecordingStatus({
+    stackDataRoot: options.config.stackDataRoot,
+    operatorSessionId: sessionId,
+    localCount: counts.local,
+    cloudLabel,
+    captureCount: state.operatorSession.capture_count,
+  })
+  const recording = recordingStatus.recording
+  return [
+    lightsSessionBarText(oneLine(`Session ${sessionId}`, columns), "session-id", options, state, refresh),
+    lightsSessionBarText(oneLine(recordingStatus.statusLine, columns), "session-info", options, state, refresh),
+    lightsSessionBarText(
+      "  ▶ Record screen",
+      recording ? "session-record-start-disabled" : "session-record-start",
+      options,
+      state,
+      refresh,
+    ),
+    lightsSessionBarText(
+      "  ■ Stop recording",
+      recording ? "session-record-stop" : "session-record-stop-disabled",
+      options,
+      state,
+      refresh,
+    ),
   ]
-  if (state.operatorSession.tagged_effort_slug) {
-    lines.push(`  effort ${oneLine(state.operatorSession.tagged_effort_slug, Math.max(16, columns - 10))}`)
+}
+
+function startOperatorSessionRecordingFromUi(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  try {
+    if (
+      readActiveOperatorSessionCapture(
+        options.config.stackDataRoot,
+        state.operatorSession.operator_session_id,
+      )
+    ) {
+      appendStackBlock(state.blocks, "recording already active · click Stop recording")
+      refresh()
+      return
+    }
+    const result = startOperatorSessionRecording({ session: state.operatorSession, kind: "fullscreen" })
+    appendStackBlock(
+      state.blocks,
+      `recording started · ${result.capture.capture_id}\n${result.capture.output_path}`,
+    )
+    refresh()
+  } catch (error) {
+    appendStackBlock(state.blocks, `recording start failed: ${errorMessage(error)}`)
+    refresh()
   }
-  const activeCapture = readActiveOperatorSessionCapture(
-    options.config.stackDataRoot,
-    state.operatorSession.operator_session_id,
-  )
-  if (activeCapture) {
-    lines.push(`  recording ${oneLine(activeCapture.capture_id, 18)} · ${oneLine(activeCapture.device ?? "screen", 16)}`)
-  } else if (state.operatorSession.capture_count > 0) {
-    lines.push(`  captures ${state.operatorSession.capture_count}`)
+}
+
+function stopOperatorSessionRecordingFromUi(
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+): void {
+  try {
+    const result = stopOperatorSessionRecording({ session: state.operatorSession })
+    const latest =
+      readOperatorSession(options.config.stackDataRoot, state.operatorSession.operator_session_id) ??
+      state.operatorSession
+    state.operatorSession = latest
+    appendStackBlock(
+      state.blocks,
+      `recording stopped · ${result.capture.capture_id}\n${result.capture.output_path}`,
+    )
+    refresh()
+  } catch (error) {
+    appendStackBlock(state.blocks, `recording stop failed: ${errorMessage(error)}`)
+    refresh()
   }
-  if (state.operatorSession.upload_status === "disabled") {
-    lines.push("  cloud disabled")
-  }
-  return { id: "sessions", header, lines }
 }
 
 function lightsUsageSection(input: ReturnType<typeof buildOpsPanelInput>, columns: number): LightsPanelSection {
@@ -11304,15 +11893,18 @@ function updateThreadsRailColumns(renderer: CliRenderer, state: AppState): void 
 async function loadThreadHistory(
   config: StackConfig,
   session?: StackLocalSession,
+  options?: { includeStackd?: boolean },
 ): Promise<StackSessionSummary[]> {
   let history = await listSessionHistoryFromDirs(sessionHistoryScanDirs(config), config.codexPricing)
-  try {
-    history = mergeSessionSummaries([
-      ...history,
-      ...(await stackdThreads()).map(stackdThreadToSessionSummary),
-    ])
-  } catch {
-    // stackd unavailable — local session dirs are authoritative
+  if (options?.includeStackd !== false) {
+    try {
+      history = mergeSessionSummaries([
+        ...history,
+        ...(await stackdThreads()).map(stackdThreadToSessionSummary),
+      ])
+    } catch {
+      // stackd unavailable — local session dirs are authoritative
+    }
   }
   if (session) {
     history = ensureSessionInHistory(
@@ -11884,8 +12476,9 @@ function renderEffortsPanelStyled(options: StackAppOptions, state: AppState, col
   if (efforts.length === 0) {
     lines.push({ text: "No Efforts yet.", color: theme.fgMuted })
   } else {
-    pushEffortSectionLines(lines, "Running", running, columns, options.config, selected?.id, activeSlug)
-    pushEffortSectionLines(lines, "Archived", archived, columns, options.config, selected?.id, activeSlug)
+    const lineBudget = Math.max(1, visibleRows)
+    pushEffortSectionLines(lines, "Running", running, columns, lineBudget, options.config, selected?.id, activeSlug)
+    pushEffortSectionLines(lines, "Archived", archived, columns, lineBudget, options.config, selected?.id, activeSlug)
   }
 
   const rendered = lines.slice(0, Math.max(1, visibleRows))
@@ -11931,6 +12524,7 @@ function pushEffortSectionLines(
   title: string,
   efforts: StackEffortSummary[],
   columns: number,
+  lineBudget: number,
   config: StackConfig,
   selectedEffortId?: string,
   activeEffortSlug?: string | null,
@@ -11940,12 +12534,17 @@ function pushEffortSectionLines(
   if (lines.length > 2) lines.push({ text: "", color: theme.fgPrimary })
   lines.push({ text: `${title} (${efforts.length})`, color: theme.fgSecondary })
   for (const effort of efforts) {
+    if (lines.length >= lineBudget) {
+      lines.push({ text: `... ${title.toLowerCase()} continues`, color: theme.fgMuted })
+      return
+    }
     const selected = effort.id === selectedEffortId
     const isOn = effortIsActiveOn(activeEffortSlug ?? null, effort.slug)
     lines.push({
       text: oneLine(`${selected ? ">" : " "} ${isOn ? "◉ ON · " : "       "}${effort.short_title}`, columns),
       color: isOn ? theme.synth.amber : selected ? theme.synth.amber : theme.fgPrimary,
     })
+    if (lines.length >= lineBudget && !selected) continue
     const metaCount = effort.meta_thread_refs.length
     const metaLabel = `${metaCount} thread${metaCount === 1 ? "" : "s"}`
     const refs = effortSummaryRefs(effort)
@@ -11959,6 +12558,16 @@ function pushEffortSectionLines(
         color: theme.fgMuted,
       })
     }
+    if (!selected) {
+      if (lines.length < lineBudget) {
+        lines.push({
+          text: oneLine(`  ${effort.folder_ref}`, columns),
+          color: theme.fgMuted,
+        })
+      }
+      continue
+    }
+    if (lines.length >= lineBudget) continue
     const artifacts = effortArtifactInventoryLine(effort, workspaceRoot, stackDataRoot)
     if (artifacts) {
       lines.push({
@@ -11966,84 +12575,84 @@ function pushEffortSectionLines(
         color: theme.fgMuted,
       })
     }
-    const artifactPage = latestArtifactForEffort(config, effort)
+    const artifactPage = lines.length < lineBudget ? latestArtifactForEffort(config, effort) : undefined
     if (artifactPage) {
       lines.push({
         text: oneLine(`  artifact page - ${artifactPage.slug} - ${artifactDisplayUrl(artifactPage)}`, columns),
         color: theme.fgSecondary,
       })
     }
-    const audit = effortAuditLine(effort, workspaceRoot, stackDataRoot)
+    const audit = lines.length < lineBudget ? effortAuditLine(effort, workspaceRoot, stackDataRoot) : undefined
     if (audit) {
       lines.push({
         text: oneLine(`  audit - ${audit.text}`, columns),
         color: audit.color,
       })
     }
-    const goal = effortGoalContextLine(effort, stackDataRoot)
+    const goal = lines.length < lineBudget ? effortGoalContextLine(effort, stackDataRoot) : undefined
     if (goal) {
       lines.push({
         text: oneLine(`  goal - ${goal}`, columns),
         color: theme.fgSecondary,
       })
     }
-    const progress = effortLatestProgressLine(effort, workspaceRoot)
+    const progress = lines.length < lineBudget ? effortLatestProgressLine(effort, workspaceRoot) : undefined
     if (progress) {
       lines.push({
         text: oneLine(`  progress - ${progress}`, columns),
         color: theme.fgSecondary,
       })
     }
-    const activity = effortLatestActivityLine(effort, workspaceRoot)
+    const activity = lines.length < lineBudget ? effortLatestActivityLine(effort, workspaceRoot) : undefined
     if (activity) {
       lines.push({
         text: oneLine(`  activity - ${activity}`, columns),
         color: theme.fgSecondary,
       })
     }
-    const blocker = effortLatestBlockerLine(effort, workspaceRoot, stackDataRoot)
+    const blocker = lines.length < lineBudget ? effortLatestBlockerLine(effort, workspaceRoot, stackDataRoot) : undefined
     if (blocker) {
       lines.push({
         text: oneLine(`  blocker - ${blocker}`, columns),
         color: theme.synth.amber,
       })
     }
-    const handoff = effortHandoffLine(effort, workspaceRoot)
+    const handoff = lines.length < lineBudget ? effortHandoffLine(effort, workspaceRoot) : undefined
     if (handoff) {
       lines.push({
         text: oneLine(`  handoff - ${handoff}`, columns),
         color: theme.fgSecondary,
       })
     }
-    const acceptance = effortAcceptanceLine(effort, workspaceRoot, stackDataRoot)
+    const acceptance = lines.length < lineBudget ? effortAcceptanceLine(effort, workspaceRoot, stackDataRoot) : undefined
     if (acceptance) {
       lines.push({
         text: oneLine(`  acceptance - ${acceptance}`, columns),
         color: theme.fgSecondary,
       })
     }
-    const candidate = effortOptimizerCandidateLine(effort, workspaceRoot, stackDataRoot)
+    const candidate = lines.length < lineBudget ? effortOptimizerCandidateLine(effort, workspaceRoot, stackDataRoot) : undefined
     if (candidate) {
       lines.push({
         text: oneLine(`  candidate - ${candidate}`, columns),
         color: theme.fgSecondary,
       })
     }
-    const runEvidence = effortRunEvidenceLine(effort, workspaceRoot, stackDataRoot)
+    const runEvidence = lines.length < lineBudget ? effortRunEvidenceLine(effort, workspaceRoot, stackDataRoot) : undefined
     if (runEvidence) {
       lines.push({
         text: oneLine(`  run evidence - ${runEvidence}`, columns),
         color: theme.fgSecondary,
       })
     }
-    const benchmark = effortBenchmarkLine(effort, workspaceRoot, stackDataRoot)
+    const benchmark = lines.length < lineBudget ? effortBenchmarkLine(effort, workspaceRoot, stackDataRoot) : undefined
     if (benchmark) {
       lines.push({
         text: oneLine(`  benchmark - ${benchmark}`, columns),
         color: theme.fgSecondary,
       })
     }
-    if (selected) {
+    if (lines.length < lineBudget) {
       const detailLines = effortEvidenceDetailLines(effort, workspaceRoot, stackDataRoot)
       if (detailLines.length > 0) {
         lines.push({
@@ -12058,14 +12667,14 @@ function pushEffortSectionLines(
         }
       }
     }
-    const remaining = effortRemainingWorkLine(effort, workspaceRoot, stackDataRoot)
+    const remaining = lines.length < lineBudget ? effortRemainingWorkLine(effort, workspaceRoot, stackDataRoot) : undefined
     if (remaining) {
       lines.push({
         text: oneLine(`  remaining - ${remaining}`, columns),
         color: theme.synth.amber,
       })
     }
-    const engineering = effortEngineeringPacketLine(effort, workspaceRoot)
+    const engineering = lines.length < lineBudget ? effortEngineeringPacketLine(effort, workspaceRoot) : undefined
     if (engineering) {
       lines.push({
         text: oneLine(`  engineering - ${engineering}`, columns),
@@ -13392,6 +14001,7 @@ function scrollAgentTranscript(
   viewport?: TranscriptViewport,
   direction: "up" | "down" = "up",
 ): void {
+  noteAgentManualScroll(state)
   const metrics = viewport ?? { lines: 12, columns: 80, pageLines: 10 }
   const maxOffset = maxTranscriptScrollOffset(
     state.blocks,
@@ -13403,6 +14013,17 @@ function scrollAgentTranscript(
   )
   const signedDelta = direction === "up" ? delta : -delta
   state.agentScrollOffset = Math.max(0, Math.min(maxOffset, state.agentScrollOffset + signedDelta))
+  syncAgentManualScrollPause(state)
+}
+
+function noteAgentManualScroll(state: AppState): void {
+  state.lastAgentScrollAt = Date.now()
+  if (state.status === "running") state.agentChatPaused = true
+}
+
+function syncAgentManualScrollPause(state: AppState): void {
+  if (state.status !== "running") return
+  state.agentChatPaused = state.agentScrollOffset > 0
 }
 
 function handleAgentScrollKey(
@@ -13439,22 +14060,20 @@ function handleAgentScrollKey(
           visibleRows: viewport?.lines ?? 12,
         })
     handleWorkerGoalViewScroll(direction, state, maxOffset, () => undefined)
-    state.lastAgentScrollAt = Date.now()
+    noteAgentManualScroll(state)
     return true
   }
   if (key.name === "pageup" || (key.ctrl && key.name === "u")) {
-    state.lastAgentScrollAt = Date.now()
     scrollAgentTranscript(state, viewport?.pageLines ?? 10, viewport, "up")
     return true
   }
   if (key.name === "pagedown" || (key.ctrl && key.name === "d")) {
-    state.lastAgentScrollAt = Date.now()
     scrollAgentTranscript(state, viewport?.pageLines ?? 10, viewport, "down")
     return true
   }
   if (key.name === "home") {
     const metrics = viewport ?? { lines: 12, columns: 80, pageLines: 10 }
-    state.lastAgentScrollAt = Date.now()
+    noteAgentManualScroll(state)
     state.agentScrollOffset = maxTranscriptScrollOffset(
       state.blocks,
       state.toolLogs,
@@ -13463,11 +14082,13 @@ function handleAgentScrollKey(
       transcriptRenderOptions(state),
       metrics.lines,
     )
+    syncAgentManualScrollPause(state)
     return true
   }
   if (key.name === "end") {
-    state.lastAgentScrollAt = Date.now()
+    noteAgentManualScroll(state)
     state.agentScrollOffset = 0
+    syncAgentManualScrollPause(state)
     return true
   }
   return false
@@ -13682,9 +14303,11 @@ async function observeCodexAuthState(
   rateLimits?: CodexRateLimitsSnapshot,
   state?: AppState,
 ): Promise<void> {
-  const account = await readCodexAccountSnapshot()
+  const account = await readCodexAccountSnapshot(config.codexHome)
+  const status = await readCodexAuthStatus(config, false)
   if (state) {
     state.codexAccountEmail = account.email
+    state.codexAuthAttention = codexAuthAttentionLabel(status)
     if (rateLimits) state.codexRateLimits = rateLimits
   }
   recordCodexAuthObservation({
@@ -13694,6 +14317,111 @@ async function observeCodexAuthState(
     account,
     rateLimits: rateLimits ?? state?.codexRateLimits,
   })
+}
+
+async function handleCodexAuthSlash(
+  action: string,
+  args: string,
+  options: StackAppOptions,
+  state: AppState,
+  refresh: () => void,
+  feedbackChannel: SlashFeedbackChannel,
+): Promise<void> {
+  const verb = action.trim().toLowerCase() || "status"
+  const config = options.config
+  try {
+    if (verb === "status") {
+      const status = await readCodexAuthStatus(config, !args.includes("--no-probe"))
+      appendSlashFeedback(options, state, formatCodexAuthStatusLines(status).join("\n"), feedbackChannel, refresh)
+      return
+    }
+    if (verb === "sync") {
+      const result = syncCodexAuthToIsolatedHome({
+        config,
+        force: args.includes("--force"),
+        ...(args.includes("--profile") ? { profileSlug: args.replace(/--profile\s+/, "").trim().split(/\s+/)[0] } : {}),
+      })
+      await observeCodexAuthState(config, options.session.id, state.codexRateLimits, state)
+      appendSlashFeedback(
+        options,
+        state,
+        result.copied
+          ? `codex sync ok · ${result.account.email ?? result.account.authMode}`
+          : `codex already up to date · ${result.account.email ?? result.account.authMode}`,
+        feedbackChannel,
+        refresh,
+      )
+      refresh()
+      return
+    }
+    if (verb === "login") {
+      appendSlashFeedback(
+        options,
+        state,
+        "codex login needs a terminal · run: stack codex login",
+        feedbackChannel,
+        refresh,
+      )
+      return
+    }
+    if (verb === "logout") {
+      const code = runCodexLogout(config)
+      await observeCodexAuthState(config, options.session.id, state.codexRateLimits, state)
+      appendSlashFeedback(
+        options,
+        state,
+        code === 0 ? "codex logout ok · restart Stack to clear worker sessions" : "codex logout failed",
+        feedbackChannel,
+        refresh,
+      )
+      refresh()
+      return
+    }
+    if (verb === "use") {
+      const selector = args.trim()
+      if (!selector) {
+        appendSlashFeedback(options, state, "codex use · pass email, account id, or profile slug", feedbackChannel, refresh)
+        return
+      }
+      const result = await activateCodexAccount(config, selector)
+      await observeCodexAuthState(config, options.session.id, state.codexRateLimits, state)
+      appendSlashFeedback(
+        options,
+        state,
+        `codex active · ${result.email ?? result.account_id} · restart Stack to reconnect workers`,
+        feedbackChannel,
+        refresh,
+      )
+      refresh()
+      return
+    }
+    if (verb === "accounts") {
+      const status = await readCodexAuthStatus(config, false)
+      appendSlashFeedback(
+        options,
+        state,
+        [`active ${status.isolated.email ?? status.isolated.authMode}`, `registry ${status.registry_path}`].join("\n"),
+        feedbackChannel,
+        refresh,
+      )
+      return
+    }
+    appendSlashFeedback(
+      options,
+      state,
+      "codex · /codex status|sync|login|logout|use <account>|accounts",
+      feedbackChannel,
+      refresh,
+    )
+  } catch (error) {
+    appendSlashFeedback(
+      options,
+      state,
+      error instanceof Error ? error.message : String(error),
+      feedbackChannel,
+      refresh,
+    )
+  }
 }
 
 async function refreshMetaThreadGoal(
@@ -15624,8 +16352,10 @@ async function refreshHarnessAccountLight(
     return
   }
   state.cursorAccount = undefined
-  const account = await readCodexAccountSnapshot()
+  const account = await readCodexAccountSnapshot(options.config.codexHome)
   state.codexAccountEmail = account.email
+  const status = await readCodexAuthStatus(options.config, false)
+  state.codexAuthAttention = codexAuthAttentionLabel(status)
   const latest = await readLatestCodexRateLimits()
   if (latest) {
     state.codexRateLimits = latest
@@ -15802,6 +16532,18 @@ async function readRuntimeFactory(): Promise<RuntimeFactoryRead> {
       snapshot: null,
       eventsAppended: null,
     }
+  }
+}
+
+function emptyOptimizerSnapshot(config: StackConfig): OptimizerSnapshot {
+  return {
+    status: "stopped",
+    serviceUrl: config.optimizerServiceUrl,
+    dbPath: config.optimizerDbPath,
+    logPath: config.optimizerLogPath,
+    checkedAt: new Date().toISOString(),
+    runCounts: {},
+    runs: [],
   }
 }
 
@@ -16756,6 +17498,7 @@ async function submitPrompt(
   let lastLiveRefreshAt = 0
   let monitorQueue: Promise<StackMonitorSnapshot | undefined> = Promise.resolve(undefined)
   const refreshIfScrollStable = () => {
+    if (state.agentChatPaused && agentChatPauseEligible(state)) return
     if (isRecentAgentScroll(state)) return
     if (refreshPending) return
     refreshPending = true
@@ -17256,4 +17999,579 @@ function displayCwd(path: string): string {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
+}
+
+async function runEmbeddedTuiPerfBench(input: {
+  renderer: CliRenderer
+  options: StackAppOptions
+  state: AppState
+  remount: () => void
+  scheduleRender: () => void
+  submitFromCurrentInput: (key?: StackKeyEvent, forceQueue?: boolean) => boolean
+  submitFromMonitorInput: (key?: StackKeyEvent) => boolean
+  submitFromGardenerInput: (key?: StackKeyEvent) => boolean
+  refreshHistory: () => Promise<void>
+  refreshMetaEvents: () => void
+  codexSessionHandle: { session?: HarnessSession }
+  refreshHarnessAccount: () => Promise<void>
+  refreshOptimizers: () => Promise<void>
+  refreshRemoteAccount: () => Promise<void>
+  refreshRemoteUsage: () => Promise<void>
+  refreshRemoteResearch: () => Promise<void>
+  refreshRemoteProjects: () => Promise<void>
+  refreshHostedOptimizers: () => Promise<void>
+  refreshRemoteOpsPanel: () => Promise<void>
+  cycleStackEnvironmentFromUi: (direction: number) => Promise<void>
+  exitStack: () => void
+}): Promise<{ rows: import("./perf.js").TuiPerfScenarioResult[]; meta: import("./perf-harness.js").TuiPerfBenchMeta }> {
+  const {
+    benchNativeSamples,
+    benchPaintSamples,
+    benchRemountSamples,
+    flushMicrotasks,
+    readTuiPerfBenchIterations,
+    seedHeavyTranscriptState,
+  } = await import("./perf-harness.js")
+  const { tuiPerfMark } = await import("./perf.js")
+  const iterations = readTuiPerfBenchIterations()
+  const blockCount = seedHeavyTranscriptState(input.state)
+  const measureOperation = async (run: () => void): Promise<number> => {
+    const start = performance.now()
+    run()
+    await flushMicrotasks()
+    return performance.now() - start
+  }
+  const measureAsyncOperation = async (run: () => void | Promise<void>): Promise<number> => {
+    const start = performance.now()
+    await run()
+    await flushMicrotasks()
+    return performance.now() - start
+  }
+  const measureRemountNow = () => measureOperation(input.remount)
+  await measureRemountNow()
+
+  const rawInput = (sequence: string) => {
+    handleRawInput(
+      sequence,
+      input.options,
+      input.state,
+      input.renderer,
+      () => input.submitFromCurrentInput(),
+      () => input.submitFromMonitorInput(),
+      () => input.submitFromGardenerInput(),
+      input.remount,
+      input.refreshHistory,
+      input.refreshMetaEvents,
+      input.codexSessionHandle,
+      input.refreshHarnessAccount,
+      input.refreshOptimizers,
+      input.refreshRemoteAccount,
+      input.refreshRemoteUsage,
+      input.refreshRemoteResearch,
+      input.refreshRemoteProjects,
+      input.refreshHostedOptimizers,
+      input.refreshRemoteOpsPanel,
+      input.cycleStackEnvironmentFromUi,
+      input.exitStack,
+    )
+  }
+
+  const rows: import("./perf.js").TuiPerfScenarioResult[] = []
+  const remountScenario = async (
+    scenario: string,
+    budgetMs: number,
+    run: () => void,
+  ) => {
+    tuiPerfMark("scenario", `${scenario}:start`, 0, "remount")
+    const samples: number[] = []
+    for (let i = 0; i < iterations; i += 1) {
+      samples.push(await measureOperation(run))
+    }
+    rows.push(benchRemountSamples(scenario, samples, budgetMs))
+    tuiPerfMark("scenario", `${scenario}:end`, 0, "remount")
+  }
+  const asyncRemountScenario = async (
+    scenario: string,
+    budgetMs: number,
+    run: () => void | Promise<void>,
+  ) => {
+    tuiPerfMark("scenario", `${scenario}:start`, 0, "remount")
+    const samples: number[] = []
+    for (let i = 0; i < iterations; i += 1) {
+      samples.push(await measureAsyncOperation(run))
+    }
+    rows.push(benchRemountSamples(scenario, samples, budgetMs))
+    tuiPerfMark("scenario", `${scenario}:end`, 0, "remount")
+  }
+  const nativeScenario = async (
+    scenario: string,
+    budgetMs: number,
+    run: () => void,
+  ) => {
+    tuiPerfMark("scenario", `${scenario}:start`, 0, "native")
+    const samples: number[] = []
+    for (let i = 0; i < iterations; i += 1) {
+      samples.push(await measureOperation(run))
+    }
+    rows.push(benchNativeSamples(scenario, samples, budgetMs))
+    tuiPerfMark("scenario", `${scenario}:end`, 0, "native")
+  }
+  const paintScenario = async (
+    scenario: string,
+    budgetMs: number,
+    run: () => void,
+  ) => {
+    tuiPerfMark("scenario", `${scenario}:start`, 0, "paint")
+    const samples: number[] = []
+    for (let i = 0; i < iterations; i += 1) {
+      samples.push(await measureOperation(run))
+    }
+    rows.push(benchPaintSamples(scenario, samples, budgetMs))
+    tuiPerfMark("scenario", `${scenario}:end`, 0, "paint")
+  }
+  const resetAgentChat = () => {
+    input.state.focusMode = "agent"
+    input.state.status = "idle"
+    input.state.agentChatPaused = false
+    input.state.workerPanelView = "chat"
+    input.state.inputBuffer = ""
+    input.state.inputFastPathNeedsRemount = false
+    input.state.monitorInputBuffer = ""
+    input.state.gardenerInputBuffer = ""
+    input.state.slashMenuIndex = 0
+    input.state.leftPanelOpen = false
+    input.state.rightPanelOpen = false
+    input.state.rightPanelContent = "default"
+    input.state.rightPanelOpsVisible = false
+  }
+  const setMonitorPanelOpen = () => {
+    input.state.monitorSnapshot = {
+      ...input.state.monitorSnapshot,
+      enabled: true,
+      status: "watching",
+    }
+    input.state.rightPanelOpen = true
+    input.state.rightPanelContent = "default"
+    input.state.rightPanelOpsVisible = false
+    input.state.focusMode = "monitor"
+    input.state.monitorPanelMode = "chat"
+  }
+  const setLightsPanelOpen = () => {
+    input.state.leftPanelOpen = false
+    input.state.rightPanelOpen = true
+    input.state.rightPanelContent = "lights"
+    input.state.rightPanelOpsVisible = false
+    input.state.focusMode = "ops"
+  }
+  const setRightPanel = (content: RightPanelContent, focusMode: FocusMode = "ops") => {
+    input.state.leftPanelOpen = false
+    input.state.rightPanelOpen = true
+    input.state.rightPanelContent = content
+    input.state.rightPanelOpsVisible = false
+    input.state.focusMode = focusMode
+  }
+  const setOpsPanel = (mode: RightPanelMode, focusMode: FocusMode = "ops") => {
+    input.state.leftPanelOpen = false
+    input.state.rightPanelOpen = true
+    input.state.rightPanelContent = "default"
+    input.state.rightPanelOpsVisible = true
+    input.state.rightPanelMode = mode
+    input.state.focusMode = focusMode
+    input.state.opsScrollOffset = 0
+  }
+  const measureNativeAgentEdit = (previous: string, next: string) => {
+    input.state.focusMode = "agent"
+    input.state.status = "idle"
+    input.state.inputBuffer = previous
+    input.state.slashMenuIndex = 0
+    noteInputBufferEdit(input.state, previous, next)
+    input.state.inputBuffer = next
+    if (input.state.inputFastPathNeedsRemount) {
+      input.state.inputFastPathNeedsRemount = false
+      input.remount()
+    }
+  }
+  const assertScenario = (condition: boolean, message: string) => {
+    if (!condition) throw new Error(message)
+  }
+
+  resetAgentChat()
+  await remountScenario("real_full_remount", 400, input.remount)
+
+  resetAgentChat()
+  await remountScenario("real_scroll_pagedown", 400, () => {
+    handleAgentScrollKey({ name: "pagedown" }, input.state, input.renderer, input.options)
+    input.remount()
+  })
+
+  resetAgentChat()
+  input.state.agentScrollOffset = 12
+  await remountScenario("real_scroll_pageup", 400, () => {
+    handleAgentScrollKey({ name: "pageup" }, input.state, input.renderer, input.options)
+    input.remount()
+  })
+
+  resetAgentChat()
+  await remountScenario("real_scroll_home", 400, () => {
+    handleAgentScrollKey({ name: "home" }, input.state, input.renderer, input.options)
+    input.remount()
+  })
+
+  resetAgentChat()
+  input.state.agentScrollOffset = 12
+  await remountScenario("real_scroll_end", 400, () => {
+    handleAgentScrollKey({ name: "end" }, input.state, input.renderer, input.options)
+    input.remount()
+  })
+
+  resetAgentChat()
+  await nativeScenario("real_idle_worker_char", 5, () => {
+    rawInput("x")
+  })
+
+  resetAgentChat()
+  input.state.inputBuffer = "bench"
+  await nativeScenario("real_idle_worker_backspace", 5, () => {
+    rawInput("\x7f")
+  })
+
+  resetAgentChat()
+  await remountScenario("real_slash_open", 400, () => measureNativeAgentEdit("", "/"))
+
+  resetAgentChat()
+  await remountScenario("real_slash_filter_char", 400, () => measureNativeAgentEdit("/", "/g"))
+
+  resetAgentChat()
+  input.state.inputBuffer = "/mo"
+  await remountScenario("real_slash_select_tab", 400, () => {
+    rawInput("\t")
+  })
+
+  resetAgentChat()
+  await remountScenario("real_slash_close", 400, () => measureNativeAgentEdit("/", ""))
+
+  resetAgentChat()
+  input.state.status = "running"
+  await remountScenario("real_running_worker_char", 500, () => {
+    rawInput("x")
+  })
+
+  resetAgentChat()
+  input.state.status = "running"
+  await remountScenario("real_running_worker_w_char", 500, () => {
+    input.state.inputBuffer = ""
+    rawInput("w")
+    assertScenario(input.state.inputBuffer === "w", "running worker leading w did not enter the draft")
+  })
+
+  resetAgentChat()
+  input.state.status = "running"
+  input.state.inputBuffer = "bench"
+  await remountScenario("real_running_worker_backspace", 500, () => {
+    rawInput("\x7f")
+  })
+
+  resetAgentChat()
+  input.state.status = "running"
+  input.state.liveThinkingText = "thinking ".repeat(120)
+  input.state.currentTurnStartedAt = new Date(Date.now() - 45_000).toISOString()
+  await remountScenario("real_running_scroll_pageup", 500, () => {
+    input.state.agentScrollOffset = 0
+    input.state.agentChatPaused = false
+    handleAgentScrollKey({ name: "pageup" }, input.state, input.renderer, input.options)
+    assertScenario(input.state.agentScrollOffset > 0, "running PageUp did not move off tail")
+    assertScenario(input.state.agentChatPaused, "running PageUp did not pause live tail-follow")
+    input.remount()
+  })
+
+  resetAgentChat()
+  input.state.status = "running"
+  input.state.liveThinkingText = "thinking ".repeat(120)
+  input.state.currentTurnStartedAt = new Date(Date.now() - 45_000).toISOString()
+  await remountScenario("real_running_scroll_end", 500, () => {
+    input.state.agentScrollOffset = 12
+    input.state.agentChatPaused = true
+    handleAgentScrollKey({ name: "end" }, input.state, input.renderer, input.options)
+    assertScenario(input.state.agentScrollOffset === 0, "running End did not return to tail")
+    assertScenario(!input.state.agentChatPaused, "running End did not resume live tail-follow")
+    input.remount()
+  })
+
+  resetAgentChat()
+  await remountScenario("real_paste_small", 500, () => {
+    appendPasteToFocusedBuffer(input.state, "short paste", input.remount)
+  })
+
+  resetAgentChat()
+  await remountScenario("real_paste_large", 700, () => {
+    appendPasteToFocusedBuffer(input.state, "large paste line\n".repeat(80), input.remount)
+  })
+
+  input.state.focusMode = "gardener"
+  input.state.gardenerPanelMode = "chat"
+  input.state.gardenerInputBuffer = "bench "
+  await remountScenario("real_gardener_char", 500, () => {
+    rawInput("x")
+  })
+
+  setMonitorPanelOpen()
+  input.state.monitorInputBuffer = ""
+  await remountScenario("real_monitor_char", 500, () => {
+    rawInput("x")
+  })
+
+  resetAgentChat()
+  await remountScenario("real_focus_cycle_tab", 400, () => {
+    rawInput("\t")
+  })
+
+  resetAgentChat()
+  await remountScenario("real_focus_agent_to_gardener", 400, () => {
+    applySidePanelFocus(input.state, "gardener")
+    input.remount()
+  })
+
+  resetAgentChat()
+  await remountScenario("real_focus_agent_to_monitor", 400, () => {
+    applySidePanelFocus(input.state, "monitor")
+    input.remount()
+  })
+
+  resetAgentChat()
+  await remountScenario("real_focus_mode_switch_sequence", 700, () => {
+    applySidePanelFocus(input.state, "gardener")
+    applySidePanelFocus(input.state, "monitor")
+    setOpsPanel("local", "ops")
+    input.remount()
+  })
+
+  resetAgentChat()
+  await remountScenario("real_model_panel_open", 400, () => {
+    input.state.focusMode = "model"
+    input.remount()
+  })
+
+  resetAgentChat()
+  await remountScenario("real_config_panel_open", 400, () => {
+    input.state.focusMode = "config"
+    input.remount()
+  })
+
+  input.state.focusMode = "config"
+  await remountScenario("real_config_panel_scroll", 400, () => {
+    handleConfigKey(
+      { name: "j" },
+      input.options,
+      input.state,
+      input.remount,
+      async () => undefined,
+      input.codexSessionHandle,
+    )
+  })
+
+  resetAgentChat()
+  await remountScenario("real_environment_panel_open", 400, () => {
+    input.state.focusMode = "environment"
+    input.remount()
+  })
+
+  resetAgentChat()
+  await remountScenario("real_account_panel_open", 400, () => {
+    input.state.focusMode = "account"
+    input.remount()
+  })
+
+  resetAgentChat()
+  await remountScenario("real_projects_panel_open", 400, () => {
+    input.state.focusMode = "projects"
+    input.remount()
+  })
+
+  input.state.focusMode = "projects"
+  await remountScenario("real_projects_panel_scroll", 400, () => {
+    handleProjectsFocusKey({ name: "j" } as StackKeyEvent, input.state, input.remount, input.refreshRemoteProjects)
+  })
+
+  await remountScenario("real_lights_panel_open", 400, () => {
+    setLightsPanelOpen()
+    input.remount()
+  })
+
+  await remountScenario("real_threads_panel_open", 400, () => {
+    setRightPanel("threads", "history")
+    input.remount()
+  })
+
+  setRightPanel("threads", "history")
+  await remountScenario("real_threads_panel_scroll", 400, () => {
+    handleThreadsMouseScroll({ scroll: { direction: "down" } }, input.state, input.remount)
+  })
+
+  await remountScenario("real_efforts_panel_open", 400, () => {
+    setRightPanel("efforts", "ops")
+    input.state.opsScrollOffset = 0
+    input.remount()
+  })
+
+  setRightPanel("efforts", "ops")
+  await asyncRemountScenario("real_efforts_panel_scroll", 500, async () => {
+    await handleEffortsKey({ name: "j" }, input.options, input.state, input.remount)
+  })
+
+  await remountScenario("real_ops_panel_open", 400, () => {
+    setOpsPanel("local", "ops")
+    input.remount()
+  })
+
+  setOpsPanel("local", "ops")
+  await remountScenario("real_ops_panel_scroll", 400, () => {
+    handleOpsKey(
+      { name: "j" } as StackKeyEvent,
+      input.state,
+      input.renderer,
+      input.options,
+      buildOpsPanelInput(input.options, input.state),
+      opsVisibleRows(input.renderer, input.state),
+      input.remount,
+      input.refreshRemoteOpsPanel,
+      input.refreshOptimizers,
+    )
+  })
+
+  await remountScenario("real_ops_actors_panel_open", 400, () => {
+    setOpsPanel("actors", "ops")
+    input.remount()
+  })
+
+  await remountScenario("real_optimizers_panel_open", 400, () => {
+    setOpsPanel("local", "optimizers")
+    input.remount()
+  })
+
+  await remountScenario("real_hosted_panel_open", 400, () => {
+    setOpsPanel("hosted", "hosted")
+    input.remount()
+  })
+
+  input.state.focusMode = "hosted"
+  await asyncRemountScenario("real_hosted_panel_scroll", 500, async () => {
+    await handleHostedOptimizerKey({ name: "j" }, input.options, input.state, input.remount, input.refreshHostedOptimizers)
+  })
+
+  await remountScenario("real_remote_panel_open", 400, () => {
+    setOpsPanel("hosted", "remote")
+    input.state.liveOpsMode = "remote"
+    input.remount()
+  })
+
+  input.state.focusMode = "remote"
+  await asyncRemountScenario("real_remote_panel_scroll", 500, async () => {
+    await handleRemoteKey({ name: "j" }, input.options, input.state, input.remount, input.refreshRemoteResearch)
+  })
+
+  await remountScenario("real_right_panel_close", 400, () => {
+    setRightPanel("threads", "history")
+    applyStackdClosedSidePanel(input.state)
+    input.remount()
+  })
+
+  input.state.focusMode = "gardener"
+  input.state.gardenerPanelMode = "chat"
+  await remountScenario("real_gardener_chat_scroll", 500, () => {
+    handleGardenerChatScrollKey({ name: "pagedown" }, input.options, input.state, input.renderer, input.remount)
+  })
+
+  input.state.focusMode = "gardener"
+  input.state.gardenerPanelMode = "events"
+  await remountScenario("real_gardener_events_scroll", 500, () => {
+    scrollGardenerPane(
+      "down",
+      input.options,
+      input.state,
+      readThreadMetaEvents(input.options.config.stackDataRoot, gardenerThreadId(input.state)),
+      buildGardenerThreadContext(input.options, input.state),
+      gardenerPanelColumns(input.renderer),
+      gardenerThreadVisibleRows(input.renderer, input.state),
+      "events",
+      input.remount,
+    )
+  })
+
+  setMonitorPanelOpen()
+  await remountScenario("real_monitor_pane_scroll", 500, () => {
+    handleMonitorScrollKey({ name: "j" }, input.state, input.renderer)
+    input.remount()
+  })
+
+  if (showWorkerGoalTabs(input.state, input.state.metaEvents)) {
+    resetAgentChat()
+    input.state.workerPanelView = "chat"
+    await remountScenario("real_goal_tab_switch", 400, () => {
+      selectWorkerPanelView(input.state, "goal", input.remount)
+    })
+  }
+
+  await paintScenario("real_spinner_tick", 5, () => {
+    input.state.spinnerFrame += 1
+    input.scheduleRender()
+  })
+
+  await paintScenario("real_paint_only", 5, input.scheduleRender)
+
+  {
+    const previousEvents = input.state.metaEvents
+    input.state.metaEvents = Array.from({ length: 1000 }, (_, index) => ({
+      event_id: `perf_meta_${index}`,
+      type: index % 3 === 0 ? "monitor.summary" : index % 3 === 1 ? "agent.tool.completed" : "guidance.used",
+      thread_id: input.options.session.id,
+      observed_at: new Date(Date.now() - index * 1000).toISOString(),
+      actor_id: index % 2 === 0 ? "monitor" : "primary",
+      actor_role: index % 2 === 0 ? "monitor" : "primary",
+      payload: {
+        headline: `perf meta event ${index}`,
+        summary: `Synthetic perf meta event ${index}`,
+        command: index % 3 === 1 ? `sed -n '${index},${index + 1}p' src/tui/app.ts` : undefined,
+      },
+    }))
+    await remountScenario("real_large_meta_events", 700, input.remount)
+    input.state.metaEvents = previousEvents
+  }
+
+  {
+    const previousBlocks = input.state.blocks
+    const previousTools = input.state.toolLogs
+    const previousSubagents = input.state.subagentLogs
+    const previousScrollOffset = input.state.agentScrollOffset
+    seedHeavyTranscriptState(input.state, Math.max(1200, blockCount * 2))
+    resetAgentChat()
+    await remountScenario("real_large_transcript_remount", 800, input.remount)
+    input.state.blocks = previousBlocks
+    input.state.toolLogs = previousTools
+    input.state.subagentLogs = previousSubagents
+    input.state.agentScrollOffset = previousScrollOffset
+  }
+
+  {
+    const previousStatus = input.state.status
+    const previousThinking = input.state.liveThinkingText
+    const previousStartedAt = input.state.currentTurnStartedAt
+    input.state.status = "running"
+    input.state.liveThinkingText = "thinking ".repeat(120)
+    input.state.currentTurnStartedAt = new Date(Date.now() - 45_000).toISOString()
+    await remountScenario("real_running_transcript", 600, input.remount)
+    input.state.status = previousStatus
+    input.state.liveThinkingText = previousThinking
+    input.state.currentTurnStartedAt = previousStartedAt
+  }
+
+  return {
+    rows,
+    meta: {
+      session_id: input.options.session.id,
+      session_turns: input.options.session.turns.length,
+      transcript_blocks: blockCount,
+      iterations,
+      seeded_fixture: true,
+    },
+  }
 }

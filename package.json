@@ -30,6 +30,7 @@
     "smoke:telemetry:approval": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_telemetry_approval.ts\"",
     "smoke:telemetry:modal-fast": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_telemetry_modal_fast.ts\"",
     "smoke:tui-input-fuzz": "bun run scripts/smoke_tui_input_latency_fuzz.ts",
+    "tui:perf": "./scripts/tui_perf.sh",
     "smoke:growth-ingestion": "STACK_REPO_ROOT=\"$PWD\" bun run \"${STACK_TESTING_REPO_ROOT:-../testing}/stack/smoke/smoke_growth_ingestion.ts\"",
     "smoke:tui:blackspace": "STACK_REPO_ROOT=\"$PWD\" bun run scripts/smoke_tui_blackspace_playwright.ts",
     "smoke:release-artifact:local": "bun run scripts/package_release_artifact.ts",

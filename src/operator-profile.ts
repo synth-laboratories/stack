@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { dirname, join } from "node:path"
 
 export const STACK_PROFILE_OPTIONS = ["default", "research", "engineering", "product"] as const
@@ -45,10 +45,25 @@ export function normalizeStackProfileName(value: string | undefined): StackProfi
   return STACK_PROFILE_OPTIONS.find((option) => option === normalized)
 }
 
+type CachedStackProfile = {
+  mtimeMs: number
+  size: number
+  state: StackProfileState
+}
+
+const stackProfileCache = new Map<string, CachedStackProfile>()
+
 export function readStackProfile(stackRoot: string): StackProfileState {
   const path = stackProfileConfigPath(stackRoot)
   if (!existsSync(path)) {
+    stackProfileCache.delete(path)
     return { active: DEFAULT_STACK_PROFILE, path, explicit: false }
+  }
+
+  const stats = statSync(path)
+  const cached = stackProfileCache.get(path)
+  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+    return { ...cached.state }
   }
 
   let parsed: unknown
@@ -68,14 +83,19 @@ export function readStackProfile(stackRoot: string): StackProfileState {
     throw new Error(`profile config active must be one of: ${STACK_PROFILE_OPTIONS.join(", ")} (${path})`)
   }
 
-  return { active, path, explicit: true }
+  const state = { active, path, explicit: true }
+  stackProfileCache.set(path, { mtimeMs: stats.mtimeMs, size: stats.size, state })
+  return { ...state }
 }
 
 export function writeStackProfile(stackRoot: string, active: StackProfileName): StackProfileState {
   const path = stackProfileConfigPath(stackRoot)
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, `${JSON.stringify({ active }, null, 2)}\n`, "utf8")
-  return { active, path, explicit: true }
+  const stats = statSync(path)
+  const state = { active, path, explicit: true }
+  stackProfileCache.set(path, { mtimeMs: stats.mtimeMs, size: stats.size, state })
+  return { ...state }
 }
 
 export function nextStackProfile(current: StackProfileName, direction = 1): StackProfileName {

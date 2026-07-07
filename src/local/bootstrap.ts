@@ -9,6 +9,7 @@ import { readOptimizerSnapshot, startOptimizerService, type OptimizerSnapshot } 
 
 export type { LocalBootstrapSnapshot } from "./dev-stack.js"
 export {
+  emptyLocalBootstrapSnapshot,
   ensureDevStackBootstrap,
   isDockerAvailable,
   probeDevApiReachable,

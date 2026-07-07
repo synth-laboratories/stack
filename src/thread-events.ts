@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto"
-import { appendFileSync, existsSync, mkdirSync, readFileSync } from "node:fs"
+import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync } from "node:fs"
 import { dirname, join } from "node:path"
 import { readOperatorSessionCorrelation } from "./operator-session.js"
 import { projectMetaEventToVictoriaLogs } from "./observability/victorialogs.js"
@@ -17,6 +17,14 @@ export type StackThreadMetaEvent = {
   operator_session_id?: string
   payload: Record<string, unknown>
 }
+
+type ThreadMetaEventCacheEntry = {
+  mtimeMs: number
+  size: number
+  events: StackThreadMetaEvent[]
+}
+
+const threadMetaEventCache = new Map<string, ThreadMetaEventCacheEntry>()
 
 export function threadEventLogPath(stackRoot: string, threadId: string): string {
   return join(stackRoot, ".stack", "events", "threads", `${safeThreadId(threadId)}.jsonl`)
@@ -44,6 +52,11 @@ export function appendThreadMetaEventOnce(stackRoot: string, event: StackThreadM
 export function readThreadMetaEvents(stackRoot: string, threadId: string): StackThreadMetaEvent[] {
   const path = threadEventLogPath(stackRoot, threadId)
   if (!existsSync(path)) return []
+  const stats = statSync(path)
+  const cached = threadMetaEventCache.get(path)
+  if (cached && cached.mtimeMs === stats.mtimeMs && cached.size === stats.size) {
+    return cached.events
+  }
   const events: StackThreadMetaEvent[] = []
   for (const line of readFileSync(path, "utf8").split(/\r?\n/)) {
     if (!line.trim()) continue
@@ -54,6 +67,11 @@ export function readThreadMetaEvents(stackRoot: string, threadId: string): Stack
       // Ignore malformed meta events; append-only logs should not break the TUI.
     }
   }
+  threadMetaEventCache.set(path, {
+    mtimeMs: stats.mtimeMs,
+    size: stats.size,
+    events,
+  })
   return events
 }
 

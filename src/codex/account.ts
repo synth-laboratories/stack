@@ -20,9 +20,13 @@ type CodexAuthJson = {
 }
 
 export async function readCodexAccountSnapshot(codexHome = defaultCodexHome()): Promise<CodexAccountSnapshot> {
+  return readCodexAuthFileSnapshot(join(codexHome, "auth.json"))
+}
+
+export async function readCodexAuthFileSnapshot(authFilePath: string): Promise<CodexAccountSnapshot> {
   const checkedAt = new Date().toISOString()
   try {
-    const parsed = JSON.parse(await readFile(join(codexHome, "auth.json"), "utf8")) as CodexAuthJson
+    const parsed = JSON.parse(await readFile(authFilePath, "utf8")) as CodexAuthJson
     const authMode = typeof parsed.auth_mode === "string" && parsed.auth_mode.trim() ? parsed.auth_mode.trim() : "unknown"
     const accountId = readOptionalString(parsed.tokens?.account_id)
     const email =

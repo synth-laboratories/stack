@@ -1,3 +1,5 @@
+import { tuiPerfMark, tuiPerfStart } from "./perf.js"
+
 /**
  * Coalesces OpenTUI full-tree remounts and paint-only refreshes.
  * Stack's TUI rebuilds the entire `stack-root` subtree on many state updates; overlapping
@@ -53,9 +55,11 @@ export function createRemountCoordinator(debounceMs = readRemountDebounceMs()): 
       return
     }
     mountInFlight = true
+    const finish = tuiPerfStart("remount", "full_tree", "remount")
     try {
       handlers.mount()
     } finally {
+      finish()
       mountInFlight = false
       if (remountQueued) {
         remountQueued = false
@@ -82,7 +86,12 @@ export function createRemountCoordinator(debounceMs = readRemountDebounceMs()): 
     renderScheduled = true
     queueMicrotask(() => {
       renderScheduled = false
-      handlers?.render()
+      const finish = tuiPerfStart("render", "paint_only", "paint")
+      try {
+        handlers?.render()
+      } finally {
+        finish()
+      }
     })
   }
 

@@ -11,6 +11,7 @@ import {
   personalCodexHome,
   type StackCodexIsolationMode,
 } from "./codex/isolation.js"
+import { maybeAutoSyncCodexAuth } from "./codex/auth-sync.js"
 
 const DEFAULT_CODEX_MODEL = "gpt-5.4-mini"
 const DEFAULT_CODEX_REASONING_EFFORT = "medium"
@@ -279,7 +280,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     "STACK_CODEX_REASONING_EFFORT",
   )
 
-  return {
+  const config: StackConfig = {
     appRoot,
     stackDataRoot,
     synthDevRoot,
@@ -349,6 +350,8 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     autoSubmitInitialPrompt: process.env.STACK_AUTOSUBMIT === "1",
     voice: readVoiceConfig(appRoot, fileConfig),
   }
+  maybeAutoSyncCodexAuth(config)
+  return config
 }
 
 function readVoiceConfig(appRoot: string, fileConfig: StackConfigFile): StackVoiceConfig {
