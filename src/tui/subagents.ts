@@ -147,6 +147,62 @@ export function parseCollabSpawnItem(item: Record<string, unknown>, startedAt: s
   }
 }
 
+function collabStatusToSubagentStatus(raw: string | undefined): SubagentStatus | undefined {
+  switch (raw) {
+    case "pending_init":
+      return "pending_init"
+    case "spawning":
+      return "spawning"
+    case "running":
+    case "in_progress":
+      return "running"
+    case "completed":
+    case "done":
+      return "completed"
+    case "errored":
+    case "error":
+    case "failed":
+      return "errored"
+    case "interrupted":
+      return "interrupted"
+    case "closed":
+      return "closed"
+    case "shutdown":
+      return "shutdown"
+    case "not_found":
+      return "not_found"
+    default:
+      return undefined
+  }
+}
+
+/**
+ * Codex collab items (spawn_agent/wait/…) carry `agents_states`, a map of receiver thread id →
+ * `{ status, message }` with the agent's real lifecycle. We use it to keep an already-spawned
+ * subagent's status live (pending_init → running → completed) rather than leaving it stuck at the
+ * spawn-time status. Only updates subagents we already know about; the spawn item creates them.
+ */
+export function applyCollabAgentStates(
+  subagents: SubagentLog[],
+  states: Record<string, unknown>,
+  finishedAt: string,
+): void {
+  for (const [threadId, value] of Object.entries(states)) {
+    const existing = subagents.find((entry) => entry.id === threadId || entry.spawnCallId === threadId)
+    if (!existing) continue
+    const record = asRecord(value)
+    const status =
+      collabStatusToSubagentStatus(readString(record?.status) ?? (typeof value === "string" ? value : undefined)) ??
+      existing.status
+    upsertSubagentLog(subagents, {
+      ...existing,
+      status,
+      message: readString(record?.message) ?? existing.message,
+      finishedAt: isTerminalStatus(status) ? (existing.finishedAt ?? finishedAt) : existing.finishedAt,
+    })
+  }
+}
+
 export function applyMultiAgentFunctionOutput(
   subagents: SubagentLog[],
   toolName: string,

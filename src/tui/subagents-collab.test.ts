@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test"
-import { parseCollabSpawnItem } from "./subagents.js"
+import { applyCollabAgentStates, parseCollabSpawnItem, type SubagentLog } from "./subagents.js"
 import { blocksFromTurnStdout } from "./transcript.js"
 
 const START = "2026-07-07T00:00:00.000Z"
@@ -50,6 +50,50 @@ test("parseCollabSpawnItem: non-spawn collab tools (wait/close) produce no subag
       ),
     ).toBeUndefined()
   }
+})
+
+test("applyCollabAgentStates updates a known subagent's live status and leaves unknowns alone", () => {
+  const subs: SubagentLog[] = [{ id: "019f3df8", name: "019f3df8", status: "running", agentType: "collab" }]
+  applyCollabAgentStates(
+    subs,
+    {
+      "019f3df8": { status: "completed", message: "done: baseline recorded" },
+      "019fZZZZ": { status: "running" },
+    },
+    "2026-07-07T01:00:00.000Z",
+  )
+  expect(subs.length).toBe(1)
+  expect(subs[0]?.status).toBe("completed")
+  expect(subs[0]?.message).toBe("done: baseline recorded")
+  expect(subs[0]?.finishedAt).toBe("2026-07-07T01:00:00.000Z")
+})
+
+test("agents_states drives status end-to-end: a waited-on spawn reflects pending_init, not running", () => {
+  const stdout = [
+    JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "collab_tool_call",
+        tool: "spawn_agent",
+        status: "completed",
+        receiver_thread_ids: ["019f3df8-4b68"],
+        prompt: "worker brief",
+      },
+    }),
+    JSON.stringify({
+      type: "item.completed",
+      item: {
+        type: "collab_tool_call",
+        tool: "wait",
+        status: "in_progress",
+        receiver_thread_ids: ["019f3df8-4b68"],
+        agents_states: { "019f3df8-4b68": { status: "pending_init", message: null } },
+      },
+    }),
+  ].join("\n")
+  const rich = blocksFromTurnStdout("", stdout)
+  expect(rich.subagents.length).toBe(1)
+  expect(rich.subagents[0]?.status).toBe("pending_init")
 })
 
 test("blocksFromTurnStdout extracts a collab spawn as a subagent (end-to-end)", () => {

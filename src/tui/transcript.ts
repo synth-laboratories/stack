@@ -6,6 +6,7 @@ import { harnessSpeakerLabel } from "../harness.js"
 import { readUsageFromCodexEvent } from "../session.js"
 import { stackTuiTheme as theme } from "./theme.js"
 import {
+  applyCollabAgentStates,
   applyMultiAgentFunctionOutput,
   isMultiAgentToolName,
   parseCollabSpawnItem,
@@ -95,6 +96,8 @@ export type CodexLineResult = {
   subagent?: SubagentLog
   /** A Codex collab spawn_agent (app-server `collab_tool_call` item) to upsert as a subagent. */
   collabSpawn?: SubagentLog
+  /** `agents_states` from a collab item: receiver thread id → live lifecycle for known subagents. */
+  collabStates?: Record<string, unknown>
 }
 
 export function parseCodexJsonLine(line: string): CodexLineResult | undefined {
@@ -151,6 +154,10 @@ export function applyCodexLine(
     upsertSubagentLog(subagentLogs, rendered.collabSpawn)
     noteSubagentInLiveGroup(blocks, liveSubagentGroupId, rendered.collabSpawn.id, turnStartedAt.current)
     rendered.subagent = rendered.collabSpawn
+  }
+
+  if (rendered.collabStates) {
+    applyCollabAgentStates(subagentLogs, rendered.collabStates, new Date().toISOString())
   }
 
   if (rendered.multiAgentCall) {
@@ -1087,9 +1094,14 @@ function parseCodexEvent(event: unknown): CodexLineResult | undefined {
 
   if (type === "collab_tool_call") {
     // Codex collaboration items: spawn_agent becomes a subagent; wait/close/etc are control
-    // plumbing we drop rather than render as anonymous tool blocks.
+    // plumbing we drop rather than render as anonymous tool blocks. `agents_states` on any collab
+    // item carries live lifecycle for already-spawned subagents.
+    const result: CodexLineResult = {}
     const collabSpawn = parseCollabSpawnItem(record, new Date().toISOString())
-    return collabSpawn ? { collabSpawn } : {}
+    if (collabSpawn) result.collabSpawn = collabSpawn
+    const states = asRecord(record.agents_states)
+    if (states && Object.keys(states).length > 0) result.collabStates = states
+    return result
   }
 
   if (type.includes("command") || type.includes("tool") || type.includes("exec")) {
