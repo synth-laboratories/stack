@@ -13,6 +13,7 @@ export type StackThreadMetaEvent = {
   meta_thread_id?: string
   segment_id?: string
   artifact_id?: string
+  operator_session_id?: string
   payload: Record<string, unknown>
 }
 

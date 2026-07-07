@@ -66,6 +66,10 @@ try {
     const { runEffortCli } = await import("./effort-cli.js")
     process.exit(await runEffortCli(config, process.argv.slice(2)))
   }
+  if (process.argv[2] === "session") {
+    const { runOperatorSessionCli } = await import("./operator-session-cli.js")
+    process.exit(await runOperatorSessionCli(config, process.argv.slice(2)))
+  }
   if (process.argv[2] === "assembly") {
     const { runAssemblyCli } = await import("./assembly-cli.js")
     process.exit(await runAssemblyCli(config, process.argv.slice(2)))
