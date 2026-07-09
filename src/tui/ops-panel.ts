@@ -240,7 +240,7 @@ function synthUsageHeader(account: RemoteAccountSnapshot, usage: RemoteUsageSnap
 
 function formatPlanLabel(usage: RemoteUsageSnapshot): string | undefined {
   if (!usage.planTier) return undefined
-  const tier = oneLine(usage.planTier, 10)
+  const tier = oneLine(usage.planDisplayName ?? usage.planTier, 18)
   const legacy = usage.legacyPlan && usage.legacyPlan !== usage.planTier
     ? ` (${oneLine(usage.legacyPlan, 12)})`
     : ""
@@ -263,12 +263,21 @@ function synthUsageBody(account: RemoteAccountSnapshot, usage: RemoteUsageSnapsh
   }
 
   if (usage.blocked) {
-    lines.push(`  blocked${usage.blockedReason ? ` · ${oneLine(usage.blockedReason, 40)}` : ""}`)
+    const blocker = usage.blockedMessage ?? usage.blockedReason
+    lines.push(`  blocked${blocker ? ` · ${oneLine(blocker, 40)}` : ""}`)
   }
 
   if (usage.walletUsd !== undefined && usage.walletUsd > 0) {
     lines.push(`  wallet ${formatUsd(usage.walletUsd)}`)
   }
+  const resetBank = formatResetBankLine(usage)
+  if (resetBank) lines.push(resetBank)
+  const activePromos = formatPromotionLine("promo active", usage.activePromotions)
+  if (activePromos) lines.push(activePromos)
+  const claimablePromos = formatPromotionLine("promo claimable", usage.claimablePromotions)
+  if (claimablePromos) lines.push(claimablePromos)
+  const nextAction = formatNextActionLine(usage)
+  if (nextAction) lines.push(nextAction)
 
   const stackAuxBudget = formatStackAuxBudgetLine(usage)
   if (stackAuxBudget) lines.push(stackAuxBudget)
@@ -387,16 +396,40 @@ function formatAllowanceSummaryLines(
     const label = modelClass === "premium" ? "Prem" : "Val"
     const parts = group.map((window) => {
       const windowLabel = allowanceWindowLabel(window.windowKind)
+      const state = window.state && window.state !== "active" ? ` ${window.state}` : ""
+      const source = window.promoCampaignId ? " promo" : ""
       const remaining = formatUsd(window.remainingUsd)
       const used = formatUsd(Math.max(0, window.capUsd - window.remainingUsd))
       if (window.consumedUsd > 0.001) {
-        return `${windowLabel} ${remaining} left (${used} used)`
+        return `${windowLabel}${state}${source} ${remaining} left (${used} used)`
       }
-      return `${windowLabel} ${remaining} left`
+      return `${windowLabel}${state}${source} ${remaining} left`
     })
     lines.push(`  ${label} · ${oneLine(parts.join(" · "), 46)}`)
   }
   return lines
+}
+
+function formatResetBankLine(usage: RemoteUsageSnapshot): string | undefined {
+  const bank = usage.resetBank
+  if (!bank) return undefined
+  const parts = [`${bank.availableCount} banked`]
+  if (bank.expiringCount > 0) parts.push(`${bank.expiringCount} expiring`)
+  const firstGrant = bank.grants.find((grant) => grant.status === "available" && grant.reasonLabel)
+  if (firstGrant?.reasonLabel) parts.push(oneLine(firstGrant.reasonLabel, 22))
+  return `  resets ${oneLine(parts.join(" · "), 46)}`
+}
+
+function formatPromotionLine(label: string, promotions: string[] | undefined): string | undefined {
+  if (!promotions || promotions.length === 0) return undefined
+  return `  ${label} ${oneLine(promotions.slice(0, 2).join(", "), 40)}`
+}
+
+function formatNextActionLine(usage: RemoteUsageSnapshot): string | undefined {
+  const action = usage.nextActions?.[0]
+  if (!action) return undefined
+  const owner = action.requiresAdmin ? "owner" : action.surface ?? "console"
+  return `  next ${oneLine(`${action.label} (${owner})`, 48)}`
 }
 
 function formatStackAuxBudgetLine(usage: RemoteUsageSnapshot): string | undefined {
