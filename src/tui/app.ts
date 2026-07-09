@@ -101,7 +101,8 @@ import {
 } from "../meta-thread-goal.js"
 import { auditEffort, bindEffortMetaThread, createEffort, effortArtifactInventory, listEfforts, listEffortTemplates, readEffort, readEffortAcceptancePacket, readEffortBenchmarkSummaries, readEffortOpenBlockerTail, readEffortOptimizerCandidateSummaries, readEffortRemainingWork, readEffortRunEvidenceSummaries, updateEffortStatus, writeEffortHandoff, type StackEffortBenchmarkSummary, type StackEffortOptimizerCandidateSummary, type StackEffortRunEvidenceSummary, type StackEffortSummary } from "../effort.js"
 import { readLatestArtifacts, type StackArtifactManifestEntry } from "../artifacts.js"
-import { stackdUpdateMetaThreadEffortRef, type StackdMetaSidePanel, type StackdMetaStatus, type StackdMetaThreadManifest } from "../client/stackd.js"
+import { stackdUpdateMetaThreadEffortRef, stackdWorkerRunStatus, type StackdMetaSidePanel, type StackdMetaStatus, type StackdMetaThreadManifest, type StackdWorkerRunStatus } from "../client/stackd.js"
+import { listJesterkyWorkflowRuns, type JesterkyWorkflowRunRecord } from "../jesterky.js"
 import {
   formatCodexBudgetSuffix,
   formatCodexRateLimitsCardLines,
@@ -721,6 +722,8 @@ type AppState = {
   threadGoalStatus: Map<string, ThreadGoalStatus>
   threadGoalMetrics: Map<string, ThreadGoalLightsMetrics>
   threadLifecycleStatus: Map<string, ThreadLifecycleStatus>
+  workerRunStatus: Map<string, StackdWorkerRunStatus>
+  workflowRuns: JesterkyWorkflowRunRecord[]
   threadMetaThreadIds: Map<string, string>
   threadMetaThreadManifests: Map<string, StackdMetaThreadManifest>
   threadMetaThreadTitles: Map<string, string>
@@ -1070,6 +1073,47 @@ const HARNESS_PROVIDER_CHOICES: ReadonlyArray<{ label: string; harness: StackHar
 
 const stackStartupProfileEnabled = process.env.STACK_STARTUP_PROFILE === "1"
 const stackStartupProfileFile = process.env.STACK_STARTUP_PROFILE_FILE?.trim()
+const stackTuiCapturePng = process.env.STACK_TUI_CAPTURE_PNG?.trim()
+
+function openTuiFrameAnsi(renderer: CliRenderer): string {
+  const lines = renderer.currentRenderBuffer.getSpanLines()
+  return lines.map((line) => {
+    const spans = line.spans.map((span) => {
+      const [fr, fg, fb] = span.fg.toInts()
+      const [br, bg, bb] = span.bg.toInts()
+      const attrs = span.attributes & 0xff
+      const sgr = [
+        0,
+        38, 2, fr, fg, fb,
+        48, 2, br, bg, bb,
+        ...(attrs & 1 ? [1] : []),
+        ...(attrs & 2 ? [2] : []),
+        ...(attrs & 4 ? [3] : []),
+        ...(attrs & 8 ? [4] : []),
+        ...(attrs & 16 ? [5] : []),
+        ...(attrs & 32 ? [7] : []),
+        ...(attrs & 64 ? [8] : []),
+        ...(attrs & 128 ? [9] : []),
+      ]
+      return `\x1b[${sgr.join(";")}m${span.text}`
+    }).join("")
+    return `${spans}\x1b[0m`
+  }).join("\r\n")
+}
+
+async function captureOpenTuiFrame(renderer: CliRenderer, path: string): Promise<void> {
+  const { renderAnsiPng } = await import("@termless/ghostty")
+  const frameText = new TextDecoder().decode(renderer.currentRenderBuffer.getRealCharBytes(true))
+  const png = await renderAnsiPng(openTuiFrameAnsi(renderer), {
+    cols: renderer.currentRenderBuffer.width,
+    rows: renderer.currentRenderBuffer.height,
+    fontSize: 14,
+    hideCursor: true,
+  })
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(`${path}.txt`, frameText, "utf8")
+  writeFileSync(path, png)
+}
 
 function createStackStartupProfiler(scope: string): (label: string) => void {
   if (!stackStartupProfileEnabled) return () => {}
@@ -1123,7 +1167,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     hostedOptimizerSnapshotFromRuntime(runtimeFactorySnapshot, options.config) ??
     await readHostedOptimizerSnapshot(options.config)
   markStartup("hosted_optimizer_done")
-  const telemetrySnapshot: StackdTelemetryStatus | undefined = undefined
+  let telemetrySnapshot: StackdTelemetryStatus | undefined
   markStartup("telemetry_deferred")
   const recentRemoteDownloads = await readRemoteDownloadHistory(options.config)
   markStartup("remote_downloads_done")
@@ -1218,6 +1262,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     threadGoalStatus: new Map(),
     threadGoalMetrics: new Map(),
     threadLifecycleStatus: new Map(),
+    workerRunStatus: new Map(),
+    workflowRuns: listJesterkyWorkflowRuns(options.config, { limit: 100 }),
     threadMetaThreadIds: new Map(),
     threadMetaThreadManifests: new Map(),
     threadMetaThreadTitles: new Map(),
@@ -1412,6 +1458,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     if (currentIndex >= 0 && selectedIndex < 0) state.selectedHistoryIndex = currentIndex
     await refreshGardenerMaintenance(options, state, "idle")
     await refreshThreadGoalStatus(options, state)
+    await refreshWorkerRunStatuses(state)
   }
 
   const refreshMetaEvents = () => {
@@ -1419,6 +1466,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   }
 
   let metaStatusPollInFlight = false
+  let workerRunStatusPollInFlight = false
   const refreshStackdMetaStatusUi = async () => {
     if (metaStatusPollInFlight) return
     metaStatusPollInFlight = true
@@ -1432,6 +1480,23 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     } finally {
       metaStatusPollInFlight = false
     }
+  }
+
+  const refreshWorkerRunStatusUi = async () => {
+    if (workerRunStatusPollInFlight) return
+    workerRunStatusPollInFlight = true
+    try {
+      if (await refreshWorkerRunStatuses(state)) scheduleRemount()
+    } finally {
+      workerRunStatusPollInFlight = false
+    }
+  }
+
+  const refreshWorkflowRunsUi = () => {
+    const next = listJesterkyWorkflowRuns(options.config, { limit: 100 })
+    if (JSON.stringify(next) === JSON.stringify(state.workflowRuns)) return
+    state.workflowRuns = next
+    scheduleRemount()
   }
 
   let spinnerInterval: ReturnType<typeof setInterval> | undefined
@@ -1901,6 +1966,20 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
 
   view = mountView(renderer, options, state, undefined)
   markStartup("mounted")
+  if (stackTuiCapturePng) {
+    const captureDelayMs = Math.max(250, Number.parseInt(process.env.STACK_TUI_CAPTURE_DELAY_MS ?? "3000", 10) || 3000)
+    setTimeout(() => {
+      void renderer.idle()
+        .then(() => captureOpenTuiFrame(renderer, stackTuiCapturePng))
+        .then(() => {
+          if (process.env.STACK_TUI_CAPTURE_EXIT === "1") exitStack()
+        })
+        .catch((error) => {
+          process.stderr.write(`stack TUI capture failed: ${errorMessage(error)}\n`)
+          if (process.env.STACK_TUI_CAPTURE_EXIT === "1") exitStack()
+        })
+    }, captureDelayMs)
+  }
   if (!perfBench) {
     markStartup("background_refresh_deferred")
     setTimeout(() => {
@@ -2066,8 +2145,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   }, 120_000)
 
   void refreshStackdMetaStatusUi()
+  void refreshWorkerRunStatusUi()
   metaStatusInterval = setInterval(() => {
     void refreshStackdMetaStatusUi()
+    void refreshWorkerRunStatusUi()
+    refreshWorkflowRunsUi()
     if (
       readActiveOperatorSessionCapture(
         options.config.stackDataRoot,
@@ -5004,6 +5086,33 @@ async function refreshThreadGoalStatus(options: StackAppOptions, state: AppState
   state.threadLightsPreviews = nextPreviews
 }
 
+async function refreshWorkerRunStatuses(state: AppState): Promise<boolean> {
+  const workerIds = state.history
+    .filter((summary) => summary.id !== state.gardenerThreadId)
+    .map((summary) => summary.id)
+  if (workerIds.length === 0) {
+    const changed = state.workerRunStatus.size > 0
+    if (changed) state.workerRunStatus = new Map()
+    return changed
+  }
+  const reads = await Promise.allSettled(
+    workerIds.map(async (threadId) => [threadId, await stackdWorkerRunStatus(threadId)] as const),
+  )
+  const next = new Map<string, StackdWorkerRunStatus>()
+  for (const read of reads) {
+    if (read.status === "fulfilled") {
+      next.set(read.value[0], read.value[1])
+      continue
+    }
+  }
+  if (next.size === 0) return false
+  const before = JSON.stringify([...state.workerRunStatus.entries()])
+  const after = JSON.stringify([...next.entries()])
+  if (before === after) return false
+  state.workerRunStatus = next
+  return true
+}
+
 /**
  * Authoritative goal-ownership invariant, enforced every render before any isGoalMode read:
  *  - A meta goal belongs to the metathread named by `manifest.id`; show it only when the foreground
@@ -6576,10 +6685,12 @@ function gardenerPlanWidget(state: AppState, columns: number): ReturnType<typeof
 }
 
 type GardenerPaneAgent = {
-  kind: "worker" | "codex"
+  kind: "worker" | "monitor" | "workflow" | "codex"
+  depth: 0 | 1
   label: string
   statusLabel: string
-  phase: "live" | "done" | "other"
+  phase: "running" | "done" | "other"
+  goalLabel?: string
   /** Token total, workers only — codex spawn_agent runs in-process with the gardener (no per-agent usage). */
   tokensLabel?: string
 }
@@ -6590,11 +6701,12 @@ type GardenerPaneAgent = {
  * collab agents (transient, from agents_states) tagged `codex`. Live first, then done, then other.
  */
 function gardenerPaneAgents(options: StackAppOptions, state: AppState): GardenerPaneAgent[] {
-  const workers: GardenerPaneAgent[] = associatedGardenerWorkers(options, state).map((worker) => {
+  const workflowRuns = state.workflowRuns
+  const workers: GardenerPaneAgent[] = []
+  for (const worker of associatedGardenerWorkers(options, state)) {
     const id = worker.summary.id
-    const goal = state.threadGoalStatus.get(id)
-    const lifecycle = state.threadLifecycleStatus.get(id) ?? "live"
-    const done = goal === "done" || lifecycle === "archived"
+    const runStatus = state.workerRunStatus.get(id)
+    const goal = runStatus?.active_goal_status ?? state.threadGoalStatus.get(id)
     const label =
       state.threadMetaThreadTitles.get(id)?.trim() ||
       worker.manifest.title?.trim() ||
@@ -6602,29 +6714,79 @@ function gardenerPaneAgents(options: StackAppOptions, state: AppState): Gardener
       id.slice(0, 8)
     const usage = threadUsageSummary(options, worker.summary)
     const tokens = usage ? sessionTokenTotal(usage.totals) : 0
-    return {
-      kind: "worker" as const,
+    workers.push({
+      kind: "worker",
+      depth: 0,
       label,
-      statusLabel: done ? "done" : goal ? `goal ${goal}` : lifecycle,
-      phase: done ? ("done" as const) : ("live" as const),
+      statusLabel: workerRunStatusLabel(runStatus),
+      phase: runStatus?.state === "running" ? "running" : runStatus?.state === "done" ? "done" : "other",
+      ...(goal ? { goalLabel: `goal ${goal}` } : {}),
       tokensLabel: tokens > 0 ? `${formatTokenTotal(tokens)}tok` : undefined,
+    })
+    const monitor = refreshMonitorSnapshot(options.config.stackDataRoot, id)
+    if (monitor.enabled || monitor.status !== "off") {
+      workers.push({
+        kind: "monitor",
+        depth: 1,
+        label: monitor.label || "sidecar",
+        statusLabel: monitor.status,
+        phase: monitor.status === "running" ? "running" : "other",
+      })
     }
-  })
+    for (const workflow of workflowRuns.filter(
+      (run) => run.owner_actor_role === "worker" && run.owner_thread_id === id,
+    )) {
+      workers.push(workflowPaneAgent(workflow, 1))
+    }
+  }
+  const gardenerWorkflows = workflowRuns
+    .filter(
+      (run) => run.owner_actor_role === "gardener" && run.owner_thread_id === state.gardenerThreadId,
+    )
+    .map((run) => workflowPaneAgent(run, 0))
   const codex: GardenerPaneAgent[] = gardenerSubagentsForLights(state).map((sub) => {
-    const live = sub.status === "running" || sub.status === "spawning" || sub.status === "pending_init"
+    const running = sub.status === "running" || sub.status === "spawning" || sub.status === "pending_init"
     return {
-      kind: "codex" as const,
+      kind: "codex",
+      depth: 0,
       label: (sub.message ? conciseAgentBrief(sub.message) : "") || sub.name || sub.id.slice(0, 8),
       statusLabel: subagentStatusLabel(sub.status),
-      phase: sub.status === "completed" ? ("done" as const) : live ? ("live" as const) : ("other" as const),
+      phase: sub.status === "completed" ? "done" : running ? "running" : "other",
     }
   })
-  return [...workers, ...codex]
+  return [...workers, ...gardenerWorkflows, ...codex]
+}
+
+function workerRunStatusLabel(status: StackdWorkerRunStatus | undefined): string {
+  if (!status) return "status unavailable"
+  const parts = [status.state, `${status.turns} turn${status.turns === 1 ? "" : "s"}`]
+  const reason = status.pause_reason ?? status.stop_reason
+  if (reason) parts.push(reason)
+  return parts.join(" · ")
+}
+
+function workflowPaneAgent(run: JesterkyWorkflowRunRecord, depth: 0 | 1): GardenerPaneAgent {
+  return {
+    kind: "workflow",
+    depth,
+    label: run.workflow_name || run.workflow_id,
+    statusLabel: workflowRunStatusLabel(run),
+    phase: run.status === "running" ? "running" : run.status === "done" ? "done" : "other",
+  }
+}
+
+function workflowRunStatusLabel(run: JesterkyWorkflowRunRecord): string {
+  const parts: string[] = [run.status]
+  if (run.event_count > 0) parts.push(`${run.event_count} event${run.event_count === 1 ? "" : "s"}`)
+  if (run.status === "running" && run.current_node) parts.push(`node ${run.current_node}`)
+  if (run.status !== "running" && run.stop_reason) parts.push(`stop ${run.stop_reason}`)
+  parts.push(`${lightsThreadRelativeAge(run.status === "running" ? run.started_at : run.updated_at)} ago`)
+  return parts.join(" · ")
 }
 
 function gardenerAgentPhaseColor(phase: GardenerPaneAgent["phase"]): string {
   if (phase === "done") return theme.goalLifecycle.active
-  if (phase === "live") return theme.synth.orange
+  if (phase === "running") return theme.synth.orange
   return theme.fgMuted
 }
 
@@ -6639,8 +6801,12 @@ function gardenerAgentsWidget(
 ): ReturnType<typeof Box> | undefined {
   const agents = gardenerPaneAgents(options, state)
   if (agents.length === 0) return undefined
-  const live = agents.filter((agent) => agent.phase === "live").length
-  const done = agents.filter((agent) => agent.phase === "done").length
+  const workerRows = agents.filter((agent) => agent.kind === "worker")
+  const workflowRows = agents.filter((agent) => agent.kind === "workflow")
+  const subagentRows = agents.filter((agent) => agent.kind === "codex")
+  const runningWorkers = workerRows.filter((agent) => agent.phase === "running").length
+  const runningWorkflows = workflowRows.filter((agent) => agent.phase === "running").length
+  const runningSubagents = subagentRows.filter((agent) => agent.phase === "running").length
   // Clamp to one line, leaving room for the pane border so rows never wrap onto a second line (a
   // wrapped row would overflow the reserved height and overlap the control row). See
   // gardenerAgentBlockHeight, which must count one row per line produced here.
@@ -6651,17 +6817,19 @@ function gardenerAgentsWidget(
   const rows: ReturnType<typeof Text>[] = [
     Text({ content: " ", width: "100%" }),
     Text({
-      content: clampLine(`Agents · ${live} live · ${done} done`),
+      content: clampLine(`workers ${runningWorkers} running / ${workerRows.length} lanes · workflows ${runningWorkflows} running · subagents ${runningSubagents} running`),
       fg: theme.transcript.subagentLabel,
       width: "100%",
     }),
   ]
   for (const agent of agents.slice(0, 6)) {
-    const glyph = agent.phase === "live" ? "✳" : agent.phase === "done" ? "✓" : "↳"
+    const glyph = agent.phase === "running" ? "✳" : agent.phase === "done" ? "✓" : agent.depth === 1 ? "↳" : "◇"
     const tokens = agent.tokensLabel ? ` · ${agent.tokensLabel}` : ""
+    const goal = agent.goalLabel ? ` · ${agent.goalLabel}` : ""
+    const indent = agent.depth === 1 ? "    " : "  "
     rows.push(
       Text({
-        content: clampLine(`  ${glyph} ${agent.kind} · ${agent.label} · ${agent.statusLabel}${tokens}`),
+        content: clampLine(`${indent}${glyph} ${agent.kind} · ${agent.label}${goal} · ${agent.statusLabel}${tokens}`),
         fg: gardenerAgentPhaseColor(agent.phase),
         width: "100%",
       }),
@@ -10852,7 +11020,10 @@ function lightsCompanionSections(
   return [
     lightsEffortsSection(options, state, width),
     lightsGardenersSection(options, state, width),
-    lightsActorsSection(input, width),
+    ...(state.workflowRuns.some((run) => run.owner_actor_role === "external")
+      ? [lightsWorkflowsSection(state, width)]
+      : []),
+    ...(state.focusMode === "gardener" ? [] : [lightsActorsSection(input, width)]),
     lightsCloudSection(state, input, width),
     lightsLocalSection(input, width),
     lightsUsageSection(input, width),
@@ -11061,7 +11232,7 @@ function lightsThreadDetailLines(
     lines.push(oneLine(`    last · ${summary.lastPrompt.trim()}`, columns))
   }
 
-  const statusLine = lightsThreadDetailStatusLine(options, state, summary, preview)
+  const statusLine = lightsThreadDetailStatusLine(options, state, summary)
   if (statusLine) lines.push(oneLine(`    ${statusLine}`, columns))
 
   const plan = state.threadPlans.get(summary.id)
@@ -11076,6 +11247,19 @@ function lightsThreadDetailLines(
     const resume = threadResumeHint(summary)
     if (resume) lines.push(oneLine(`    ${resume}`, columns))
   }
+  if (summary.id !== state.gardenerThreadId) {
+    const monitor = refreshMonitorSnapshot(options.config.stackDataRoot, summary.id)
+    if (monitor.enabled || monitor.status !== "off") {
+      lines.push(oneLine(`    ↳ monitor · ${monitor.label || "sidecar"} · ${monitor.status}`, columns))
+    }
+    const workflows = state.workflowRuns.filter(
+      (run) => run.owner_actor_role === "worker" && run.owner_thread_id === summary.id,
+    )
+    for (const workflow of workflows.slice(0, 4)) {
+      lines.push(oneLine(`    ↳ workflow · ${workflow.workflow_name} · ${workflowRunStatusLabel(workflow)}`, columns))
+    }
+    if (workflows.length > 4) lines.push(oneLine(`    ... +${workflows.length - 4} workflows`, columns))
+  }
   return lines
 }
 
@@ -11083,14 +11267,15 @@ function lightsThreadDetailStatusLine(
   options: StackAppOptions,
   state: AppState,
   summary: StackSessionSummary,
-  preview: ThreadLightsPreview | undefined,
 ): string | undefined {
   const activeIds = resolveActiveThreadIds(options.session.id, resolveAssociatedGardenerWorkerTargetId(options, state))
   const parts: string[] = []
   if (summary.id === options.session.id) parts.push("focused here")
   else if (activeIds.has(summary.id)) parts.push("active target")
-  const workerState = preview?.workerState?.trim()
-  if (workerState && workerState !== "idle") parts.push(`worker ${workerState}`)
+  if (summary.id !== state.gardenerThreadId) {
+    const workerStatus = state.workerRunStatus.get(summary.id)
+    parts.push(`worker ${workerRunStatusLabel(workerStatus)}`)
+  }
   const goal = state.threadGoalStatus.get(summary.id)
   if (goal && goal !== "done") parts.push(`goal ${goal}`)
   else {
@@ -11667,18 +11852,43 @@ function lightsGardenersSection(options: StackAppOptions, state: AppState, colum
     (agent) => agent.status === "running" || agent.status === "spawning" || agent.status === "pending_init",
   ).length
   const subagentSuffix = subagents.length > 0 ? ` · subagents ${activeSubagents}/${subagents.length}` : ""
-  const header = `Gardeners · ${status} · inbox ${inboxCount}${subagentSuffix}`
+  const workflows = state.workflowRuns.filter(
+    (run) => run.owner_actor_role === "gardener" && run.owner_thread_id === state.gardenerThreadId,
+  )
+  const runningWorkflows = workflows.filter((run) => run.status === "running").length
+  const workflowSuffix = workflows.length > 0 ? ` · workflows ${runningWorkflows}/${workflows.length}` : ""
+  const header = `Gardeners · ${status} · inbox ${inboxCount}${workflowSuffix}${subagentSuffix}`
   const targetId = resolveAssociatedGardenerWorkerTargetId(options, state)
   const lines = [
     `  default ${state.gardenerThreadId.slice(0, 8)} · target ${targetId ? targetId.slice(0, 8) : "none"}`,
   ]
   if (state.gardenerWorkspacePath) lines.push(`  workspace ${oneLine(state.gardenerWorkspacePath, Math.max(20, columns - 12))}`)
   if (state.gardenerNotice) lines.push(`  notice ${oneLine(state.gardenerNotice, Math.max(20, columns - 10))}`)
+  for (const workflow of workflows.slice(0, 4)) {
+    lines.push(oneLine(`  ↳ workflow · ${workflow.workflow_name} · ${workflowRunStatusLabel(workflow)}`, columns))
+  }
+  if (workflows.length > 4) lines.push(`  ... +${workflows.length - 4} workflows`)
   for (const agent of subagents.slice(0, 4)) {
-    lines.push(oneLine(`  ↳ ${subagentDisplayName(agent)} · ${subagentStatusLabel(agent.status)}`, columns))
+    lines.push(oneLine(`  ↳ codex · ${subagentDisplayName(agent)} · ${subagentStatusLabel(agent.status)}`, columns))
   }
   if (subagents.length > 4) lines.push(`  ... +${subagents.length - 4} subagents`)
   return { id: "gardeners", header, lines }
+}
+
+function lightsWorkflowsSection(state: AppState, columns: number): LightsPanelSection {
+  const workflows = state.workflowRuns.filter(
+    (run) => run.owner_actor_role === "external",
+  )
+  const running = workflows.filter((run) => run.status === "running").length
+  const done = workflows.filter((run) => run.status === "done").length
+  const errors = workflows.filter((run) => run.status === "error").length
+  const header = `Workflows · external · ${running} running · ${done} done · ${errors} error`
+  const lines = workflows.slice(0, 5).map(
+    (workflow) => oneLine(`  ◇ ${workflow.workflow_name} · ${workflowRunStatusLabel(workflow)}`, columns),
+  )
+  if (workflows.length > 5) lines.push(`  ... +${workflows.length - 5} workflows`)
+  if (lines.length === 0) lines.push("  (none)")
+  return { id: "workflows", header, lines }
 }
 
 /**
@@ -11700,12 +11910,12 @@ function lightsActorsSection(input: ReturnType<typeof buildOpsPanelInput>, colum
   const actors = input.actors
   const running = actors.subagents.filter((agent) => agent.status === "running" || agent.status === "spawning").length
   const failed = actors.subagents.filter((agent) => agent.status === "errored" || agent.status === "interrupted").length
-  const header = `Actors · primary ${actors.primaryStatus} · workers ${actors.subagents.length} (${running} active, ${failed} failed)`
+  const header = `Subagents · primary ${actors.primaryStatus} · ${actors.subagents.length} total (${running} running, ${failed} failed)`
   const lines = [`  model ${oneLine(actors.primaryModel, Math.max(10, columns - 10))}`]
   for (const agent of actors.subagents.slice(0, 4)) {
     lines.push(`  ${oneLine(subagentDisplayName(agent), 16)} · ${subagentStatusLabel(agent.status)}`)
   }
-  if (actors.subagents.length > 4) lines.push(`  ... +${actors.subagents.length - 4} workers`)
+  if (actors.subagents.length > 4) lines.push(`  ... +${actors.subagents.length - 4} subagents`)
   return { id: "actors", header, lines }
 }
 
@@ -14040,7 +14250,11 @@ function historyWindowStart(state: AppState, visibleRows = SESSION_HISTORY_VISIB
 }
 
 function buildAgentTranscriptViewport(renderer: CliRenderer, options: StackAppOptions, state: AppState): TranscriptViewport {
-  const widthShare = state.railsVisible ? 0.5 : 0.72
+  const widthShare = state.railsVisible
+    ? 0.5
+    : state.rightPanelOpen
+      ? Math.max(0.55, 1 - state.rightPanelWidthFraction)
+      : 0.72
   const columns = Math.max(40, Math.floor(renderer.terminalWidth * widthShare) - 8)
   if (state.focusMode === "gardener") {
     const gardenerChromeRows =
@@ -14103,7 +14317,11 @@ function buildAgentTranscriptViewport(renderer: CliRenderer, options: StackAppOp
 
 function transcriptViewportMetrics(renderer: CliRenderer, state: AppState, extraReservedRows = 0): TranscriptViewport {
   const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 12 : 10) - extraReservedRows)
-  const widthShare = state.railsVisible ? 0.5 : 0.72
+  const widthShare = state.railsVisible
+    ? 0.5
+    : state.rightPanelOpen
+      ? Math.max(0.55, 1 - state.rightPanelWidthFraction)
+      : 0.72
   const columns = Math.max(40, Math.floor(renderer.terminalWidth * widthShare) - 8)
   return {
     lines,

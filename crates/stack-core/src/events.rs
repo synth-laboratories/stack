@@ -44,7 +44,9 @@ pub async fn read_thread_events(
         if line.trim().is_empty() {
             continue;
         }
-        events.push(serde_json::from_str::<Value>(line)?);
+        for event in serde_json::Deserializer::from_str(line).into_iter::<Value>() {
+            events.push(event?);
+        }
     }
     Ok(events)
 }
@@ -58,14 +60,13 @@ pub async fn append_thread_event(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent).await?;
     }
-    let line = serde_json::to_string(event)?;
+    let line = format!("{}\n", serde_json::to_string(event)?);
     let mut file = fs::OpenOptions::new()
         .create(true)
         .append(true)
         .open(&path)
         .await?;
     file.write_all(line.as_bytes()).await?;
-    file.write_all(b"\n").await?;
     Ok(path)
 }
 

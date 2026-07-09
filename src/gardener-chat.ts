@@ -149,6 +149,7 @@ async function buildGardenerChatPrompt(
   const metaThreadLines = await liveMetaThreadLines(input.config.stackDataRoot)
   return [
     systemPrompt,
+    `Current gardener thread id: ${input.gardenerThreadId}. When you call stack_jesterky_launch, pass owner_actor_role="gardener" and owner_thread_id="${input.gardenerThreadId}" so the workflow is nested under this gardener.`,
     ...(options?.directSynth
       ? [
           "Runtime note: this gardener turn is running through direct Synth Responses chat, not the Codex app-server. Do not claim to call tools, mutate Stack state, or dispatch workers. Explicit route, steer, queue, skill register, and skill suggest commands are handled by Stack before this prompt.",

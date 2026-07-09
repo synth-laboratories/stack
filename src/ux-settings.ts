@@ -9,6 +9,7 @@ export const LIGHTS_PANEL_SECTION_IDS = [
   "threads",
   "efforts",
   "gardeners",
+  "workflows",
   "actors",
   "cloud",
   "local",

@@ -1110,6 +1110,7 @@ fn stack_worker_harness_prompt(
         "You are running inside Stack, a local OpenTUI Codex cockpit.".to_string(),
         "When Stack MCP tools are available, use them for mediated live operations instead of bypassing owner routes.".to_string(),
         "If Stack MCP reports missing auth, offline routes, or no active target, say that directly and do not fall back to raw databases, Redis keys, or compatibility projections.".to_string(),
+        format!("When calling stack_jesterky_launch, pass owner_actor_role=\"worker\" and owner_thread_id=\"{}\" so the workflow is nested under this worker lane.", session.id),
         format!("Workspace: {}", state.paths.app_root.display()),
         String::new(),
         "## Active Stack goal".to_string(),

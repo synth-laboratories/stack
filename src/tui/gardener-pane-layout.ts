@@ -8,7 +8,7 @@
  * asserts the reservation keeps the composited pane within the viewport.
  */
 
-/** separator + header + up to 6 agent rows + an overflow row when there are more than 6. */
+/** separator + header + up to 6 execution rows + an overflow row when there are more than 6. */
 export function gardenerAgentBlockHeight(agentCount: number): number {
   if (agentCount <= 0) return 0
   return 2 + Math.min(agentCount, 6) + (agentCount > 6 ? 1 : 0)

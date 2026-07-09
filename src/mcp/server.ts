@@ -163,6 +163,14 @@ import { readCrashReportsView } from "../crash-reports.js"
 import { launchLocalGepaRun, readOptimizerSnapshot } from "../local/optimizers.js"
 import { loadGardenerConfig } from "../gardener-config.js"
 import {
+  compareJesterkyManifests,
+  inspectJesterkyRun,
+  launchJesterkyWorkflow,
+  registerJesterkyWorkflow,
+  replayJesterkyRun,
+  type JesterkyManifestSelection,
+} from "../jesterky.js"
+import {
   claimRemoteLaunchPromo,
   createRemoteFactory,
   createRemoteLaunch,
@@ -3711,6 +3719,72 @@ export class StackMcpServer {
     }
   }
 
+  async jesterkyRegister(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(registerJesterkyWorkflow(config, {
+      specPath: requiredString(args, "spec_path"),
+      workflowId: optionalString(args, "workflow_id"),
+    })) ?? null
+  }
+
+  async jesterkyLaunch(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const actor = optionalString(args, "actor")
+    if (actor && actor !== "fake" && actor !== "codex") {
+      throw new RpcError(-32602, "actor must be fake or codex")
+    }
+    const ownerActorRole = optionalString(args, "owner_actor_role") ?? "external"
+    if (ownerActorRole !== "gardener" && ownerActorRole !== "worker" && ownerActorRole !== "external") {
+      throw new RpcError(-32602, "owner_actor_role must be gardener, worker, or external")
+    }
+    const ownerThreadId = optionalString(args, "owner_thread_id")
+    if (ownerActorRole !== "external" && !ownerThreadId) {
+      throw new RpcError(-32602, `owner_thread_id is required when owner_actor_role=${ownerActorRole}`)
+    }
+    return toJsonValue(launchJesterkyWorkflow(config, {
+      workflowId: optionalString(args, "workflow_id"),
+      specPath: optionalString(args, "spec_path"),
+      args: optionalJsonObject(args, "args"),
+      argsFile: optionalString(args, "args_file"),
+      runId: optionalString(args, "run_id"),
+      actor: actor as "fake" | "codex" | undefined,
+      model: optionalString(args, "model"),
+      codexHome: optionalString(args, "codex_home"),
+      cd: optionalString(args, "cd"),
+      follow: optionalBoolean(args, "follow"),
+      width: optionalInteger(args, "width"),
+      ownerActorRole,
+      ownerThreadId,
+    })) ?? null
+  }
+
+  async jesterkyInspect(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(inspectJesterkyRun(config, {
+      workflowId: optionalString(args, "workflow_id"),
+      runId: optionalString(args, "run_id"),
+      manifestPath: optionalString(args, "manifest_path"),
+      width: optionalInteger(args, "width"),
+    } as JesterkyManifestSelection & { width?: number })) ?? null
+  }
+
+  async jesterkyReplay(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(replayJesterkyRun(config, {
+      workflowId: optionalString(args, "workflow_id"),
+      runId: optionalString(args, "run_id"),
+      manifestPath: optionalString(args, "manifest_path"),
+    })) ?? null
+  }
+
+  async jesterkyCompare(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(compareJesterkyManifests(config, {
+      leftManifestPath: requiredString(args, "left_manifest_path"),
+      rightManifestPath: requiredString(args, "right_manifest_path"),
+    })) ?? null
+  }
+
   async submitHostedOptimizer(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const effortRef = optionalString(args, "effort_ref")
@@ -6553,6 +6627,78 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["config_path"],
       ),
       handler: (args) => server.launchLocalGepa(args),
+    },
+    {
+      name: "stack_jesterky_register",
+      description: "Register a local jesterky workflow spec in Stack storage after `jesterky validate`, preserving the spec and a Stack-side hash for later launch/replay.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          spec_path: stringProperty("Path to the jesterky workflow spec, relative to Stack workingDir or absolute."),
+          workflow_id: stringProperty("Optional stable Stack workflow id. Defaults to workflow name plus spec hash."),
+        },
+        ["spec_path"],
+      ),
+      handler: (args) => server.jesterkyRegister(args),
+    },
+    {
+      name: "stack_jesterky_launch",
+      description: "Launch a registered or ad-hoc jesterky workflow through the jesterky CLI, capturing a live run record, manifest, and NDJSON events under Stack storage. Gardener and worker callers must identify themselves with owner_actor_role plus owner_thread_id so Stack can nest the run under its launcher; omitted ownership is recorded as external.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          workflow_id: stringProperty("Registered Stack jesterky workflow id. Provide this or spec_path."),
+          spec_path: stringProperty("Ad-hoc jesterky spec path when workflow_id is not supplied."),
+          args: jsonObjectProperty("Optional JSON args object passed to `jesterky run --args`."),
+          args_file: stringProperty("Optional args file path passed to `jesterky run --args-file`."),
+          run_id: stringProperty("Optional jesterky run id. Defaults to jk_<timestamp>."),
+          actor: enumProperty(["fake", "codex"], "Optional jesterky actor. Defaults to jesterky CLI behavior."),
+          model: stringProperty("Optional model id passed to jesterky."),
+          codex_home: stringProperty("Optional Codex home for actor=codex."),
+          cd: stringProperty("Optional working directory passed to jesterky --cd."),
+          follow: booleanProperty("Whether jesterky should follow live output. Omit for CLI default."),
+          width: numberProperty("Optional visualization width passed through to jesterky run."),
+          owner_actor_role: enumProperty(["gardener", "worker", "external"], "Launcher role. Use gardener or worker with owner_thread_id; defaults to external."),
+          owner_thread_id: stringProperty("Launching Stack gardener/worker thread id. Required for gardener or worker ownership."),
+        },
+      ),
+      handler: (args) => server.jesterkyLaunch(args),
+    },
+    {
+      name: "stack_jesterky_inspect",
+      description: "Inspect a jesterky manifest via typed manifest fields and `jesterky visualize`; reads stop_reason directly and summarizes budgets/goals/invariants.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        workflow_id: stringProperty("Registered Stack jesterky workflow id. Required with run_id unless manifest_path is supplied."),
+        run_id: stringProperty("Run id under the registered workflow. Required with workflow_id unless manifest_path is supplied."),
+        manifest_path: stringProperty("Direct manifest path, relative to Stack workingDir or absolute."),
+        width: numberProperty("Optional visualization width."),
+      }),
+      handler: (args) => server.jesterkyInspect(args),
+    },
+    {
+      name: "stack_jesterky_replay",
+      description: "Replay a jesterky manifest through `jesterky replay`, optionally with the registered spec sidecar.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        workflow_id: stringProperty("Registered Stack jesterky workflow id. Required with run_id unless manifest_path is supplied."),
+        run_id: stringProperty("Run id under the registered workflow. Required with workflow_id unless manifest_path is supplied."),
+        manifest_path: stringProperty("Direct manifest path, relative to Stack workingDir or absolute."),
+      }),
+      handler: (args) => server.jesterkyReplay(args),
+    },
+    {
+      name: "stack_jesterky_compare",
+      description: "Compare two jesterky manifests by Addr-aligned trace rows, typed status/stop_reason, outputs, scores, and signals.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          left_manifest_path: stringProperty("Left manifest path, relative to Stack workingDir or absolute."),
+          right_manifest_path: stringProperty("Right manifest path, relative to Stack workingDir or absolute."),
+        },
+        ["left_manifest_path", "right_manifest_path"],
+      ),
+      handler: (args) => server.jesterkyCompare(args),
     },
     {
       name: "stack_submit_hosted_optimizer",
