@@ -9,6 +9,39 @@ export type RemoteBillingAllowanceWindow = {
   consumedUsd: number
   remainingUsd: number
   resetsAt?: string
+  source?: string
+  promoCampaignId?: string
+  state?: string
+}
+
+export type RemoteBillingResetGrant = {
+  resetGrantId?: string
+  grantKind?: string
+  status: string
+  appliesTo?: string
+  modelClass?: string
+  windowKind?: string
+  resetsAt?: string
+  expiresAt?: string
+  campaignId?: string
+  reasonLabel?: string
+  createdAt?: string
+  appliedAt?: string
+}
+
+export type RemoteBillingResetBank = {
+  availableCount: number
+  expiringCount: number
+  grants: RemoteBillingResetGrant[]
+}
+
+export type RemoteBillingNextAction = {
+  actionId: string
+  label: string
+  surface?: string
+  requiresAdmin?: boolean
+  previewEndpoint?: string
+  executeEndpoint?: string
 }
 
 export type RemoteUsageBreakdownRow = {
@@ -67,14 +100,21 @@ export type RemoteUsageSnapshot = {
   environmentName: string
   apiBaseUrl: string
   checkedAt: string
+  schemaVersion?: string
   message?: string
   planTier?: string
+  planDisplayName?: string
   legacyPlan?: string
   billingMode?: string
   walletUsd?: number
   walletExpiresAt?: string
+  resetBank?: RemoteBillingResetBank
+  activePromotions?: string[]
+  claimablePromotions?: string[]
   blocked?: boolean
   blockedReason?: string
+  blockedMessage?: string
+  nextActions?: RemoteBillingNextAction[]
   allowanceWindows: RemoteBillingAllowanceWindow[]
   spendTodayUsd?: number
   spend7dUsd?: number
@@ -120,7 +160,7 @@ export async function readRemoteUsageSnapshot(config: StackConfig): Promise<Remo
       fetchStackAuxUsagePayload(config),
       fetchStackInferenceUsagePayload(config),
     ])
-    return parseUsageSnapshot(config, planPayload, overviewPayload, stackAuxPayload, stackInferencePayload)
+    return parseRemoteUsageSnapshotPayloads(config, planPayload, overviewPayload, stackAuxPayload, stackInferencePayload)
   } catch (error) {
     return {
       ...base,
@@ -131,7 +171,7 @@ export async function readRemoteUsageSnapshot(config: StackConfig): Promise<Remo
   }
 }
 
-function parseUsageSnapshot(
+export function parseRemoteUsageSnapshotPayloads(
   config: StackConfig,
   planPayload: unknown,
   overviewPayload: unknown,
@@ -139,15 +179,26 @@ function parseUsageSnapshot(
   stackInferencePayload: unknown,
 ): RemoteUsageSnapshot {
   const plan = asRecord(planPayload)
+  const planInfo = asRecord(plan?.plan)
   const wallet = asRecord(plan?.wallet)
   const allowanceWindows = readAllowanceWindows(plan)
+  const resetBank = readResetBank(plan?.reset_bank)
+  const promotions = asRecord(plan?.promotions)
+  const blockedDetail = asRecord(plan?.blocked_detail)
+  const nextActions = readNextActions(plan?.next_actions)
   const overview = asRecord(overviewPayload)
   const spend = asRecord(overview?.spend_summary)
-  const usageSummary = asRecord(overview?.usage_summary)
+  const overviewUsageSummary = asRecord(overview?.usage_summary)
+  const economicsUsageSummary = asRecord(plan?.usage_summary)
+  const economicsUsageTotals = readEconomicsUsageTotals(economicsUsageSummary)
+  const usageBreakdown = overviewUsageSummary
+    ? readUsageBreakdown(overviewUsageSummary, 7)
+    : readEconomicsUsageBreakdown(economicsUsageSummary)
 
-  const planTier = readString(plan?.plan_tier)
-  const legacyPlan = readString(plan?.legacy_plan)
-  const billingMode = readString(plan?.billing_mode)
+  const planTier = readString(plan?.plan_tier) ?? readString(planInfo?.tier)
+  const planDisplayName = readString(planInfo?.display_name)
+  const legacyPlan = readString(plan?.legacy_plan) ?? readString(planInfo?.legacy_alias)
+  const billingMode = readString(plan?.billing_mode) ?? readString(planInfo?.billing_mode)
   const walletUsd = microcentsToUsd(readNumber(wallet?.balance_microcents))
   const blocked = readBoolean(plan?.blocked)
   const stackInferenceBudget = readStackInferenceBudget(stackInferencePayload)
@@ -159,23 +210,32 @@ function parseUsageSnapshot(
     environmentName: config.environmentName,
     apiBaseUrl: config.environment.apiBaseUrl,
     checkedAt: new Date().toISOString(),
-    message: planTier ? `plan ${planTier}` : "billing plan loaded",
+    schemaVersion: readString(plan?.schema_version),
+    message: planDisplayName ? `plan ${planDisplayName}` : planTier ? `plan ${planTier}` : "billing plan loaded",
     planTier,
+    planDisplayName,
     legacyPlan,
     billingMode,
     walletUsd,
     walletExpiresAt: readString(wallet?.expires_at),
+    resetBank,
+    activePromotions: readPromotionLabels(promotions?.active),
+    claimablePromotions: readPromotionLabels(promotions?.claimable),
     blocked,
-    blockedReason: readString(plan?.blocked_reason),
+    blockedReason: readString(plan?.blocked_reason) ?? readString(blockedDetail?.reason_code),
+    blockedMessage: readString(blockedDetail?.human_message),
+    nextActions,
     allowanceWindows,
-    spendTodayUsd: readNumber(spend?.today_charged_usd),
-    spend7dUsd: readNumber(spend?.last_7d_charged_usd),
-    spend30dUsd: readNumber(spend?.last_30d_charged_usd),
+    spendTodayUsd: readNumber(spend?.today_charged_usd) ?? economicsUsageTotals?.todayBilledUsd,
+    spend7dUsd: readNumber(spend?.last_7d_charged_usd) ?? economicsUsageTotals?.sevenDaysBilledUsd,
+    spend30dUsd: readNumber(spend?.last_30d_charged_usd) ?? economicsUsageTotals?.thirtyDaysBilledUsd,
     usage7dUsd:
-      readNumber(usageSummary?.total_nominal_usd) ??
-      readNumber(usageSummary?.total_cost_usd) ??
-      readNumber(usageSummary?.total_charged_usd),
-    usageBreakdown: usageSummary ? readUsageBreakdown(usageSummary, 7) : undefined,
+      readNumber(overviewUsageSummary?.total_nominal_usd) ??
+      readNumber(overviewUsageSummary?.total_cost_usd) ??
+      readNumber(overviewUsageSummary?.total_charged_usd) ??
+      economicsUsageTotals?.sevenDaysNominalUsd ??
+      economicsUsageTotals?.sevenDaysBilledUsd,
+    usageBreakdown,
     stackAuxBudget: readStackAuxBudget(stackAuxPayload),
     stackInferenceBudget,
     workerDefault: stackInferenceBudget?.workerDefault ?? "codex_byok",
@@ -187,6 +247,66 @@ function parseUsageSnapshot(
       config.synthWorkerInferenceEnabled,
     ),
   }
+}
+
+type EconomicsUsageTotals = {
+  todayBilledUsd: number
+  sevenDaysBilledUsd: number
+  thirtyDaysBilledUsd: number
+  sevenDaysNominalUsd: number
+}
+
+function readEconomicsUsageTotals(value: unknown): EconomicsUsageTotals | undefined {
+  const summary = asRecord(value)
+  if (!summary) return undefined
+  const today = asRecord(summary.today)
+  const sevenDays = asRecord(summary.seven_days)
+  const thirtyDays = asRecord(summary.thirty_days)
+  if (!today && !sevenDays && !thirtyDays) return undefined
+  return {
+    todayBilledUsd: microcentsToUsd(readNumber(today?.billed_microcents)) ?? 0,
+    sevenDaysBilledUsd: microcentsToUsd(readNumber(sevenDays?.billed_microcents)) ?? 0,
+    thirtyDaysBilledUsd: microcentsToUsd(readNumber(thirtyDays?.billed_microcents)) ?? 0,
+    sevenDaysNominalUsd: microcentsToUsd(readNumber(sevenDays?.nominal_microcents)) ?? 0,
+  }
+}
+
+function readEconomicsUsageBreakdown(value: unknown): RemoteUsageBreakdown | undefined {
+  const summary = asRecord(value)
+  if (!summary) return undefined
+  return {
+    days: 7,
+    byType: readEconomicsBreakdownRows(summary.by_surface, 5, formatUsageTypeLabel),
+    bySubtype: [],
+    byLane: [],
+    byProject: readEconomicsBreakdownRows(summary.by_project, 3, (key) => oneLine(key, 22)),
+    byFactory: readEconomicsBreakdownRows(summary.by_factory, 3, (key) => oneLine(key, 22)),
+    byActor: readEconomicsBreakdownRows(summary.by_actor, 3, shortenActorLabel),
+  }
+}
+
+function readEconomicsBreakdownRows(
+  value: unknown,
+  limit: number,
+  labelFn: (key: string) => string,
+): RemoteUsageBreakdownRow[] {
+  const rows: RemoteUsageBreakdownRow[] = []
+  for (const entry of asArray(value)) {
+    const record = asRecord(entry)
+    if (!record) continue
+    const key = readString(record.key)
+    if (!key) continue
+    rows.push({
+      label: labelFn(key),
+      costUsd:
+        microcentsToUsd(readNumber(record.nominal_microcents)) ??
+        microcentsToUsd(readNumber(record.internal_cost_microcents)) ??
+        0,
+      chargedUsd: microcentsToUsd(readNumber(record.billed_microcents)),
+      eventCount: readNumber(record.event_count),
+    })
+  }
+  return topBreakdownRows(rows, limit)
 }
 
 function readUsageBreakdown(usageSummary: Record<string, unknown>, days: number): RemoteUsageBreakdown {
@@ -314,6 +434,66 @@ function oneLine(value: string, max: number): string {
   return `${trimmed.slice(0, Math.max(0, max - 1))}…`
 }
 
+function readResetBank(value: unknown): RemoteBillingResetBank | undefined {
+  const record = asRecord(value)
+  if (!record) return undefined
+  const grants: RemoteBillingResetGrant[] = []
+  for (const entry of asArray(record.grants)) {
+    const grant = asRecord(entry)
+    if (!grant) continue
+    grants.push({
+      resetGrantId: readString(grant.reset_grant_id),
+      grantKind: readString(grant.grant_kind),
+      status: readString(grant.status) ?? "available",
+      appliesTo: readString(grant.applies_to),
+      modelClass: readString(grant.model_class),
+      windowKind: readString(grant.window_kind),
+      resetsAt: readString(grant.resets_at),
+      expiresAt: readString(grant.expires_at),
+      campaignId: readString(grant.campaign_id),
+      reasonLabel: readString(grant.reason_label),
+      createdAt: readString(grant.created_at),
+      appliedAt: readString(grant.applied_at),
+    })
+  }
+  return {
+    availableCount: readNumber(record.available_count) ?? grants.filter((grant) => grant.status === "available").length,
+    expiringCount: readNumber(record.expiring_count) ?? 0,
+    grants,
+  }
+}
+
+function readPromotionLabels(value: unknown): string[] {
+  const labels: string[] = []
+  for (const entry of asArray(value)) {
+    const campaign = asRecord(entry)
+    if (!campaign) continue
+    const label = readString(campaign.display_name) ?? readString(campaign.campaign_id)
+    if (label) labels.push(oneLine(label, 32))
+  }
+  return labels
+}
+
+function readNextActions(value: unknown): RemoteBillingNextAction[] {
+  const actions: RemoteBillingNextAction[] = []
+  for (const entry of asArray(value)) {
+    const action = asRecord(entry)
+    if (!action) continue
+    const actionId = readString(action.action_id)
+    const label = readString(action.label)
+    if (!actionId || !label) continue
+    actions.push({
+      actionId,
+      label,
+      surface: readString(action.surface),
+      requiresAdmin: readBoolean(action.requires_admin),
+      previewEndpoint: readString(action.preview_endpoint),
+      executeEndpoint: readString(action.execute_endpoint),
+    })
+  }
+  return actions
+}
+
 function readAllowanceWindows(plan: Record<string, unknown> | undefined): RemoteBillingAllowanceWindow[] {
   const rows: RemoteBillingAllowanceWindow[] = []
   for (const entry of asArray(plan?.allowance_windows)) {
@@ -329,6 +509,9 @@ function readAllowanceWindows(plan: Record<string, unknown> | undefined): Remote
       consumedUsd: microcentsToUsd(readNumber(record.consumed_microcents)) ?? 0,
       remainingUsd: microcentsToUsd(readNumber(record.remaining_microcents)) ?? 0,
       resetsAt: readString(record.resets_at),
+      source: readString(record.source),
+      promoCampaignId: readString(record.promo_campaign_id),
+      state: readString(record.state),
     })
   }
   return sortAllowanceWindows(rows)

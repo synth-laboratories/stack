@@ -42,6 +42,39 @@ function printInferenceUsage(snapshot: RemoteInferenceUsageSnapshot): void {
   }
   if (snapshot.status === "offline") return
 
+  const plan = snapshot.planDisplayName ?? snapshot.planTier
+  const economics: string[] = []
+  if (plan) economics.push(`plan ${plan}`)
+  if (snapshot.walletUsd !== undefined) economics.push(`wallet ${formatUsd(snapshot.walletUsd)}`)
+  if (snapshot.resetBank) {
+    economics.push(
+      snapshot.resetBank.availableCount === 1
+        ? "1 banked reset"
+        : `${snapshot.resetBank.availableCount} banked resets`,
+    )
+  }
+  if (snapshot.blocked) economics.push("blocked")
+  if (economics.length > 0) console.log(`economics: ${economics.join(" | ")}`)
+
+  if (snapshot.blockedMessage ?? snapshot.blockedReason) {
+    console.log(`blocked: ${snapshot.blockedMessage ?? snapshot.blockedReason}`)
+  }
+  if (snapshot.nextActions && snapshot.nextActions.length > 0) {
+    console.log(`next action: ${snapshot.nextActions[0].label}`)
+  }
+  const promos = [...(snapshot.activePromotions ?? []), ...(snapshot.claimablePromotions ?? [])]
+  if (promos.length > 0) console.log(`promos: ${promos.slice(0, 3).join(", ")}`)
+  if (snapshot.allowanceWindows.length > 0) {
+    console.log("allowance windows:")
+    for (const window of snapshot.allowanceWindows.slice(0, 4)) {
+      const reset = window.resetsAt ? ` reset ${window.resetsAt}` : ""
+      const promo = window.promoCampaignId ? ` promo ${window.promoCampaignId}` : ""
+      console.log(
+        `  ${window.modelClass}/${window.windowKind}: ${formatUsd(window.remainingUsd)} / ${formatUsd(window.capUsd)} left${reset}${promo}`,
+      )
+    }
+  }
+
   if (snapshot.inference7dUsd !== undefined) {
     console.log(`inference 7d: ${formatUsd(snapshot.inference7dUsd)}`)
   }

@@ -17,6 +17,32 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260709.1] - 2026-07-09
+
+Unified Synth economics visibility dev release.
+
+### Added
+
+- **Unified hosted economics readout.** `/usage`, the Lights panel, the ops
+  panel, `stack inference usage`, and JSON output now consume
+  `economics_snapshot.v1` and show the selected plan, allowance windows,
+  wallet, banked and expiring resets, active and claimable promotions, usage
+  breakdowns, block reason, and the next recovery action.
+- **Codex-style reset visibility.** Lights summarizes available banked resets
+  in its header and includes reset reason and expiration posture alongside the
+  five-hour and weekly premium/value windows.
+
+### Changed
+
+- Hosted usage falls back to the economics snapshot's own totals and
+  breakdowns when the broader usage overview is unavailable. See
+  `docs/USAGE.md` for the operator surfaces and environment behavior.
+
+### Known limitations
+
+- Economics views are read-only. Admin-required recovery actions are labeled
+  but are not executed by Stack.
+
 ## [0.2.0-dev.20260706.2] - 2026-07-06
 
 Workers panel and experimental Assembly Lines dev release.
