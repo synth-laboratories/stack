@@ -237,12 +237,25 @@ async function subscriptionCapsRow(config: StackConfig, decl: TaskPreflightDecl)
     return fail("task-caps", "transient", "subscription/caps route unreachable", usage.message)
   }
   if (usage.blocked) {
-    return fail("task-caps", "quota", "account is blocked from launching runs", usage.blockedReason ?? usage.message)
+    return fail(
+      "task-caps",
+      "quota",
+      "account is blocked from launching runs",
+      usage.blockedMessage ?? usage.blockedReason ?? usage.nextActions?.[0]?.label ?? usage.message,
+    )
   }
   const exhausted = usage.allowanceWindows.filter((window) => window.capUsd > 0 && window.remainingUsd <= 0)
   if (exhausted.length > 0) {
     const names = exhausted.map((window) => `${window.modelClass}/${window.windowKind}`).join(", ")
-    return fail("task-caps", "quota", `allowance exhausted: ${names}`, "wait for the window reset or raise the plan cap")
+    const resetHint = usage.resetBank?.availableCount
+      ? `${usage.resetBank.availableCount} banked reset(s) available`
+      : undefined
+    return fail(
+      "task-caps",
+      "quota",
+      `allowance exhausted: ${names}`,
+      usage.nextActions?.[0]?.label ?? resetHint ?? "wait for the window reset or raise the plan cap",
+    )
   }
   const planLabel = usage.planTier ? `plan ${usage.planTier}` : "plan unknown"
   return pass("task-caps", `subscription ok · ${planLabel}`, `${usage.allowanceWindows.length} allowance window(s) with headroom`)

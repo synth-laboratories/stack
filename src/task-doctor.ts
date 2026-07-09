@@ -254,7 +254,7 @@ async function usageCapCheck(config: StackConfig): Promise<TaskDoctorCheck> {
   }
   if (usage.blocked) {
     return taskCheck("task.subscription_caps", "fail", "billing plan is blocked", {
-      detail: usage.blockedReason,
+      detail: usage.blockedMessage ?? usage.blockedReason ?? usage.nextActions?.[0]?.label,
       class: "quota",
     })
   }
