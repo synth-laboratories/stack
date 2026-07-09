@@ -103,6 +103,11 @@ panel. The panel summarizes:
   available, title or goal preview, viewed/unviewed state, and latest monitor
   headline.
 - **Gardeners:** gardener lifecycle, inbox count, target thread, and workspace.
+- **Usage economics:** selected Synth plan, blocked state, banked and expiring
+  resets, active or claimable promotions, premium/value allowance windows, and
+  the first recovery action. This is a read-only rendering of the selected
+  environment's `economics_snapshot.v1`; admin actions are labeled but never
+  executed from the panel.
 - **Actors:** active worker/runtime model counts.
 - **Cloud:** selected environment, projects, factories, runs, deployments, and
   hosted optimizers.
@@ -1480,6 +1485,13 @@ stack inference usage
 stack inference list --json
 stack inference usage --json
 ```
+
+The usage command shares the same hosted economics snapshot as `/usage` and
+the Lights panel. Human output includes plan, allowance windows, wallet,
+banked resets, promotions, block detail, recovery posture, and recent usage;
+`--json` preserves the typed fields for automation. Use `/env` or the Stack
+environment selector before refreshing so dev, staging, and production reads
+cannot be confused.
 
 The catalog has two lanes when the backend route is deployed:
 
