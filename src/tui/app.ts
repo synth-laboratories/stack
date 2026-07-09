@@ -6689,7 +6689,7 @@ type GardenerPaneAgent = {
   depth: 0 | 1
   label: string
   statusLabel: string
-  phase: "running" | "done" | "other"
+  phase: "starting" | "running" | "done" | "other"
   goalLabel?: string
   /** Token total, workers only — codex spawn_agent runs in-process with the gardener (no per-agent usage). */
   tokensLabel?: string
@@ -6745,16 +6745,22 @@ function gardenerPaneAgents(options: StackAppOptions, state: AppState): Gardener
     )
     .map((run) => workflowPaneAgent(run, 0))
   const codex: GardenerPaneAgent[] = gardenerSubagentsForLights(state).map((sub) => {
-    const running = sub.status === "running" || sub.status === "spawning" || sub.status === "pending_init"
     return {
       kind: "codex",
       depth: 0,
       label: (sub.message ? conciseAgentBrief(sub.message) : "") || sub.name || sub.id.slice(0, 8),
       statusLabel: subagentStatusLabel(sub.status),
-      phase: sub.status === "completed" ? "done" : running ? "running" : "other",
+      phase: gardenerSubagentPhase(sub.status),
     }
   })
   return [...workers, ...gardenerWorkflows, ...codex]
+}
+
+function gardenerSubagentPhase(status: SubagentStatus): GardenerPaneAgent["phase"] {
+  if (status === "running") return "running"
+  if (status === "spawning" || status === "pending_init") return "starting"
+  if (status === "completed") return "done"
+  return "other"
 }
 
 function workerRunStatusLabel(status: StackdWorkerRunStatus | undefined): string {
@@ -6787,6 +6793,7 @@ function workflowRunStatusLabel(run: JesterkyWorkflowRunRecord): string {
 function gardenerAgentPhaseColor(phase: GardenerPaneAgent["phase"]): string {
   if (phase === "done") return theme.goalLifecycle.active
   if (phase === "running") return theme.synth.orange
+  if (phase === "starting") return theme.transcript.subagentLabel
   return theme.fgMuted
 }
 
@@ -6807,6 +6814,8 @@ function gardenerAgentsWidget(
   const runningWorkers = workerRows.filter((agent) => agent.phase === "running").length
   const runningWorkflows = workflowRows.filter((agent) => agent.phase === "running").length
   const runningSubagents = subagentRows.filter((agent) => agent.phase === "running").length
+  const startingSubagents = subagentRows.filter((agent) => agent.phase === "starting").length
+  const subagentSummary = `subagents ${runningSubagents} running${startingSubagents > 0 ? ` / ${startingSubagents} starting` : ""}`
   // Clamp to one line, leaving room for the pane border so rows never wrap onto a second line (a
   // wrapped row would overflow the reserved height and overlap the control row). See
   // gardenerAgentBlockHeight, which must count one row per line produced here.
@@ -6817,13 +6826,13 @@ function gardenerAgentsWidget(
   const rows: ReturnType<typeof Text>[] = [
     Text({ content: " ", width: "100%" }),
     Text({
-      content: clampLine(`workers ${runningWorkers} running / ${workerRows.length} lanes · workflows ${runningWorkflows} running · subagents ${runningSubagents} running`),
+      content: clampLine(`workers ${runningWorkers} running / ${workerRows.length} lanes · workflows ${runningWorkflows} running · ${subagentSummary}`),
       fg: theme.transcript.subagentLabel,
       width: "100%",
     }),
   ]
   for (const agent of agents.slice(0, 6)) {
-    const glyph = agent.phase === "running" ? "✳" : agent.phase === "done" ? "✓" : agent.depth === 1 ? "↳" : "◇"
+    const glyph = agent.phase === "running" ? "✳" : agent.phase === "starting" ? "…" : agent.phase === "done" ? "✓" : agent.depth === 1 ? "↳" : "◇"
     const tokens = agent.tokensLabel ? ` · ${agent.tokensLabel}` : ""
     const goal = agent.goalLabel ? ` · ${agent.goalLabel}` : ""
     const indent = agent.depth === 1 ? "    " : "  "
@@ -11848,10 +11857,13 @@ function lightsGardenersSection(options: StackAppOptions, state: AppState, colum
   const inboxCount = readGardenerInbox(options.config.stackDataRoot, state.gardenerThreadId).length
   const status = state.gardenerChatRunning ? "running" : inboxCount > 0 ? "queued" : "idle"
   const subagents = gardenerSubagentsForLights(state)
-  const activeSubagents = subagents.filter(
-    (agent) => agent.status === "running" || agent.status === "spawning" || agent.status === "pending_init",
+  const runningSubagents = subagents.filter((agent) => agent.status === "running").length
+  const startingSubagents = subagents.filter(
+    (agent) => agent.status === "spawning" || agent.status === "pending_init",
   ).length
-  const subagentSuffix = subagents.length > 0 ? ` · subagents ${activeSubagents}/${subagents.length}` : ""
+  const subagentSuffix = subagents.length > 0
+    ? ` · subagents ${runningSubagents} running${startingSubagents > 0 ? ` · ${startingSubagents} starting` : ""}`
+    : ""
   const workflows = state.workflowRuns.filter(
     (run) => run.owner_actor_role === "gardener" && run.owner_thread_id === state.gardenerThreadId,
   )
@@ -11892,17 +11904,18 @@ function lightsWorkflowsSection(state: AppState, columns: number): LightsPanelSe
 }
 
 /**
- * Gardener spawn_agent (collab) subagents to surface in Lights, active first. These are transient
- * Codex collab agents the gardener spawned — distinct from durable Stack worker threads (which have
- * meta-thread manifests and appear under Threads). Terminal/cleanup states are dropped so the
- * section reflects what the gardener currently has out, not its whole history.
+ * Current gardener spawn_agent (collab) subagents to surface in Lights. A gardener turn runs inside
+ * a bounded Codex process, so only the live sink is authoritative for current activity. Replaying
+ * non-terminal states from older transcript turns would mislabel dead `pending_init`/`running`
+ * records after their owning Codex process exited.
  */
 function gardenerSubagentsForLights(state: AppState): SubagentLog[] {
-  const visible = state.gardenerSubagents.filter(
+  if (!state.gardenerChatRunning) return []
+  const visible = state.gardenerLiveSubagents.filter(
     (agent) => agent.status !== "closed" && agent.status !== "shutdown" && agent.status !== "not_found",
   )
   const rank = (status: SubagentStatus): number =>
-    status === "running" || status === "spawning" || status === "pending_init" ? 0 : status === "errored" || status === "interrupted" ? 1 : 2
+    status === "running" ? 0 : status === "spawning" || status === "pending_init" ? 1 : status === "errored" || status === "interrupted" ? 2 : 3
   return [...visible].sort((a, b) => rank(a.status) - rank(b.status))
 }
 
