@@ -400,6 +400,10 @@ import {
   type OpsPanelMetaEvent,
   type RightPanelMode,
 } from "./ops-panel.js"
+import {
+  lightsUsageEconomicsHeaderParts,
+  lightsUsageEconomicsLines,
+} from "./lights-usage.js"
 import { renderThreadsRailStyled } from "./threads-rail.js"
 import {
   buildMonitorSidecarChatBlocks,
@@ -10578,12 +10582,13 @@ function lightsUsageSection(input: ReturnType<typeof buildOpsPanelInput>, column
   if (usage.spendTodayUsd !== undefined) parts.push(`today ${formatUsd(usage.spendTodayUsd)}`)
   if (usage.usage7dUsd !== undefined) parts.push(`7d ${formatUsd(usage.usage7dUsd)}`)
   if (usage.walletUsd !== undefined) parts.push(`wallet ${formatUsd(usage.walletUsd)}`)
+  parts.push(...lightsUsageEconomicsHeaderParts(usage))
   const header = oneLine(parts.join(" · "), columns)
   const lines = [
     `  agent ${oneLine(input.agentUsage.codexAuthPlan, 18)}${input.agentUsage.codexBudget ? ` · ${oneLine(input.agentUsage.codexBudget, 24)}` : ""}`,
   ]
   if (input.agentUsage.sessionSummary) lines.push(`  session ${oneLine(input.agentUsage.sessionSummary, Math.max(20, columns - 10))}`)
-  if (usage.message) lines.push(`  ${oneLine(usage.message, Math.max(20, columns - 4))}`)
+  lines.push(...lightsUsageEconomicsLines(usage, columns))
   return { id: "usage", header, lines }
 }
 
