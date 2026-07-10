@@ -176,7 +176,37 @@ export type RemoteFactorySummary = {
   health?: RemoteFactoryHealthSummary
   operatingWindow?: RemoteFactoryOperatingWindowSummary
   latestExperiment?: RemoteExperimentBundleSummary
+  judgmentState?: Record<string, RemoteJsonValue>
+  tagSessions?: RemoteTagSessionSummary[]
   statusError?: string
+}
+
+export type RemoteTagMessageSummary = {
+  taskId: string
+  taskKind: string
+  steeringTarget?: string
+  body: string
+  createdAt?: string
+  transport: Record<string, RemoteJsonValue>
+}
+
+export type RemoteTagSessionSummary = {
+  sessionId: string
+  status: string
+  factoryId?: string
+  effortId?: string
+  projectId?: string
+  experimentId?: string
+  candidateId?: string
+  runId?: string
+  request: string
+  createdAt?: string
+  updatedAt?: string
+  runUrl?: string
+  experimentUrl?: string
+  wikiUrls: string[]
+  gitUrls: string[]
+  messages: RemoteTagMessageSummary[]
 }
 
 export type RemoteExperimentBundleSummary = {
@@ -207,6 +237,16 @@ export type RemoteExperimentBundleSummary = {
   missing: string[]
   synthWiki: Record<string, RemoteJsonValue>
   gitServer: Record<string, RemoteJsonValue>
+  raw: Record<string, RemoteJsonValue>
+}
+
+export type RemoteExperimentHistorySummary = {
+  schemaVersion: string
+  projectId: string
+  acceptedCycles: number
+  incompleteCycles: number
+  missingEvidenceAlerts: Record<string, RemoteJsonValue>[]
+  bundles: RemoteExperimentBundleSummary[]
   raw: Record<string, RemoteJsonValue>
 }
 
@@ -242,11 +282,15 @@ export type RemoteFactoryOperatingWindowSummary = {
   windowStartedAt?: string
   windowDays?: number
   requiredCycles?: number
+  terminalAttempts?: number
   observedCycles?: number
+  rejectedCycles?: number
   remainingCycles?: number
   firstCycleAt?: string
   latestCycleAt?: string
   cycleRunIds: string[]
+  rejectedCycleRunIds: string[]
+  cycleEvidence: Record<string, RemoteJsonValue>[]
 }
 
 export type RemoteDeploymentSummary = {
@@ -837,7 +881,11 @@ export async function publishHostedArtifactPublic(
 
 async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySummary): Promise<RemoteFactorySummary> {
   try {
-    const payload = asRecord(await getJson(config, `/smr/factories/${encodeURIComponent(factory.factoryId)}/status`))
+    const [statusPayload, tagSessions] = await Promise.all([
+      getJson(config, `/smr/factories/${encodeURIComponent(factory.factoryId)}/status`),
+      readFactoryTagSessions(config, factory.factoryId),
+    ])
+    const payload = asRecord(statusPayload)
     if (!payload) return factory
     const latestRuns = asArray(payload.latest_runs)
     const projects = asArray(payload.projects)
@@ -895,11 +943,147 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
       health,
       operatingWindow,
       latestExperiment,
+      judgmentState: readJsonRecord(payload.judgment_state),
+      tagSessions,
       statusError: undefined,
     }
   } catch (error) {
     return { ...factory, statusError: errorMessage(error) }
   }
+}
+
+async function readFactoryTagSessions(
+  config: StackConfig,
+  factoryId: string,
+): Promise<RemoteTagSessionSummary[]> {
+  try {
+    const payload = await getJson(
+      config,
+      `/api/tag/v1/sessions?factory_id=${encodeURIComponent(factoryId)}&limit=8`,
+    )
+    const sessions = asArray(payload)
+      .map(readTagSessionSummary)
+      .filter((item): item is RemoteTagSessionSummary => Boolean(item))
+    const watched = await Promise.all(
+      sessions.slice(0, 3).map(async (session) => {
+        try {
+          const watch = asRecord(
+            await getJson(
+              config,
+              `/api/tag/v1/sessions/${encodeURIComponent(session.sessionId)}/watch`,
+            ),
+          )
+          return {
+            ...session,
+            messages: asArray(watch?.messages)
+              .map(readTagMessageSummary)
+              .filter((item): item is RemoteTagMessageSummary => Boolean(item)),
+          }
+        } catch {
+          return session
+        }
+      }),
+    )
+    return [...watched, ...sessions.slice(3)]
+  } catch {
+    return []
+  }
+}
+
+function readTagSessionSummary(value: unknown): RemoteTagSessionSummary | undefined {
+  const session = asRecord(value)
+  const sessionId = readString(session?.session_id)
+  const status = readString(session?.status)
+  const request = readString(session?.request)
+  if (!session || !sessionId || !status || !request) return undefined
+  const receipt = asRecord(session.receipt)
+  return {
+    sessionId,
+    status,
+    factoryId: readString(session.factory_id),
+    effortId: readString(session.effort_id),
+    projectId: readString(session.project_id),
+    experimentId: readString(session.experiment_id),
+    candidateId: readString(session.candidate_id),
+    runId: readString(session.run_id),
+    request,
+    createdAt: readString(session.created_at),
+    updatedAt: readString(session.updated_at),
+    runUrl: readString(receipt?.run_url),
+    experimentUrl: readString(receipt?.experiment_url),
+    wikiUrls: readStringArray(receipt?.wiki_urls),
+    gitUrls: readStringArray(receipt?.git_urls),
+    messages: [],
+  }
+}
+
+function readTagMessageSummary(value: unknown): RemoteTagMessageSummary | undefined {
+  const message = asRecord(value)
+  const taskId = readString(message?.task_id)
+  const taskKind = readString(message?.task_kind)
+  const body = readString(message?.body)
+  if (!message || !taskId || !taskKind || !body) return undefined
+  return {
+    taskId,
+    taskKind,
+    steeringTarget: readString(message.steering_target),
+    body,
+    createdAt: readString(message.created_at),
+    transport: readJsonRecord(message.transport_ref),
+  }
+}
+
+export async function readExperimentBundle(
+  config: StackConfig,
+  projectId: string,
+  experimentId: string,
+): Promise<RemoteExperimentBundleSummary> {
+  const payload = await getJson(
+    config,
+    `/smr/projects/${encodeURIComponent(projectId)}/experiments/${encodeURIComponent(experimentId)}/bundle`,
+  )
+  const bundle = readExperimentBundleSummary(payload)
+  if (!bundle) throw new Error("backend returned an invalid experiment bundle")
+  return bundle
+}
+
+export async function readExperimentHistory(
+  config: StackConfig,
+  projectId: string,
+  limit = 50,
+): Promise<RemoteExperimentHistorySummary> {
+  const payload = await getJson(
+    config,
+    `/smr/projects/${encodeURIComponent(projectId)}/experiment-bundles?limit=${limit}`,
+  )
+  const history = asRecord(payload)
+  if (!history) throw new Error("backend returned an invalid experiment history")
+  return {
+    schemaVersion: readString(history.schema_version) ?? "smr_experiment_history.v1",
+    projectId: readString(history.project_id) ?? projectId,
+    acceptedCycles: readNumber(history.accepted_cycles) ?? 0,
+    incompleteCycles: readNumber(history.incomplete_cycles) ?? 0,
+    missingEvidenceAlerts: asArray(history.missing_evidence_alerts).map(readJsonRecord),
+    bundles: asArray(history.bundles)
+      .map(readExperimentBundleSummary)
+      .filter((item): item is RemoteExperimentBundleSummary => Boolean(item)),
+    raw: readJsonRecord(history),
+  }
+}
+
+export async function compareExperiments(
+  config: StackConfig,
+  projectId: string,
+  experimentIds: string[],
+): Promise<Record<string, RemoteJsonValue>> {
+  const query = new URLSearchParams()
+  for (const experimentId of experimentIds) query.append("experiment_ids", experimentId)
+  return readJsonRecord(
+    await getJson(
+      config,
+      `/smr/projects/${encodeURIComponent(projectId)}/experiments/compare?${query.toString()}`,
+    ),
+  )
 }
 
 function readExperimentBundleSummary(value: unknown): RemoteExperimentBundleSummary | undefined {
@@ -979,11 +1163,15 @@ function readFactoryOperatingWindow(value: unknown): RemoteFactoryOperatingWindo
     windowStartedAt: readString(window.window_started_at),
     windowDays: readNumber(window.window_days),
     requiredCycles: readNumber(window.required_cycles),
+    terminalAttempts: readNumber(window.terminal_attempts),
     observedCycles: readNumber(window.observed_cycles),
+    rejectedCycles: readNumber(window.rejected_cycles),
     remainingCycles: readNumber(window.remaining_cycles),
     firstCycleAt: readString(window.first_cycle_at),
     latestCycleAt: readString(window.latest_cycle_at),
     cycleRunIds: readStringArray(window.cycle_run_ids),
+    rejectedCycleRunIds: readStringArray(window.rejected_cycle_run_ids),
+    cycleEvidence: asArray(window.cycle_evidence).map(readJsonRecord),
   }
 }
 

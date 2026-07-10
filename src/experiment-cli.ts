@@ -4,7 +4,12 @@ import {
   loadExperimentBundle,
   renderExperimentBundleArtifact,
 } from "./experiment-bundles.js"
-import { readRemoteResearchSnapshot, type RemoteExperimentBundleSummary } from "./remote/research.js"
+import {
+  compareExperiments,
+  readExperimentHistory,
+  readRemoteResearchSnapshot,
+  type RemoteExperimentBundleSummary,
+} from "./remote/research.js"
 
 type ParsedFlags = {
   args: string[]
@@ -58,6 +63,47 @@ export async function runExperimentCli(config: StackConfig, argv: string[]): Pro
         if (!result.artifact.served.ok) console.log(`serve warning: ${result.artifact.served.message}`)
       }
       return result.artifact.served.ok ? 0 : 1
+    }
+
+    if (action === "history") {
+      const projectId = parsed.args[0]
+      if (!projectId) return usageError("usage: stack experiment history <project-id> [--json]")
+      const history = await readExperimentHistory(config, projectId)
+      if (json) console.log(JSON.stringify(history.raw, null, 2))
+      else {
+        console.log(`project ${history.projectId}`)
+        console.log(`accepted ${history.acceptedCycles} incomplete ${history.incompleteCycles}`)
+        for (const bundle of history.bundles) {
+          console.log(
+            `${bundle.experimentId} ${bundle.status ?? "-"} ${bundle.verdict ?? "-"} accepted=${bundle.acceptedCycle} missing=${bundle.missing.join(",") || "-"}`,
+          )
+        }
+      }
+      return history.missingEvidenceAlerts.length === 0 ? 0 : 1
+    }
+
+    if (action === "compare") {
+      const [projectId, ...experimentIds] = parsed.args
+      if (!projectId || experimentIds.length < 2) {
+        return usageError("usage: stack experiment compare <project-id> <experiment-id> <experiment-id> [...] [--json]")
+      }
+      const comparison = await compareExperiments(config, projectId, experimentIds)
+      if (json) console.log(JSON.stringify(comparison, null, 2))
+      else {
+        console.log(`project ${projectId} comparable=${comparison.comparable === true}`)
+        const reasons = Array.isArray(comparison.not_comparable_reasons)
+          ? comparison.not_comparable_reasons.map(String)
+          : []
+        if (reasons.length > 0) console.log(`reasons ${reasons.join(", ")}`)
+        const rows = Array.isArray(comparison.rows) ? comparison.rows : []
+        for (const row of rows) {
+          const value = row && typeof row === "object" ? row as Record<string, unknown> : {}
+          console.log(
+            `${String(value.experiment_id ?? "-")} candidate=${String(value.candidate_id ?? "-")} value=${String(value.value ?? "-")} delta=${String(value.delta ?? "-")} verdict=${String(value.verdict ?? "-")}`,
+          )
+        }
+      }
+      return comparison.comparable === true ? 0 : 1
     }
 
     return usageError(`unknown stack experiment command: ${action}`)
@@ -175,6 +221,8 @@ function printUsage(): void {
   console.error("  stack experiment inspect <bundle.json> [--json]")
   console.error("  stack experiment inspect <project-id> <experiment-id> [--json]")
   console.error("  stack experiment inspect --project-id <id> --experiment-id <id> [--json]")
+  console.error("  stack experiment history <project-id> [--json]")
+  console.error("  stack experiment compare <project-id> <experiment-id> <experiment-id> [...] [--json]")
   console.error("  stack experiment render <bundle.json> [--slug <slug>] [--title <title>] [--effort <ref>] [--update] [--json]")
   console.error("  stack experiment render <project-id> <experiment-id> [--slug <slug>] [--update] [--json]")
   console.error("")

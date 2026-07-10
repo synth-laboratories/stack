@@ -281,12 +281,28 @@ export type StackdRemoteFactorySnapshot = {
     window_started_at?: string | null
     window_days?: number | null
     required_cycles?: number | null
+    terminal_attempts?: number | null
     observed_cycles?: number | null
+    rejected_cycles?: number | null
     remaining_cycles?: number | null
     first_cycle_at?: string | null
     latest_cycle_at?: string | null
     cycle_run_ids: string[]
+    rejected_cycle_run_ids?: string[]
+    cycle_evidence?: unknown[]
   } | null
+  judgment_state?: unknown
+  tag_sessions?: Array<{
+    session_id: string
+    status: string
+    project_id?: string | null
+    effort_id?: string | null
+    experiment_id?: string | null
+    candidate_id?: string | null
+    run_id?: string | null
+    request: string
+    messages?: unknown[]
+  }>
   project_ids: string[]
 }
 
