@@ -103,6 +103,11 @@ import {
   writeArtifactPage as writeStackArtifactPage,
 } from "../artifacts.js"
 import {
+  inspectExperimentBundle as inspectStackExperimentBundle,
+  loadExperimentBundle as loadStackExperimentBundle,
+  renderExperimentBundleArtifact as renderStackExperimentBundleArtifact,
+} from "../experiment-bundles.js"
+import {
   EFFORT_LAUNCH_KINDS,
   launchEffortRun as launchStackEffortRun,
   type EffortLaunchKind,
@@ -3353,6 +3358,40 @@ export class StackMcpServer {
     return toJsonValue(result) ?? null
   }
 
+  async inspectExperimentBundle(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const bundle = await loadStackExperimentBundle(config, experimentBundleSource(args))
+    return toJsonValue({
+      bundle,
+      inspection: inspectStackExperimentBundle(bundle),
+      receipt: "lever.stack_mcp experiment.bundle_inspected",
+    }) ?? null
+  }
+
+  async renderExperimentBundle(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const result = await renderStackExperimentBundleArtifact(config, {
+      ...experimentBundleSource(args),
+      slug: optionalString(args, "slug"),
+      title: optionalString(args, "title"),
+      effort: optionalString(args, "effort_ref"),
+      update: optionalBoolean(args, "update") ?? false,
+    })
+    return toJsonValue({
+      ok: result.artifact.served.ok,
+      inspection: result.inspection,
+      artifact: result.artifact.artifact,
+      local_url: result.artifact.localUrl,
+      gallery_url: artifactGalleryUrl(),
+      page_path: result.artifact.pagePath,
+      data_path: result.artifact.dataPath,
+      served: result.artifact.served,
+      receipt: result.artifact.served.ok
+        ? `RECEIPT PASS experiment_id=${result.bundle.experiment_id} bundle_sha256=${result.inspection.bundle_sha256} local_artifact_url=${result.artifact.localUrl}`
+        : null,
+    }) ?? null
+  }
+
   async recordEffortArtifact(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const effortRef = requiredString(args, "effort_ref")
@@ -3420,8 +3459,67 @@ export class StackMcpServer {
         next_wake_at: factory.nextWakeAt,
         active_efforts: factory.activeEfforts ?? 0,
         paused_or_waiting: factory.pausedOrWaiting ?? 0,
+        status_error: factory.statusError,
+        control_loops: factory.controlLoops ? {
+          service_type: factory.controlLoops.serviceType,
+          environment: factory.controlLoops.environment,
+          runtime_state: factory.controlLoops.runtimeState,
+          runtime_enabled: factory.controlLoops.runtimeEnabled,
+          scheduler_enabled: factory.controlLoops.schedulerEnabled,
+          reactor_enabled: factory.controlLoops.reactorEnabled,
+          scheduler_observed_at: factory.controlLoops.schedulerObservedAt,
+          reactor_observed_at: factory.controlLoops.reactorObservedAt,
+        } : null,
+        factory_health: factory.health ? {
+          status: factory.health.status,
+          health_score: factory.health.healthScore,
+          threshold: factory.health.threshold,
+          evaluated_at: factory.health.evaluatedAt,
+          vitals: Object.fromEntries(Object.entries(factory.health.vitals).map(([name, vital]) => [name, {
+            status: vital.status,
+            in_band: vital.inBand,
+            reason: vital.reason,
+            observed: vital.observed,
+          }])),
+        } : null,
+        operating_window: factory.operatingWindow ? {
+          status: factory.operatingWindow.status,
+          evaluated_at: factory.operatingWindow.evaluatedAt,
+          window_started_at: factory.operatingWindow.windowStartedAt,
+          window_days: factory.operatingWindow.windowDays,
+          required_cycles: factory.operatingWindow.requiredCycles,
+          observed_cycles: factory.operatingWindow.observedCycles,
+          remaining_cycles: factory.operatingWindow.remainingCycles,
+          first_cycle_at: factory.operatingWindow.firstCycleAt,
+          latest_cycle_at: factory.operatingWindow.latestCycleAt,
+          cycle_run_ids: factory.operatingWindow.cycleRunIds,
+        } : null,
+        latest_experiment: factory.latestExperiment ? {
+          experiment_id: factory.latestExperiment.experimentId,
+          project_id: factory.latestExperiment.projectId,
+          candidate_id: factory.latestExperiment.candidateId,
+          candidate_model: factory.latestExperiment.candidateModel,
+          metric: factory.latestExperiment.metric,
+          baseline_value: factory.latestExperiment.baselineValue,
+          candidate_value: factory.latestExperiment.candidateValue,
+          delta: factory.latestExperiment.delta,
+          seed_count: factory.latestExperiment.seedCount,
+          trace_count: factory.latestExperiment.traceCount,
+          cost_cents: factory.latestExperiment.costCents,
+          integrity_state: factory.latestExperiment.integrityState,
+          accepted_cycle: factory.latestExperiment.acceptedCycle,
+          missing: factory.latestExperiment.missing,
+        } : null,
       })),
     }) ?? null
+  }
+
+  async inspectExperiment(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const projectId = requiredString(args, "project_id")
+    const experimentId = requiredString(args, "experiment_id")
+    const bundle = await loadStackExperimentBundle(config, { projectId, experimentId })
+    return toJsonValue({ bundle, inspection: inspectStackExperimentBundle(bundle) }) ?? null
   }
 
   async listHostedOptimizerRuns(args: JsonObject): Promise<JsonValue> {
@@ -5332,6 +5430,10 @@ function factoriesMcpFromRuntime(
       has_cloud_dev_env: factory.has_cloud_dev_env,
       cloud_dev_label: factory.cloud_dev_label,
       is_running: factory.is_running ?? false,
+      status_error: factory.status_error,
+      control_loops: factory.control_loops,
+      factory_health: factory.factory_health,
+      operating_window: factory.operating_window,
       project_ids: factory.project_ids,
     })),
   })
@@ -6032,13 +6134,52 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.shareArtifact(args),
     },
     {
+      name: "stack_experiment_inspect",
+      description: "Validate and inspect an owner-assembled smr_experiment_bundle.v1 from a local JSON file or the authenticated Project experiment bundle route. Terminal bundles fail closed unless their integrity projection matches the evidence.",
+      inputSchema: objectSchema({
+        bundle_path: stringProperty("Workspace-relative or absolute path to an experiment bundle JSON file. Mutually exclusive with project_id and experiment_id."),
+        project_id: stringProperty("Synth Project id for owner-route bundle retrieval. Requires experiment_id."),
+        experiment_id: stringProperty("Synth experiment id for owner-route bundle retrieval. Requires project_id."),
+      }),
+      handler: (args) => server.inspectExperimentBundle(args),
+    },
+    {
+      name: "stack_experiment_render_artifact",
+      description: "Validate an owner-assembled smr_experiment_bundle.v1 and render its hypothesis, exact candidate prompt/config, executions, evaluations, economics, decision, provenance, traces, and artifacts into a local Stack Artifact Site page. Publishing remains a separate operator-confirmed artifact action.",
+      inputSchema: objectSchema(
+        {
+          bundle_path: stringProperty("Workspace-relative or absolute path to an experiment bundle JSON file. Mutually exclusive with project_id and experiment_id."),
+          project_id: stringProperty("Synth Project id for owner-route bundle retrieval. Requires experiment_id."),
+          experiment_id: stringProperty("Synth experiment id for owner-route bundle retrieval. Requires project_id."),
+          slug: stringProperty("Optional artifact slug. Defaults to experiment_id."),
+          title: stringProperty("Optional artifact title. Defaults to the bundle title."),
+          effort_ref: stringProperty("Optional local Stack Effort ref. Defaults to effort_id from the bundle."),
+          update: { type: "boolean", description: "Set true to update an existing artifact identity; false creates a new page." },
+        },
+      ),
+      handler: (args) => server.renderExperimentBundle(args),
+    },
+    {
       name: "stack_list_factories",
-      description: "List remote Research Factories and routable project/run hints for operator mediation. Uses stackd runtime snapshot first, with direct API fallback.",
+      description: "List remote Research Factories, backend-owned control-loop flags, health sensors, 12-cycle/30-day progress, and routable project/run hints. Uses stackd runtime snapshot first, with direct owner-API fallback.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         tick: { type: "boolean", description: "If true, request one stackd /runtime/tick before reading factories." },
       }),
       handler: (args) => server.listFactories(args),
+    },
+    {
+      name: "stack_inspect_experiment",
+      description: "Inspect the backend-owned experiment bundle: hypothesis, candidate model/prompt, container and scorer identity, traces, rewards, costs, Wiki receipt, git receipt, and completeness gate.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          project_id: stringProperty("Synth project id."),
+          experiment_id: stringProperty("First-class experiment id."),
+        },
+        ["project_id", "experiment_id"],
+      ),
+      handler: (args) => server.inspectExperiment(args),
     },
     {
       name: "stack_list_hosted_optimizer_runs",
@@ -7673,6 +7814,24 @@ function requiredString(args: JsonObject, key: string): string {
 function optionalString(args: JsonObject, key: string): string | undefined {
   const value = args[key]
   return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+function experimentBundleSource(args: JsonObject): {
+  bundlePath?: string
+  projectId?: string
+  experimentId?: string
+} {
+  const bundlePath = optionalString(args, "bundle_path")
+  const projectId = optionalString(args, "project_id")
+  const experimentId = optionalString(args, "experiment_id")
+  if (bundlePath && (projectId || experimentId)) {
+    throw new RpcError(-32602, "provide bundle_path or project_id+experiment_id, not both")
+  }
+  if (bundlePath) return { bundlePath }
+  if (!projectId || !experimentId) {
+    throw new RpcError(-32602, "bundle_path or both project_id and experiment_id are required")
+  }
+  return { projectId, experimentId }
 }
 
 function optionalInteger(args: JsonObject, key: string): number | undefined {
