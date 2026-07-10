@@ -636,6 +636,21 @@ export async function readRemoteRunDetail(config: StackConfig, run: RemoteSmrRun
   }
 }
 
+export async function fetchRemoteExperimentBundle(
+  config: StackConfig,
+  projectId: string,
+  experimentId: string,
+): Promise<unknown> {
+  const auth = environmentAuthStatus(config.environment)
+  if (!auth.hasAuth || !process.env[config.environment.authEnv]) {
+    throw new Error(auth.message)
+  }
+  return await getJson(
+    config,
+    `/smr/projects/${encodeURIComponent(projectId)}/experiments/${encodeURIComponent(experimentId)}/bundle`,
+  )
+}
+
 export async function readHostedArtifacts(
   config: StackConfig,
   options: { projectId?: string; limit?: number } = {},

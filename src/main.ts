@@ -70,6 +70,10 @@ try {
     const { runArtifactsCli } = await import("./artifacts-cli.js")
     process.exit(await runArtifactsCli(config, process.argv.slice(2)))
   }
+  if (process.argv[2] === "experiment") {
+    const { runExperimentCli } = await import("./experiment-cli.js")
+    process.exit(await runExperimentCli(config, process.argv.slice(2)))
+  }
   if (process.argv[2] === "watch") {
     const { runWatchCli } = await import("./watch-cli.js")
     process.exit(await runWatchCli(config, process.argv.slice(2)))
@@ -248,6 +252,7 @@ function printStackHelp(argv: string[]): void {
   console.log("  stack inference <list|usage> [--json]")
   console.log("  stack effort <command>          Create, inspect, and update Efforts")
   console.log("  stack artifacts <command>       Create and serve local Artifact Sites")
+  console.log("  stack experiment <command>      Inspect and render canonical experiment bundles")
   console.log("  stack watch <run-id> [--once|--replay] [--json]")
   console.log("  stack telemetry digest [--env dev|staging|prod]")
   console.log("  stack crashes <command>")
