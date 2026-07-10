@@ -12524,6 +12524,10 @@ function runtimeMessageLabel(message: RemoteRunDetail["runtimeMessages"][number]
 
 function selectedRemoteFactoryText(factory: RemoteFactorySummary): string[] {
   const experiment = factory.latestExperiment
+  const tagSessions = factory.tagSessions ?? []
+  const latestTagSession = tagSessions[0]
+  const latestTagMessage = latestTagSession?.messages.at(-1)
+  const judgmentLines = factoryJudgmentLines(factory)
   return [
     inlineText(factory.name, 34),
     `id ${inlineText(factory.factoryId, 30)}`,
@@ -12539,7 +12543,40 @@ function selectedRemoteFactoryText(factory: RemoteFactorySummary): string[] {
     experiment ? `eval ${experiment.metric ?? "-"} ${formatOptional(experiment.baselineValue)} → ${formatOptional(experiment.candidateValue)} Δ${formatOptional(experiment.delta)} n=${experiment.seedCount}` : "",
     experiment ? `traces ${experiment.traceCount} · cost ${formatOptional(experiment.costCents)}c · accepted ${experiment.acceptedCycle}` : "",
     experiment && experiment.missing.length > 0 ? `missing ${inlineText(experiment.missing.join(", "), 48)}` : "",
+    tagSessions.length > 0
+      ? `tag sessions ${tagSessions.length} · latest ${inlineText(latestTagSession?.sessionId ?? "-", 20)} · ${latestTagSession?.status ?? "-"}`
+      : "tag sessions 0",
+    latestTagSession ? `tag request ${inlineText(latestTagSession.request, 48)}` : "",
+    latestTagMessage
+      ? `tag ${latestTagMessage.steeringTarget ?? latestTagMessage.taskKind} ${inlineText(latestTagMessage.body, 48)}`
+      : "",
+    latestTagSession?.experimentUrl ? `tag experiment ${inlineText(latestTagSession.experimentUrl, 46)}` : "",
+    latestTagSession && latestTagSession.wikiUrls.length > 0
+      ? `tag wiki ${inlineText(latestTagSession.wikiUrls[0] ?? "", 50)}`
+      : "",
+    ...judgmentLines,
   ].filter((line) => line.length > 0)
+}
+
+function factoryJudgmentLines(factory: RemoteFactorySummary): string[] {
+  const efforts = asRecord(factory.judgmentState?.efforts)
+  if (!efforts) return []
+  const latest = Object.values(efforts).map(asRecord).find(Boolean)
+  if (!latest) return []
+  const gate = asRecord(latest.review_gate)
+  const seraph = asRecord(latest.seraph)
+  const gardener = asRecord(latest.gardener)
+  const citations = Array.isArray(seraph?.cited_evidence) ? seraph.cited_evidence.length : 0
+  const carry = asRecord(gardener?.memory_carry)
+  return [
+    `judgment ${String(gate?.review_gate_status ?? gate?.action ?? "-")} · decision=${String(latest.decision_needed ?? false)}`,
+    seraph
+      ? `seraph ${String(seraph.verdict ?? "-")} · ${String(seraph.failure_class ?? "-")} · citations ${citations}`
+      : "seraph -",
+    gardener
+      ? `gardener ${String(gardener.record_type ?? "-")} · ${String(gardener.producing_rung ?? "-")}→${String(gardener.next_rung ?? "-")} · carry ${carry ? String(carry.source_row_id ?? "present") : "-"}`
+      : "gardener -",
+  ]
 }
 
 function currentRemoteRunDetail(state: AppState): RemoteRunDetail | undefined {

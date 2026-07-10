@@ -3401,8 +3401,8 @@ export class StackMcpServer {
       ? await stackdRuntimeTick().catch(() => undefined)
       : await readStackRuntimeFactory()
     const runtimeFactories = factoriesMcpFromRuntime(runtime?.snapshot, config)
-    if (runtimeFactories) return runtimeFactories
     const snapshot = await readRemoteResearchSnapshot(config)
+    if (snapshot.factories.length === 0 && runtimeFactories) return runtimeFactories
     return toJsonValue({
       environment: config.environmentName,
       source: "direct-api",
@@ -3450,12 +3450,39 @@ export class StackMcpServer {
           window_started_at: factory.operatingWindow.windowStartedAt,
           window_days: factory.operatingWindow.windowDays,
           required_cycles: factory.operatingWindow.requiredCycles,
+          terminal_attempts: factory.operatingWindow.terminalAttempts,
           observed_cycles: factory.operatingWindow.observedCycles,
+          rejected_cycles: factory.operatingWindow.rejectedCycles,
           remaining_cycles: factory.operatingWindow.remainingCycles,
           first_cycle_at: factory.operatingWindow.firstCycleAt,
           latest_cycle_at: factory.operatingWindow.latestCycleAt,
           cycle_run_ids: factory.operatingWindow.cycleRunIds,
+          rejected_cycle_run_ids: factory.operatingWindow.rejectedCycleRunIds,
+          cycle_evidence: factory.operatingWindow.cycleEvidence,
         } : null,
+        judgment_state: factory.judgmentState ?? null,
+        tag_sessions: (factory.tagSessions ?? []).map((session) => ({
+          session_id: session.sessionId,
+          status: session.status,
+          project_id: session.projectId,
+          effort_id: session.effortId,
+          experiment_id: session.experimentId,
+          candidate_id: session.candidateId,
+          run_id: session.runId,
+          request: session.request,
+          run_url: session.runUrl,
+          experiment_url: session.experimentUrl,
+          wiki_urls: session.wikiUrls,
+          git_urls: session.gitUrls,
+          messages: session.messages.map((message) => ({
+            task_id: message.taskId,
+            task_kind: message.taskKind,
+            steering_target: message.steeringTarget,
+            body: message.body,
+            created_at: message.createdAt,
+            transport: message.transport,
+          })),
+        })),
         latest_experiment: factory.latestExperiment ? {
           experiment_id: factory.latestExperiment.experimentId,
           project_id: factory.latestExperiment.projectId,

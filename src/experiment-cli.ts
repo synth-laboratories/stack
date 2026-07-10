@@ -2,7 +2,9 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname, resolve } from "node:path"
 import type { StackConfig } from "./config.js"
 import {
+  compareExperiments,
   readExperimentBundle,
+  readExperimentHistory,
   readRemoteResearchSnapshot,
   type RemoteExperimentBundleSummary,
 } from "./remote/research.js"
@@ -52,6 +54,47 @@ export async function runExperimentCli(config: StackConfig, argv: string[]): Pro
     if (parsed.json) console.log(JSON.stringify({ output, accepted_cycle: bundle.acceptedCycle }, null, 2))
     else console.log(output)
     return bundle.acceptedCycle ? 0 : 1
+  }
+
+  if (noun === "experiment" && action === "history") {
+    const projectId = parsed.positional[0]
+    if (!projectId) return usageError("usage: stack experiment history <project-id> [--json]")
+    const history = await readExperimentHistory(config, projectId)
+    if (parsed.json) console.log(JSON.stringify(history.raw, null, 2))
+    else {
+      console.log(`project ${history.projectId}`)
+      console.log(`accepted ${history.acceptedCycles} incomplete ${history.incompleteCycles}`)
+      for (const bundle of history.bundles) {
+        console.log(
+          `${bundle.experimentId} ${bundle.status ?? "-"} ${bundle.verdict ?? "-"} accepted=${bundle.acceptedCycle} missing=${bundle.missing.join(",") || "-"}`,
+        )
+      }
+    }
+    return history.missingEvidenceAlerts.length === 0 ? 0 : 1
+  }
+
+  if (noun === "experiment" && action === "compare") {
+    const [projectId, ...experimentIds] = parsed.positional
+    if (!projectId || experimentIds.length < 2) {
+      return usageError("usage: stack experiment compare <project-id> <experiment-id> <experiment-id> [...] [--json]")
+    }
+    const comparison = await compareExperiments(config, projectId, experimentIds)
+    if (parsed.json) console.log(JSON.stringify(comparison, null, 2))
+    else {
+      console.log(`project ${projectId} comparable=${comparison.comparable === true}`)
+      const reasons = Array.isArray(comparison.not_comparable_reasons)
+        ? comparison.not_comparable_reasons.map(String)
+        : []
+      if (reasons.length > 0) console.log(`reasons ${reasons.join(", ")}`)
+      const rows = Array.isArray(comparison.rows) ? comparison.rows : []
+      for (const row of rows) {
+        const value = row && typeof row === "object" ? row as Record<string, unknown> : {}
+        console.log(
+          `${String(value.experiment_id ?? "-")} candidate=${String(value.candidate_id ?? "-")} value=${String(value.value ?? "-")} delta=${String(value.delta ?? "-")} verdict=${String(value.verdict ?? "-")}`,
+        )
+      }
+    }
+    return comparison.comparable === true ? 0 : 1
   }
 
   printUsage()
@@ -139,5 +182,7 @@ function usageError(message: string): number {
 function printUsage(): void {
   console.log("  stack factory inspect <factory-id> [--json]")
   console.log("  stack experiment inspect <project-id> <experiment-id> [--json]")
+  console.log("  stack experiment history <project-id> [--json]")
+  console.log("  stack experiment compare <project-id> <experiment-id> <experiment-id> [...] [--json]")
   console.log("  stack experiment render <project-id> <experiment-id> [--output <report.md>] [--json]")
 }
