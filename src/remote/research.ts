@@ -904,9 +904,10 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
 
 function readExperimentBundleSummary(value: unknown): RemoteExperimentBundleSummary | undefined {
   const bundle = asRecord(value)
+  const schemaVersion = readString(bundle?.schema_version)
   const experimentId = readString(bundle?.experiment_id)
   const projectId = readString(bundle?.project_id)
-  if (!bundle || !experimentId || !projectId) return undefined
+  if (schemaVersion !== "smr_experiment_bundle.v1" || !bundle || !experimentId || !projectId) return undefined
   const experiment = asRecord(bundle.experiment)
   const candidate = asRecord(bundle.candidate)
   const evaluation = asRecord(asArray(bundle.evaluations)[0])
@@ -914,7 +915,7 @@ function readExperimentBundleSummary(value: unknown): RemoteExperimentBundleSumm
   const integrity = asRecord(bundle.integrity)
   const provenance = asRecord(bundle.provenance)
   return {
-    schemaVersion: readString(bundle.schema_version) ?? "smr_experiment_bundle.v1",
+    schemaVersion,
     experimentId,
     projectId,
     runIds: asArray(bundle.run_ids).map(readString).filter((item): item is string => Boolean(item)),
@@ -937,7 +938,7 @@ function readExperimentBundleSummary(value: unknown): RemoteExperimentBundleSumm
     tokens: readNumber(economics?.tokens),
     traceCount: asArray(bundle.trace_index).length,
     integrityState: readString(integrity?.state),
-    acceptedCycle: readBoolean(integrity?.accepted_cycle) ?? false,
+    acceptedCycle: readBoolean(integrity?.accepted_cycle),
     missing: asArray(integrity?.missing).map(readString).filter((item): item is string => Boolean(item)),
     synthWiki: readJsonRecord(provenance?.synth_wiki),
     gitServer: readJsonRecord(provenance?.git_server),

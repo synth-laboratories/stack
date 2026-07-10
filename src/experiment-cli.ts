@@ -92,6 +92,9 @@ function bundleSource(parsed: ParsedFlags): {
   projectId?: string
   experimentId?: string
 } {
+  if (parsed.args.length > 2) {
+    throw new Error("experiment commands accept at most two positional arguments")
+  }
   const projectIdFlag = flagString(parsed, "project-id")
   const experimentIdFlag = flagString(parsed, "experiment-id")
   if (parsed.args.length === 2 && !projectIdFlag && !experimentIdFlag) {
