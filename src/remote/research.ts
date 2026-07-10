@@ -1,6 +1,13 @@
 import { environmentAuthStatus, type StackConfig } from "../config.js"
 
 export type RemoteResearchStatus = "ready" | "missing-auth" | "offline"
+export type RemoteJsonValue =
+  | null
+  | boolean
+  | number
+  | string
+  | RemoteJsonValue[]
+  | { [key: string]: RemoteJsonValue }
 
 export type RemoteSmrRunSummary = {
   runId: string
@@ -165,6 +172,49 @@ export type RemoteFactorySummary = {
   hasCloudDevEnv?: boolean
   cloudDevLabel?: string
   isRunning?: boolean
+  controlLoops?: RemoteFactoryControlLoopSummary
+  health?: RemoteFactoryHealthSummary
+  operatingWindow?: RemoteFactoryOperatingWindowSummary
+  statusError?: string
+}
+
+export type RemoteFactoryControlLoopSummary = {
+  serviceType?: string
+  environment?: string
+  runtimeState?: string
+  runtimeEnabled?: boolean
+  schedulerEnabled?: boolean
+  reactorEnabled?: boolean
+  schedulerObservedAt?: string
+  reactorObservedAt?: string
+}
+
+export type RemoteFactoryVitalSummary = {
+  status?: string
+  inBand?: boolean
+  reason?: string
+  observed: Record<string, RemoteJsonValue>
+}
+
+export type RemoteFactoryHealthSummary = {
+  status?: string
+  healthScore?: number
+  threshold?: number
+  evaluatedAt?: string
+  vitals: Record<string, RemoteFactoryVitalSummary>
+}
+
+export type RemoteFactoryOperatingWindowSummary = {
+  status?: string
+  evaluatedAt?: string
+  windowStartedAt?: string
+  windowDays?: number
+  requiredCycles?: number
+  observedCycles?: number
+  remainingCycles?: number
+  firstCycleAt?: string
+  latestCycleAt?: string
+  cycleRunIds: string[]
 }
 
 export type RemoteDeploymentSummary = {
@@ -755,6 +805,10 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
     const factoryStatus = readString(factoryRecord?.status) ?? factory.status
     const runtimeState = readString(runtime?.state)
     const runtimeEnabled = readBoolean(runtime?.enabled)
+    const controlLoopFlags = asRecord(runtime?.control_loop_flags)
+    const reactor = asRecord(runtime?.reactor)
+    const health = readFactoryHealth(payload.factory_health)
+    const operatingWindow = readFactoryOperatingWindow(payload.operating_window)
     const cloudDev = readFactoryCloudDevEnv(payload)
     const isRunning = factoryIsRunning({
       factoryStatus,
@@ -780,9 +834,63 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
       hasCloudDevEnv: cloudDev.hasCloudDevEnv,
       cloudDevLabel: cloudDev.label,
       isRunning,
+      controlLoops: {
+        serviceType: readString(controlLoopFlags?.service_type),
+        environment: readString(controlLoopFlags?.environment),
+        runtimeState,
+        runtimeEnabled: readOptionalBoolean(runtime?.enabled),
+        schedulerEnabled: readOptionalBoolean(controlLoopFlags?.scheduler_enabled),
+        reactorEnabled: readOptionalBoolean(controlLoopFlags?.reactor_enabled),
+        schedulerObservedAt: readString(runtime?.last_observed_at),
+        reactorObservedAt: readString(reactor?.last_observed_at),
+      },
+      health,
+      operatingWindow,
+      statusError: undefined,
     }
-  } catch {
-    return factory
+  } catch (error) {
+    return { ...factory, statusError: errorMessage(error) }
+  }
+}
+
+function readFactoryHealth(value: unknown): RemoteFactoryHealthSummary | undefined {
+  const health = asRecord(value)
+  if (!health) return undefined
+  const vitalsRecord = asRecord(health.vitals) ?? {}
+  const vitals: Record<string, RemoteFactoryVitalSummary> = {}
+  for (const [name, rawVital] of Object.entries(vitalsRecord)) {
+    const vital = asRecord(rawVital)
+    if (!vital) continue
+    vitals[name] = {
+      status: readString(vital.status),
+      inBand: readOptionalBoolean(vital.in_band),
+      reason: readString(vital.reason),
+      observed: readJsonRecord(vital.observed),
+    }
+  }
+  return {
+    status: readString(health.status),
+    healthScore: readNumber(health.health_score),
+    threshold: readNumber(health.threshold),
+    evaluatedAt: readString(health.evaluated_at),
+    vitals,
+  }
+}
+
+function readFactoryOperatingWindow(value: unknown): RemoteFactoryOperatingWindowSummary | undefined {
+  const window = asRecord(value)
+  if (!window) return undefined
+  return {
+    status: readString(window.status),
+    evaluatedAt: readString(window.evaluated_at),
+    windowStartedAt: readString(window.window_started_at),
+    windowDays: readNumber(window.window_days),
+    requiredCycles: readNumber(window.required_cycles),
+    observedCycles: readNumber(window.observed_cycles),
+    remainingCycles: readNumber(window.remaining_cycles),
+    firstCycleAt: readString(window.first_cycle_at),
+    latestCycleAt: readString(window.latest_cycle_at),
+    cycleRunIds: readStringArray(window.cycle_run_ids),
   }
 }
 
@@ -1100,6 +1208,32 @@ function asRecord(value: unknown): Record<string, unknown> | undefined {
   return value as Record<string, unknown>
 }
 
+function readJsonRecord(value: unknown): Record<string, RemoteJsonValue> {
+  const parsed = readJsonValue(value)
+  return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}
+}
+
+function readJsonValue(value: unknown): RemoteJsonValue | undefined {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return value
+  if (typeof value === "number") return Number.isFinite(value) ? value : undefined
+  if (Array.isArray(value)) {
+    const items: RemoteJsonValue[] = []
+    for (const item of value) {
+      const parsed = readJsonValue(item)
+      if (parsed !== undefined) items.push(parsed)
+    }
+    return items
+  }
+  const record = asRecord(value)
+  if (!record) return undefined
+  const output: Record<string, RemoteJsonValue> = {}
+  for (const [key, item] of Object.entries(record)) {
+    const parsed = readJsonValue(item)
+    if (parsed !== undefined) output[key] = parsed
+  }
+  return output
+}
+
 function asArray(value: unknown): unknown[] {
   return Array.isArray(value) ? value : []
 }
@@ -1110,6 +1244,10 @@ function readString(value: unknown): string | undefined {
 
 function readBoolean(value: unknown): boolean {
   return typeof value === "boolean" ? value : false
+}
+
+function readOptionalBoolean(value: unknown): boolean | undefined {
+  return typeof value === "boolean" ? value : undefined
 }
 
 function readNumber(value: unknown): number | undefined {

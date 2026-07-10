@@ -268,19 +268,22 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
                     Ok(status) => {
                         factory.apply_status_payload(&status);
                     }
-                    Err(error) => events.push(fetch_failed_event(
-                        "sensor.remote.factory_status.fetch_failed",
-                        "remote_factory",
-                        &factory.factory_id,
-                        &observed_at,
-                        &format!("/smr/factories/{}/status", factory.factory_id),
-                        error,
-                        &profile,
-                        RuntimeCorrelation {
-                            factory_id: Some(factory.factory_id.clone()),
-                            ..RuntimeCorrelation::default()
-                        },
-                    )),
+                    Err(error) => {
+                        factory.status_error = Some(error.to_string());
+                        events.push(fetch_failed_event(
+                            "sensor.remote.factory_status.fetch_failed",
+                            "remote_factory",
+                            &factory.factory_id,
+                            &observed_at,
+                            &format!("/smr/factories/{}/status", factory.factory_id),
+                            error,
+                            &profile,
+                            RuntimeCorrelation {
+                                factory_id: Some(factory.factory_id.clone()),
+                                ..RuntimeCorrelation::default()
+                            },
+                        ));
+                    }
                 }
                 if let Some(prior) = previous.as_ref() {
                     factory.preserve_missing_enrichment(prior);
@@ -859,6 +862,10 @@ fn factory_event(
             "has_cloud_dev_env": factory.has_cloud_dev_env,
             "cloud_dev_label": factory.cloud_dev_label,
             "is_running": factory.is_running,
+            "status_error": factory.status_error,
+            "control_loops": factory.control_loops,
+            "factory_health": factory.factory_health,
+            "operating_window": factory.operating_window,
             "project_ids": factory.project_ids,
             "previous": previous,
         }),
@@ -1060,6 +1067,52 @@ impl RemoteRunMessageCursor {
     }
 }
 
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct RemoteFactoryControlLoopsCursor {
+    service_type: Option<String>,
+    environment: Option<String>,
+    runtime_state: Option<String>,
+    runtime_enabled: Option<bool>,
+    scheduler_enabled: Option<bool>,
+    reactor_enabled: Option<bool>,
+    scheduler_observed_at: Option<String>,
+    reactor_observed_at: Option<String>,
+}
+
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct RemoteFactoryVitalCursor {
+    status: Option<String>,
+    in_band: Option<bool>,
+    reason: Option<String>,
+    #[serde(default)]
+    observed: Value,
+}
+
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct RemoteFactoryHealthCursor {
+    status: Option<String>,
+    health_score: Option<f64>,
+    threshold: Option<f64>,
+    evaluated_at: Option<String>,
+    #[serde(default)]
+    vitals: BTreeMap<String, RemoteFactoryVitalCursor>,
+}
+
+#[derive(Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+struct RemoteFactoryOperatingWindowCursor {
+    status: Option<String>,
+    evaluated_at: Option<String>,
+    window_started_at: Option<String>,
+    window_days: Option<i64>,
+    required_cycles: Option<i64>,
+    observed_cycles: Option<i64>,
+    remaining_cycles: Option<i64>,
+    first_cycle_at: Option<String>,
+    latest_cycle_at: Option<String>,
+    #[serde(default)]
+    cycle_run_ids: Vec<String>,
+}
+
 #[derive(Clone, serde::Serialize, serde::Deserialize)]
 struct RemoteFactoryCursor {
     factory_id: String,
@@ -1074,6 +1127,10 @@ struct RemoteFactoryCursor {
     has_cloud_dev_env: Option<bool>,
     cloud_dev_label: Option<String>,
     is_running: Option<bool>,
+    status_error: Option<String>,
+    control_loops: Option<RemoteFactoryControlLoopsCursor>,
+    factory_health: Option<RemoteFactoryHealthCursor>,
+    operating_window: Option<RemoteFactoryOperatingWindowCursor>,
     #[serde(default)]
     project_ids: Vec<String>,
 }
@@ -1091,6 +1148,10 @@ impl RemoteFactoryCursor {
             || self.has_cloud_dev_env != prior.has_cloud_dev_env
             || self.cloud_dev_label != prior.cloud_dev_label
             || self.is_running != prior.is_running
+            || self.status_error != prior.status_error
+            || self.control_loops != prior.control_loops
+            || self.factory_health != prior.factory_health
+            || self.operating_window != prior.operating_window
             || self.project_ids != prior.project_ids
     }
 
@@ -1121,6 +1182,15 @@ impl RemoteFactoryCursor {
         }
         if self.is_running.is_none() {
             self.is_running = prior.is_running;
+        }
+        if self.control_loops.is_none() {
+            self.control_loops = prior.control_loops.clone();
+        }
+        if self.factory_health.is_none() {
+            self.factory_health = prior.factory_health.clone();
+        }
+        if self.operating_window.is_none() {
+            self.operating_window = prior.operating_window.clone();
         }
         if self.project_ids.is_empty() {
             self.project_ids = prior.project_ids.clone();
@@ -1171,6 +1241,39 @@ impl RemoteFactoryCursor {
                 .and_then(Value::as_bool),
             self.active_efforts,
         ));
+        if let Some(runtime) = payload.get("runtime") {
+            let flags = runtime.get("control_loop_flags");
+            let reactor = runtime.get("reactor");
+            self.control_loops = Some(RemoteFactoryControlLoopsCursor {
+                service_type: flags.and_then(|value| read_string(value, "service_type")),
+                environment: flags.and_then(|value| read_string(value, "environment")),
+                runtime_state: read_string(runtime, "state"),
+                runtime_enabled: runtime.get("enabled").and_then(Value::as_bool),
+                scheduler_enabled: flags
+                    .and_then(|value| value.get("scheduler_enabled"))
+                    .and_then(Value::as_bool),
+                reactor_enabled: flags
+                    .and_then(|value| value.get("reactor_enabled"))
+                    .and_then(Value::as_bool),
+                scheduler_observed_at: read_string(runtime, "last_observed_at"),
+                reactor_observed_at: reactor
+                    .and_then(|value| read_string(value, "last_observed_at")),
+            });
+        }
+        if let Some(health) = payload
+            .get("factory_health")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+        {
+            self.factory_health = Some(health);
+        }
+        if let Some(window) = payload
+            .get("operating_window")
+            .cloned()
+            .and_then(|value| serde_json::from_value(value).ok())
+        {
+            self.operating_window = Some(window);
+        }
     }
 }
 
@@ -1309,6 +1412,10 @@ fn read_factories(value: &Value) -> Vec<RemoteFactoryCursor> {
                 has_cloud_dev_env: None,
                 cloud_dev_label: None,
                 is_running: None,
+                status_error: None,
+                control_loops: None,
+                factory_health: None,
+                operating_window: None,
                 project_ids: Vec::new(),
             })
         })
