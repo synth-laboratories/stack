@@ -198,6 +198,7 @@ import { readRemoteInferenceUsage } from "../remote/inference-usage.js"
 import {
   headUrlStatus,
   readHostedArtifacts,
+  readExperimentBundle,
   readRemoteResearchSnapshot,
   readRemoteProjectsPanelSnapshot,
   readRemoteRunDetail,
@@ -3455,8 +3456,32 @@ export class StackMcpServer {
           latest_cycle_at: factory.operatingWindow.latestCycleAt,
           cycle_run_ids: factory.operatingWindow.cycleRunIds,
         } : null,
+        latest_experiment: factory.latestExperiment ? {
+          experiment_id: factory.latestExperiment.experimentId,
+          project_id: factory.latestExperiment.projectId,
+          candidate_id: factory.latestExperiment.candidateId,
+          candidate_model: factory.latestExperiment.candidateModel,
+          metric: factory.latestExperiment.metric,
+          baseline_value: factory.latestExperiment.baselineValue,
+          candidate_value: factory.latestExperiment.candidateValue,
+          delta: factory.latestExperiment.delta,
+          seed_count: factory.latestExperiment.seedCount,
+          trace_count: factory.latestExperiment.traceCount,
+          cost_cents: factory.latestExperiment.costCents,
+          integrity_state: factory.latestExperiment.integrityState,
+          accepted_cycle: factory.latestExperiment.acceptedCycle,
+          missing: factory.latestExperiment.missing,
+        } : null,
       })),
     }) ?? null
+  }
+
+  async inspectExperiment(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const projectId = requiredString(args, "project_id")
+    const experimentId = requiredString(args, "experiment_id")
+    const bundle = await readExperimentBundle(config, projectId, experimentId)
+    return toJsonValue(bundle.raw) ?? null
   }
 
   async listHostedOptimizerRuns(args: JsonObject): Promise<JsonValue> {
@@ -6078,6 +6103,19 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         tick: { type: "boolean", description: "If true, request one stackd /runtime/tick before reading factories." },
       }),
       handler: (args) => server.listFactories(args),
+    },
+    {
+      name: "stack_inspect_experiment",
+      description: "Inspect the backend-owned experiment bundle: hypothesis, candidate model/prompt, container and scorer identity, traces, rewards, costs, Wiki receipt, git receipt, and completeness gate.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          project_id: stringProperty("Synth project id."),
+          experiment_id: stringProperty("First-class experiment id."),
+        },
+        ["project_id", "experiment_id"],
+      ),
+      handler: (args) => server.inspectExperiment(args),
     },
     {
       name: "stack_list_hosted_optimizer_runs",
