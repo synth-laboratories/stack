@@ -718,6 +718,21 @@ export async function readRemoteRunDetail(config: StackConfig, run: RemoteSmrRun
   }
 }
 
+export async function fetchRemoteExperimentBundle(
+  config: StackConfig,
+  projectId: string,
+  experimentId: string,
+): Promise<unknown> {
+  const auth = environmentAuthStatus(config.environment)
+  if (!auth.hasAuth || !process.env[config.environment.authEnv]) {
+    throw new Error(auth.message)
+  }
+  return await getJson(
+    config,
+    `/smr/projects/${encodeURIComponent(projectId)}/experiments/${encodeURIComponent(experimentId)}/bundle`,
+  )
+}
+
 export async function readHostedArtifacts(
   config: StackConfig,
   options: { projectId?: string; limit?: number } = {},
@@ -885,20 +900,6 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
   } catch (error) {
     return { ...factory, statusError: errorMessage(error) }
   }
-}
-
-export async function readExperimentBundle(
-  config: StackConfig,
-  projectId: string,
-  experimentId: string,
-): Promise<RemoteExperimentBundleSummary> {
-  const payload = await getJson(
-    config,
-    `/smr/projects/${encodeURIComponent(projectId)}/experiments/${encodeURIComponent(experimentId)}/bundle`,
-  )
-  const bundle = readExperimentBundleSummary(payload)
-  if (!bundle) throw new Error("backend returned an invalid experiment bundle")
-  return bundle
 }
 
 function readExperimentBundleSummary(value: unknown): RemoteExperimentBundleSummary | undefined {

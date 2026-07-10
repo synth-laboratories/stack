@@ -1,134 +1,164 @@
-import { mkdirSync, writeFileSync } from "node:fs"
-import { dirname, resolve } from "node:path"
 import type { StackConfig } from "./config.js"
 import {
-  readExperimentBundle,
-  readRemoteResearchSnapshot,
-  type RemoteExperimentBundleSummary,
-} from "./remote/research.js"
+  inspectExperimentBundle,
+  loadExperimentBundle,
+  renderExperimentBundleArtifact,
+} from "./experiment-bundles.js"
+import { readRemoteResearchSnapshot, type RemoteExperimentBundleSummary } from "./remote/research.js"
 
-type ParsedArguments = {
-  positional: string[]
-  json: boolean
-  output?: string
+type ParsedFlags = {
+  args: string[]
+  flags: Map<string, string | true>
 }
 
 export async function runExperimentCli(config: StackConfig, argv: string[]): Promise<number> {
   const [noun, action] = argv
-  const parsed = parseArguments(argv.slice(2))
-  if (noun === "factory" && action === "inspect") {
-    const factoryId = parsed.positional[0]
-    if (!factoryId) return usageError("usage: stack factory inspect <factory-id> [--json]")
-    const snapshot = await readRemoteResearchSnapshot(config)
-    const factory = snapshot.factories.find((item) => item.factoryId === factoryId)
-    if (!factory) return usageError(`factory not found: ${factoryId}`)
-    if (parsed.json) console.log(JSON.stringify(factory, null, 2))
-    else {
-      console.log(`factory ${factory.name}`)
-      console.log(`id ${factory.factoryId}`)
-      console.log(`status ${factory.status ?? "-"} runtime ${factory.runtimeState ?? "-"}`)
-      if (factory.latestExperiment) printExperiment(factory.latestExperiment)
-      else console.log("experiment none")
-    }
-    return factory.latestExperiment?.acceptedCycle ? 0 : 1
+  const parsed = parseFlags(argv.slice(2))
+  const json = parsed.flags.has("json")
+  if (!action || action === "help" || action === "--help" || action === "-h" || parsed.flags.has("help")) {
+    printUsage()
+    return action ? 0 : 2
   }
 
-  if (noun === "experiment" && (action === "inspect" || action === "render")) {
-    const [projectId, experimentId] = parsed.positional
-    if (!projectId || !experimentId) {
-      return usageError(
-        `usage: stack experiment ${action} <project-id> <experiment-id>${action === "render" ? " --output <report.md>" : " [--json]"}`,
-      )
+  try {
+    if (noun === "factory" && action === "inspect") {
+      return await inspectFactory(config, parsed, json)
     }
-    const bundle = await readExperimentBundle(config, projectId, experimentId)
+    if (noun !== "experiment") return usageError(`unknown command: ${noun} ${action}`)
+
     if (action === "inspect") {
-      if (parsed.json) console.log(JSON.stringify(bundle.raw, null, 2))
-      else printExperiment(bundle)
-      return bundle.acceptedCycle ? 0 : 1
+      const bundle = await loadExperimentBundle(config, bundleSource(parsed))
+      const inspection = inspectExperimentBundle(bundle)
+      if (json) console.log(JSON.stringify({ bundle, inspection }, null, 2))
+      else printInspection(inspection)
+      return inspection.ok ? 0 : 1
     }
-    const output = resolve(parsed.output ?? `experiment-${experimentId}.md`)
-    mkdirSync(dirname(output), { recursive: true })
-    writeFileSync(output, renderExperiment(bundle), "utf8")
-    if (parsed.json) console.log(JSON.stringify({ output, accepted_cycle: bundle.acceptedCycle }, null, 2))
-    else console.log(output)
-    return bundle.acceptedCycle ? 0 : 1
-  }
 
-  printUsage()
-  return action ? 2 : 0
+    if (action === "render") {
+      const result = await renderExperimentBundleArtifact(config, {
+        ...bundleSource(parsed),
+        slug: flagString(parsed, "slug"),
+        title: flagString(parsed, "title"),
+        effort: flagString(parsed, "effort"),
+        update: parsed.flags.has("update"),
+      })
+      if (json) {
+        console.log(JSON.stringify({
+          ok: result.artifact.served.ok,
+          inspection: result.inspection,
+          artifact: result.artifact.artifact,
+          local_url: result.artifact.localUrl,
+          page_path: result.artifact.pagePath,
+          data_path: result.artifact.dataPath,
+          served: result.artifact.served,
+        }, null, 2))
+      } else {
+        printInspection(result.inspection)
+        console.log(`${result.artifact.artifact.slug} -> ${result.artifact.localUrl}`)
+        if (!result.artifact.served.ok) console.log(`serve warning: ${result.artifact.served.message}`)
+      }
+      return result.artifact.served.ok ? 0 : 1
+    }
+
+    return usageError(`unknown stack experiment command: ${action}`)
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    if (json) console.log(JSON.stringify({ ok: false, error: message }, null, 2))
+    else console.error(message)
+    return 1
+  }
 }
 
-function printExperiment(bundle: RemoteExperimentBundleSummary): void {
+async function inspectFactory(config: StackConfig, parsed: ParsedFlags, json: boolean): Promise<number> {
+  const factoryId = parsed.args[0]
+  if (!factoryId) return usageError("usage: stack factory inspect <factory-id> [--json]")
+  const snapshot = await readRemoteResearchSnapshot(config)
+  const factory = snapshot.factories.find((item) => item.factoryId === factoryId)
+  if (!factory) return usageError(`factory not found: ${factoryId}`)
+  if (json) {
+    console.log(JSON.stringify(factory, null, 2))
+  } else {
+    console.log(`factory ${factory.name}`)
+    console.log(`id ${factory.factoryId}`)
+    console.log(`status ${factory.status ?? "not reported"} runtime ${factory.runtimeState ?? "not reported"}`)
+    if (factory.latestExperiment) printRemoteExperiment(factory.latestExperiment)
+    else console.log("experiment none")
+  }
+  return factory.latestExperiment?.acceptedCycle ? 0 : 1
+}
+
+function bundleSource(parsed: ParsedFlags): {
+  bundlePath?: string
+  projectId?: string
+  experimentId?: string
+} {
+  const projectIdFlag = flagString(parsed, "project-id")
+  const experimentIdFlag = flagString(parsed, "experiment-id")
+  if (parsed.args.length === 2 && !projectIdFlag && !experimentIdFlag) {
+    return { projectId: parsed.args[0], experimentId: parsed.args[1] }
+  }
+  const bundlePath = parsed.args[0]
+  if (bundlePath && (projectIdFlag || experimentIdFlag)) {
+    throw new Error("provide a bundle path or project id plus experiment id, not both")
+  }
+  if (bundlePath) return { bundlePath }
+  if (!projectIdFlag || !experimentIdFlag) {
+    throw new Error("provide <bundle.json>, <project-id> <experiment-id>, or both --project-id and --experiment-id")
+  }
+  return { projectId: projectIdFlag, experimentId: experimentIdFlag }
+}
+
+function printInspection(inspection: ReturnType<typeof inspectExperimentBundle>): void {
+  console.log(`${inspection.status} · ${inspection.verdict} · ${inspection.experiment_id}`)
+  console.log(`integrity: ${inspection.ok ? "pass" : "fail"} · publishable: ${inspection.publishable ? "yes" : "no"}`)
+  console.log(`runs: ${inspection.run_ids.length} · executions: ${inspection.execution_count} · evaluations: ${inspection.evaluation_count} · traces: ${inspection.trace_count} · receipts: ${inspection.receipt_count}`)
+  console.log(`bundle sha256: ${inspection.bundle_sha256}`)
+  for (const warning of inspection.warnings) console.log(`warning: ${warning}`)
+  for (const error of inspection.errors) console.log(`error: ${error}`)
+}
+
+function printRemoteExperiment(bundle: RemoteExperimentBundleSummary): void {
   console.log(`experiment ${bundle.title ?? bundle.experimentId}`)
   console.log(`id ${bundle.experimentId} project ${bundle.projectId}`)
-  console.log(`status ${bundle.status ?? "-"} verdict ${bundle.verdict ?? "-"}`)
-  console.log(`integrity ${bundle.integrityState ?? "-"} accepted_cycle=${bundle.acceptedCycle}`)
-  console.log(`candidate ${bundle.candidateId ?? "-"} model ${bundle.candidateModel ?? "-"}`)
-  console.log(`prompt ${bundle.candidatePrompt ? "inline" : bundle.candidatePromptArtifact ?? "missing"}`)
-  console.log(
-    `eval ${bundle.metric ?? "-"} baseline=${formatNumber(bundle.baselineValue)} candidate=${formatNumber(bundle.candidateValue)} delta=${formatNumber(bundle.delta)} seeds=${bundle.seedCount}`,
-  )
-  console.log(`scorer ${bundle.scorerId ?? "-"} traces ${bundle.traceCount}`)
-  console.log(`cost ${bundle.costCents ?? 0}c tokens ${bundle.tokens ?? 0}`)
-  if (bundle.missing.length > 0) console.log(`missing ${bundle.missing.join(", ")}`)
+  console.log(`status ${bundle.status ?? "not reported"} verdict ${bundle.verdict ?? "not reported"}`)
+  console.log(`integrity ${bundle.integrityState ?? "not reported"} accepted_cycle=${bundle.acceptedCycle}`)
+  console.log(`candidate ${bundle.candidateId ?? "not reported"} model ${bundle.candidateModel ?? "not reported"}`)
+  console.log(`eval ${bundle.metric ?? "not reported"} baseline=${formatNumber(bundle.baselineValue)} candidate=${formatNumber(bundle.candidateValue)} delta=${formatNumber(bundle.delta)} seeds=${bundle.seedCount}`)
 }
 
-function renderExperiment(bundle: RemoteExperimentBundleSummary): string {
-  return [
-    `# ${bundle.title ?? `Experiment ${bundle.experimentId}`}`,
-    "",
-    `- Experiment: \`${bundle.experimentId}\``,
-    `- Project: \`${bundle.projectId}\``,
-    `- Runs: ${bundle.runIds.map((item) => `\`${item}\``).join(", ") || "-"}`,
-    `- Status: ${bundle.status ?? "-"}`,
-    `- Verdict: ${bundle.verdict ?? "-"}`,
-    `- Integrity: ${bundle.integrityState ?? "-"}`,
-    `- Accepted cycle: ${bundle.acceptedCycle}`,
-    "",
-    "## Hypothesis",
-    "",
-    bundle.hypothesis ?? "-",
-    "",
-    "## Candidate",
-    "",
-    `- ID: ${bundle.candidateId ?? "-"}`,
-    `- Model: ${bundle.candidateModel ?? "-"}`,
-    `- Prompt: ${bundle.candidatePrompt ? "included below" : bundle.candidatePromptArtifact ?? "missing"}`,
-    "",
-    ...(bundle.candidatePrompt ? ["```text", bundle.candidatePrompt, "```", ""] : []),
-    "## Evaluation",
-    "",
-    `- Metric: ${bundle.metric ?? "-"}`,
-    `- Baseline: ${formatNumber(bundle.baselineValue)}`,
-    `- Candidate: ${formatNumber(bundle.candidateValue)}`,
-    `- Delta: ${formatNumber(bundle.delta)}`,
-    `- Sample size: ${bundle.sampleSize ?? "-"}`,
-    `- Seeds: ${bundle.seedCount}`,
-    `- Scorer: ${bundle.scorerId ?? "-"}`,
-    `- Trace records: ${bundle.traceCount}`,
-    `- Cost: ${bundle.costCents ?? 0} cents`,
-    `- Tokens: ${bundle.tokens ?? 0}`,
-    "",
-    "## Missing evidence",
-    "",
-    bundle.missing.length > 0 ? bundle.missing.map((item) => `- ${item}`).join("\n") : "None.",
-    "",
-  ].join("\n")
-}
-
-function parseArguments(values: string[]): ParsedArguments {
-  const parsed: ParsedArguments = { positional: [], json: false }
-  for (let index = 0; index < values.length; index += 1) {
-    const value = values[index]
-    if (value === "--json") parsed.json = true
-    else if (value === "--output") parsed.output = values[++index]
-    else parsed.positional.push(value)
+function parseFlags(argv: string[]): ParsedFlags {
+  const args: string[] = []
+  const flags = new Map<string, string | true>()
+  for (let index = 0; index < argv.length; index += 1) {
+    const token = argv[index]
+    if (!token.startsWith("--")) {
+      args.push(token)
+      continue
+    }
+    const raw = token.slice(2)
+    const separator = raw.indexOf("=")
+    if (separator >= 0) {
+      flags.set(raw.slice(0, separator), raw.slice(separator + 1))
+      continue
+    }
+    const next = argv[index + 1]
+    if (next && !next.startsWith("--")) {
+      flags.set(raw, next)
+      index += 1
+    } else {
+      flags.set(raw, true)
+    }
   }
-  return parsed
+  return { args, flags }
+}
+
+function flagString(parsed: ParsedFlags, name: string): string | undefined {
+  const value = parsed.flags.get(name)
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
 }
 
 function formatNumber(value: number | undefined): string {
-  return value === undefined ? "-" : String(value)
+  return value === undefined ? "not reported" : String(value)
 }
 
 function usageError(message: string): number {
@@ -137,7 +167,13 @@ function usageError(message: string): number {
 }
 
 function printUsage(): void {
-  console.log("  stack factory inspect <factory-id> [--json]")
-  console.log("  stack experiment inspect <project-id> <experiment-id> [--json]")
-  console.log("  stack experiment render <project-id> <experiment-id> [--output <report.md>] [--json]")
+  console.error("Usage:")
+  console.error("  stack factory inspect <factory-id> [--json]")
+  console.error("  stack experiment inspect <bundle.json> [--json]")
+  console.error("  stack experiment inspect <project-id> <experiment-id> [--json]")
+  console.error("  stack experiment inspect --project-id <id> --experiment-id <id> [--json]")
+  console.error("  stack experiment render <bundle.json> [--slug <slug>] [--title <title>] [--effort <ref>] [--update] [--json]")
+  console.error("  stack experiment render <project-id> <experiment-id> [--slug <slug>] [--update] [--json]")
+  console.error("")
+  console.error("Rendering creates or updates a normal Stack Artifact Site page. Publish it with stack artifacts publish/share.")
 }

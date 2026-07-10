@@ -76,6 +76,8 @@ export type StackArtifactWriteRequest = {
   pagePath?: string
   htmlPath?: string
   dataPath?: string
+  htmlContent?: string
+  data?: unknown
   update?: boolean
 }
 
@@ -389,9 +391,11 @@ export async function writeArtifactPage(config: StackConfig, request: StackArtif
   if (request.update && !existing) {
     throw new Error(`artifact ${slug} does not exist; use stack artifacts create ${slug}`)
   }
-  if (request.pagePath && request.htmlPath) throw new Error("provide --page or --html, not both")
+  const contentSources = [request.pagePath, request.htmlPath, request.htmlContent].filter((value) => value !== undefined)
+  if (contentSources.length > 1) throw new Error("provide pagePath, htmlPath, or htmlContent, not more than one")
   if (!request.update && !request.title?.trim()) throw new Error("create requires --title")
-  if (!request.update && !request.pagePath && !request.htmlPath) throw new Error("create requires --page or --html")
+  if (!request.update && contentSources.length === 0) throw new Error("create requires pagePath, htmlPath, or htmlContent")
+  if (request.dataPath && request.data !== undefined) throw new Error("provide dataPath or data, not both")
 
   const now = new Date().toISOString()
   const title = (request.title ?? existing?.title ?? titleFromSlug(slug)).trim()
@@ -403,7 +407,9 @@ export async function writeArtifactPage(config: StackConfig, request: StackArtif
   mkdirSync(dataDir, { recursive: true })
 
   const dataPath = join(dataDir, "data.json")
-  if (request.dataPath) {
+  if (request.data !== undefined) {
+    writeFileSync(dataPath, `${JSON.stringify(request.data, null, 2)}\n`, "utf8")
+  } else if (request.dataPath) {
     const source = resolveWorkspacePath(config, request.dataPath)
     const dataText = readFileSync(source, "utf8")
     JSON.parse(dataText)
@@ -413,9 +419,10 @@ export async function writeArtifactPage(config: StackConfig, request: StackArtif
   }
 
   let htmlPath = existing?.html_path ? join(artifactsRoot(config), existing.html_path) : undefined
-  if (request.htmlPath) {
-    const source = resolveWorkspacePath(config, request.htmlPath)
-    const htmlText = readFileSync(source, "utf8")
+  if (request.htmlPath || request.htmlContent !== undefined) {
+    const htmlText = request.htmlContent !== undefined
+      ? request.htmlContent
+      : readFileSync(resolveWorkspacePath(config, request.htmlPath!), "utf8")
     htmlPath = join(dataDir, "index.html")
     writeFileSync(htmlPath, htmlText, "utf8")
     writeFileSync(join(pageDir, "page.tsx"), htmlPassthroughPageSource(slug), "utf8")

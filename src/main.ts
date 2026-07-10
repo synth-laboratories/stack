@@ -254,6 +254,7 @@ function printStackHelp(argv: string[]): void {
   console.log("  stack factory inspect <id>      Inspect Factory research and integrity")
   console.log("  stack experiment <command>      Inspect or render one experiment bundle")
   console.log("  stack artifacts <command>       Create and serve local Artifact Sites")
+  console.log("  stack experiment <command>      Inspect and render canonical experiment bundles")
   console.log("  stack watch <run-id> [--once|--replay] [--json]")
   console.log("  stack telemetry digest [--env dev|staging|prod]")
   console.log("  stack crashes <command>")
