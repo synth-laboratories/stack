@@ -3420,6 +3420,41 @@ export class StackMcpServer {
         next_wake_at: factory.nextWakeAt,
         active_efforts: factory.activeEfforts ?? 0,
         paused_or_waiting: factory.pausedOrWaiting ?? 0,
+        status_error: factory.statusError,
+        control_loops: factory.controlLoops ? {
+          service_type: factory.controlLoops.serviceType,
+          environment: factory.controlLoops.environment,
+          runtime_state: factory.controlLoops.runtimeState,
+          runtime_enabled: factory.controlLoops.runtimeEnabled,
+          scheduler_enabled: factory.controlLoops.schedulerEnabled,
+          reactor_enabled: factory.controlLoops.reactorEnabled,
+          scheduler_observed_at: factory.controlLoops.schedulerObservedAt,
+          reactor_observed_at: factory.controlLoops.reactorObservedAt,
+        } : null,
+        factory_health: factory.health ? {
+          status: factory.health.status,
+          health_score: factory.health.healthScore,
+          threshold: factory.health.threshold,
+          evaluated_at: factory.health.evaluatedAt,
+          vitals: Object.fromEntries(Object.entries(factory.health.vitals).map(([name, vital]) => [name, {
+            status: vital.status,
+            in_band: vital.inBand,
+            reason: vital.reason,
+            observed: vital.observed,
+          }])),
+        } : null,
+        operating_window: factory.operatingWindow ? {
+          status: factory.operatingWindow.status,
+          evaluated_at: factory.operatingWindow.evaluatedAt,
+          window_started_at: factory.operatingWindow.windowStartedAt,
+          window_days: factory.operatingWindow.windowDays,
+          required_cycles: factory.operatingWindow.requiredCycles,
+          observed_cycles: factory.operatingWindow.observedCycles,
+          remaining_cycles: factory.operatingWindow.remainingCycles,
+          first_cycle_at: factory.operatingWindow.firstCycleAt,
+          latest_cycle_at: factory.operatingWindow.latestCycleAt,
+          cycle_run_ids: factory.operatingWindow.cycleRunIds,
+        } : null,
       })),
     }) ?? null
   }
@@ -5332,6 +5367,10 @@ function factoriesMcpFromRuntime(
       has_cloud_dev_env: factory.has_cloud_dev_env,
       cloud_dev_label: factory.cloud_dev_label,
       is_running: factory.is_running ?? false,
+      status_error: factory.status_error,
+      control_loops: factory.control_loops,
+      factory_health: factory.factory_health,
+      operating_window: factory.operating_window,
       project_ids: factory.project_ids,
     })),
   })
@@ -6033,7 +6072,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_list_factories",
-      description: "List remote Research Factories and routable project/run hints for operator mediation. Uses stackd runtime snapshot first, with direct API fallback.",
+      description: "List remote Research Factories, backend-owned control-loop flags, health sensors, 12-cycle/30-day progress, and routable project/run hints. Uses stackd runtime snapshot first, with direct owner-API fallback.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         tick: { type: "boolean", description: "If true, request one stackd /runtime/tick before reading factories." },

@@ -252,6 +252,41 @@ export type StackdRemoteFactorySnapshot = {
   has_cloud_dev_env?: boolean | null
   cloud_dev_label?: string | null
   is_running?: boolean | null
+  status_error?: string | null
+  control_loops?: {
+    service_type?: string | null
+    environment?: string | null
+    runtime_state?: string | null
+    runtime_enabled?: boolean | null
+    scheduler_enabled?: boolean | null
+    reactor_enabled?: boolean | null
+    scheduler_observed_at?: string | null
+    reactor_observed_at?: string | null
+  } | null
+  factory_health?: {
+    status?: string | null
+    health_score?: number | null
+    threshold?: number | null
+    evaluated_at?: string | null
+    vitals: Record<string, {
+      status?: string | null
+      in_band?: boolean | null
+      reason?: string | null
+      observed?: unknown
+    }>
+  } | null
+  operating_window?: {
+    status?: string | null
+    evaluated_at?: string | null
+    window_started_at?: string | null
+    window_days?: number | null
+    required_cycles?: number | null
+    observed_cycles?: number | null
+    remaining_cycles?: number | null
+    first_cycle_at?: string | null
+    latest_cycle_at?: string | null
+    cycle_run_ids: string[]
+  } | null
   project_ids: string[]
 }
 
