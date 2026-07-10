@@ -175,7 +175,39 @@ export type RemoteFactorySummary = {
   controlLoops?: RemoteFactoryControlLoopSummary
   health?: RemoteFactoryHealthSummary
   operatingWindow?: RemoteFactoryOperatingWindowSummary
+  latestExperiment?: RemoteExperimentBundleSummary
   statusError?: string
+}
+
+export type RemoteExperimentBundleSummary = {
+  schemaVersion: string
+  experimentId: string
+  projectId: string
+  runIds: string[]
+  title?: string
+  hypothesis?: string
+  status?: string
+  verdict?: string
+  candidateId?: string
+  candidateModel?: string
+  candidatePrompt?: string
+  candidatePromptArtifact?: string
+  metric?: string
+  baselineValue?: number
+  candidateValue?: number
+  delta?: number
+  sampleSize?: number
+  seedCount: number
+  scorerId?: string
+  costCents?: number
+  tokens?: number
+  traceCount: number
+  integrityState?: string
+  acceptedCycle: boolean
+  missing: string[]
+  synthWiki: Record<string, RemoteJsonValue>
+  gitServer: Record<string, RemoteJsonValue>
+  raw: Record<string, RemoteJsonValue>
 }
 
 export type RemoteFactoryControlLoopSummary = {
@@ -809,6 +841,7 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
     const reactor = asRecord(runtime?.reactor)
     const health = readFactoryHealth(payload.factory_health)
     const operatingWindow = readFactoryOperatingWindow(payload.operating_window)
+    const latestExperiment = readExperimentBundleSummary(payload.experiment_observability)
     const cloudDev = readFactoryCloudDevEnv(payload)
     const isRunning = factoryIsRunning({
       factoryStatus,
@@ -846,10 +879,68 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
       },
       health,
       operatingWindow,
+      latestExperiment,
       statusError: undefined,
     }
   } catch (error) {
     return { ...factory, statusError: errorMessage(error) }
+  }
+}
+
+export async function readExperimentBundle(
+  config: StackConfig,
+  projectId: string,
+  experimentId: string,
+): Promise<RemoteExperimentBundleSummary> {
+  const payload = await getJson(
+    config,
+    `/smr/projects/${encodeURIComponent(projectId)}/experiments/${encodeURIComponent(experimentId)}/bundle`,
+  )
+  const bundle = readExperimentBundleSummary(payload)
+  if (!bundle) throw new Error("backend returned an invalid experiment bundle")
+  return bundle
+}
+
+function readExperimentBundleSummary(value: unknown): RemoteExperimentBundleSummary | undefined {
+  const bundle = asRecord(value)
+  const experimentId = readString(bundle?.experiment_id)
+  const projectId = readString(bundle?.project_id)
+  if (!bundle || !experimentId || !projectId) return undefined
+  const experiment = asRecord(bundle.experiment)
+  const candidate = asRecord(bundle.candidate)
+  const evaluation = asRecord(asArray(bundle.evaluations)[0])
+  const economics = asRecord(bundle.economics)
+  const integrity = asRecord(bundle.integrity)
+  const provenance = asRecord(bundle.provenance)
+  return {
+    schemaVersion: readString(bundle.schema_version) ?? "smr_experiment_bundle.v1",
+    experimentId,
+    projectId,
+    runIds: asArray(bundle.run_ids).map(readString).filter((item): item is string => Boolean(item)),
+    title: readString(experiment?.title),
+    hypothesis: readString(experiment?.hypothesis),
+    status: readString(experiment?.status),
+    verdict: readString(experiment?.verdict),
+    candidateId: readString(candidate?.candidate_id),
+    candidateModel: readString(candidate?.model),
+    candidatePrompt: readString(candidate?.prompt),
+    candidatePromptArtifact: readString(candidate?.prompt_artifact),
+    metric: readString(evaluation?.metric),
+    baselineValue: readNumber(evaluation?.baseline_value),
+    candidateValue: readNumber(evaluation?.value),
+    delta: readNumber(evaluation?.delta),
+    sampleSize: readNumber(evaluation?.sample_size),
+    seedCount: asArray(evaluation?.seed_set).length,
+    scorerId: readString(evaluation?.scorer_id),
+    costCents: readNumber(economics?.cost_cents),
+    tokens: readNumber(economics?.tokens),
+    traceCount: asArray(bundle.trace_index).length,
+    integrityState: readString(integrity?.state),
+    acceptedCycle: readBoolean(integrity?.accepted_cycle) ?? false,
+    missing: asArray(integrity?.missing).map(readString).filter((item): item is string => Boolean(item)),
+    synthWiki: readJsonRecord(provenance?.synth_wiki),
+    gitServer: readJsonRecord(provenance?.git_server),
+    raw: readJsonRecord(bundle),
   }
 }
 

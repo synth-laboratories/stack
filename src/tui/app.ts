@@ -12523,6 +12523,7 @@ function runtimeMessageLabel(message: RemoteRunDetail["runtimeMessages"][number]
 }
 
 function selectedRemoteFactoryText(factory: RemoteFactorySummary): string[] {
+  const experiment = factory.latestExperiment
   return [
     inlineText(factory.name, 34),
     `id ${inlineText(factory.factoryId, 30)}`,
@@ -12533,6 +12534,11 @@ function selectedRemoteFactoryText(factory: RemoteFactorySummary): string[] {
     `active ${formatOptional(factory.activeEfforts)} waiting ${formatOptional(factory.pausedOrWaiting)}`,
     factory.latestRunId ? `latest run ${inlineText(factory.latestRunId, 25)}` : "",
     factory.latestWorkProductId ? `latest wp ${inlineText(factory.latestWorkProductId, 26)}` : "",
+    experiment ? `experiment ${inlineText(experiment.experimentId, 24)} · ${experiment.integrityState ?? "-"}` : "experiment -",
+    experiment ? `candidate ${inlineText(experiment.candidateId ?? "-", 18)} · ${inlineText(experiment.candidateModel ?? "-", 18)}` : "",
+    experiment ? `eval ${experiment.metric ?? "-"} ${formatOptional(experiment.baselineValue)} → ${formatOptional(experiment.candidateValue)} Δ${formatOptional(experiment.delta)} n=${experiment.seedCount}` : "",
+    experiment ? `traces ${experiment.traceCount} · cost ${formatOptional(experiment.costCents)}c · accepted ${experiment.acceptedCycle}` : "",
+    experiment && experiment.missing.length > 0 ? `missing ${inlineText(experiment.missing.join(", "), 48)}` : "",
   ].filter((line) => line.length > 0)
 }
 
