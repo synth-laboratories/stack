@@ -24,6 +24,7 @@ import { ensureStackdAutostart } from "./stackd-autostart.js"
 import { runUpdate } from "./update.js"
 import { runVoiceCheck, voiceStatusLine, writeVoiceStatus, resolveVoiceStatus } from "./voice/status.js"
 import { printStackVersion, stackAppRoot, stackVersion, wantsVersionFlag } from "./version.js"
+import { printCodeFactoryUsage } from "./code-factory-cli.js"
 
 if (wantsHelpFlag(process.argv)) {
   printStackHelp(process.argv)
@@ -69,6 +70,10 @@ try {
   if (process.argv[2] === "factory" || process.argv[2] === "experiment") {
     const { runExperimentCli } = await import("./experiment-cli.js")
     process.exit(await runExperimentCli(config, process.argv.slice(2)))
+  }
+  if (process.argv[2] === "code-factory") {
+    const { runCodeFactoryCli } = await import("./code-factory-cli.js")
+    process.exit(await runCodeFactoryCli(config, process.argv.slice(2)))
   }
   if (process.argv[2] === "artifacts") {
     const { runArtifactsCli } = await import("./artifacts-cli.js")
@@ -180,6 +185,9 @@ function wantsHelpFlag(argv: string[]): boolean {
   if (["auth", "login", "signup", "whoami"].includes(args[0])) {
     return args.includes("--help") || args.includes("-h")
   }
+  if (args[0] === "code-factory") {
+    return args.includes("--help") || args.includes("-h")
+  }
   return args[0] === "goal" && (args[1] === "--help" || args[1] === "-h")
 }
 
@@ -241,6 +249,10 @@ function printStackHelp(argv: string[]): void {
     console.log("  stack auth test signup|signin")
     return
   }
+  if (args[0] === "code-factory") {
+    printCodeFactoryUsage(args[1])
+    return
+  }
   console.log("Usage:")
   console.log("  stack                         Open the TUI")
   console.log("  stack login [--no-browser]    Open optional Synth sign-in")
@@ -253,6 +265,7 @@ function printStackHelp(argv: string[]): void {
   console.log("  stack effort <command>          Create, inspect, and update Efforts")
   console.log("  stack factory inspect <id>      Inspect Factory research and integrity")
   console.log("  stack experiment <command>      Inspect and render canonical experiment bundles")
+  console.log("  stack code-factory <command>    Operate durable local Code Factory sessions")
   console.log("  stack artifacts <command>       Create and serve local Artifact Sites")
   console.log("  stack watch <run-id> [--once|--replay] [--json]")
   console.log("  stack telemetry digest [--env dev|staging|prod]")
