@@ -401,6 +401,7 @@ export class CodeFactoryClient {
     const response = await this.requestStream(url, path, headers, options.signal)
     if (!response.body) throw new CodeFactoryProtocolError("event stream response has no body")
 
+    let previousCursor = afterCursor ?? 0
     for await (const frame of parseSse(response.body)) {
       if (!frame.data) continue
       let payload: unknown
@@ -410,11 +411,20 @@ export class CodeFactoryClient {
         throw new CodeFactoryProtocolError("event stream data is not valid JSON")
       }
       const event = parseEvent(payload, "event stream")
-      if (frame.id !== undefined && frame.id !== String(event.cursor)) {
+      if (frame.id === undefined || !/^\d+$/.test(frame.id)) {
+        throw new CodeFactoryProtocolError("event stream id must be a decimal cursor")
+      }
+      if (frame.id !== String(event.cursor)) {
         throw new CodeFactoryProtocolError(
           `event stream id ${JSON.stringify(frame.id)} does not match cursor ${event.cursor}`,
         )
       }
+      if (event.cursor <= previousCursor) {
+        throw new CodeFactoryProtocolError(
+          `event stream cursors must increase after ${previousCursor}; saw ${event.cursor}`,
+        )
+      }
+      previousCursor = event.cursor
       if (frame.event !== undefined && frame.event !== event.event_type) {
         throw new CodeFactoryProtocolError(
           `event stream type ${JSON.stringify(frame.event)} does not match ${JSON.stringify(event.event_type)}`,
