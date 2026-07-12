@@ -57,6 +57,9 @@ fi
 if [[ "${1:-}" == "artifacts" ]]; then
   exec bun run "$SCRIPT_DIR/src/main.ts" "$@"
 fi
+if [[ "${1:-}" == "code-factory" ]]; then
+  exec bun run "$SCRIPT_DIR/src/main.ts" "$@"
+fi
 
 stackd_autostart
 exec bun run "$SCRIPT_DIR/src/main.ts" "$@"
