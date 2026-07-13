@@ -28,7 +28,8 @@
     "prod": {
       "label": "Prod",
       "apiBaseUrl": "https://api.usesynth.ai",
-      "authEnv": "SYNTH_API_KEY"
+      "authEnv": "SYNTH_TUI_API_KEY_PROD",
+      "authEnvFile": ".env"
     }
   },
   "defaultHarness": "codex",
