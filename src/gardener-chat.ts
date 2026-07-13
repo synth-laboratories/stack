@@ -18,8 +18,10 @@ import {
   type StackSessionSummary,
 } from "./session.js"
 import { runSynthResponsesTurn } from "./synth-responses.js"
+import { localModelCapabilities } from "./local/optimizers.js"
 import { blocksFromTurnStdout } from "./tui/transcript.js"
 import { resolveThreadDisplayLabel } from "./thread-display-name.js"
+import { readThreadMetaEvents } from "./thread-events.js"
 
 export type GardenerChatTurnInput = {
   config: StackConfig
@@ -66,7 +68,7 @@ export async function runGardenerChatTurn(input: GardenerChatTurnInput): Promise
     })
     gardenerSession.turns.push(turn)
     await writeSessionLog(gardenerSession, input.config.sessionLogDir, {
-      codexModel: gardenerSession.codexModel,
+      codexModel: gardenerConfig.model.model,
       pricingRows: input.config.codexPricing,
     })
     const response = extractTurnAssistantText(turn)
@@ -146,9 +148,12 @@ async function buildGardenerChatPrompt(
   )
   const target = input.workerTargetId?.slice(0, 8)
   const systemPrompt = resolveGardenerSystemPrompt(input.config.stackDataRoot, gardenerConfig)
+  const localModelLines = localModelRuntimeFacts(input.config)
   const metaThreadLines = await liveMetaThreadLines(input.config.stackDataRoot)
+  const handoffLines = gardenerWorkerHandoffLines(input.config.stackDataRoot, input.gardenerThreadId)
   return [
     systemPrompt,
+    ...localModelLines,
     `Current gardener thread id: ${input.gardenerThreadId}. When you call stack_jesterky_launch, pass owner_actor_role="gardener" and owner_thread_id="${input.gardenerThreadId}" so the workflow is nested under this gardener.`,
     ...(options?.directSynth
       ? [
@@ -158,10 +163,46 @@ async function buildGardenerChatPrompt(
     ...(target ? [`Default worker target for explicit routing: ${target}`] : []),
     ...(workerLines.length > 0 ? ["Live worker threads:", ...workerLines] : []),
     ...(metaThreadLines.length > 0 ? ["Live meta-threads:", ...metaThreadLines] : []),
+    ...(handoffLines.length > 0 ? ["Worker lifecycle handoffs (durable):", ...handoffLines] : []),
     "",
     "Operator message:",
     message,
-  ].join("\n")
+].join("\n")
+}
+
+function localModelRuntimeFacts(config: StackConfig): string[] {
+  const gemini = localModelCapabilities(config).find((capability) => capability.model === "gemini-3.1-flash-lite")
+  if (!gemini || gemini.credential_status !== "available") {
+    return [
+      "Runtime fact: Gemini local policy credentials are not available. Do not infer availability from a hosted catalog; report the safe local configuration step instead.",
+    ]
+  }
+  return [
+    "AUTHORITATIVE RUNTIME FACT: gemini-3.1-flash-lite is available for Stack's local GEPA/policy harness through GEMINI_API_KEY. This route is independent of stack_inference_catalog and does not require hosted Synth inference to be online.",
+    "Historical worker or Effort text saying that Gemini requires restoring/authenticating the hosted owner catalog is stale for this local policy route. Do not repeat it as the current blocker. If reviewing that Effort, identify the old hosted-route blocker as superseded and use the local policy/harness path for the next safe action.",
+    "Boundary: Gemini remains policy/benchmark-only, not a Codex gardener or worker model. Never change the Codex model to Gemini or claim the local policy capability proves a hosted route.",
+  ]
+}
+
+function gardenerWorkerHandoffLines(stackRoot: string, gardenerThreadId: string, limit = 8): string[] {
+  return readThreadMetaEvents(stackRoot, gardenerThreadId)
+    .filter((event) => event.type === "gardener.worker_run_status")
+    .slice(-limit)
+    .map((event) => {
+      const payload = event.payload
+      const worker = payloadString(payload, "worker_title") ?? payloadString(payload, "worker_thread_id")?.slice(0, 8) ?? "worker"
+      const status = payloadString(payload, "status") ?? "updated"
+      const reason = payloadString(payload, "error") ?? payloadString(payload, "reason")
+      const completed = payload.completed_turns
+      const max = payload.max_turns
+      const turns = typeof completed === "number" && typeof max === "number" ? ` · ${completed}/${max} turns` : ""
+      return `- ${event.observed_at.slice(0, 19).replace("T", " ")} · ${worker} · ${status}${turns}${reason ? ` · ${truncateOneLine(reason, 72)}` : ""}`
+    })
+}
+
+function payloadString(payload: Record<string, unknown>, key: string): string | undefined {
+  const value = payload[key]
+  return typeof value === "string" && value.trim() ? value.trim() : undefined
 }
 
 function synthGardenerProvider(config: StackGardenerConfig): "synth_aux" | "synth_inference" | undefined {

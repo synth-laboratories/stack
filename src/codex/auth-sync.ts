@@ -321,8 +321,8 @@ function isOlderRefresh(left?: string, right?: string): boolean {
 
 export function formatCodexAuthStatusLines(status: CodexAuthStatus): string[] {
   const lines = [
-    `isolated ${status.isolated.email ?? status.isolated.authMode}${status.isolated.last_refresh ? ` · refreshed ${status.isolated.last_refresh}` : ""}`,
-    `personal ${status.personal.email ?? status.personal.authMode}${status.personal.last_refresh ? ` · refreshed ${status.personal.last_refresh}` : ""}`,
+    `isolated ${status.isolated.email ?? status.isolated.authMode}${status.isolated.lastRefresh ? ` · refreshed ${status.isolated.lastRefresh}` : ""}`,
+    `personal ${status.personal.email ?? status.personal.authMode}${status.personal.lastRefresh ? ` · refreshed ${status.personal.lastRefresh}` : ""}`,
     `drift ${status.drift ? "yes" : "no"} · stale ${status.stale ? "yes" : "no"} · healthy ${status.healthy ? "yes" : "no"}`,
     status.isolated.path,
   ]

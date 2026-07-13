@@ -1,6 +1,7 @@
 use crate::runtime::sensors::SensorPoll;
 use chrono::Utc;
 use reqwest::Client;
+use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use stack_core::config::StackPaths;
 use stack_core::runtime_event::{RuntimeCorrelation, RuntimeEventDraft, RuntimeSubject};
@@ -42,6 +43,7 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
             ));
         }
         cursor.auth_status = Some("missing".to_string());
+        cursor.fetch_failures.clear();
         return SensorPoll {
             events,
             cursor: cursor.into_value(),
@@ -443,6 +445,7 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
         )),
     }
 
+    dedupe_fetch_failures(&mut events, &mut cursor);
     cursor.checked_at = Some(observed_at);
     SensorPoll {
         events,
@@ -953,27 +956,71 @@ struct RemoteSynthCursor {
     deployments: BTreeMap<String, RemoteDeploymentCursor>,
     #[serde(default)]
     run_messages: BTreeMap<String, RemoteRunMessageCursor>,
+    #[serde(default)]
+    fetch_failures: BTreeMap<String, String>,
 }
 
 impl RemoteSynthCursor {
     fn from_value(value: Value) -> Self {
-        serde_json::from_value(value).unwrap_or(Self {
-            environment_name: None,
-            api_base_url: None,
-            auth_status: None,
-            checked_at: None,
-            projects: BTreeMap::new(),
-            runs: BTreeMap::new(),
-            factories: BTreeMap::new(),
-            optimizers: BTreeMap::new(),
-            deployments: BTreeMap::new(),
-            run_messages: BTreeMap::new(),
-        })
+        Self {
+            environment_name: cursor_string(&value, "environment_name"),
+            api_base_url: cursor_string(&value, "api_base_url"),
+            auth_status: cursor_string(&value, "auth_status"),
+            checked_at: cursor_string(&value, "checked_at"),
+            projects: cursor_map(&value, "projects"),
+            runs: cursor_map(&value, "runs"),
+            factories: cursor_map(&value, "factories"),
+            optimizers: cursor_map(&value, "optimizers"),
+            deployments: cursor_map(&value, "deployments"),
+            run_messages: cursor_map(&value, "run_messages"),
+            fetch_failures: cursor_map(&value, "fetch_failures"),
+        }
     }
 
     fn into_value(self) -> Value {
         serde_json::to_value(self).unwrap_or_else(|_| json!({}))
     }
+}
+
+fn cursor_string(value: &Value, key: &str) -> Option<String> {
+    value.get(key).and_then(Value::as_str).map(str::to_string)
+}
+
+fn cursor_map<T: DeserializeOwned>(value: &Value, key: &str) -> BTreeMap<String, T> {
+    let mut parsed = BTreeMap::new();
+    let Some(entries) = value.get(key).and_then(Value::as_object) else {
+        return parsed;
+    };
+    for (entry_key, entry_value) in entries {
+        match serde_json::from_value(entry_value.clone()) {
+            Ok(entry) => {
+                parsed.insert(entry_key.clone(), entry);
+            }
+            Err(error) => {
+                tracing::warn!(cursor_field = key, cursor_key = entry_key, %error, "ignoring incompatible remote sensor cursor entry");
+            }
+        }
+    }
+    parsed
+}
+
+fn dedupe_fetch_failures(events: &mut Vec<RuntimeEventDraft>, cursor: &mut RemoteSynthCursor) {
+    let previous = std::mem::take(&mut cursor.fetch_failures);
+    let mut current = BTreeMap::new();
+    events.retain(|event| {
+        if !event.event_type.ends_with(".fetch_failed") {
+            return true;
+        }
+        let key = format!(
+            "{}:{}:{}",
+            event.event_type, event.subject.kind, event.subject.id
+        );
+        let signature = serde_json::to_string(&event.payload).unwrap_or_default();
+        let changed = previous.get(&key) != Some(&signature);
+        current.insert(key, signature);
+        changed
+    });
+    cursor.fetch_failures = current;
 }
 
 #[derive(Clone, serde::Serialize, serde::Deserialize)]

@@ -1,4 +1,4 @@
-import { StyledText, bold, dim, fg, type TextChunk } from "@opentui/core"
+import { StyledText, bg, bold, dim, fg, type TextChunk } from "@opentui/core"
 import { randomUUID } from "node:crypto"
 import type { CodexRateLimitsSnapshot } from "../codex/rate-limits.js"
 import { parseRateLimitsFromCodexStdoutLine, parseRateLimitsFromEvent } from "../codex/rate-limits.js"
@@ -172,6 +172,13 @@ export function applyCodexLine(
       upsertSubagentLog(subagentLogs, subagent)
       noteSubagentInLiveGroup(blocks, liveSubagentGroupId, subagent.id, turnStartedAt.current)
       rendered.subagent = subagent
+    } else if (isCollabWaitToolName(rendered.multiAgentCall.toolName)) {
+      upsertToolLog(toolLogs, {
+        id: rendered.multiAgentCall.callId,
+        name: rendered.multiAgentCall.toolName,
+        status: "in_progress",
+        command: rendered.multiAgentCall.arguments,
+      })
     }
   }
 
@@ -191,12 +198,26 @@ export function applyCodexLine(
         (entry) => entry.spawnCallId === rendered.multiAgentOutput?.callId || beforeIds.includes(entry.id),
       )
       if (touched) rendered.subagent = touched
+      if (isCollabWaitToolName(meta.toolName)) {
+        upsertToolLog(toolLogs, {
+          id: rendered.multiAgentOutput.callId,
+          name: meta.toolName,
+          status: "completed",
+          output: rendered.multiAgentOutput.output,
+          stdout: rendered.multiAgentOutput.output,
+          exitCode: 0,
+          finishedAt: rendered.multiAgentOutput.finishedAt,
+        })
+      }
     } else if (rendered.tool) {
       upsertToolLog(toolLogs, rendered.tool)
       noteToolInLiveGroup(blocks, liveToolGroupId, rendered.tool.id, turnStartedAt.current)
     }
   } else if (rendered.tool) {
-    if (!isMultiAgentToolName(rendered.tool.name)) {
+    if (isCollabWaitToolName(rendered.tool.name)) {
+      // Keep wait state for the activity line ("Waiting for agents") without a transcript tool block.
+      upsertToolLog(toolLogs, rendered.tool)
+    } else if (!isMultiAgentToolName(rendered.tool.name)) {
       upsertToolLog(toolLogs, rendered.tool)
       noteToolInLiveGroup(blocks, liveToolGroupId, rendered.tool.id, turnStartedAt.current)
     }
@@ -302,8 +323,9 @@ export function renderTranscriptStyledView(
   const annotated = blocksToAnnotatedLines(blocks, toolLogs, subagentLogs, viewport.columns, options)
   const { visible, offset } = sliceAnnotatedTranscript(annotated, viewport.lines, scrollOffset)
   const chunks: TextChunk[] = []
+  const markdownState = markdownStyleStateBeforeVisibleLines(annotated, visible, offset)
   for (const line of visible) {
-    chunks.push(...styleAnnotatedTranscriptLine(line))
+    chunks.push(...styleAnnotatedTranscriptLine(line, markdownState, viewport.columns))
   }
   if (offset > 0) {
     chunks.push(
@@ -398,9 +420,7 @@ function blocksToAnnotatedLines(
   }
   for (const block of visibleBlocks) {
     if (block.kind === "thinking") {
-      if (block.live && options.running) {
-        lines.push(...blockToAnnotatedLines(block, toolLogs, subagentLogs, columns, options))
-      }
+      // Live progress belongs in the single composer status row, not a second transcript indicator.
       continue
     }
     lines.push(...blockToAnnotatedLines(block, toolLogs, subagentLogs, columns, options))
@@ -484,27 +504,67 @@ function sliceAnnotatedTranscript(
   return { visible: annotated.slice(start, end), offset }
 }
 
-function styleAnnotatedTranscriptLine(line: AnnotatedTranscriptLine): TextChunk[] {
+type MarkdownStyleState = {
+  inFence: boolean
+  language?: string
+  kind?: AnnotatedTranscriptLine["kind"]
+}
+
+function markdownStyleStateBeforeVisibleLines(
+  annotated: readonly AnnotatedTranscriptLine[],
+  visible: readonly AnnotatedTranscriptLine[],
+  offset: number,
+): MarkdownStyleState {
+  const state: MarkdownStyleState = { inFence: false }
+  const start = Math.max(0, annotated.length - offset - visible.length)
+  for (const line of annotated.slice(0, start)) {
+    if (line.kind !== "agent" && line.kind !== "user") continue
+    if (state.kind !== line.kind) {
+      state.inFence = false
+      state.language = undefined
+      state.kind = line.kind
+    }
+    const fence = line.text.trimStart().match(/^```\s*([^\s`]*)/)
+    if (!fence) continue
+    if (state.inFence) {
+      state.inFence = false
+      state.language = undefined
+    } else {
+      state.inFence = true
+      state.language = fence[1]?.toLowerCase() || undefined
+    }
+  }
+  return state
+}
+
+function styleAnnotatedTranscriptLine(
+  line: AnnotatedTranscriptLine,
+  markdownState: MarkdownStyleState,
+  columns: number,
+): TextChunk[] {
   const palette = theme.transcript
   const text = line.text.endsWith("\n") ? line.text : `${line.text}\n`
   if (line.part === "blank") return [fg(theme.fgPrimary)("\n")]
+  if ((line.kind === "agent" || line.kind === "user") && markdownState.kind !== line.kind) {
+    markdownState.inFence = false
+    markdownState.language = undefined
+    markdownState.kind = line.kind
+  }
 
   switch (line.kind) {
     case "user":
-      if (line.part === "label") return [bold(fg(palette.userLabel)(text))]
-      return [fg(palette.userBody)(text)]
+      return styleUserMessageLine(line.text, columns)
     case "agent":
-      if (line.part === "label") return [bold(fg(palette.agentLabel)(text))]
-      return [fg(palette.agentBody)(text)]
+      return styleMarkdownLine(line.text, palette.agentBody, markdownState)
     case "thinking":
       if (line.part === "inline") return [dim(fg(palette.planningLabel)(text))]
       if (line.part === "label") return [bold(fg(palette.planningLabel)(text))]
       return [dim(fg(palette.planningBody)(text))]
     case "tool":
     case "tool_group":
-      if (line.part === "inline") return [dim(fg(palette.toolLabel)(text))]
-      if (line.part === "label") return [dim(fg(palette.toolLabel)(text))]
-      return [dim(fg(palette.toolBody)(text))]
+      if (line.part === "inline") return [fg(palette.toolLabel)(text)]
+      if (line.part === "label") return [bold(fg(palette.toolLabel)(text))]
+      return [fg(palette.toolBody)(text)]
     case "stack":
       if (line.part === "label") return [dim(fg(palette.stackLabel)(text))]
       return [dim(fg(palette.stackBody)(text))]
@@ -518,6 +578,159 @@ function styleAnnotatedTranscriptLine(line: AnnotatedTranscriptLine): TextChunk[
     default:
       return [fg(theme.fgPrimary)(text)]
   }
+}
+
+function styleUserMessageLine(raw: string, columns: number): TextChunk[] {
+  const width = Math.max(1, columns)
+  const content = ` ${raw.trimStart()}`.slice(0, width).padEnd(width)
+  return [bg(theme.bgInput)(fg(theme.transcript.userBody)(`${content}\n`))]
+}
+
+function styleMarkdownLine(
+  raw: string,
+  baseColor: string,
+  state: MarkdownStyleState,
+  emphasize = false,
+): TextChunk[] {
+  const palette = theme.transcript
+  const fence = raw.trimStart().match(/^```\s*([^\s`]*)/)
+  if (fence) {
+    const indentation = raw.slice(0, raw.length - raw.trimStart().length)
+    if (state.inFence) {
+      state.inFence = false
+      state.language = undefined
+      return [dim(fg(palette.meta)(`${indentation}└─\n`))]
+    }
+    state.inFence = true
+    state.language = fence[1]?.toLowerCase() || undefined
+    const label = state.language ? ` ${state.language}` : ""
+    return [dim(fg(palette.meta)(`${indentation}┌─${label}\n`))]
+  }
+
+  if (state.inFence) return styleCodeLine(raw, state.language)
+
+  const trimmed = raw.trimStart()
+  const indentation = raw.slice(0, raw.length - trimmed.length)
+  const heading = trimmed.match(/^(#{1,6})\s+(.+)$/)
+  if (heading) {
+    return [fg(baseColor)(indentation), bold(fg(palette.heading)(`${heading[2]}\n`))]
+  }
+
+  const bullet = trimmed.match(/^([-*•]|\d+[.)])\s+(.+)$/)
+  if (bullet) {
+    return [
+      fg(baseColor)(indentation),
+      fg(palette.bullet)(`${bullet[1]} `),
+      ...styleInlineMarkdown(bullet[2] ?? "", baseColor),
+      fg(baseColor)("\n"),
+    ]
+  }
+
+  if (/^\s*@@/.test(raw)) return [fg(palette.diffHunk)(`${raw}\n`)]
+
+  if (/^\|.*\|$/.test(trimmed)) {
+    if (/^\|[\s:|-]+\|$/.test(trimmed)) return [dim(fg(palette.meta)(`${raw}\n`))]
+    const chunks: TextChunk[] = [fg(baseColor)(indentation)]
+    const cells = trimmed.slice(1, -1).split("|")
+    chunks.push(fg(palette.meta)("│"))
+    for (const cell of cells) {
+      chunks.push(...styleInlineMarkdown(cell, baseColor), fg(palette.meta)("│"))
+    }
+    chunks.push(fg(baseColor)("\n"))
+    return chunks
+  }
+
+  const chunks = styleInlineMarkdown(raw, baseColor)
+  chunks.push(fg(baseColor)("\n"))
+  return emphasize ? chunks.map((chunk) => bold(chunk)) : chunks
+}
+
+function styleInlineMarkdown(text: string, baseColor: string): TextChunk[] {
+  const palette = theme.transcript
+  const chunks: TextChunk[] = []
+  const pattern = /(\*\*[^*\n]+\*\*|`[^`\n]+`|\[[^\]\n]+\]\([^)\n]+\))/g
+  let cursor = 0
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0
+    if (index > cursor) chunks.push(...styleSemanticText(text.slice(cursor, index), baseColor))
+    const token = match[0]
+    if (token.startsWith("**")) {
+      chunks.push(bold(fg(theme.fgAccentStrong)(token.slice(2, -2))))
+    } else if (token.startsWith("`")) {
+      chunks.push(bg(theme.bgSubtle)(fg(palette.inlineCode)(` ${token.slice(1, -1)} `)))
+    } else {
+      const link = token.match(/^\[([^\]]+)\]\(([^)]+)\)$/)
+      chunks.push(fg(palette.link)(link?.[1] ?? token))
+    }
+    cursor = index + token.length
+  }
+  if (cursor < text.length) chunks.push(...styleSemanticText(text.slice(cursor), baseColor))
+  return chunks
+}
+
+function styleSemanticText(text: string, baseColor: string): TextChunk[] {
+  const palette = theme.transcript
+  const chunks: TextChunk[] = []
+  const pattern = /(\b(?:CLAIMED\/IDLE|FREE|READY|OK|UP|DONE|COMPLETED|SUCCESS)\b|\b(?:ORPHAN|IDLE|WAITING|STALE|PENDING)\b|\b(?:FAILED|FAIL|ERROR|DOWN|BLOCKED)\b|https?:\/\/[^\s)]+|(?:~|\/)\/?[A-Za-z0-9_./-]+|\b[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+\b|\b[a-z][a-z0-9]*(?:_[a-z0-9]+)+\b|:\d{2,5}\b)/g
+  let cursor = 0
+  for (const match of text.matchAll(pattern)) {
+    const index = match.index ?? 0
+    if (index > cursor) chunks.push(fg(baseColor)(text.slice(cursor, index)))
+    const token = match[0]
+    const color = /^(?:FREE|READY|OK|UP|DONE|COMPLETED|SUCCESS)$/.test(token)
+      ? palette.semanticSuccess
+      : /^(?:CLAIMED\/IDLE|ORPHAN|IDLE|WAITING|STALE|PENDING)$/.test(token)
+        ? palette.semanticWarning
+        : /^(?:FAILED|FAIL|ERROR|DOWN|BLOCKED)$/.test(token)
+          ? palette.semanticError
+          : token.startsWith("http") || token.startsWith("/") || token.startsWith("~") || token.includes("/")
+            ? palette.semanticPath
+            : palette.semanticIdentifier
+    chunks.push(fg(color)(token))
+    cursor = index + token.length
+  }
+  if (cursor < text.length) chunks.push(fg(baseColor)(text.slice(cursor)))
+  return chunks
+}
+
+function styleCodeLine(raw: string, language: string | undefined): TextChunk[] {
+  const palette = theme.transcript
+  const trimmed = raw.trimStart()
+  if (language === "diff" || trimmed.startsWith("@@")) {
+    const color = trimmed.startsWith("+")
+      ? palette.diffAdd
+      : trimmed.startsWith("-")
+        ? palette.diffRemove
+        : palette.diffHunk
+    return [fg(color)(`${raw}\n`)]
+  }
+
+  const chunks: TextChunk[] = []
+  const tokenPattern = /("(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`|\/\/.*$|#.*$|\b(?:async|await|break|case|catch|class|const|continue|def|else|enum|except|export|false|fn|for|from|function|if|impl|import|in|let|match|None|null|Ok|pub|return|Some|struct|throw|true|try|type|use|while)\b|\b[A-Za-z_][A-Za-z0-9_]*(?=\s*\()|\b[A-Z][A-Za-z0-9_]*\b|--[a-zA-Z0-9-]+|\b\d+(?:\.\d+)?\b|[=<>!&|+*/%-]+)/g
+  let cursor = 0
+  for (const match of raw.matchAll(tokenPattern)) {
+    const index = match.index ?? 0
+    if (index > cursor) chunks.push(fg(palette.codeText)(raw.slice(cursor, index)))
+    const token = match[0]
+    const color = token.startsWith("//") || token.startsWith("#")
+      ? palette.codeComment
+      : token.startsWith('"') || token.startsWith("'") || token.startsWith("`")
+        ? palette.codeString
+        : /^\d/.test(token)
+          ? palette.codeNumber
+          : /^(?:async|await|break|case|catch|class|const|continue|def|else|enum|except|export|false|fn|for|from|function|if|impl|import|in|let|match|None|null|Ok|pub|return|Some|struct|throw|true|try|type|use|while)$/.test(token)
+            ? palette.codeKeyword
+            : token.startsWith("--") || /^[a-z_][A-Za-z0-9_]*$/.test(token)
+              ? palette.codeFunction
+              : /^[A-Z]/.test(token)
+                ? palette.codeType
+                : palette.codeOperator
+    chunks.push(fg(color)(token))
+    cursor = index + token.length
+  }
+  if (cursor < raw.length) chunks.push(fg(palette.codeText)(raw.slice(cursor)))
+  chunks.push(fg(palette.codeText)("\n"))
+  return chunks
 }
 
 function blockToLines(
@@ -987,6 +1200,10 @@ function upsertToolBlock(blocks: TranscriptBlock[], toolId: string): void {
   if (index < 0) blocks.push({ id: randomUUID(), kind: "tool", toolId })
 }
 
+function isCollabWaitToolName(name: string | undefined): boolean {
+  return name === "wait" || name === "wait_agent"
+}
+
 export function upsertToolLog(tools: ToolLog[], incoming: ToolLog): void {
   const now = new Date().toISOString()
   const index = tools.findIndex((tool) => tool.id === incoming.id)
@@ -1094,13 +1311,23 @@ function parseCodexEvent(event: unknown): CodexLineResult | undefined {
 
   if (type === "collab_tool_call") {
     // Codex collaboration items: spawn_agent becomes a subagent; wait/close/etc are control
-    // plumbing we drop rather than render as anonymous tool blocks. `agents_states` on any collab
-    // item carries live lifecycle for already-spawned subagents.
+    // plumbing we mostly drop rather than render as anonymous tool blocks. An in-progress wait
+    // is kept as a lightweight tool so the activity line can show "Waiting for agents".
+    // `agents_states` on any collab item carries live lifecycle for already-spawned subagents.
     const result: CodexLineResult = {}
     const collabSpawn = parseCollabSpawnItem(record, new Date().toISOString())
     if (collabSpawn) result.collabSpawn = collabSpawn
     const states = asRecord(record.agents_states)
     if (states && Object.keys(states).length > 0) result.collabStates = states
+    const toolName = readString(record.tool)
+    if (toolName === "wait" || toolName === "wait_agent") {
+      const itemStatus = readString(record.status) ?? "in_progress"
+      result.tool = {
+        id: readString(record.id) ?? `collab-wait-${toolName}`,
+        name: toolName,
+        status: itemStatus === "completed" || itemStatus === "failed" ? "completed" : "in_progress",
+      }
+    }
     return result
   }
 

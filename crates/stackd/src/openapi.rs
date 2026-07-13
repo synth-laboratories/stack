@@ -75,6 +75,17 @@ pub async fn doc() -> Json<Value> {
                     "responses": { "200": { "description": "array of StackSessionSummary" } }
                 }
             },
+            "/gardeners/messages": {
+                "post": {
+                    "summary": "Durably accept an operator message for a registered gardener and wake it asynchronously",
+                    "requestBody": { "required": true, "description": "owned worker_thread_id, body, and idempotency_key; gardener_thread_id is optional and checked against the authoritative binding" },
+                    "responses": {
+                        "200": { "description": "accepted gardener message receipt" },
+                        "400": { "description": "invalid body or worker/gardener ownership mismatch" },
+                        "404": { "description": "missing gardener or worker session" }
+                    }
+                }
+            },
             "/threads/{stackSessionId}": {
                 "get": {
                     "summary": "Return raw Stack session JSON",

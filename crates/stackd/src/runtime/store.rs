@@ -104,7 +104,16 @@ impl RuntimeStore {
     pub fn load_events_for_reduction(&self) -> anyhow::Result<Vec<RuntimeEvent>> {
         let conn = self.connect()?;
         let mut stmt = conn.prepare(
-            "SELECT event_id, seq, event_type, source, observed_at, subject_json, correlation_json, payload_json FROM runtime_events ORDER BY seq ASC",
+            "SELECT event_id, seq, event_type, source, observed_at, subject_json, correlation_json, payload_json
+             FROM runtime_events
+             WHERE event_type NOT LIKE '%.fetch_failed'
+                OR seq IN (
+                    SELECT MAX(seq)
+                    FROM runtime_events
+                    WHERE event_type LIKE '%.fetch_failed'
+                    GROUP BY event_type, source, subject_kind, subject_id
+                )
+             ORDER BY seq ASC",
         )?;
         let rows = stmt.query_map([], row_to_event)?;
         let mut events = Vec::new();
@@ -213,21 +222,23 @@ impl RuntimeStore {
             );
             ",
         )?;
-        ensure_column(
-            &conn,
-            "factory_snapshot",
-            "events_appended",
-            "ALTER TABLE factory_snapshot ADD COLUMN events_appended INTEGER NOT NULL DEFAULT 0",
-        )?;
-        ensure_column(
+        let subject_json_added = ensure_column(
             &conn,
             "runtime_events",
             "subject_json",
             "ALTER TABLE runtime_events ADD COLUMN subject_json TEXT NOT NULL DEFAULT '{\"kind\":\"unknown\",\"id\":\"unknown\"}'",
         )?;
-        conn.execute(
-            "UPDATE runtime_events SET subject_json = json_object('kind', subject_kind, 'id', COALESCE(subject_id, '')) WHERE subject_json = '{\"kind\":\"unknown\",\"id\":\"unknown\"}'",
-            [],
+        if subject_json_added {
+            conn.execute(
+                "UPDATE runtime_events SET subject_json = json_object('kind', subject_kind, 'id', COALESCE(subject_id, '')) WHERE subject_json = '{\"kind\":\"unknown\",\"id\":\"unknown\"}'",
+                [],
+            )?;
+        }
+        ensure_column(
+            &conn,
+            "factory_snapshot",
+            "events_appended",
+            "ALTER TABLE factory_snapshot ADD COLUMN events_appended INTEGER NOT NULL DEFAULT 0",
         )?;
         Ok(())
     }
@@ -247,16 +258,16 @@ fn ensure_column(
     table: &str,
     column: &str,
     alter_sql: &str,
-) -> anyhow::Result<()> {
+) -> anyhow::Result<bool> {
     let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
     let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
     for row in rows {
         if row? == column {
-            return Ok(());
+            return Ok(false);
         }
     }
     conn.execute(alter_sql, [])?;
-    Ok(())
+    Ok(true)
 }
 
 fn row_to_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<RuntimeEvent> {

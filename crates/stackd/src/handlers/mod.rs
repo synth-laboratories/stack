@@ -2,6 +2,7 @@ pub mod assembly;
 pub mod checkpoints;
 pub mod codex;
 pub mod export;
+pub mod gardeners;
 pub mod health;
 pub mod logs;
 pub mod mcp;

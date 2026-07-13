@@ -116,6 +116,22 @@ export type StackdWorkerRunResponse = {
   receipt: string
 }
 
+export type StackdGardenerMessageRequest = {
+  gardener_thread_id?: string
+  worker_thread_id: string
+  body: string
+  idempotency_key: string
+}
+
+export type StackdGardenerMessageResponse = {
+  accepted: boolean
+  gardener_thread_id: string
+  worker_thread_id: string
+  message_event_id: string
+  duplicate: boolean
+  receipt: string
+}
+
 export type StackdTrace = {
   stack_session_id: string
   stack_session_path: string
@@ -716,6 +732,17 @@ export type StackdUpdateMetaThreadTitleResponse = {
   event_id?: string | null
 }
 
+export type StackdUpdateMetaThreadMonitorRequest = {
+  monitor_profile: string
+  reason?: string
+  actor_id?: string
+}
+
+export type StackdUpdateMetaThreadMonitorResponse = {
+  manifest: StackdMetaThreadManifest
+  event_id?: string | null
+}
+
 export type StackdBindMetaThreadRemoteSmrRunRequest = {
   smr_run_id: string
   environment: string
@@ -921,6 +948,17 @@ export async function stackdWorkerRunStatus(id: string, baseUrl = stackdBaseUrl(
   return requestJson<StackdWorkerRunStatus>(baseUrl, `/threads/${encodeURIComponent(id)}/worker-run/status`)
 }
 
+export async function stackdMessageGardener(
+  request: StackdGardenerMessageRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdGardenerMessageResponse> {
+  return requestJson<StackdGardenerMessageResponse>(
+    baseUrl,
+    "/gardeners/messages",
+    jsonPost(request),
+  )
+}
+
 export async function stackdWorkerRun(
   id: string,
   request: StackdWorkerRunRequest = {},
@@ -1123,6 +1161,31 @@ export async function stackdUpdateMetaThreadTitle(
     baseUrl,
     `/meta-threads/${encodeURIComponent(metaThreadId)}/title`,
     jsonPatch(request),
+  )
+}
+
+export async function stackdUpdateMetaThreadMonitor(
+  metaThreadId: string,
+  request: StackdUpdateMetaThreadMonitorRequest,
+  baseUrl = stackdBaseUrl(),
+): Promise<StackdUpdateMetaThreadMonitorResponse> {
+  return requestJson<StackdUpdateMetaThreadMonitorResponse>(
+    baseUrl,
+    `/meta-threads/${encodeURIComponent(metaThreadId)}/monitor`,
+    jsonPatch(request),
+  )
+}
+
+export async function stackdResumeMonitor(
+  threadId: string,
+  monitorId = "monitor_default",
+  request?: { strictness?: string },
+  baseUrl = stackdBaseUrl(),
+): Promise<unknown> {
+  return requestJson<unknown>(
+    baseUrl,
+    `/threads/${encodeURIComponent(threadId)}/monitors/${encodeURIComponent(monitorId)}/resume`,
+    request ? jsonPost(request) : jsonPost({}),
   )
 }
 

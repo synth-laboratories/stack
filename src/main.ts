@@ -110,6 +110,14 @@ try {
     const { runWatchCli } = await import("./watch-cli.js")
     process.exit(await runWatchCli(config, process.argv.slice(2)))
   }
+  if (process.argv[2] === "monitor") {
+    const { runMonitorCli } = await import("./monitor-cli.js")
+    process.exit(await runMonitorCli(config, process.argv.slice(2)))
+  }
+  if (process.argv[2] === "gardener") {
+    const { runGardenerCli } = await import("./gardener-cli.js")
+    process.exit(await runGardenerCli(config, process.argv.slice(2)))
+  }
   if (process.argv[2] === "crashes") {
     const { runCrashReports } = await import("./crash-reports.js")
     process.exit(await runCrashReports(config, process.argv.slice(3)))

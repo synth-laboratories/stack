@@ -1,4 +1,5 @@
 mod assembly_store;
+mod gardener_runtime;
 mod handlers;
 mod mcp_sidecar;
 mod meta;

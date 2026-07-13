@@ -79,8 +79,41 @@ pub struct WorkerRunStatus {
     pub stop_reason: Option<String>,
 }
 
+#[derive(Debug, Clone)]
+pub struct WorkerRunSessionSnapshot {
+    pub thread_id: String,
+    pub meta_thread_id: Option<String>,
+    pub turns: usize,
+    pub last_turn_exit_code: Option<i32>,
+    pub last_agent_message: Option<String>,
+}
+
+pub fn worker_run_session_snapshot(session: &StackLocalSession) -> WorkerRunSessionSnapshot {
+    WorkerRunSessionSnapshot {
+        thread_id: session.id.clone(),
+        meta_thread_id: session.meta_thread_id.clone(),
+        turns: session.turns.len(),
+        last_turn_exit_code: session.turns.last().and_then(|turn| turn.exit_code),
+        last_agent_message: last_agent_message(&session.turns),
+    }
+}
+
 pub fn derive_worker_run_status(
     session: &StackLocalSession,
+    events: &[Value],
+    active_goal: Option<&MetaThreadActiveGoal>,
+    record: Option<&WorkerRunRecord>,
+) -> WorkerRunStatus {
+    derive_worker_run_status_from_snapshot(
+        &worker_run_session_snapshot(session),
+        events,
+        active_goal,
+        record,
+    )
+}
+
+pub fn derive_worker_run_status_from_snapshot(
+    session: &WorkerRunSessionSnapshot,
     events: &[Value],
     active_goal: Option<&MetaThreadActiveGoal>,
     record: Option<&WorkerRunRecord>,
@@ -90,40 +123,59 @@ pub fn derive_worker_run_status(
         .and_then(|event| event.get("type"))
         .and_then(Value::as_str)
         .map(str::to_string);
-    let active_goal_status = active_goal
-        .map(|goal| goal.status.trim())
-        .filter(|status| !status.is_empty())
-        .map(str::to_string);
+    let active_goal_status = if record.is_some_and(|record| {
+        record.state == WorkerRunState::Done
+            && record.stop_reason.as_deref() == Some("monitor_goal_met")
+    }) {
+        Some("done".to_string())
+    } else {
+        active_goal
+            .map(|goal| goal.status.trim())
+            .filter(|status| !status.is_empty())
+            .map(str::to_string)
+    };
     let normalized_goal_status = active_goal_status
         .as_deref()
         .map(|status| status.to_ascii_lowercase());
-    let last_turn = session.turns.last();
-
     let record_state = record.map(|record| record.state);
-    let state = match record_state {
-        Some(WorkerRunState::Running) => WorkerRunState::Running,
-        Some(WorkerRunState::Paused) => WorkerRunState::Paused,
-        Some(WorkerRunState::Error) => WorkerRunState::Error,
-        Some(WorkerRunState::Blocked) => WorkerRunState::Blocked,
-        Some(WorkerRunState::Done) => WorkerRunState::Done,
-        Some(WorkerRunState::Idle) | None => match latest_run_event_type.as_deref() {
-            Some("worker_run.started") => WorkerRunState::Running,
-            Some("worker_run.failed") => WorkerRunState::Error,
-            Some("worker_run.paused") => WorkerRunState::Paused,
-            Some("worker_run.blocked") => WorkerRunState::Blocked,
-            Some("worker_run.done") => WorkerRunState::Done,
-            _ => goal_or_turn_state(normalized_goal_status.as_deref(), active_goal, last_turn),
-        },
+    let lifecycle_state = record.and_then(|record| {
+        latest_run_event.and_then(|event| terminal_lifecycle_state(event, &record.run_id))
+    });
+    let state = if matches!(
+        normalized_goal_status.as_deref(),
+        Some("done" | "complete" | "completed")
+    ) {
+        WorkerRunState::Done
+    } else {
+        match lifecycle_state.or(record_state) {
+            Some(WorkerRunState::Running) => WorkerRunState::Running,
+            Some(WorkerRunState::Paused) => WorkerRunState::Paused,
+            Some(WorkerRunState::Error) => WorkerRunState::Error,
+            Some(WorkerRunState::Blocked) => WorkerRunState::Blocked,
+            Some(WorkerRunState::Done) => WorkerRunState::Done,
+            Some(WorkerRunState::Idle) | None => match latest_run_event_type.as_deref() {
+                Some("worker_run.started") => WorkerRunState::Running,
+                Some("worker_run.failed") => WorkerRunState::Error,
+                Some("worker_run.paused") => WorkerRunState::Paused,
+                Some("worker_run.blocked") => WorkerRunState::Blocked,
+                Some("worker_run.done") => WorkerRunState::Done,
+                _ => goal_or_turn_state(
+                    normalized_goal_status.as_deref(),
+                    active_goal,
+                    session.last_turn_exit_code,
+                ),
+            },
+        }
     };
 
     WorkerRunStatus {
-        thread_id: session.id.clone(),
+        thread_id: session.thread_id.clone(),
         meta_thread_id: session.meta_thread_id.clone(),
         state,
-        turns: session.turns.len(),
+        turns: session.turns,
         active_goal_status,
-        last_turn_exit_code: last_turn.and_then(|turn| turn.exit_code),
-        last_agent_message: last_agent_message(&session.turns),
+        last_turn_exit_code: session.last_turn_exit_code,
+        last_agent_message: session.last_agent_message.clone(),
         latest_run_event_type,
         latest_run_event_id: latest_run_event
             .and_then(|event| event.get("event_id"))
@@ -141,10 +193,28 @@ pub fn derive_worker_run_status(
     }
 }
 
+fn terminal_lifecycle_state(event: &Value, run_id: &str) -> Option<WorkerRunState> {
+    let event_run_id = event
+        .get("payload")
+        .and_then(|payload| payload.get("run_id"))
+        .and_then(Value::as_str)?;
+    if event_run_id != run_id {
+        return None;
+    }
+    match event.get("type").and_then(Value::as_str) {
+        Some("worker_run.paused") => Some(WorkerRunState::Paused),
+        Some("worker_run.failed") => Some(WorkerRunState::Error),
+        Some("worker_run.blocked") => Some(WorkerRunState::Blocked),
+        Some("worker_run.done") => Some(WorkerRunState::Done),
+        Some("worker_run.completed") => Some(WorkerRunState::Idle),
+        _ => None,
+    }
+}
+
 fn goal_or_turn_state(
     normalized_goal_status: Option<&str>,
     active_goal: Option<&MetaThreadActiveGoal>,
-    last_turn: Option<&StackCodexTurn>,
+    last_turn_exit_code: Option<i32>,
 ) -> WorkerRunState {
     match normalized_goal_status {
         Some("done" | "complete" | "completed") => WorkerRunState::Done,
@@ -156,13 +226,7 @@ fn goal_or_turn_state(
         {
             WorkerRunState::Blocked
         }
-        _ if last_turn
-            .and_then(|turn| turn.exit_code)
-            .map(|code| code != 0)
-            .unwrap_or(false) =>
-        {
-            WorkerRunState::Error
-        }
+        _ if last_turn_exit_code.is_some_and(|code| code != 0) => WorkerRunState::Error,
         _ => WorkerRunState::Idle,
     }
 }

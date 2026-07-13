@@ -10,6 +10,7 @@ use chrono::Utc;
 use futures_util::stream::{self, Stream};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use stack_core::actor_runtime::event_type;
 use stack_core::codex_isolation::{
     assert_stack_codex_isolation, personal_codex_home, prepare_stack_codex_home,
 };
@@ -19,21 +20,25 @@ use stack_core::events::{
 };
 use stack_core::meta_thread::{read_manifest, MetaThreadActiveGoal, MetaThreadManifest};
 use stack_core::session::{
-    build_usage_summary, list_summaries, read_session_by_id, read_session_value_by_id,
-    read_usage_from_stdout, session_path, thread_id_from_session, trace_turns, write_session,
-    StackCodexTurn, StackLocalSession, StackSessionSummary, StackSessionUsageSummary,
-    StackTraceTurn,
+    build_usage_summary, count_sessions, list_recent_summaries, read_session_by_id,
+    read_session_value_by_id, read_usage_from_stdout, session_path, thread_id_from_session,
+    trace_turns, write_session, StackCodexTurn, StackLocalSession, StackSessionSummary,
+    StackSessionUsageSummary, StackTraceTurn,
 };
 use stack_core::worker_run::{
-    derive_worker_run_status, read_worker_run_record, write_worker_run_record, WorkerRunRecord,
-    WorkerRunState, WorkerRunStatus,
+    derive_worker_run_status, derive_worker_run_status_from_snapshot, read_worker_run_record,
+    worker_run_session_snapshot, write_worker_run_record, WorkerRunRecord,
+    WorkerRunSessionSnapshot, WorkerRunState, WorkerRunStatus,
 };
+use std::collections::HashMap;
+use std::path::PathBuf;
 use std::process::Stdio;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
+use std::time::{Duration, Instant, SystemTime};
 use tokio::fs;
 use tokio::io::AsyncWriteExt;
 use tokio::process::Command;
+use tokio::sync::Mutex as AsyncMutex;
 
 #[derive(Debug, Serialize)]
 pub struct TraceResponse {
@@ -60,6 +65,25 @@ pub struct StackStatusResponse {
     pub latest_session: Option<StackSessionSummary>,
     pub runtime: Option<Value>,
 }
+
+#[derive(Clone)]
+struct CachedWorkerRunSession {
+    modified_at: Option<SystemTime>,
+    len: u64,
+    snapshot: WorkerRunSessionSnapshot,
+}
+
+static WORKER_RUN_SESSION_CACHE: OnceLock<StdMutex<HashMap<PathBuf, CachedWorkerRunSession>>> =
+    OnceLock::new();
+
+#[derive(Clone)]
+struct CachedWorkerRunStatus {
+    cached_at: Instant,
+    status: WorkerRunStatus,
+}
+
+static WORKER_RUN_STATUS_CACHE: OnceLock<AsyncMutex<HashMap<String, CachedWorkerRunStatus>>> =
+    OnceLock::new();
 
 #[derive(Debug, Deserialize)]
 pub struct MonitorModeRequest {
@@ -106,13 +130,15 @@ pub struct EventStreamQuery {
 pub async fn list_threads(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<StackSessionSummary>>, ApiError> {
-    Ok(Json(list_summaries(&state.paths.session_log_dir).await?))
+    Ok(Json(
+        list_recent_summaries(&state.paths.session_log_dir, 100).await?,
+    ))
 }
 
 pub async fn get_stack_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<StackStatusResponse>, ApiError> {
-    let summaries = list_summaries(&state.paths.session_log_dir).await?;
+    let summaries = list_recent_summaries(&state.paths.session_log_dir, 1).await?;
     Ok(Json(StackStatusResponse {
         ok: true,
         stackd_version: env!("CARGO_PKG_VERSION"),
@@ -124,7 +150,7 @@ pub async fn get_stack_status(
             .runtime_status_path
             .to_string_lossy()
             .to_string(),
-        session_count: summaries.len(),
+        session_count: count_sessions(&state.paths.session_log_dir).await?,
         latest_session: summaries.first().cloned(),
         runtime: read_factory_runtime_status(&state).await,
     }))
@@ -334,7 +360,17 @@ pub async fn get_worker_run_status(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<WorkerRunStatus>, ApiError> {
-    let session = read_session_by_id(&state.paths.session_log_dir, &id).await?;
+    let mut status_cache = WORKER_RUN_STATUS_CACHE
+        .get_or_init(|| AsyncMutex::new(HashMap::new()))
+        .lock()
+        .await;
+    if let Some(cached) = status_cache
+        .get(&id)
+        .filter(|entry| entry.cached_at.elapsed() < Duration::from_secs(2))
+    {
+        return Ok(Json(cached.status.clone()));
+    }
+    let session = read_worker_run_session_snapshot(&state, &id).await?;
     let events = read_thread_events(&state.paths.stack_dir, &id).await?;
     let manifest = match session.meta_thread_id.as_deref() {
         Some(meta_thread_id) => Some(
@@ -345,14 +381,60 @@ pub async fn get_worker_run_status(
         None => None,
     };
     let record = read_worker_run_record(&state.paths.stack_dir, &id).await?;
-    Ok(Json(derive_worker_run_status(
+    let status = derive_worker_run_status_from_snapshot(
         &session,
         &events,
         manifest
             .as_ref()
             .and_then(|manifest| manifest.active_goal.as_ref()),
         record.as_ref(),
-    )))
+    );
+    status_cache.insert(
+        id,
+        CachedWorkerRunStatus {
+            cached_at: Instant::now(),
+            status: status.clone(),
+        },
+    );
+    Ok(Json(status))
+}
+
+async fn read_worker_run_session_snapshot(
+    state: &AppState,
+    id: &str,
+) -> Result<WorkerRunSessionSnapshot, ApiError> {
+    let path = session_path(&state.paths.session_log_dir, id)?;
+    let metadata = fs::metadata(&path)
+        .await
+        .map_err(|error| ApiError::internal(error.to_string()))?;
+    let modified_at = metadata.modified().ok();
+    let len = metadata.len();
+    let cached = WORKER_RUN_SESSION_CACHE
+        .get_or_init(|| StdMutex::new(HashMap::new()))
+        .lock()
+        .ok()
+        .and_then(|cache| cache.get(&path).cloned())
+        .filter(|entry| entry.modified_at == modified_at && entry.len == len);
+    if let Some(cached) = cached {
+        return Ok(cached.snapshot);
+    }
+
+    let session = read_session_by_id(&state.paths.session_log_dir, id).await?;
+    let snapshot = worker_run_session_snapshot(&session);
+    if let Ok(mut cache) = WORKER_RUN_SESSION_CACHE
+        .get_or_init(|| StdMutex::new(HashMap::new()))
+        .lock()
+    {
+        cache.insert(
+            path,
+            CachedWorkerRunSession {
+                modified_at,
+                len,
+                snapshot: snapshot.clone(),
+            },
+        );
+    }
+    Ok(snapshot)
 }
 
 pub async fn run_worker_turn(
@@ -410,6 +492,19 @@ pub async fn pause_worker_run(
             last_turn_id: None,
             last_error: None,
         });
+    let events = read_thread_events(&state.paths.stack_dir, &id).await?;
+    let manifest = read_worker_manifest(&state, &session).await?;
+    let current_status = derive_worker_run_status(
+        &session,
+        &events,
+        manifest
+            .as_ref()
+            .and_then(|manifest| manifest.active_goal.as_ref()),
+        Some(&record),
+    );
+    if current_status.state == WorkerRunState::Done {
+        return Ok(Json(current_status));
+    }
     if record.state != WorkerRunState::Running {
         record.state = WorkerRunState::Paused;
     }
@@ -425,7 +520,6 @@ pub async fn pause_worker_run(
     )
     .await?;
     let events = read_thread_events(&state.paths.stack_dir, &id).await?;
-    let manifest = read_worker_manifest(&state, &session).await?;
     Ok(Json(derive_worker_run_status(
         &session,
         &events,
@@ -542,6 +636,21 @@ async fn start_worker_run(
 
     let session = read_session_by_id(&state.paths.session_log_dir, thread_id).await?;
     let manifest = read_worker_manifest(&state, &session).await?;
+    if manifest
+        .as_ref()
+        .and_then(|manifest| manifest.active_goal.as_ref())
+        .is_some_and(|goal| {
+            matches!(
+                goal.status.trim().to_ascii_lowercase().as_str(),
+                "done" | "complete" | "completed"
+            )
+        })
+    {
+        return Err(ApiError::with_status(
+            StatusCode::CONFLICT,
+            "worker goal is complete; update the goal before starting another run",
+        ));
+    }
     let objective = objective
         .as_deref()
         .map(str::trim)
@@ -560,7 +669,16 @@ async fn start_worker_run(
         })?;
 
     if let Some(existing) = read_worker_run_record(&state.paths.stack_dir, &session.id).await? {
-        if existing.state == WorkerRunState::Running {
+        let events = read_thread_events(&state.paths.stack_dir, &session.id).await?;
+        let existing_status = derive_worker_run_status(
+            &session,
+            &events,
+            manifest
+                .as_ref()
+                .and_then(|manifest| manifest.active_goal.as_ref()),
+            Some(&existing),
+        );
+        if existing_status.state == WorkerRunState::Running {
             return Err(ApiError::with_status(
                 StatusCode::CONFLICT,
                 "worker run is already running",
@@ -568,11 +686,15 @@ async fn start_worker_run(
         }
     }
 
-    if let Some(profile) = monitor_profile.as_deref().or_else(|| {
-        manifest
-            .as_ref()
-            .and_then(|manifest| manifest.monitor_profile.as_deref())
-    }) {
+    let effective_monitor_profile = monitor_profile
+        .as_deref()
+        .or_else(|| {
+            manifest
+                .as_ref()
+                .and_then(|manifest| manifest.monitor_profile.as_deref())
+        })
+        .map(str::to_string);
+    if let Some(profile) = effective_monitor_profile.as_deref() {
         enable_monitor_for_worker(&state, &session, profile).await?;
     }
 
@@ -609,6 +731,10 @@ async fn start_worker_run(
         }),
     )
     .await?;
+    let _ = append_gardener_worker_run_status(
+        &state, &session, "running", &run_id, None, 0, max_turns, None,
+    )
+    .await;
 
     let events = read_thread_events(&state.paths.stack_dir, &session.id).await?;
     let status = derive_worker_run_status(
@@ -627,6 +753,7 @@ async fn start_worker_run(
     let task_objective = objective.clone();
     let task_continue_note = continue_note.clone();
     let task_record = record.clone();
+    let task_monitor_profile = effective_monitor_profile.clone();
     tokio::spawn(async move {
         let _permit = permit;
         if let Err(error) = run_worker_loop_task(
@@ -636,6 +763,7 @@ async fn start_worker_run(
             max_turns,
             task_continue_note,
             task_record,
+            task_monitor_profile,
         )
         .await
         {
@@ -662,6 +790,7 @@ async fn run_worker_loop_task(
     max_turns: u32,
     continue_note: Option<String>,
     mut record: WorkerRunRecord,
+    monitor_profile: Option<String>,
 ) -> Result<(), ApiError> {
     let run_id = record.run_id.clone();
     for index in 0..max_turns {
@@ -678,6 +807,17 @@ async fn run_worker_loop_task(
                 json!({"run_id": run_id, "reason": record.pause_reason}),
             )
             .await?;
+            let _ = append_gardener_worker_run_status(
+                &state,
+                &session,
+                "paused",
+                &run_id,
+                record.pause_reason.as_deref(),
+                record.completed_turns,
+                max_turns,
+                None,
+            )
+            .await;
             break;
         }
 
@@ -725,6 +865,28 @@ async fn run_worker_loop_task(
         )
         .await?;
 
+        if let Some(profile) = monitor_profile.as_deref() {
+            if let Err(error) = run_monitor_after_worker_turn(&state, &session, profile).await {
+                tracing::warn!(
+                    "monitor pass failed after worker turn {} for {}: {error}",
+                    turn.id,
+                    session.id,
+                );
+                append_worker_event(
+                    &state,
+                    &session,
+                    "worker_run.monitor_failed",
+                    json!({
+                        "run_id": run_id,
+                        "stack_turn_id": turn.id,
+                        "monitor_profile": profile,
+                        "error": truncate(&error, 1200),
+                    }),
+                )
+                .await?;
+            }
+        }
+
         if pause_after_turn.is_some() {
             append_worker_event(
                 &state,
@@ -733,11 +895,29 @@ async fn run_worker_loop_task(
                 json!({"run_id": run_id, "reason": record.pause_reason, "turns": session.turns.len()}),
             )
             .await?;
+            let _ = append_gardener_worker_run_status(
+                &state,
+                &session,
+                "paused",
+                &run_id,
+                record.pause_reason.as_deref(),
+                record.completed_turns,
+                max_turns,
+                None,
+            )
+            .await;
             break;
         }
 
         let refreshed_manifest = read_worker_manifest(&state, &session).await?;
-        let decision = worker_loop_stop_decision(refreshed_manifest.as_ref(), exit_code);
+        let manifest_decision = worker_loop_stop_decision(refreshed_manifest.as_ref(), exit_code);
+        let monitor_decision = monitor_goal_stop_decision_after(
+            &state,
+            &session.id,
+            turn.finished_at.as_deref().unwrap_or(&turn.started_at),
+        )
+        .await?;
+        let decision = manifest_decision.or(monitor_decision);
         if let Some((state_value, event_type, reason)) = decision {
             record.state = state_value;
             record.stop_reason = Some(reason.to_string());
@@ -750,6 +930,17 @@ async fn run_worker_loop_task(
                 json!({"run_id": run_id, "reason": reason, "turns": session.turns.len()}),
             )
             .await?;
+            let _ = append_gardener_worker_run_status(
+                &state,
+                &session,
+                worker_run_state_label(&record.state),
+                &run_id,
+                Some(reason),
+                record.completed_turns,
+                max_turns,
+                None,
+            )
+            .await;
             break;
         }
         if index + 1 == max_turns {
@@ -764,19 +955,73 @@ async fn run_worker_loop_task(
                 json!({"run_id": run_id, "reason": "max_turns_reached", "turns": session.turns.len()}),
             )
             .await?;
+            let _ = append_gardener_worker_run_status(
+                &state,
+                &session,
+                "idle",
+                &run_id,
+                Some("max_turns_reached"),
+                record.completed_turns,
+                max_turns,
+                None,
+            )
+            .await;
         }
     }
     Ok(())
 }
 
+async fn run_monitor_after_worker_turn(
+    state: &AppState,
+    session: &StackLocalSession,
+    monitor_profile: &str,
+) -> Result<(), String> {
+    let output = Command::new("bun")
+        .arg("run")
+        .arg("src/main.ts")
+        .arg("monitor")
+        .arg("run-once")
+        .arg("--thread-id")
+        .arg(&session.id)
+        .arg("--profile")
+        .arg(monitor_profile)
+        .arg("--wake-reason")
+        .arg("external_worker_turn")
+        .current_dir(&state.paths.install_root)
+        .env("STACK_ROOT", &state.paths.app_root)
+        .env("STACK_WORKING_DIR", &session.workspace_root)
+        .env("STACK_SESSION_DIR", &state.paths.session_log_dir)
+        .env("CODEX_HOME", &state.paths.codex_home)
+        .env("STACK_CODEX_ISOLATED", "1")
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .await
+        .map_err(|error| format!("spawning monitor consumer: {error}"))?;
+    if output.status.success() {
+        return Ok(());
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+    let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    Err(format!(
+        "monitor consumer exited {}: {}",
+        output.status.code().unwrap_or(1),
+        if stderr.is_empty() { stdout } else { stderr },
+    ))
+}
+
 async fn mark_worker_run_error(state: &AppState, thread_id: &str, run_id: &str, error: &ApiError) {
     let message = error.message();
+    let mut completed_turns = 0;
+    let mut max_turns = 0;
     if let Ok(Some(mut record)) = read_worker_run_record(&state.paths.stack_dir, thread_id).await {
         if record.run_id == run_id {
             record.state = WorkerRunState::Error;
             record.stop_reason = Some("runner_error".to_string());
             record.last_error = Some(truncate(message, 1200));
             record.updated_at = now();
+            completed_turns = record.completed_turns;
+            max_turns = record.max_turns;
             let _ = write_worker_run_record(&state.paths.stack_dir, &record).await;
         }
     }
@@ -786,6 +1031,17 @@ async fn mark_worker_run_error(state: &AppState, thread_id: &str, run_id: &str, 
             &session,
             "worker_run.failed",
             json!({"run_id": run_id, "reason": "runner_error", "error": truncate(message, 1200)}),
+        )
+        .await;
+        let _ = append_gardener_worker_run_status(
+            state,
+            &session,
+            "error",
+            run_id,
+            Some("runner_error"),
+            completed_turns,
+            max_turns,
+            Some(&truncate(message, 300)),
         )
         .await;
     }
@@ -800,12 +1056,14 @@ async fn run_worker_loop_turn(
     turn_index: u32,
 ) -> Result<StackCodexTurn, ApiError> {
     let started_at = now();
+    let monitor_steer = pending_monitor_steer(state, session).await?;
     let user_prompt = worker_turn_prompt(
         objective,
         active_goal
             .map(|goal| goal.acceptance_criteria.as_slice())
             .unwrap_or(&[]),
         continue_note,
+        monitor_steer.as_deref(),
         turn_index,
     );
     let prompt = stack_worker_harness_prompt(state, session, &user_prompt, active_goal);
@@ -823,6 +1081,42 @@ async fn run_worker_loop_turn(
         stdout,
         stderr,
     })
+}
+
+async fn pending_monitor_steer(
+    state: &AppState,
+    session: &StackLocalSession,
+) -> Result<Option<String>, ApiError> {
+    let events = read_thread_events(&state.paths.stack_dir, &session.id).await?;
+    let after = events
+        .iter()
+        .rposition(|event| {
+            matches!(
+                event_type(event),
+                Some("worker_run.started" | "worker_run.turn_completed")
+            )
+        })
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let messages: Vec<&str> = events
+        .iter()
+        .skip(after)
+        .filter(|event| event_type(event) == Some("monitor.steer"))
+        .filter_map(|event| {
+            event
+                .get("payload")
+                .and_then(|payload| payload.get("message"))
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|message| !message.is_empty())
+        })
+        .take(3)
+        .collect();
+    if messages.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(truncate(&messages.join("\n\n"), 3000)))
+    }
 }
 
 async fn read_worker_manifest(
@@ -868,6 +1162,37 @@ fn worker_loop_stop_decision(
     None
 }
 
+async fn monitor_goal_stop_decision_after(
+    state: &AppState,
+    thread_id: &str,
+    after: &str,
+) -> Result<Option<(WorkerRunState, &'static str, &'static str)>, ApiError> {
+    let events = read_thread_events(&state.paths.stack_dir, thread_id).await?;
+    for event in events.iter().rev() {
+        let observed_at = event
+            .get("observed_at")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        if observed_at < after {
+            break;
+        }
+        if event.get("type").and_then(Value::as_str) != Some("monitor.goal_status") {
+            continue;
+        }
+        let status = event
+            .get("payload")
+            .and_then(|payload| payload.get("status"))
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        return Ok((status == "goal_met").then_some((
+            WorkerRunState::Done,
+            "worker_run.done",
+            "monitor_goal_met",
+        )));
+    }
+    Ok(None)
+}
+
 async fn requested_pause_reason(
     state: &AppState,
     thread_id: &str,
@@ -887,12 +1212,12 @@ fn normalize_worker_max_turns(value: Option<u32>) -> Result<u32, ApiError> {
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(3);
+        .unwrap_or(100);
     let hard_cap = std::env::var("STACK_WORKER_RUN_MAX_TURNS")
         .ok()
         .and_then(|value| value.parse::<u32>().ok())
         .filter(|value| *value > 0)
-        .unwrap_or(25);
+        .unwrap_or(100);
     let turns = value.unwrap_or(default);
     if turns == 0 {
         return Err(ApiError::bad_request("max_turns must be at least 1"));
@@ -1034,6 +1359,7 @@ async fn enable_monitor_for_worker(
     session: &StackLocalSession,
     monitor_profile: &str,
 ) -> Result<(), ApiError> {
+    let monitor_actor_id = format!("monitor_{}", monitor_profile.trim());
     let strictness = if monitor_profile.trim().eq_ignore_ascii_case("passive") {
         "passive"
     } else {
@@ -1042,7 +1368,7 @@ async fn enable_monitor_for_worker(
     let _ = update_monitor_mode(
         state,
         &session.id,
-        "monitor_default",
+        &monitor_actor_id,
         strictness,
         "monitor.resumed",
     )
@@ -1051,7 +1377,7 @@ async fn enable_monitor_for_worker(
         state,
         session,
         "worker_run.monitor_enabled",
-        json!({"monitor_profile": monitor_profile, "monitor_actor_id": "monitor_default", "strictness": strictness}),
+        json!({"monitor_profile": monitor_profile, "monitor_actor_id": monitor_actor_id, "strictness": strictness}),
     )
     .await?;
     Ok(())
@@ -1061,11 +1387,13 @@ fn worker_turn_prompt(
     objective: &str,
     acceptance_criteria: &[String],
     continue_note: Option<&str>,
+    monitor_steer: Option<&str>,
     turn_index: u32,
 ) -> String {
     let mut lines = vec![
         "Continue this Stack worker lane in the background. Work only on the assigned objective."
             .to_string(),
+        "Local Gemini policy rule: when the objective calls for Gemini 3.1 Flash Lite in a local GEPA/policy or React-policy harness, use policy.provider=google with GEMINI_API_KEY after Stack confirms local capability. An offline hosted stack_inference_catalog is not a blocker for that local policy route. Gemini is never a Codex worker model; do not pass it to codex exec.".to_string(),
         format!("Background run turn: {}", turn_index + 1),
         String::new(),
         "Objective:".to_string(),
@@ -1075,6 +1403,14 @@ fn worker_turn_prompt(
     if let Some(note) = continue_note.map(str::trim).filter(|note| !note.is_empty()) {
         lines.push("Continuation note:".to_string());
         lines.push(note.to_string());
+        lines.push(String::new());
+    }
+    if let Some(steer) = monitor_steer
+        .map(str::trim)
+        .filter(|steer| !steer.is_empty())
+    {
+        lines.push("Monitor guidance from the previous turn:".to_string());
+        lines.push(steer.to_string());
         lines.push(String::new());
     }
     if !acceptance_criteria.is_empty() {
@@ -1266,6 +1602,102 @@ async fn append_worker_event(
     )
     .await?;
     Ok(())
+}
+
+/// A durable worker belongs to its registered gardener. Mirror only lifecycle
+/// boundaries into that gardener's event log so both the visible conversation
+/// and the gardener's next turn receive the same launch/terminal receipt.
+/// This is deliberately best-effort at call sites: an absent gardener session
+/// must never prevent a worker from starting or reaching its terminal state.
+async fn append_gardener_worker_run_status(
+    state: &AppState,
+    worker_session: &StackLocalSession,
+    status: &str,
+    run_id: &str,
+    reason: Option<&str>,
+    completed_turns: u32,
+    max_turns: u32,
+    error: Option<&str>,
+) -> Result<(), ApiError> {
+    let Some(manifest) = read_worker_manifest(state, worker_session).await? else {
+        return Ok(());
+    };
+    let Some(gardener_thread_id) = manifest
+        .gardener_thread_id
+        .filter(|id| !id.trim().is_empty())
+    else {
+        return Ok(());
+    };
+    if gardener_thread_id == worker_session.id {
+        return Ok(());
+    }
+    if read_session_by_id(&state.paths.session_log_dir, &gardener_thread_id)
+        .await
+        .is_err()
+    {
+        return Ok(());
+    }
+
+    append_thread_event_projected(
+        &state.paths.stack_dir,
+        &gardener_thread_id,
+        &json!({
+            "event_id": event_id("gardener.worker_run_status"),
+            "type": "gardener.worker_run_status",
+            "thread_id": gardener_thread_id,
+            "observed_at": now(),
+            "actor_id": "worker_runner",
+            "actor_role": "system",
+            "meta_thread_id": worker_session.meta_thread_id,
+            "segment_id": worker_session.segment_id,
+            "payload": {
+                "worker_thread_id": worker_session.id,
+                "worker_meta_thread_id": worker_session.meta_thread_id,
+                "worker_title": manifest.title,
+                "run_id": run_id,
+                "status": status,
+                "reason": reason,
+                "completed_turns": completed_turns,
+                "max_turns": max_turns,
+                "error": error,
+            },
+        }),
+    )
+    .await?;
+    if matches!(status, "idle" | "paused" | "done" | "error") {
+        let message = [
+            "A worker run reached a terminal state and emitted a durable lifecycle handoff.",
+            "Review the latest worker lifecycle handoff, then report the outcome, evidence readiness, and whether the operator needs to act.",
+            "Do not start or continue another worker run unless the operator explicitly authorized it.",
+        ]
+        .join(" ");
+        if let Err(error) = crate::gardener_runtime::run_gardener_message(
+            state,
+            &gardener_thread_id,
+            &worker_session.id,
+            &message,
+            "worker_run_terminal",
+        )
+        .await
+        {
+            tracing::warn!(
+                "gardener pass failed after terminal worker status for {}: {error}",
+                worker_session.id,
+            );
+        }
+    }
+    Ok(())
+}
+
+fn worker_run_state_label(state: &WorkerRunState) -> &'static str {
+    match state {
+        WorkerRunState::Running => "running",
+        WorkerRunState::Paused => "paused",
+        WorkerRunState::Idle => "idle",
+        WorkerRunState::Done => "done",
+        WorkerRunState::Blocked => "blocked",
+        WorkerRunState::Error => "error",
+    }
 }
 
 fn with_segment_payload(payload: Value, session: &StackLocalSession) -> Value {

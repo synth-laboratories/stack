@@ -37,7 +37,7 @@ import {
 import { appendThreadMetaEvent, readThreadMetaEvents, stackEventId } from "../thread-events.js"
 import { emitOperatorSessionEvent, readActiveOperatorSession } from "../operator-session.js"
 import { applyLightsThreadViewUpdate, readLightsThreadViewState } from "../lights-thread-view.js"
-import { readMetaThreadManifest } from "../meta-thread-goal.js"
+import { readMetaThreadManifest, readMetaThreadManifests } from "../meta-thread-goal.js"
 import {
   appendEffortProgress as appendStackEffortProgress,
   appendEffortResearchLog as appendStackEffortResearchLog,
@@ -114,9 +114,12 @@ import {
   writeTaggedEffortSlug,
   taggedEffortDisplayLabel,
 } from "../tagged-effort.js"
+import { loadGardenerConfig } from "../gardener-config.js"
 import { isUiPanelId, panelOpenAllowed, panelViewAllowed, UI_PANEL_IDS, UI_PANELS, type UiPanelOpener } from "../ui/vocabulary.js"
 import {
+  stackdHealthOk,
   stackdExport,
+  stackdResumeMonitor,
   stackdAssemblyCreate,
   stackdAssemblyGet,
   stackdAssemblyList,
@@ -126,6 +129,7 @@ import {
   stackdCreateMetaThread,
   stackdCreateWorkerMetaThread,
   stackdListMemories,
+  stackdMessageGardener,
   stackdMemoryKinds,
   stackdMissingEffortRefRouteMessage,
   stackdMetaThread,
@@ -142,6 +146,7 @@ import {
   stackdUpdateMetaThreadEffortRef,
   stackdUpdateMetaThreadGoal,
   stackdUpdateMetaThreadLifecycle,
+  stackdUpdateMetaThreadMonitor,
   stackdUpdateMetaThreadTitle,
   stackdWorkerContinue,
   stackdWorkerPause,
@@ -160,8 +165,7 @@ import {
 } from "../client/stackd.js"
 import { projectLogDocumentToVictoriaLogs, queryStackLogs } from "../observability/victorialogs.js"
 import { readCrashReportsView } from "../crash-reports.js"
-import { launchLocalGepaRun, readOptimizerSnapshot } from "../local/optimizers.js"
-import { loadGardenerConfig } from "../gardener-config.js"
+import { launchLocalGepaRun, localModelCapabilities, readOptimizerSnapshot } from "../local/optimizers.js"
 import {
   compareJesterkyManifests,
   inspectJesterkyRun,
@@ -170,6 +174,8 @@ import {
   replayJesterkyRun,
   type JesterkyManifestSelection,
 } from "../jesterky.js"
+import { filterThreadEvents, threadEventsToJson } from "../gardener-visibility.js"
+import { setMonitorEnabled } from "../monitor.js"
 import {
   claimRemoteLaunchPromo,
   createRemoteFactory,
@@ -2112,6 +2118,31 @@ export class StackMcpServer {
     }) ?? null
   }
 
+  async messageGardener(args: JsonObject): Promise<JsonValue> {
+    await this.config(args)
+    const gardenerThreadId = optionalString(args, "gardener_thread_id")
+    const workerThreadId = requiredString(args, "worker_thread_id")
+    const body = requiredString(args, "body")
+    const idempotencyKey = requiredString(args, "idempotency_key")
+    const workerStatusBefore = await stackdWorkerRunStatus(workerThreadId)
+    const accepted = await stackdMessageGardener({
+      gardener_thread_id: gardenerThreadId,
+      worker_thread_id: workerThreadId,
+      body,
+      idempotency_key: idempotencyKey,
+    })
+    return toJsonValue({
+      ...accepted,
+      worker_status_before: workerStatusBefore,
+      asynchronous: true,
+      next: [
+        `Call stack_thread_events_read for ${accepted.gardener_thread_id} with types=["gardener.*"] to read the reply.`,
+        `Call stack_worker_run_status for ${workerThreadId} to verify whether the gardener resumed the worker.`,
+      ],
+      receipt: "lever.stack_mcp gardener_message.accepted",
+    }) ?? null
+  }
+
   async workerContinue(args: JsonObject): Promise<JsonValue> {
     await this.config(args)
     const threadId = requiredString(args, "thread_id")
@@ -2137,6 +2168,68 @@ export class StackMcpServer {
     return toJsonValue({
       ...status,
       receipt: "lever.stack_mcp worker_run.paused",
+    }) ?? null
+  }
+
+  async readThreadEvents(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const threadId = requiredString(args, "thread_id")
+    const limit = optionalInteger(args, "limit") ?? 20
+    if (limit < 1 || limit > 100) {
+      throw new RpcError(-32602, "limit must be between 1 and 100")
+    }
+    const typeFilters = optionalStringArray(args, "types")
+    const forHumanOnly = optionalBoolean(args, "for_human_only") ?? false
+    const events = filterThreadEvents(readThreadMetaEvents(config.stackDataRoot, threadId), {
+      types: typeFilters,
+      limit,
+      forHumanOnly,
+    })
+    return toJsonValue({
+      ok: true,
+      thread_id: threadId,
+      count: events.length,
+      events: threadEventsToJson(events),
+      receipt: "lever.stack_mcp thread_events.read",
+    }) ?? null
+  }
+
+  async setMetaThreadMonitor(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const actorRole = optionalString(args, "actor_role") ?? "gardener"
+    if (actorRole !== "gardener" && actorRole !== "operator") {
+      throw new RpcError(-32602, "actor_role must be gardener or operator")
+    }
+    const monitorProfile = optionalString(args, "monitor_profile")
+    const enable = optionalBoolean(args, "enable")
+    if (!monitorProfile && enable !== true) {
+      throw new RpcError(-32602, "monitor_profile and/or enable=true is required")
+    }
+    const resolved = await resolveMetaThreadBinding(config, args)
+    let manifest = resolved.manifest
+    if (monitorProfile) {
+      if (!(await stackdHealthOk())) {
+        throw new RpcError(-32603, "stackd is required to update monitor_profile on a meta-thread")
+      }
+      const updated = await stackdUpdateMetaThreadMonitor(resolved.metaThreadId, {
+        monitor_profile: monitorProfile,
+        reason: optionalString(args, "reason"),
+        actor_id: optionalString(args, "actor_id") ?? actorRole,
+      })
+      manifest = updated.manifest
+    }
+    let monitorEnabled = false
+    if (enable === true || monitorProfile) {
+      monitorEnabled = await enableMonitorSidecar(config.stackDataRoot, resolved.headThreadId, monitorProfile)
+    }
+    return toJsonValue({
+      ok: true,
+      meta_thread_id: manifest.id,
+      thread_id: manifest.head_thread_id,
+      monitor_profile: manifest.monitor_profile ?? null,
+      monitor_enabled: monitorEnabled,
+      manifest,
+      receipt: "lever.stack_mcp meta_thread.monitor_updated",
     }) ?? null
   }
 
@@ -3727,6 +3820,15 @@ export class StackMcpServer {
     })) ?? null
   }
 
+  async localModelCapabilities(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue({
+      ok: true,
+      models: localModelCapabilities(config),
+      note: "Credential status reports presence only; Gemini policy models are not Codex agent models.",
+    }) ?? null
+  }
+
   async jesterkyLaunch(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const actor = optionalString(args, "actor")
@@ -3741,6 +3843,8 @@ export class StackMcpServer {
     if (ownerActorRole !== "external" && !ownerThreadId) {
       throw new RpcError(-32602, `owner_thread_id is required when owner_actor_role=${ownerActorRole}`)
     }
+    await assertJesterkyWorkflowOwner(config, ownerActorRole, ownerThreadId)
+    const model = optionalString(args, "model") ?? (actor === "codex" ? harnessModel(config) : undefined)
     return toJsonValue(launchJesterkyWorkflow(config, {
       workflowId: optionalString(args, "workflow_id"),
       specPath: optionalString(args, "spec_path"),
@@ -3748,11 +3852,12 @@ export class StackMcpServer {
       argsFile: optionalString(args, "args_file"),
       runId: optionalString(args, "run_id"),
       actor: actor as "fake" | "codex" | undefined,
-      model: optionalString(args, "model"),
+      model,
       codexHome: optionalString(args, "codex_home"),
       cd: optionalString(args, "cd"),
       follow: optionalBoolean(args, "follow"),
       width: optionalInteger(args, "width"),
+      background: optionalBoolean(args, "background"),
       ownerActorRole,
       ownerThreadId,
     })) ?? null
@@ -5992,6 +6097,14 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.inferenceCatalog(args),
     },
     {
+      name: "stack_local_model_capabilities",
+      description: "List local policy-model routes and safe credential-presence status. Never returns secret material. Gemini 3.1 Flash Lite is available only as a local policy/benchmark model, not as a Codex agent model.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+      }),
+      handler: (args) => server.localModelCapabilities(args),
+    },
+    {
       name: "stack_inference_usage",
       description:
         "Read Synth inference usage visibility from backend owner endpoints: free aux promo budget, inference spend summaries, top project/actor rows, and the primary-worker opt-in invariant. Does not include prompts or transcripts.",
@@ -6658,6 +6771,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
           cd: stringProperty("Optional working directory passed to jesterky --cd."),
           follow: booleanProperty("Whether jesterky should follow live output. Omit for CLI default."),
           width: numberProperty("Optional visualization width passed through to jesterky run."),
+          background: booleanProperty("Run in the background and return the durable run record immediately. Defaults to true; set false only when a synchronous manifest is required."),
           owner_actor_role: enumProperty(["gardener", "worker", "external"], "Launcher role. Use gardener or worker with owner_thread_id; defaults to external."),
           owner_thread_id: stringProperty("Launching Stack gardener/worker thread id. Required for gardener or worker ownership."),
         },
@@ -7546,13 +7660,13 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_worker_run",
-      description: "Start a background Codex run for a durable Stack worker through the Rust stackd runner. Returns worker_run.started immediately; the runner takes turns until the goal is done, a blocker is recorded, a pause is requested, an error, or the turn budget is reached (default 3, cap 25). Poll stack_worker_run_status for liveness — do not assume the worker finished when this returns.",
+      description: "Start a background Codex run for a durable Stack worker through the Rust stackd runner. Returns worker_run.started immediately; the runner takes up to 100 turns but stops early when the goal is done, a pause is requested, or an error occurs. Substantive work defaults to 100 turns; use a smaller budget only when the operator explicitly requests one or the run is a narrow diagnostic. Poll stack_worker_run_status for liveness — do not assume the worker finished when this returns.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
           thread_id: stringProperty("Stack worker thread/session id."),
           objective: stringProperty("Optional objective for the run. Defaults to the worker meta-thread active goal."),
-          max_turns: { type: "integer", description: "Optional turn budget for this run (default 3, hard cap 25)." },
+          max_turns: { type: "integer", description: "Optional turn budget for this run (default and hard cap 100). Do not reduce it for substantive work unless the operator explicitly asks." },
           monitor_profile: stringProperty("Optional monitor profile; auto-enables the sidecar and is recorded on the worker_run.started event."),
         },
         ["thread_id"],
@@ -7572,14 +7686,29 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.workerRunStatus(args),
     },
     {
+      name: "stack_message_gardener",
+      description: "Send an operator message to a registered local Stack gardener through the stackd owner route. The call returns after durable acceptance; the gardener runs asynchronously so it can safely call Stack MCP tools such as stack_worker_continue. Read gardener.* events for its reply and stack_worker_run_status for worker liveness.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          gardener_thread_id: stringProperty("Optional registered gardener thread id. stackd resolves the authoritative owner from worker_thread_id and rejects mismatches."),
+          worker_thread_id: stringProperty("Worker thread the gardener should inspect or coordinate. Must be owned by this gardener."),
+          body: stringProperty("Operator message to the gardener."),
+          idempotency_key: stringProperty("Caller-generated stable key for safe retries of this message."),
+        },
+        ["worker_thread_id", "body", "idempotency_key"],
+      ),
+      handler: (args) => server.messageGardener(args),
+    },
+    {
       name: "stack_worker_continue",
-      description: "Resume or nudge a paused/idle durable Stack worker run through the Rust stackd runner. Runs until done, blocker, pause, error, or the turn budget.",
+      description: "Resume or nudge a paused/idle durable Stack worker run through the Rust stackd runner. Substantive continuations default to 100 turns and stop early when done, paused, or errored; do not invent a smaller safety budget.",
       inputSchema: objectSchema(
         {
           environment: environmentProperty(),
           thread_id: stringProperty("Stack worker thread/session id."),
           note: stringProperty("Optional continuation note for the next worker turn."),
-          max_turns: { type: "integer", description: "Optional turn budget for this continuation." },
+          max_turns: { type: "integer", description: "Optional turn budget for this continuation (default and hard cap 100). Use 1-3 only for an explicitly requested narrow diagnostic." },
         },
         ["thread_id"],
       ),
@@ -7647,6 +7776,36 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["meta_thread_id", "title"],
       ),
       handler: (args) => server.setMetaThreadTitle(args),
+    },
+    {
+      name: "stack_meta_thread_set_monitor",
+      description: "Attach or update monitor policy on an existing durable meta-thread and optionally enable the monitor sidecar on its head worker thread. Use when the operator wants monitor coverage on a run that already exists. Setting monitor_profile also enables the sidecar by default.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        meta_thread_id: stringProperty("Stack meta-thread id. Provide this or thread_id."),
+        thread_id: stringProperty("Head worker thread id. Provide this or meta_thread_id."),
+        monitor_profile: stringProperty("Monitor profile id (for example default, engineering, research)."),
+        enable: { type: "boolean", description: "Enable the monitor sidecar on the head worker thread. Defaults to true when monitor_profile is set." },
+        reason: stringProperty("Optional short reason for the change."),
+        actor_id: stringProperty("Optional actor id. Defaults to actor_role."),
+        actor_role: enumProperty(["gardener", "operator"], "Actor role. Defaults to gardener."),
+      }),
+      handler: (args) => server.setMetaThreadMonitor(args),
+    },
+    {
+      name: "stack_thread_events_read",
+      description: "Read recent thread meta-events for a worker thread. Use to inspect monitor sidecar updates, worker_run lifecycle events, or gardener routing without opening the TUI. Filter with types prefixes such as monitor.* or worker_run.*.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          thread_id: stringProperty("Stack worker thread/session id."),
+          types: { type: "array", items: { type: "string" }, description: "Optional event type filters. Supports exact types or prefixes ending in .* (for example monitor.*, worker_run.*)." },
+          limit: numberProperty("Maximum events to return. Defaults to 20, max 100."),
+          for_human_only: { type: "boolean", description: "When true, monitor.goal_status events must have for_human=true." },
+        },
+        ["thread_id"],
+      ),
+      handler: (args) => server.readThreadEvents(args),
     },
     {
       name: "stack_message_live_run",
@@ -8367,6 +8526,40 @@ function resolveEffortSourcePath(config: StackConfig, effortFolderPath: string, 
   return resolve(config.workingDir, rawPath)
 }
 
+async function resolveMetaThreadBinding(
+  config: StackConfig,
+  args: JsonObject,
+): Promise<{ metaThreadId: string; headThreadId: string; manifest: StackdMetaThreadManifest }> {
+  const metaThreadId = optionalString(args, "meta_thread_id")
+  const threadId = optionalString(args, "thread_id")
+  if (metaThreadId) {
+    const manifest = await readMetaThreadManifest(config.stackDataRoot, metaThreadId)
+    if (!manifest) throw new RpcError(-32602, `meta-thread not found: ${metaThreadId}`)
+    return { metaThreadId: manifest.id, headThreadId: manifest.head_thread_id, manifest }
+  }
+  if (threadId) {
+    const manifests = await readMetaThreadManifests(config.stackDataRoot, "live")
+    const manifest = manifests.find((entry) => entry.head_thread_id === threadId)
+    if (!manifest) throw new RpcError(-32602, `no live meta-thread bound to thread_id: ${threadId}`)
+    return { metaThreadId: manifest.id, headThreadId: manifest.head_thread_id, manifest }
+  }
+  throw new RpcError(-32602, "meta_thread_id or thread_id is required")
+}
+
+async function enableMonitorSidecar(
+  stackRoot: string,
+  threadId: string,
+  monitorProfile?: string,
+): Promise<boolean> {
+  if (await stackdHealthOk()) {
+    const strictness = monitorProfile?.trim().toLowerCase() === "passive" ? "passive" : "conservative"
+    await stackdResumeMonitor(threadId, "monitor_default", { strictness })
+    return true
+  }
+  setMonitorEnabled(stackRoot, threadId, true)
+  return true
+}
+
 function metaThreadListItem(stackRoot: string, manifest: {
   id: string
   title: string
@@ -8643,6 +8836,30 @@ async function resolveLightsThreadTargetId(stackDataRoot: string, threadId: stri
   const manifest = await readMetaThreadManifest(stackDataRoot, trimmed)
   const head = manifest?.head_thread_id?.trim()
   return head || trimmed
+}
+
+async function assertJesterkyWorkflowOwner(
+  config: StackConfig,
+  role: "gardener" | "worker" | "external",
+  threadId: string | undefined,
+): Promise<void> {
+  if (role === "external") return
+  const ownerThreadId = threadId?.trim()
+  if (!ownerThreadId) throw new RpcError(-32602, `owner_thread_id is required when owner_actor_role=${role}`)
+  if (role === "gardener") {
+    const gardenerThreadId = readCurrentGardenerThreadId(config.stackDataRoot)
+    if (gardenerThreadId !== ownerThreadId) {
+      throw new RpcError(-32602, "owner_thread_id is not the registered Stack gardener thread")
+    }
+    return
+  }
+  const manifests = await readMetaThreadManifests(config.stackDataRoot, "live")
+  const isWorkerThread = manifests.some((manifest) =>
+    manifest.segments.some((segment) => segment.threadId === ownerThreadId && segment.agentRole === "worker"),
+  )
+  if (!isWorkerThread) {
+    throw new RpcError(-32602, "owner_thread_id is not a live Stack worker thread")
+  }
 }
 
 function readCurrentGardenerThreadId(stackDataRoot: string): string | undefined {

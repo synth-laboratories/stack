@@ -138,6 +138,19 @@ pub struct UpdateEffortRefRequest {
 }
 
 #[derive(Debug, Deserialize)]
+pub struct UpdateMonitorRequest {
+    pub monitor_profile: Option<String>,
+    pub reason: Option<String>,
+    pub actor_id: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct UpdateMonitorResponse {
+    pub manifest: MetaThreadManifest,
+    pub event_id: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
 pub struct BindRemoteSmrRunRequest {
     pub smr_run_id: String,
     pub environment: String,
@@ -381,6 +394,62 @@ pub async fn update_effort_ref(
     )
     .await?;
     Ok(Json(manifest))
+}
+
+pub async fn update_monitor(
+    State(state): State<Arc<AppState>>,
+    Path(id): Path<String>,
+    Json(request): Json<UpdateMonitorRequest>,
+) -> Result<Json<UpdateMonitorResponse>, ApiError> {
+    let monitor_profile = normalize_optional_string(request.monitor_profile.as_deref());
+    if monitor_profile.is_none() {
+        return Err(ApiError::bad_request(
+            "monitor_profile is required to update monitor policy",
+        ));
+    }
+    let mut manifest = read_manifest(&state.paths.stack_dir, &id)
+        .await
+        .map_err(ApiError::from)?;
+    let previous = manifest.monitor_profile.clone();
+    if previous == monitor_profile {
+        return Ok(Json(UpdateMonitorResponse {
+            manifest,
+            event_id: None,
+        }));
+    }
+
+    let actor_id = request
+        .actor_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("gardener")
+        .to_string();
+    let reason = normalize_optional_string(request.reason.as_deref());
+    manifest.monitor_profile = monitor_profile.clone();
+    manifest.updated_at = now();
+    write_manifest(&state.paths.stack_dir, &manifest)
+        .await
+        .map_err(ApiError::from)?;
+    let event_id = append_meta_event(
+        &state,
+        &manifest.id,
+        "meta_thread.monitor_updated",
+        &manifest.head_thread_id,
+        Some(&manifest.head_segment_id),
+        None,
+        json!({
+            "previous_monitor_profile": previous,
+            "monitor_profile": monitor_profile,
+            "reason": reason,
+            "actor_id": actor_id,
+        }),
+    )
+    .await?;
+    Ok(Json(UpdateMonitorResponse {
+        manifest,
+        event_id: Some(event_id),
+    }))
 }
 
 pub async fn bind_remote_smr_run(

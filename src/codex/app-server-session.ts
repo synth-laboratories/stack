@@ -64,6 +64,15 @@ export async function runCodexTurn(options: CodexRunOptions): Promise<StackCodex
     // fully open. CODEX_HOME isolation still keeps these background turns out
     // of the operator's personal Codex namespace.
     baseArgs = withExecSandboxMode(baseArgs, "danger-full-access")
+  } else if (
+    actorRole === "worker" &&
+    (process.env.STACK_CODEX_WRITABLE_ROOTS ?? "").trim().length > 0
+  ) {
+    // EffortBench sets STACK_CODEX_WRITABLE_ROOTS for packet writes. App-server
+    // honors that via thread/start sandboxPolicy; plain `codex exec` does not,
+    // so workers EPERM on $STACKEVAL_PACKET and get seatbelt PermissionDenied
+    // on localhost binds. Open the exec sandbox for those eval workers only.
+    baseArgs = withExecSandboxMode(baseArgs, "danger-full-access")
   }
   const args = [...baseArgs, "-C", options.config.workspaceRoot, "-"]
   assertStackCodexIsolation(options.config, actorRole, { transport: "exec", args })
@@ -267,6 +276,13 @@ export class CodexAppServerSession {
 
   takeQueuedPrompt(): string | undefined {
     return this.queuedPrompts.shift()
+  }
+
+  removeQueuedPrompt(prompt: string): boolean {
+    const index = this.queuedPrompts.lastIndexOf(prompt)
+    if (index < 0) return false
+    this.queuedPrompts.splice(index, 1)
+    return true
   }
 
   async ensureReady(): Promise<void> {

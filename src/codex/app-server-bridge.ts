@@ -57,11 +57,41 @@ export class CodexAppServerEventBridge {
       case "item/completed":
         return itemLifecycleLine(params.item, "completed")
       case "commandExecution/outputDelta":
+      case "item/commandExecution/outputDelta":
+      case "command/exec/outputDelta":
         return JSON.stringify({
           type: "command_execution",
-          id: readString(params.itemId) ?? readString(params.id),
+          id: readString(params.itemId) ?? readString(params.id) ?? readString(params.processId),
           status: "in_progress",
-          aggregated_output: readString(params.delta) ?? readString(params.output),
+          aggregated_output: readString(params.delta) ?? readString(params.output) ?? decodeBase64Delta(params.deltaBase64),
+        })
+      case "item/commandExecution/terminalInteraction":
+        return JSON.stringify({
+          type: "command_execution",
+          id: readString(params.itemId) ?? readString(params.id) ?? readString(params.processId) ?? readString(params.process_id),
+          status: "in_progress",
+          command: readString(params.command) ?? readString(params.stdin),
+          aggregated_output: readString(params.output) ?? readString(params.aggregatedOutput),
+        })
+      case "process/outputDelta":
+        return JSON.stringify({
+          type: "command_execution",
+          id: readString(params.processId) ?? readString(params.process_id) ?? readString(params.itemId) ?? readString(params.id),
+          status: "in_progress",
+          aggregated_output: readString(params.delta) ?? readString(params.output) ?? decodeBase64Delta(params.deltaBase64),
+        })
+      case "process/exited":
+        return JSON.stringify({
+          type: "command_execution",
+          id: readString(params.processId) ?? readString(params.process_id) ?? readString(params.itemId) ?? readString(params.id),
+          status: "completed",
+          aggregated_output:
+            readString(params.aggregatedOutput) ??
+            readString(params.stdout) ??
+            readString(params.output),
+          stdout: readString(params.stdout),
+          stderr: readString(params.stderr),
+          exit_code: readNumber(params.exitCode ?? params.exit_code),
         })
       case "thread/tokenUsageUpdated":
         return JSON.stringify({
@@ -171,6 +201,15 @@ function readNestedString(record: Record<string, unknown>, ...path: string[]): s
     current = asRecord(current)?.[part]
   }
   return readString(current)
+}
+
+function decodeBase64Delta(value: unknown): string | undefined {
+  if (typeof value !== "string" || !value) return undefined
+  try {
+    return Buffer.from(value, "base64").toString("utf8")
+  } catch {
+    return undefined
+  }
 }
 
 export function autoApproveServerRequest(method: string, params?: unknown): unknown {

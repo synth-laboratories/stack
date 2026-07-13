@@ -50,9 +50,9 @@ import { homedir } from "node:os"
 import { basename, dirname, relative, resolve, join } from "node:path"
 import {
   CODEX_MODEL_OPTIONS,
-  CURSOR_MODEL_OPTIONS,
+  CURSOR_GROK_REASONING_EFFORT_OPTIONS,
   CODEX_REASONING_EFFORT_OPTIONS,
-  CURSOR_REASONING_EFFORT_OPTIONS,
+  DEFAULT_CURSOR_GROK_MODEL,
   STACK_ENVIRONMENT_OPTIONS,
   STACK_HARNESS_OPTIONS,
   environmentAuthStatus,
@@ -67,6 +67,9 @@ import {
   harnessAuthPlan,
   harnessModel,
   harnessSessionCommand,
+  cursorGrokModelForEffort,
+  cursorGrokReasoningEffort,
+  cursorReasoningEffort,
   setStackHarness,
   writeStackConfigPatch,
   stackDataRootFromSessionPath,
@@ -93,7 +96,7 @@ import {
   readGoalFromSession,
   type CodexGoalSnapshot,
 } from "../codex/goal-context.js"
-import { agentGoalPreviewLineCount, agentPanelChromeRows, renderAgentGoalPreviewStyled } from "./goal-preview.js"
+import { agentGoalPreviewLineCount, renderAgentGoalPreviewStyled } from "./goal-preview.js"
 import {
   mergeMetaThreadGoalContext,
   readMetaThreadManifest,
@@ -160,7 +163,7 @@ import {
   type GardenerInboxItem,
   type WorkerHarnessSnapshot,
 } from "../gardener.js"
-import { loadGardenerConfig } from "../gardener-config.js"
+import { loadGardenerConfig, updateGardenerModelConfig } from "../gardener-config.js"
 import {
   executeGardenerThreadLifecycle,
   resolveGardenerArchiveTargets,
@@ -592,6 +595,13 @@ type FocusMode =
   | "lights-filter"
 type WorkMode = "eng" | "research"
 type HarnessSession = CodexAppServerSession | CursorAcpSession
+type RecentReturnSubmission = {
+  prompt: string
+  displayText: string
+  submittedAtMs: number
+  phase: "steering" | "queued" | "steered"
+  forceSteerRequested: boolean
+}
 type LiveOpsMode = "local" | "remote"
 type MonitorPanelMode = "chat" | "events"
 type WorkerPanelView = "chat" | "goal"
@@ -663,6 +673,10 @@ export type StackAppOptions = {
 
 type AppState = {
   focusMode: FocusMode
+  /** Stable input rail to restore after a temporary selector closes. */
+  selectorReturnFocus: FocusMode
+  /** The model owner currently being edited; gardeners never inherit worker controls. */
+  modelPickerScope: "worker" | "gardener"
   workMode: WorkMode
   liveOpsMode: LiveOpsMode
   /** Agent Bridge + session detail panels (right). Threads rail stays visible. */
@@ -805,6 +819,7 @@ type AppState = {
   planningColumns: number
   codexTransport: "app-server" | "exec" | "acp"
   queuedMessages: string[]
+  recentReturnSubmission?: RecentReturnSubmission
   activeTurnPromise?: Promise<void>
   abortTurnLoop?: boolean
   talkToGardener: boolean
@@ -984,9 +999,28 @@ function applySidePanelFocus(state: AppState, focusMode: FocusMode): void {
   }
 }
 
+function selectorOwnerFocus(focusMode: FocusMode): FocusMode {
+  if (focusMode === "gardener" || focusMode === "monitor" || focusMode === "agent") return focusMode
+  return "agent"
+}
+
+function openSelectorPanel(state: AppState, focusMode: FocusMode): void {
+  if (!isSelectorPanelFocusMode(state.focusMode)) {
+    state.selectorReturnFocus = selectorOwnerFocus(state.focusMode)
+  }
+  state.focusMode = focusMode
+}
+
 function closeSelectorPanel(state: AppState): boolean {
   if (!isSelectorPanelFocusMode(state.focusMode)) return false
-  state.focusMode = "agent"
+  const closingModelPicker = state.focusMode === "model"
+  if (state.focusMode === "tagged-effort") {
+    restoreFocusAfterActiveEffortPicker(state)
+  } else {
+    applySidePanelFocus(state, selectorOwnerFocus(state.selectorReturnFocus))
+    state.selectorReturnFocus = "agent"
+  }
+  if (closingModelPicker) state.modelPickerScope = "worker"
   state.configNotice = undefined
   state.slashMenuIndex = 0
   return true
@@ -1198,7 +1232,9 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   applyEvalTaggedEffortFromEnv(options.config.stackDataRoot)
   const lightsViewState = readLightsThreadViewState(options.config.stackDataRoot)
   const evalUiHandleSettings = readEvalUiHandleSettings()
-  const initialLightsPanelOpen = uxSettings.lightsPanelOpen || evalUiHandleSettings.evalModeEnabled
+  // Start in conversation mode every time. Operational detail remains one slash command away;
+  // eval mode is the only workflow that intentionally owns the landing layout.
+  const initialLightsPanelOpen = evalUiHandleSettings.evalModeEnabled
   let operatorSession = startOperatorSession({
     stackDataRoot: options.config.stackDataRoot,
     workspaceRoot: options.config.workspaceRoot,
@@ -1217,6 +1253,8 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     // First-launch approval must own key focus: with the agent input focused, printable
     // keys never reach the global telemetry key handler, so the modal's a/d/l keys go dead.
     focusMode: "gardener",
+    selectorReturnFocus: "gardener",
+    modelPickerScope: "worker",
     workMode: "eng",
     liveOpsMode: "local",
     railsVisible: false,
@@ -1390,6 +1428,11 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
     closeSidePanelsForGardenerFocus(state)
     state.gardenerPanelMode = "chat"
     state.focusMode = "gardener"
+  } else if (process.env.STACK_EFFORT_EVAL_MODE === "1") {
+    // EffortBench worker-first: default TUI focus is gardener, but eval mode with
+    // STACK_EFFORT_OPEN_GARDENER!=1 must land on the worker so assert_worker_thread_ready passes.
+    state.focusMode = "agent"
+    state.selectorReturnFocus = "agent"
   }
   if (state.focusMode === "gardener") syncGardenerLeftPanel(state)
   syncMonitorRightPanel(state)
@@ -1664,7 +1707,18 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const submitFromCurrentInput = (key?: StackKeyEvent, forceQueue = false): boolean => {
     if (!view || state.focusMode !== "agent") return false
     const prompt = resolveSlashSubmitPrompt(state.inputBuffer.trim(), state.slashMenuIndex)
-    if (!prompt) return false
+    if (!prompt) {
+      if (
+        !forceQueue &&
+        (key === undefined || isEnterKey(key)) &&
+        promoteRecentReturnSubmissionToSteer(state, codexSessionHandle.session, remount)
+      ) {
+        key?.preventDefault?.()
+        key?.stopPropagation?.()
+        return true
+      }
+      return false
+    }
     key?.preventDefault?.()
     key?.stopPropagation?.()
     if (handleEvalFeedbackSlash(prompt, state, remount)) {
@@ -2712,8 +2766,11 @@ function createView(
   const showRightLightsPanel = state.rightPanelOpen && state.rightPanelContent === "lights"
   const showRightEffortsPanel = state.rightPanelOpen && state.rightPanelContent === "efforts"
   const showDefaultRightPanel = state.rightPanelOpen && state.rightPanelContent === "default"
+  const selectorOwnedByGardener =
+    isSelectorPanelFocusMode(state.focusMode) && state.selectorReturnFocus === "gardener"
   const showCoreGardenerPanel =
     state.focusMode === "gardener" ||
+    selectorOwnedByGardener ||
     (state.focusMode === "tagged-effort" && state.taggedEffortReturnFocus === "gardener")
   const showCenterPanels =
     !showRightThreadsPanel &&
@@ -2778,13 +2835,18 @@ function createView(
     state.gardenerChatRunning,
     state.gardenerLiveThinking,
   )
-  // Reserve rows for the pinned plan + agents blocks so the fixed-height transcript content doesn't
-  // overflow onto them (which composites as garbled overlapping text). See gardener-pane-layout.test.
+  // Reserve rows for pinned task context and the compact worker/workflow status block.
   const gardenerPlanReserve = showCoreGardenerPanel
     ? gardenerPlanBlockHeight(state.threadPlans.get(state.gardenerThreadId)?.steps.length ?? 0)
     : 0
+  const gardenerPaneAgentRows = showCoreGardenerPanel ? gardenerPaneAgents(options, state) : []
   const gardenerAgentReserve = showCoreGardenerPanel
-    ? gardenerAgentBlockHeight(gardenerPaneAgents(options, state).length)
+    ? gardenerAgentBlockHeight(
+        gardenerPaneAgentRows.length,
+        gardenerPaneAgentRows.slice(0, 6).filter(
+          (agent) => agent.kind === "monitor" && Boolean(agent.progressLabel),
+        ).length,
+      )
     : 0
   const gardenerChatAreaRows = showCoreGardenerPanel
     ? gardenerTranscriptRowsWithReserve(transcriptViewport.lines, gardenerPlanReserve, gardenerAgentReserve)
@@ -2953,14 +3015,18 @@ function createView(
   if (state.focusMode === "tagged-effort" && taggedEffortSettings) {
     gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, taggedEffortSettings)
   }
-  // Agents block sits BELOW the control row (model/effort/env info), not above the input.
+  if (selectorOwnedByGardener) {
+    const selectorPanels = [switcher, configSettings, evalInfoSettings, experimentalSettings, permissionsSettings].filter(
+      (panel): panel is ReturnType<typeof Box> => panel !== undefined,
+    )
+    gardenerCoreChildren.splice(gardenerCoreChildren.length - 1, 0, ...selectorPanels)
+  }
   const gardenerAgents = gardenerAgentsWidget(options, state, transcriptViewport.columns)
   if (gardenerAgents) {
     gardenerCoreChildren.push(gardenerAgents)
   }
   const evalFeedbackModal = renderEvalFeedbackModal(state)
   const agentChildren = showCoreGardenerPanel ? gardenerCoreChildren : [
-    workerPanelTopBar(renderer, options, state, refresh),
     ...(state.railsVisible ? [Text({ content: mediationTopStrip(options, state), fg: theme.synth.amber })] : []),
     ...(workerGoalTabs ? [workerPanelModeBar(state, refresh)] : []),
     agentMainPane,
@@ -2975,6 +3041,12 @@ function createView(
     agentControlRow(options, state, transcriptViewport.columns, refresh),
   ]
   markStartup?.("view_agent_children_done")
+
+  const minimalChatSurface =
+    !state.leftPanelOpen &&
+    !state.rightPanelOpen &&
+    !showCenterPanels &&
+    !state.railsVisible
 
   const root = Box(
     {
@@ -3189,7 +3261,7 @@ function createView(
         : []),
       Box(
         {
-          border: true,
+          border: !minimalChatSurface,
           borderStyle: "single",
           borderColor:
             state.focusMode === "agent" ||
@@ -3203,7 +3275,11 @@ function createView(
             state.focusMode === "gardener"
               ? theme.borderActive
               : theme.borderInactive,
-          title: showCoreGardenerPanel ? gardenerPanelTitle(options, state) : agentPanelTitle(options, state),
+          title: minimalChatSurface
+            ? undefined
+            : showCoreGardenerPanel
+              ? gardenerPanelTitle(options, state)
+              : agentPanelTitle(options, state),
           backgroundColor: theme.bgCanvas,
           flexGrow: 1,
           padding: stackTuiLayout.panelPadding,
@@ -3674,7 +3750,7 @@ function switcherPanel(
 type ModelPickerAction =
   | { kind: "model"; value: string }
   | { kind: "effort"; value: string }
-  | { kind: "fixed-effort"; value: string }
+  | { kind: "cursor-effort"; value: string }
 
 type ModelPickerRow = {
   text: string
@@ -3687,13 +3763,13 @@ function modelPickerPanel(
   state: AppState,
   refresh: () => void,
 ): ReturnType<typeof Box> {
-  const rows = modelPickerRows(options.config)
+  const rows = modelPickerRows(options, state)
   return Box(
     {
       border: true,
       borderStyle: "single",
       borderColor: theme.borderActive,
-      title: "Model",
+      title: state.modelPickerScope === "gardener" ? "Gardener Model" : "Model",
       padding: stackTuiLayout.panelPadding,
       flexDirection: "column",
       width: "100%",
@@ -3711,58 +3787,84 @@ function modelPickerPanel(
   )
 }
 
-function modelPickerRows(config: StackConfig): ModelPickerRow[] {
-  const modelOptions = switcherOptions(config, "model")
+function modelPickerRows(options: StackAppOptions, state: AppState): ModelPickerRow[] {
+  const config = options.config
+  const gardenerConfig = state.modelPickerScope === "gardener" ? loadGardenerConfig(config.stackDataRoot) : undefined
+  const gardenerScope = gardenerConfig !== undefined
+  const modelOptions = gardenerScope ? CODEX_MODEL_OPTIONS : switcherOptions(config, "model")
+  const cursorHarness = !gardenerScope && isCursorHarness(config)
+  const currentModel = gardenerConfig?.model.model ?? harnessModel(config)
+  const currentEffort = gardenerConfig?.model.reasoningEffort ?? config.codexReasoningEffort
+  const currentCursorEffort = cursorHarness ? cursorGrokReasoningEffort(currentModel) : undefined
   const rows: ModelPickerRow[] = [
-    { text: `provider: ${harnessAuthPlan(config)} · /provider changes provider` },
-    { text: "number or click option · j/k model · e reasoning · Esc close" },
+    {
+      text: gardenerScope
+        ? `gardener · provider ${gardenerConfig.model.provider} · applies next turn`
+        : `provider ${harnessAuthPlan(config)} · /provider switch`,
+    },
+    { text: !cursorHarness || currentCursorEffort ? "number/click · j/k · e effort · Esc" : "number/click · j/k model · Esc" },
     { text: "Models" },
   ]
-  const currentModel = harnessModel(config)
   for (const [index, model] of modelOptions.entries()) {
     rows.push({
-      text: `${index + 1}. ${modelPickerModelLabel(config, model)}${model === currentModel ? " (current)" : ""}  ${modelPickerModelDescription(config, model)}`,
+      text: `${index + 1}. ${modelPickerModelLabel(config, model, gardenerScope)}${model === currentModel ? " (current)" : ""}  ${modelPickerModelDescription(config, model, gardenerScope)}`,
       active: model === currentModel,
       action: { kind: "model", value: model },
     })
   }
 
-  rows.push({ text: "Reasoning" })
-  if (isCursorHarness(config)) {
-    const effort = CURSOR_REASONING_EFFORT_OPTIONS[0]
-    rows.push({
-      text: `${modelOptions.length + 1}. ${modelPickerEffortLabel(effort)} (current)  ${modelPickerEffortDescription(effort)}`,
-      active: true,
-      action: { kind: "fixed-effort", value: effort },
-    })
+  if (cursorHarness) {
+    if (!currentCursorEffort) {
+      rows.push({ text: "Reasoning · Cursor managed" })
+      return rows
+    }
+    rows.push({ text: "Reasoning" })
+    const start = modelOptions.length
+    for (const [index, effort] of CURSOR_GROK_REASONING_EFFORT_OPTIONS.entries()) {
+      rows.push({
+        text: `${start + index + 1}. ${modelPickerEffortLabel(effort)}${effort === currentCursorEffort ? " (current)" : effort === "medium" ? " (default)" : ""}  ${modelPickerEffortDescription(effort)}`,
+        active: effort === currentCursorEffort,
+        action: { kind: "cursor-effort", value: effort },
+      })
+    }
     return rows
   }
+  rows.push({ text: "Reasoning" })
   const start = modelOptions.length
   for (const [index, effort] of CODEX_REASONING_EFFORT_OPTIONS.entries()) {
     rows.push({
-      text: `${start + index + 1}. ${modelPickerEffortLabel(effort)}${effort === config.codexReasoningEffort ? " (current)" : effort === "medium" ? " (default)" : ""}  ${modelPickerEffortDescription(effort)}`,
-      active: effort === config.codexReasoningEffort,
+      text: `${start + index + 1}. ${modelPickerEffortLabel(effort)}${effort === currentEffort ? " (current)" : effort === "medium" ? " (default)" : ""}  ${modelPickerEffortDescription(effort)}`,
+      active: effort === currentEffort,
       action: { kind: "effort", value: effort },
     })
   }
   return rows
 }
 
-function modelPickerModelLabel(config: StackConfig, model: string): string {
-  if (isCursorHarness(config)) {
+function modelPickerModelLabel(config: StackConfig, model: string, gardenerScope = false): string {
+  if (!gardenerScope && isCursorHarness(config)) {
     if (model === "composer-2.5") return "Composer 2.5"
+    if (cursorGrokReasoningEffort(model)) return "Grok 4.5"
     if (model === "auto") return "Auto"
   }
+  if (model === "gpt-5.6-luna") return "GPT-5.6 Luna"
+  if (model === "gpt-5.6-terra") return "GPT-5.6 Terra"
+  if (model === "gpt-5.6-sol") return "GPT-5.6 Sol"
   return model
 }
 
-function modelPickerModelDescription(config: StackConfig, model: string): string {
-  if (isCursorHarness(config)) {
-    if (model === "composer-2.5") return "Cursor Composer model"
-    if (model === "auto") return "Cursor-managed routing"
+function modelPickerModelDescription(config: StackConfig, model: string, gardenerScope = false): string {
+  if (!gardenerScope && isCursorHarness(config)) {
+    if (model === "composer-2.5") return "Cursor agent"
+    const grokEffort = cursorGrokReasoningEffort(model)
+    if (grokEffort) return `${modelPickerEffortLabel(grokEffort)}${grokEffort === "medium" ? " · default" : ""}`
+    if (model === "auto") return "managed routing"
   }
-  if (model === "gpt-5.4-mini") return "fast daily worker"
-  if (model === "gpt-5.5") return "deeper frontier reasoning"
+  if (model === "gpt-5.4-mini") return "fast"
+  if (model === "gpt-5.5") return "frontier"
+  if (model === "gpt-5.6-luna") return "fast · affordable"
+  if (model === "gpt-5.6-terra") return "balanced"
+  if (model === "gpt-5.6-sol") return "frontier"
   return ""
 }
 
@@ -3776,11 +3878,11 @@ function modelPickerEffortLabel(effort: string): string {
 }
 
 function modelPickerEffortDescription(effort: string): string {
-  if (effort === "low") return "fast responses with lighter reasoning"
-  if (effort === "medium") return "balanced speed and depth"
-  if (effort === "normal") return "Cursor agent fixed effort"
-  if (effort === "high") return "greater reasoning depth"
-  if (effort === "xhigh") return "maximum reasoning depth"
+  if (effort === "low") return "lighter · faster"
+  if (effort === "medium") return "balanced"
+  if (effort === "normal") return "Cursor fixed"
+  if (effort === "high") return "deeper"
+  if (effort === "xhigh") return "deepest"
   return ""
 }
 
@@ -3790,13 +3892,32 @@ function applyModelPickerAction(
   state: AppState,
   refresh: () => void,
 ): void {
+  if (state.modelPickerScope === "gardener") {
+    const before = loadGardenerConfig(options.config.stackDataRoot)
+    const requested = {
+      model: action.kind === "model" ? action.value : before.model.model,
+      reasoningEffort: action.kind === "effort" ? action.value : before.model.reasoningEffort,
+    }
+    const after = updateGardenerModelConfig(options.config.stackDataRoot, requested)
+    const changed = before.model.model !== requested.model || before.model.reasoningEffort !== requested.reasoningEffort
+    const requestedLabel = `${requested.model} ${requested.reasoningEffort}`
+    if (after.model.model !== requested.model || after.model.reasoningEffort !== requested.reasoningEffort) {
+      state.gardenerNotice = `gardener model override active; requested ${requestedLabel}, running ${after.model.model} ${after.model.reasoningEffort}`
+    } else if (changed) {
+      const timing = state.gardenerChatRunning ? "after the current turn" : "on the next turn"
+      const message = `model handoff ${before.model.model} ${before.model.reasoningEffort} → ${requestedLabel} · applies ${timing}`
+      appendGardenerChatMessage(options.config.stackDataRoot, gardenerThreadId(state), "gardener", message, { source: "model-handoff" })
+      state.gardenerNotice = message
+    }
+    refresh()
+    return
+  }
   if (action.kind === "model") {
     applySwitcherOption("model", action.value, options, state, refresh)
     appendStackBlock(state.blocks, `model ${harnessModel(options.config)}`)
-  } else if (action.kind === "fixed-effort") {
-    appendStackBlock(state.blocks, `reasoning effort ${action.value}`)
-    refresh()
-    return
+  } else if (action.kind === "cursor-effort") {
+    setCursorModel(options.config, cursorGrokModelForEffort(action.value as "low" | "medium" | "high"))
+    appendStackBlock(state.blocks, `reasoning effort ${cursorReasoningEffort(options.config.cursorModel)}`)
   } else if (!isCursorHarness(options.config)) {
     setCodexReasoningEffort(options.config, action.value)
     appendStackBlock(state.blocks, `reasoning effort ${options.config.codexReasoningEffort}`)
@@ -3804,13 +3925,29 @@ function applyModelPickerAction(
   persistStackConfig(options, state, refresh)
 }
 
-function modelPickerActionForKey(keyName: string | undefined, config: StackConfig): ModelPickerAction | undefined {
-  const modelOptions = switcherOptions(config, "model")
-  if (keyName === "e" && !isCursorHarness(config)) {
-    const current = Math.max(0, CODEX_REASONING_EFFORT_OPTIONS.findIndex((option) => option === config.codexReasoningEffort))
+function modelPickerActionForKey(
+  keyName: string | undefined,
+  config: StackConfig,
+  scope: "worker" | "gardener",
+): ModelPickerAction | undefined {
+  const gardenerScope = scope === "gardener"
+  const modelOptions = gardenerScope ? CODEX_MODEL_OPTIONS : switcherOptions(config, "model")
+  const gardenerConfig = gardenerScope ? loadGardenerConfig(config.stackDataRoot) : undefined
+  if (keyName === "e" && !gardenerScope && isCursorHarness(config)) {
+    const currentEffort = cursorGrokReasoningEffort(config.cursorModel)
+    if (!currentEffort) return undefined
+    const current = CURSOR_GROK_REASONING_EFFORT_OPTIONS.indexOf(currentEffort)
+    return {
+      kind: "cursor-effort",
+      value: CURSOR_GROK_REASONING_EFFORT_OPTIONS[(current + 1) % CURSOR_GROK_REASONING_EFFORT_OPTIONS.length] ?? currentEffort,
+    }
+  }
+  if (keyName === "e" && (gardenerScope || !isCursorHarness(config))) {
+    const currentEffort = gardenerConfig?.model.reasoningEffort ?? config.codexReasoningEffort
+    const current = Math.max(0, CODEX_REASONING_EFFORT_OPTIONS.findIndex((option) => option === currentEffort))
     return {
       kind: "effort",
-      value: CODEX_REASONING_EFFORT_OPTIONS[(current + 1) % CODEX_REASONING_EFFORT_OPTIONS.length] ?? config.codexReasoningEffort,
+      value: CODEX_REASONING_EFFORT_OPTIONS[(current + 1) % CODEX_REASONING_EFFORT_OPTIONS.length] ?? currentEffort,
     }
   }
 
@@ -3819,11 +3956,14 @@ function modelPickerActionForKey(keyName: string | undefined, config: StackConfi
   const model = modelOptions[numeric - 1]
   if (model) return { kind: "model", value: model }
 
-  if (isCursorHarness(config) && numeric === modelOptions.length + 1) {
-    return { kind: "fixed-effort", value: CURSOR_REASONING_EFFORT_OPTIONS[0] }
+  if (!gardenerScope && isCursorHarness(config)) {
+    const effort = CURSOR_GROK_REASONING_EFFORT_OPTIONS[numeric - modelOptions.length - 1]
+    if (cursorGrokReasoningEffort(config.cursorModel) && effort) {
+      return { kind: "cursor-effort", value: effort }
+    }
   }
 
-  if (!isCursorHarness(config)) {
+  if (gardenerScope || !isCursorHarness(config)) {
     const effort = CODEX_REASONING_EFFORT_OPTIONS[numeric - modelOptions.length - 1]
     if (effort) return { kind: "effort", value: effort }
   }
@@ -4070,11 +4210,16 @@ function configRows(
     },
     {
       id: "effort",
-      text: isCursorHarness(config) ? `reasoning effort: ${CURSOR_REASONING_EFFORT_OPTIONS[0]}` : `reasoning effort: ${config.codexReasoningEffort}`,
+      text: isCursorHarness(config) ? `reasoning effort: ${cursorReasoningEffort(config.cursorModel)}` : `reasoning effort: ${config.codexReasoningEffort}`,
       onSelect: () => {
         if (isCursorHarness(config)) {
-          state.configNotice = `reasoning effort ${CURSOR_REASONING_EFFORT_OPTIONS[0]}`
-          refresh()
+          if (cycleCursorEffort(config, 1)) {
+            state.configNotice = `reasoning effort ${cursorReasoningEffort(config.cursorModel)}`
+            persistStackConfig(options, state, refresh)
+          } else {
+            state.configNotice = "reasoning effort managed by Cursor"
+            refresh()
+          }
           return
         }
         cycleEffort(config, 1)
@@ -4445,7 +4590,11 @@ function switcherCurrentValue(config: StackConfig, state: AppState, focusMode: F
 
 function switcherOptions(config: StackConfig, focusMode: FocusMode): readonly string[] {
   if (focusMode === "model") {
-    return isCursorHarness(config) ? CURSOR_MODEL_OPTIONS : CODEX_MODEL_OPTIONS
+    if (!isCursorHarness(config)) return CODEX_MODEL_OPTIONS
+    const grokModel = cursorGrokReasoningEffort(config.cursorModel)
+      ? config.cursorModel
+      : DEFAULT_CURSOR_GROK_MODEL
+    return ["composer-2.5", grokModel, "auto"]
   }
   if (focusMode === "subagent-model") return CODEX_MODEL_OPTIONS
   if (focusMode === "subagents" || focusMode === "monitor") return ["on", "off"] as const
@@ -4486,12 +4635,19 @@ function workerHarnessForDisplay(config: StackConfig, state: AppState): WorkerHa
   }
   return {
     codexModel: harnessModel(config),
-    codexReasoningEffort: config.codexReasoningEffort,
+    codexReasoningEffort: isCursorHarness(config)
+      ? cursorReasoningEffort(config.cursorModel)
+      : config.codexReasoningEffort,
   }
 }
 
-function buildSlashCommandContext(options: StackAppOptions, state: AppState): SlashCommandContext {
+function buildSlashCommandContext(
+  options: StackAppOptions,
+  state: AppState,
+  owner: "worker" | "gardener" = "worker",
+): SlashCommandContext {
   const workerHarness = workerHarnessForDisplay(options.config, state)
+  const gardenerHarness = owner === "gardener" ? loadGardenerConfig(options.config.stackDataRoot).model : undefined
   const objective =
     state.metaThreadManifest?.active_goal?.objective?.trim() ?? state.goalContext.objective?.trim()
   return {
@@ -4503,11 +4659,11 @@ function buildSlashCommandContext(options: StackAppOptions, state: AppState): Sl
     railsVisible: state.railsVisible,
     agentViewEnabled: state.agentViewEnabled,
     environmentName: options.config.environmentName,
-    providerName: harnessAuthPlan(options.config),
+    providerName: gardenerHarness?.provider ?? harnessAuthPlan(options.config),
     profileName: readStackProfile(options.config.stackDataRoot).active,
     workMode: state.workMode,
-    model: workerHarness.codexModel,
-    effort: isCursorHarness(options.config) ? CURSOR_REASONING_EFFORT_OPTIONS[0] : workerHarness.codexReasoningEffort,
+    model: gardenerHarness?.model ?? workerHarness.codexModel,
+    effort: gardenerHarness?.reasoningEffort ?? workerHarness.codexReasoningEffort,
     goalObjective: objective,
     goalStatus: state.metaThreadManifest?.active_goal?.status ?? state.goalContext.status,
   }
@@ -4619,13 +4775,9 @@ function agentControlRow(
   columns: number,
   refresh: () => void,
 ): ReturnType<typeof Box> {
-  const config = options.config
-  const cursorHarness = isCursorHarness(config)
   const goalPreview = renderAgentGoalPreviewStyled(state.metaThreadManifest, state.goalContext, columns)
   const onGardenerSession = isGardenerSession(options, state)
-  const workerHarness = workerHarnessForDisplay(config, state)
   const slashCtx = buildSlashCommandContext(options, state)
-  const goalMode = isGoalMode(state)
   const workerVoiceHint = panelVoiceHintLine(state, "worker")
   return Box(
     {
@@ -4675,7 +4827,7 @@ function agentControlRow(
           Input({
             id: AGENT_INPUT_NATIVE_ID,
             value: state.inputBuffer,
-            placeholder: onGardenerSession ? "Message gardener · /help" : "Build anything · /help",
+            placeholder: "Ask anything · / for commands",
             backgroundColor: agentInputBackground(state),
             textColor: theme.fgInput,
             focusedBackgroundColor: agentInputBackground(state),
@@ -4692,110 +4844,6 @@ function agentControlRow(
           width: "100%",
         }),
     ...slashMenuElements(state.inputBuffer, state.slashMenuIndex, slashCtx, columns, state.focusMode === "agent"),
-    ...(goalMode && !onGardenerSession
-      ? [compactGoalWorkerControlRow(options, state, workerHarness, cursorHarness, refresh)]
-      : onGardenerSession
-      ? [
-          Box(
-            {
-              flexDirection: "row",
-              gap: stackTuiLayout.panelGap,
-              alignItems: "center",
-            },
-            controlLabel(agentRoleLabel("gardener")),
-            focusControlChip(gardenerHarnessLabel(config.stackDataRoot), "model", state, refresh),
-            ...(cursorHarness
-              ? []
-              : [
-                  controlDivider(),
-                  focusControlChip(loadGardenerConfig(config.stackDataRoot).model.reasoningEffort, "effort", state, refresh),
-                ]),
-            controlDivider(),
-            focusControlChip(`env ${config.environmentName}`, "environment", state, refresh),
-          ),
-          Box(
-            {
-              flexDirection: "row",
-              gap: stackTuiLayout.panelGap,
-              alignItems: "center",
-            },
-            controlLabel(agentRoleLabel("monitor")),
-            controlChip(state.monitorSnapshot.model, false),
-            ...(cursorHarness ? [] : [controlDivider(), controlChip(state.monitorSnapshot.reasoningEffort, false)]),
-            controlDivider(),
-            monitorControlChip(
-              monitorOnOffLabel(state.monitorSnapshot),
-              state.monitorSnapshot,
-              false,
-              () => toggleMonitorEnabled(options, state, refresh),
-            ),
-            controlDivider(),
-            controlChip(
-              state.rightPanelOpen ? "hide" : "show",
-              state.rightPanelOpen,
-              () => toggleMonitorPanelVisibility(options, state, refresh),
-            ),
-          ),
-        ]
-      : [
-          Box(
-            {
-              flexDirection: "row",
-              gap: stackTuiLayout.panelGap,
-              alignItems: "center",
-            },
-            controlLabel(agentRoleLabel("worker")),
-            focusControlChip(workerHarness.codexModel, "model", state, refresh),
-            ...(cursorHarness
-              ? []
-              : [
-                  controlDivider(),
-                  focusControlChip(workerHarness.codexReasoningEffort, "effort", state, refresh),
-                ]),
-            controlDivider(),
-            focusControlChip(`env ${config.environmentName}`, "environment", state, refresh),
-          ),
-          ...(cursorHarness
-            ? []
-            : [
-                Box(
-                  {
-                    flexDirection: "row",
-                    gap: stackTuiLayout.panelGap,
-                    alignItems: "center",
-                  },
-                  controlLabel("subagents"),
-                  focusControlChip(config.codexSubagentModel, "subagent-model", state, refresh),
-                  controlDivider(),
-                  focusControlChip(config.codexSubagentReasoningEffort, "subagent-effort", state, refresh),
-                  controlDivider(),
-                  focusControlChip(options.config.codexSubagentsEnabled ? "on" : "off", "subagents", state, refresh),
-                ),
-              ]),
-          Box(
-            {
-              flexDirection: "row",
-              gap: stackTuiLayout.panelGap,
-              alignItems: "center",
-            },
-            controlLabel(agentRoleLabel("monitor")),
-            controlChip(state.monitorSnapshot.model, false),
-            ...(cursorHarness ? [] : [controlDivider(), controlChip(state.monitorSnapshot.reasoningEffort, false)]),
-            controlDivider(),
-            monitorControlChip(
-              monitorOnOffLabel(state.monitorSnapshot),
-              state.monitorSnapshot,
-              false,
-              () => toggleMonitorEnabled(options, state, refresh),
-            ),
-            controlDivider(),
-            controlChip(
-              state.rightPanelOpen ? "hide" : "show",
-              state.rightPanelOpen,
-              () => toggleMonitorPanelVisibility(options, state, refresh),
-            ),
-          ),
-        ]),
   )
 }
 
@@ -4957,6 +5005,7 @@ function focusControlChip(
   refresh: () => void,
 ): ReturnType<typeof Text> {
   return controlChip(content, state.focusMode === focusMode, () => {
+    if (focusMode === "model") state.modelPickerScope = "worker"
     state.focusMode = focusMode
     refresh()
   })
@@ -5096,16 +5145,17 @@ async function refreshWorkerRunStatuses(state: AppState): Promise<boolean> {
     return changed
   }
   const reads = await Promise.allSettled(
-    workerIds.map(async (threadId) => [threadId, await stackdWorkerRunStatus(threadId)] as const),
+    workerIds.map(async (threadId) => {
+      const status = await awaitWithTimeout(stackdWorkerRunStatus(threadId), 8_000)
+      return status ? [threadId, status] as const : undefined
+    }),
   )
   const next = new Map<string, StackdWorkerRunStatus>()
   for (const read of reads) {
-    if (read.status === "fulfilled") {
+    if (read.status === "fulfilled" && read.value) {
       next.set(read.value[0], read.value[1])
-      continue
     }
   }
-  if (next.size === 0) return false
   const before = JSON.stringify([...state.workerRunStatus.entries()])
   const after = JSON.stringify([...next.entries()])
   if (before === after) return false
@@ -6598,19 +6648,9 @@ function gardenerControlRow(
   refresh: () => void,
   columns: number,
 ): ReturnType<typeof Box> {
-  const config = options.config
-  const gardenerConfig = loadGardenerConfig(config.stackDataRoot)
-  const cursorHarness = isCursorHarness(config)
   const voiceHint = panelVoiceHintLine(state, "gardener", state.gardenerNotice)
-  const slashCtx = buildSlashCommandContext(options, state)
-  const rowProps = {
-    flexDirection: "row" as const,
-    gap: stackTuiLayout.panelGap,
-    alignItems: "center" as const,
-    width: "100%" as const,
-    overflow: "hidden" as const,
-    flexShrink: 0 as const,
-  }
+  const waitingStatus = gardenerWaitingStatusLine(options, state, columns)
+  const slashCtx = buildSlashCommandContext(options, state, "gardener")
   return Box(
     {
       flexDirection: "column",
@@ -6621,6 +6661,14 @@ function gardenerControlRow(
           Text({
             content: voiceHint,
             fg: voiceHintColor(state, state.gardenerNotice),
+            width: "100%",
+          }),
+        ]
+      : []),
+    ...(waitingStatus
+      ? [
+          Text({
+            content: waitingStatus,
             width: "100%",
           }),
         ]
@@ -6638,17 +6686,31 @@ function gardenerControlRow(
       columns,
       state.focusMode === "gardener",
     ),
-    Box(
-      rowProps,
-      controlLabel(agentRoleLabel("gardener")),
-      focusControlChip(gardenerConfig.model.model, "model", state, refresh),
-      ...(cursorHarness
-        ? []
-        : [controlDivider(), focusControlChip(gardenerConfig.model.reasoningEffort, "effort", state, refresh)]),
-      controlDivider(),
-      focusControlChip(`env ${config.environmentName}`, "environment", state, refresh),
-    ),
   )
+}
+
+function gardenerWaitingStatusLine(
+  options: StackAppOptions,
+  state: AppState,
+  columns: number,
+): StyledText | undefined {
+  if (state.gardenerChatRunning) return undefined
+  const worker = associatedGardenerWorkers(options, state).find(
+    (entry) => state.workerRunStatus.get(entry.summary.id)?.state === "running",
+  )
+  if (!worker) return undefined
+  const label =
+    state.threadMetaThreadTitles.get(worker.summary.id)?.trim() ||
+    worker.manifest.title?.trim() ||
+    worker.manifest.active_goal?.objective?.trim() ||
+    "worker"
+  const frames = ["◐", "◓", "◑", "◒"]
+  const glyph = frames[state.spinnerFrame % frames.length] ?? "◌"
+  return new StyledText([
+    fg(theme.transcript.semanticWarning)(`${glyph} `),
+    fg(theme.fgPrimary)("Waiting on "),
+    fg(theme.transcript.semanticIdentifier)(oneLine(label, Math.max(12, columns - 12))),
+  ])
 }
 
 function planStepColor(status: AgentPlan["steps"][number]["status"]): string {
@@ -6691,8 +6753,12 @@ type GardenerPaneAgent = {
   statusLabel: string
   phase: "starting" | "running" | "done" | "other"
   goalLabel?: string
+  /** Model binding of the row's own durable actor/run, never inherited from the current UI picker. */
+  modelLabel?: string
   /** Token total, workers only — codex spawn_agent runs in-process with the gardener (no per-agent usage). */
   tokensLabel?: string
+  /** Latest human-facing monitor update, rendered beneath the monitor status row. */
+  progressLabel?: string
 }
 
 /**
@@ -6703,7 +6769,17 @@ type GardenerPaneAgent = {
 function gardenerPaneAgents(options: StackAppOptions, state: AppState): GardenerPaneAgent[] {
   const workflowRuns = state.workflowRuns
   const workers: GardenerPaneAgent[] = []
-  for (const worker of associatedGardenerWorkers(options, state)) {
+  const associatedWorkers = [...associatedGardenerWorkers(options, state)].sort((left, right) => {
+    const score = (worker: typeof left): number => {
+      const workerRunning = state.workerRunStatus.get(worker.summary.id)?.state === "running"
+      const workflowRunning = workflowRuns.some(
+        (run) => run.owner_actor_role === "worker" && run.owner_thread_id === worker.summary.id && run.status === "running",
+      )
+      return workerRunning || workflowRunning ? 0 : 1
+    }
+    return score(left) - score(right)
+  })
+  for (const worker of associatedWorkers) {
     const id = worker.summary.id
     const runStatus = state.workerRunStatus.get(id)
     const goal = runStatus?.active_goal_status ?? state.threadGoalStatus.get(id)
@@ -6714,6 +6790,7 @@ function gardenerPaneAgents(options: StackAppOptions, state: AppState): Gardener
       id.slice(0, 8)
     const usage = threadUsageSummary(options, worker.summary)
     const tokens = usage ? sessionTokenTotal(usage.totals) : 0
+    const modelLabel = workerModelLabel(worker.manifest)
     workers.push({
       kind: "worker",
       depth: 0,
@@ -6721,16 +6798,20 @@ function gardenerPaneAgents(options: StackAppOptions, state: AppState): Gardener
       statusLabel: workerRunStatusLabel(runStatus),
       phase: runStatus?.state === "running" ? "running" : runStatus?.state === "done" ? "done" : "other",
       ...(goal ? { goalLabel: `goal ${goal}` } : {}),
+      ...(modelLabel ? { modelLabel } : {}),
       tokensLabel: tokens > 0 ? `${formatTokenTotal(tokens)}tok` : undefined,
     })
     const monitor = refreshMonitorSnapshot(options.config.stackDataRoot, id)
     if (monitor.enabled || monitor.status !== "off") {
+      const preview = state.threadLightsPreviews.get(id)
+      const progressLabel = preview?.note?.trim() || preview?.headline?.trim()
       workers.push({
         kind: "monitor",
         depth: 1,
         label: monitor.label || "sidecar",
-        statusLabel: monitor.status,
+        statusLabel: monitorStatusLabel(monitor),
         phase: monitor.status === "running" ? "running" : "other",
+        ...(progressLabel ? { progressLabel } : {}),
       })
     }
     for (const workflow of workflowRuns.filter(
@@ -6765,10 +6846,28 @@ function gardenerSubagentPhase(status: SubagentStatus): GardenerPaneAgent["phase
 
 function workerRunStatusLabel(status: StackdWorkerRunStatus | undefined): string {
   if (!status) return "status unavailable"
-  const parts = [status.state, `${status.turns} turn${status.turns === 1 ? "" : "s"}`]
+  const progress = workerRunProgressLabel(status)
+  const parts = [status.state, progress ?? `${status.turns} turn${status.turns === 1 ? "" : "s"}`]
   const reason = status.pause_reason ?? status.stop_reason
   if (reason) parts.push(reason)
+  if (status.latest_run_observed_at) parts.push(`event ${lightsThreadRelativeAge(status.latest_run_observed_at)} ago`)
   return parts.join(" · ")
+}
+
+function workerRunProgressLabel(status: StackdWorkerRunStatus): string | undefined {
+  const max = status.max_turns
+  const completed = status.completed_turns
+  if (!Number.isFinite(max) || !Number.isFinite(completed) || !max || max < 1) return undefined
+  const total = Math.max(1, Math.floor(max))
+  const done = Math.min(total, Math.max(0, Math.floor(completed ?? 0)))
+  const cells = Math.min(8, Math.max(5, total))
+  const filled = Math.min(cells, Math.round((done / total) * cells))
+  return `${"▰".repeat(filled)}${"▱".repeat(cells - filled)} ${done}/${total}`
+}
+
+function monitorStatusLabel(monitor: ReturnType<typeof refreshMonitorSnapshot>): string {
+  if (!monitor.lastEventAt) return `${monitor.status} · no events yet`
+  return `${monitor.status} · event ${lightsThreadRelativeAge(monitor.lastEventAt)} ago`
 }
 
 function workflowPaneAgent(run: JesterkyWorkflowRunRecord, depth: 0 | 1): GardenerPaneAgent {
@@ -6778,16 +6877,29 @@ function workflowPaneAgent(run: JesterkyWorkflowRunRecord, depth: 0 | 1): Garden
     label: run.workflow_name || run.workflow_id,
     statusLabel: workflowRunStatusLabel(run),
     phase: run.status === "running" ? "running" : run.status === "done" ? "done" : "other",
+    ...(run.model ? { modelLabel: run.model } : {}),
   }
+}
+
+function workerModelLabel(manifest: StackdMetaThreadManifest): string | undefined {
+  const segment = manifest.segments.find((candidate) => candidate.segmentId === manifest.head_segment_id)
+    ?? manifest.segments.find((candidate) => candidate.threadId === manifest.head_thread_id)
+  if (!segment?.model) return undefined
+  return segment.reasoningEffort ? `${segment.model} ${segment.reasoningEffort}` : segment.model
 }
 
 function workflowRunStatusLabel(run: JesterkyWorkflowRunRecord): string {
   const parts: string[] = [run.status]
   if (run.event_count > 0) parts.push(`${run.event_count} event${run.event_count === 1 ? "" : "s"}`)
   if (run.status === "running" && run.current_node) parts.push(`node ${run.current_node}`)
+  if (run.status === "running" && run.last_event_at) parts.push(`event ${lightsThreadRelativeAge(run.last_event_at)} ago`)
   if (run.status !== "running" && run.stop_reason) parts.push(`stop ${run.stop_reason}`)
   parts.push(`${lightsThreadRelativeAge(run.status === "running" ? run.started_at : run.updated_at)} ago`)
   return parts.join(" · ")
+}
+
+function workflowRowLabel(run: JesterkyWorkflowRunRecord): string {
+  return `${run.workflow_name}${run.model ? ` · ${run.model}` : ""} · ${workflowRunStatusLabel(run)}`
 }
 
 function gardenerAgentPhaseColor(phase: GardenerPaneAgent["phase"]): string {
@@ -6798,7 +6910,7 @@ function gardenerAgentPhaseColor(phase: GardenerPaneAgent["phase"]): string {
 }
 
 /**
- * Pinned Claude-Code-style agents block above the gardener input: one row per agent, tagged
+ * Pinned agents block beneath the gardener composer: one row per agent, tagged
  * worker vs codex so the operator can tell a durable Stack worker from a transient collab agent.
  */
 function gardenerAgentsWidget(
@@ -6835,14 +6947,24 @@ function gardenerAgentsWidget(
     const glyph = agent.phase === "running" ? "✳" : agent.phase === "starting" ? "…" : agent.phase === "done" ? "✓" : agent.depth === 1 ? "↳" : "◇"
     const tokens = agent.tokensLabel ? ` · ${agent.tokensLabel}` : ""
     const goal = agent.goalLabel ? ` · ${agent.goalLabel}` : ""
+    const model = agent.modelLabel ? ` · ${agent.modelLabel}` : ""
     const indent = agent.depth === 1 ? "    " : "  "
     rows.push(
       Text({
-        content: clampLine(`${indent}${glyph} ${agent.kind} · ${agent.label}${goal} · ${agent.statusLabel}${tokens}`),
+        content: clampLine(`${indent}${glyph} ${agent.kind} · ${agent.label}${model}${goal} · ${agent.statusLabel}${tokens}`),
         fg: gardenerAgentPhaseColor(agent.phase),
         width: "100%",
       }),
     )
+    if (agent.kind === "monitor" && agent.progressLabel) {
+      rows.push(
+        Text({
+          content: clampLine(`${indent}  ↳ ${agent.progressLabel}`),
+          fg: theme.fgMuted,
+          width: "100%",
+        }),
+      )
+    }
   }
   if (agents.length > 6) {
     rows.push(Text({ content: clampLine(`  … +${agents.length - 6}`), fg: theme.fgMuted, width: "100%" }))
@@ -6858,7 +6980,7 @@ function gardenerInputBackground(state: AppState): string {
 function renderGardenerInputStyled(options: StackAppOptions, state: AppState, columns?: number): StyledText {
   const idleHint = isLightsPanelOpen(state)
     ? "click Record/Stop at top of Lights · /help"
-    : "Message gardener · /usage · /help"
+    : "Ask anything · / for commands"
   return renderWorkerAgentInputStyled(
     {
       status: state.gardenerChatRunning ? "running" : "idle",
@@ -6868,6 +6990,7 @@ function renderGardenerInputStyled(options: StackAppOptions, state: AppState, co
       queuedMessages: state.gardenerQueuedMessages,
       spinnerFrame: state.spinnerFrame,
       toolLogs: state.gardenerLiveTools,
+      subagentLogs: state.subagentLogs,
       currentTurnStartedAt: state.gardenerChatStartedAt,
       columns,
       showRecentToolActivity: true,
@@ -7512,16 +7635,24 @@ function buildSlashDispatchHooks(
       refresh()
     },
     openModelSwitcher: () => {
-      state.focusMode = "model"
+      state.modelPickerScope = feedbackChannel === "gardener" ? "gardener" : "worker"
+      openSelectorPanel(state, "model")
       refresh()
     },
     setModel: (name) => {
-      const modelOptions = switcherOptions(options.config, "model")
+      const gardenerScope = feedbackChannel === "gardener"
+      const modelOptions = gardenerScope ? CODEX_MODEL_OPTIONS : switcherOptions(options.config, "model")
       const needle = name.trim().toLowerCase()
       const match =
         modelOptions.find((option) => option.toLowerCase() === needle) ??
         modelOptions.find((option) => option.toLowerCase().includes(needle))
       if (!match) return false
+      if (gardenerScope) {
+        state.modelPickerScope = "gardener"
+        applyModelPickerAction({ kind: "model", value: match }, options, state, refresh)
+        return true
+      }
+      state.modelPickerScope = "worker"
       applySwitcherOption("model", match, options, state, refresh)
       appendStackBlock(state.blocks, `model ${match}`)
       persistStackConfig(options, state, refresh)
@@ -7544,13 +7675,26 @@ function buildSlashDispatchHooks(
       )
     },
     openExperimental: () => {
-      state.focusMode = "experimental"
+      openSelectorPanel(state, "experimental")
       refresh()
     },
     cycleEffort: () => {
+      if (feedbackChannel === "gardener") {
+        const action = modelPickerActionForKey("e", options.config, "gardener")
+        if (action) {
+          state.modelPickerScope = "gardener"
+          applyModelPickerAction(action, options, state, refresh)
+        }
+        return
+      }
       if (isCursorHarness(options.config)) {
-        appendStackBlock(state.blocks, `reasoning effort ${CURSOR_REASONING_EFFORT_OPTIONS[0]}`)
-        refresh()
+        if (cycleCursorEffort(options.config, 1)) {
+          appendStackBlock(state.blocks, `reasoning effort ${cursorReasoningEffort(options.config.cursorModel)}`)
+          persistStackConfig(options, state, refresh)
+        } else {
+          appendStackBlock(state.blocks, "reasoning effort managed by Cursor")
+          refresh()
+        }
         return
       }
       cycleEffort(options.config, 1)
@@ -7627,7 +7771,7 @@ function buildSlashDispatchHooks(
       void handleCodexAuthSlash(action, args, options, state, refresh, feedbackChannel)
     },
     openConfig: () => {
-      state.focusMode = "config"
+      openSelectorPanel(state, "config")
       state.configSelectedIndex = 0
       state.configNotice = undefined
       refresh()
@@ -7733,9 +7877,7 @@ function stackUsageSummaryText(
   const config = options.config
   const provider = harnessAuthPlan(config)
   const model = harnessModel(config)
-  const effort = isCursorHarness(config)
-    ? CURSOR_REASONING_EFFORT_OPTIONS[0]
-    : config.codexReasoningEffort
+  const effort = isCursorHarness(config) ? cursorReasoningEffort(config.cursorModel) : config.codexReasoningEffort
   const sessionUsage = buildSessionUsageSummary(options.session.turns, model, config.codexPricing)
   const agentUsage = buildOpsPanelAgentUsage(options, state)
   const lines: string[] = []
@@ -7817,6 +7959,69 @@ function providerSlashArgToHarness(value: string): StackHarnessKind | undefined 
   return undefined
 }
 
+const DOUBLE_RETURN_STEER_WINDOW_MS = 1_600
+const DOUBLE_RETURN_STEER_MIN_GAP_MS = 80
+
+function removeLastQueuedMessage(messages: readonly string[], message: string): string[] {
+  const index = messages.lastIndexOf(message)
+  if (index < 0) return [...messages]
+  return [...messages.slice(0, index), ...messages.slice(index + 1)]
+}
+
+async function retryRecentReturnAsSteer(
+  state: AppState,
+  session: HarnessSession,
+  submission: RecentReturnSubmission,
+  refresh: () => void,
+): Promise<void> {
+  submission.phase = "steering"
+  state.lastSteerHint = "steering"
+  refresh()
+  const steered = await session.trySteer(submission.prompt)
+  if (steered) {
+    submission.phase = "steered"
+    appendUserBlock(state.blocks, submission.displayText)
+    state.lastSteerHint = "steered"
+    refresh()
+    return
+  }
+  session.enqueue(submission.prompt)
+  state.queuedMessages = [...state.queuedMessages, submission.displayText]
+  submission.phase = "queued"
+  state.lastSteerHint = `queued (${state.queuedMessages.length})`
+  refresh()
+}
+
+function promoteRecentReturnSubmissionToSteer(
+  state: AppState,
+  session: HarnessSession | undefined,
+  refresh: () => void,
+): boolean {
+  const submission = state.recentReturnSubmission
+  const elapsedMs = submission ? Date.now() - submission.submittedAtMs : Number.POSITIVE_INFINITY
+  if (
+    state.status !== "running" ||
+    !session ||
+    !submission ||
+    submission.phase === "steered" ||
+    elapsedMs < DOUBLE_RETURN_STEER_MIN_GAP_MS ||
+    elapsedMs > DOUBLE_RETURN_STEER_WINDOW_MS
+  ) {
+    return false
+  }
+
+  submission.forceSteerRequested = true
+  state.lastSteerHint = "steering"
+  if (submission.phase === "queued") {
+    session.removeQueuedPrompt(submission.prompt)
+    state.queuedMessages = removeLastQueuedMessage(state.queuedMessages, submission.displayText)
+    void retryRecentReturnAsSteer(state, session, submission, refresh)
+  } else {
+    refresh()
+  }
+  return true
+}
+
 function submitInputValue(
   prompt: string,
   options: StackAppOptions,
@@ -7889,15 +8094,29 @@ function submitInputValue(
       refresh()
       return
     }
+    const submission: RecentReturnSubmission = {
+      prompt,
+      displayText: channelPrompt,
+      submittedAtMs: Date.now(),
+      phase: "steering",
+      forceSteerRequested: false,
+    }
+    state.recentReturnSubmission = submission
     void codexSession.trySteer(prompt).then((steered) => {
       if (steered) {
+        submission.phase = "steered"
         appendUserBlock(state.blocks, channelPrompt)
         state.lastSteerHint = "steered"
         refresh()
         return
       }
+      if (submission.forceSteerRequested) {
+        void retryRecentReturnAsSteer(state, codexSession, submission, refresh)
+        return
+      }
       codexSession.enqueue(prompt)
       state.queuedMessages = [...state.queuedMessages, channelPrompt]
+      submission.phase = "queued"
       state.lastSteerHint = `queued (${state.queuedMessages.length})`
       refresh()
     })
@@ -8223,12 +8442,8 @@ function panelVoiceHintLine(
       target,
     })
   }
-  if (activeTarget === target && state.voiceStatus.health === "READY") {
-    if (target === "gardener") {
-      return "Shift+V · voice · type or speak · enter to send"
-    }
-    return `Shift+V · voice → ${target} · enter to send`
-  }
+  // Ready capabilities stay discoverable in /help without consuming a permanent row.
+  // Only active voice work and actionable failures interrupt the conversation surface.
   return undefined
 }
 
@@ -8817,8 +9032,8 @@ function handleRawInputInner(
     const buffer = activeInputBuffer(state)
     const selected = selectedSlashCommandSpec(buffer, state.slashMenuIndex)
     if (selected?.command === "model" && slashMenuVisible(buffer)) {
-      state.focusMode = "model"
       setActiveInputBuffer(state, "")
+      openSelectorPanel(state, "model")
       state.slashMenuIndex = 0
       refresh()
       return true
@@ -8998,13 +9213,6 @@ function handleRawInputInner(
 
   if (state.focusMode === "gardener" || state.gardenerInputBuffer.trim().length > 0) {
     if (shouldDeferRawSequenceForVoiceHold(sequence)) {
-      return false
-    }
-    if (
-      state.focusMode === "gardener" &&
-      !state.gardenerInputBuffer &&
-      (sequence === "j" || sequence === "k" || sequence === "d" || sequence === "a")
-    ) {
       return false
     }
     return handleRawGardenerInput(sequence, state, submitGardener, refresh)
@@ -9602,157 +9810,36 @@ function globalConnectionBar(
   options: StackAppOptions,
   state: AppState,
   refresh: () => void,
-  applyStackEnvironmentFromUi: (environmentName: StackEnvironmentName) => Promise<void>,
-  codexSessionHandle: { session?: HarnessSession },
-  columns: number,
-  exitStack: () => void,
+  _applyStackEnvironmentFromUi: (environmentName: StackEnvironmentName) => Promise<void>,
+  _codexSessionHandle: { session?: HarnessSession },
+  _columns: number,
+  _exitStack: () => void,
 ): ReturnType<typeof Box> {
-  const config = options.config
-  const environmentName = options.config.environmentName
-  const connection = synthConnectionBadge(config, state)
-  const accountSelected = state.focusMode === "account"
-  const accountLabel = harnessAccountBudgetLabel(config, state)
-  const cursorHarness = isCursorHarness(config)
-  const authPlan = harnessAuthPlan(config)
-  const accountEmail =
-    state.codexAccountEmail &&
-    (cursorHarness ? isCursorAuthPlan(authPlan) : isChatGptAuthPlan(authPlan))
-      ? oneLine(state.codexAccountEmail, columns - 12)
-      : undefined
-  const rightBarColumns = globalConnectionBarRightColumns(columns)
-  const leftBarColumns = globalConnectionBarLeftColumns(columns)
   const evalModeChip = evalModeBarChip(state, refresh)
-  const selectProvider = (harness: StackHarnessKind) => {
-    state.focusMode = "account"
-    if (config.harness === harness) {
-      refresh()
-      return
-    }
-    void applyHarnessSwitch(options, state, codexSessionHandle, harness, refresh)
-  }
+  const updateChip = stackUpdateChip(options, state, refresh)
   return Box(
     {
       flexDirection: "row",
       width: "100%",
-      gap: stackTuiLayout.panelGap,
+      gap: 1,
       flexShrink: 0,
-      alignItems: "flex-start",
+      alignItems: "center",
     },
-    Box(
-      {
-        flexDirection: "column",
-        flexGrow: 1,
-        flexShrink: 1,
-        minWidth: 0,
-        gap: 0,
+    Text({
+      content: " stack ",
+      fg: theme.fgOnAccent,
+      bg: state.focusMode === "account" ? theme.bgChipActive : theme.synth.orangeDark,
+      flexShrink: 0,
+      onMouseDown(event) {
+        event.preventDefault?.()
+        event.stopPropagation?.()
+        openSelectorPanel(state, "account")
+        refresh()
       },
-      Text({
-        content: ` ${oneLine(connection.label, leftBarColumns)} `,
-        fg: accountSelected ? theme.fgOnAccent : connection.fg,
-        bg: accountSelected ? theme.bgChipActive : theme.bgSubtle,
-        onMouseDown(event) {
-          event.preventDefault?.()
-          event.stopPropagation?.()
-          state.focusMode = "account"
-          refresh()
-        },
-      }),
-      ...(connection.detail
-        ? [
-            Text({
-              content: oneLine(connection.detail, leftBarColumns),
-              fg: connection.detailFg ?? theme.fgMuted,
-              onMouseDown(event) {
-                event.preventDefault?.()
-                event.stopPropagation?.()
-                state.focusMode = "account"
-                refresh()
-              },
-            }),
-          ]
-        : []),
-      Text({
-        content: accountLabel,
-        fg: accountSelected ? theme.fgPrimary : theme.fgMuted,
-        onMouseDown(event) {
-          event.preventDefault?.()
-          event.stopPropagation?.()
-          state.focusMode = "account"
-          refresh()
-        },
-      }),
-      ...(accountSelected
-        ? [
-            Box(
-              {
-                flexDirection: "row",
-                gap: stackTuiLayout.panelGap,
-                alignItems: "center",
-                flexWrap: "wrap",
-              },
-              ...HARNESS_PROVIDER_CHOICES.map(({ label, harness }) =>
-                providerOptionChip(label, config.harness === harness, () => selectProvider(harness)),
-              ),
-            ),
-            ...(accountEmail
-              ? [
-                  Text({
-                    content: accountEmail,
-                    fg: theme.fgMuted,
-                  }),
-                ]
-              : []),
-          ]
-        : []),
-    ),
-    Box(
-      {
-        flexDirection: "column",
-        gap: 0,
-        flexShrink: 0,
-        alignItems: "flex-end",
-        width: rightBarColumns,
-      },
-      ...(evalModeChip
-        ? [
-            Box(
-              {
-                flexDirection: "row",
-                justifyContent: "flex-end",
-                flexShrink: 0,
-                width: rightBarColumns,
-              },
-              evalModeChip,
-            ),
-          ]
-        : []),
-      taggedEffortBarChip(options, state, refresh, rightBarColumns),
-      Box(
-        {
-          flexDirection: "row",
-          gap: stackTuiLayout.panelGap,
-          flexShrink: 0,
-          alignItems: "center",
-          justifyContent: "flex-end",
-          width: rightBarColumns,
-        },
-        stackVersionAndUpdateRow(options, state, refresh, rightBarColumns),
-        exitButtonChip(exitStack),
-      ),
-      Box(
-        {
-          flexDirection: "row",
-          gap: stackTuiLayout.panelGap,
-          flexShrink: 0,
-        },
-        ...STACK_ENVIRONMENT_OPTIONS.map((name) =>
-          environmentChip(name, name === environmentName, () => {
-            if (name === environmentName) return
-            void applyStackEnvironmentFromUi(name).then(refresh)
-          }),
-        ),
-      ),
-    ),
+    }),
+    Box({ flexGrow: 1, flexShrink: 1 }),
+    ...(evalModeChip ? [evalModeChip] : []),
+    ...(updateChip ? [updateChip] : []),
   )
 }
 
@@ -11259,13 +11346,13 @@ function lightsThreadDetailLines(
   if (summary.id !== state.gardenerThreadId) {
     const monitor = refreshMonitorSnapshot(options.config.stackDataRoot, summary.id)
     if (monitor.enabled || monitor.status !== "off") {
-      lines.push(oneLine(`    ↳ monitor · ${monitor.label || "sidecar"} · ${monitor.status}`, columns))
+      lines.push(oneLine(`    ↳ monitor · ${monitor.label || "sidecar"} · ${monitorStatusLabel(monitor)}`, columns))
     }
     const workflows = state.workflowRuns.filter(
       (run) => run.owner_actor_role === "worker" && run.owner_thread_id === summary.id,
     )
     for (const workflow of workflows.slice(0, 4)) {
-      lines.push(oneLine(`    ↳ workflow · ${workflow.workflow_name} · ${workflowRunStatusLabel(workflow)}`, columns))
+      lines.push(oneLine(`    ↳ workflow · ${workflowRowLabel(workflow)}`, columns))
     }
     if (workflows.length > 4) lines.push(oneLine(`    ... +${workflows.length - 4} workflows`, columns))
   }
@@ -11877,7 +11964,7 @@ function lightsGardenersSection(options: StackAppOptions, state: AppState, colum
   if (state.gardenerWorkspacePath) lines.push(`  workspace ${oneLine(state.gardenerWorkspacePath, Math.max(20, columns - 12))}`)
   if (state.gardenerNotice) lines.push(`  notice ${oneLine(state.gardenerNotice, Math.max(20, columns - 10))}`)
   for (const workflow of workflows.slice(0, 4)) {
-    lines.push(oneLine(`  ↳ workflow · ${workflow.workflow_name} · ${workflowRunStatusLabel(workflow)}`, columns))
+    lines.push(oneLine(`  ↳ workflow · ${workflowRowLabel(workflow)}`, columns))
   }
   if (workflows.length > 4) lines.push(`  ... +${workflows.length - 4} workflows`)
   for (const agent of subagents.slice(0, 4)) {
@@ -11894,9 +11981,10 @@ function lightsWorkflowsSection(state: AppState, columns: number): LightsPanelSe
   const running = workflows.filter((run) => run.status === "running").length
   const done = workflows.filter((run) => run.status === "done").length
   const errors = workflows.filter((run) => run.status === "error").length
-  const header = `Workflows · external · ${running} running · ${done} done · ${errors} error`
+  const stale = workflows.filter((run) => run.status === "stale").length
+  const header = `Workflows · external · ${running} running · ${done} done · ${errors} error${stale > 0 ? ` · ${stale} stale` : ""}`
   const lines = workflows.slice(0, 5).map(
-    (workflow) => oneLine(`  ◇ ${workflow.workflow_name} · ${workflowRunStatusLabel(workflow)}`, columns),
+    (workflow) => oneLine(`  ◇ ${workflowRowLabel(workflow)}`, columns),
   )
   if (workflows.length > 5) lines.push(`  ... +${workflows.length - 5} workflows`)
   if (lines.length === 0) lines.push("  (none)")
@@ -12357,12 +12445,21 @@ async function openLatestLocalArtifact(
 
 function footerHint(config: StackConfig, state: AppState, _sessionId: string): string {
   const parts: string[] = []
+  const gardenerFocused =
+    state.focusMode === "gardener" ||
+    (isSelectorPanelFocusMode(state.focusMode) && state.selectorReturnFocus === "gardener")
+  const gardenerModel = gardenerFocused ? loadGardenerConfig(config.stackDataRoot).model : undefined
+  const model = gardenerModel?.model ?? harnessModel(config)
+  const effort = gardenerModel?.reasoningEffort ??
+    (isCursorHarness(config) ? cursorReasoningEffort(config.cursorModel) : config.codexReasoningEffort)
+  parts.push(`${gardenerFocused ? "gardener" : "worker"} · ${compactModelLabel(model)} · ${compactEffortLabel(effort)}`)
+  parts.push(shortPath(config.workspaceRoot))
   const artifact = latestLocalArtifact(config)
   if (artifact) {
-    parts.push(`artifact Ctrl+] ${artifactDisplayUrl(artifact)}`)
+    parts.push("Ctrl+] artifact")
   }
   if (permissionsNeedsReminder(state.telemetryStatus?.tiers)) {
-    parts.push("/permissions review telemetry")
+    parts.push("/permissions")
   }
   if (agentChatPauseEligible(state)) {
     parts.push(state.agentChatPaused ? "Esc stop turn · Enter steer · ctrl+enter queue" : "Esc pause")
@@ -12370,7 +12467,7 @@ function footerHint(config: StackConfig, state: AppState, _sessionId: string): s
   if (evalFeedbackEnabled(state)) {
     parts.push("Ctrl+E eval feedback")
   }
-  parts.push("/exit quit")
+  parts.push("/ commands")
   return parts.join(" · ")
 }
 
@@ -12621,12 +12718,13 @@ function renderAgentInputStyled(options: StackAppOptions, state: AppState, colum
       queuedMessages: state.queuedMessages,
       spinnerFrame: state.spinnerFrame,
       toolLogs: state.toolLogs,
+      subagentLogs: state.subagentLogs,
       currentTurnStartedAt: state.currentTurnStartedAt,
       columns,
       showRecentToolActivity: !isGoalMode(state),
     },
     {
-      idleHint: onGardenerSession ? "Message gardener · /help" : "Build anything · /help",
+      idleHint: "Ask anything · / for commands",
       promptColor: onGardenerSession ? "#3fb950" : theme.synth.amber,
     },
   )
@@ -14267,14 +14365,16 @@ function buildAgentTranscriptViewport(renderer: CliRenderer, options: StackAppOp
     ? 0.5
     : state.rightPanelOpen
       ? Math.max(0.55, 1 - state.rightPanelWidthFraction)
-      : 0.72
-  const columns = Math.max(40, Math.floor(renderer.terminalWidth * widthShare) - 8)
+      : 1
+  const horizontalChrome = state.railsVisible || state.rightPanelOpen ? 8 : 2
+  const columns = Math.max(40, Math.floor(renderer.terminalWidth * widthShare) - horizontalChrome)
   if (state.focusMode === "gardener") {
     const gardenerChromeRows =
-      4 +
+      1 +
       (panelVoiceHintLine(state, "gardener", state.gardenerNotice) ? 1 : 0) +
+      (gardenerWaitingStatusLine(options, state, columns) ? 1 : 0) +
       (slashMenuVisible(state.gardenerInputBuffer) ? 1 : 0) +
-      Math.max(0, agentInputRenderedLineCount({
+      agentInputRenderedLineCount({
         status: state.gardenerChatRunning ? "running" : "idle",
         focusMode: state.focusMode,
         agentChatPaused: false,
@@ -14282,11 +14382,12 @@ function buildAgentTranscriptViewport(renderer: CliRenderer, options: StackAppOp
         queuedMessages: state.gardenerQueuedMessages,
         spinnerFrame: state.spinnerFrame,
         toolLogs: state.gardenerLiveTools,
+        subagentLogs: state.subagentLogs,
         currentTurnStartedAt: state.gardenerChatStartedAt,
         columns,
         showRecentToolActivity: true,
-      }) - 1)
-    const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 12 : 10) - gardenerChromeRows)
+      })
+    const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 4 : 2) - gardenerChromeRows)
     return {
       lines,
       columns,
@@ -14301,9 +14402,8 @@ function buildAgentTranscriptViewport(renderer: CliRenderer, options: StackAppOp
   const workerGoalTabRows = showWorkerGoalTabs(state, state.metaEvents) ? 1 : 0
   const workerVoiceHintRows = panelVoiceHintLine(state, "worker") ? 1 : 0
   const chromeRows =
-    agentPanelChromeRows({
-      goalPreviewLineCount,
-      inputLineCount: agentInputRenderedLineCount({
+    goalPreviewLineCount +
+    agentInputRenderedLineCount({
         status: state.status,
         focusMode: state.focusMode,
         agentChatPaused: state.agentChatPaused,
@@ -14311,16 +14411,15 @@ function buildAgentTranscriptViewport(renderer: CliRenderer, options: StackAppOp
         queuedMessages: state.queuedMessages,
         spinnerFrame: state.spinnerFrame,
         toolLogs: state.toolLogs,
+        subagentLogs: state.subagentLogs,
         currentTurnStartedAt: state.currentTurnStartedAt,
         columns,
         showRecentToolActivity: !isGoalMode(state),
-      }),
-      slashMenuOpen: slashMenuVisible(state.inputBuffer),
-      goalMode: isGoalMode(state),
-      gardenerSession: isGardenerSession(options, state),
-      railsVisible: state.railsVisible,
-    }) + workerGoalTabRows + workerVoiceHintRows
-  const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 12 : 10) - chromeRows)
+      }) +
+    (slashMenuVisible(state.inputBuffer) ? 1 : 0) +
+    workerGoalTabRows +
+    workerVoiceHintRows
+  const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 4 : 2) - chromeRows)
   return {
     lines,
     columns,
@@ -14329,13 +14428,14 @@ function buildAgentTranscriptViewport(renderer: CliRenderer, options: StackAppOp
 }
 
 function transcriptViewportMetrics(renderer: CliRenderer, state: AppState, extraReservedRows = 0): TranscriptViewport {
-  const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 12 : 10) - extraReservedRows)
+  const lines = Math.max(8, renderer.terminalHeight - (state.railsVisible ? 4 : 2) - extraReservedRows)
   const widthShare = state.railsVisible
     ? 0.5
     : state.rightPanelOpen
       ? Math.max(0.55, 1 - state.rightPanelWidthFraction)
-      : 0.72
-  const columns = Math.max(40, Math.floor(renderer.terminalWidth * widthShare) - 8)
+      : 1
+  const horizontalChrome = state.railsVisible || state.rightPanelOpen ? 8 : 2
+  const columns = Math.max(40, Math.floor(renderer.terminalWidth * widthShare) - horizontalChrome)
   return {
     lines,
     columns,
@@ -14457,6 +14557,7 @@ function isTranscriptSpinnerActive(state: AppState): boolean {
   return state.status === "running"
     || state.gardenerChatRunning
     || state.monitorSnapshot.status === "running"
+    || [...state.workerRunStatus.values()].some((status) => status.state === "running")
 }
 
 function seedGardenerLiveThinkingBlock(state: AppState): void {
@@ -15219,19 +15320,19 @@ async function handleGardenerKey(
 ): Promise<void> {
   if (state.gardenerInputBuffer.length > 0) return
   if (handleGardenerChatScrollKey(key, options, state, renderer, refresh)) return
-  if (key.name === "p") {
+  if (key.ctrl && key.name === "p") {
     toggleLeftPanelRails(state)
     refresh()
     return
   }
   const inbox = readGardenerInbox(options.config.stackDataRoot, gardenerThreadId(state))
   state.gardenerInboxSelectedIndex = clampIndex(state.gardenerInboxSelectedIndex, inbox.length)
-  if (key.name === "w") {
+  if (key.ctrl && key.name === "w") {
     cycleGardenerWorkerTarget(options, state)
     refresh()
     return
   }
-  if (key.name === "j" || key.name === "down") {
+  if ((key.ctrl && key.name === "j") || key.name === "down") {
     if (inbox.length > 0) {
       state.gardenerInboxSelectedIndex = Math.min(inbox.length - 1, state.gardenerInboxSelectedIndex + 1)
     } else {
@@ -15241,7 +15342,7 @@ async function handleGardenerKey(
     refresh()
     return
   }
-  if (key.name === "k" || key.name === "up") {
+  if ((key.ctrl && key.name === "k") || key.name === "up") {
     if (inbox.length > 0) {
       state.gardenerInboxSelectedIndex = Math.max(0, state.gardenerInboxSelectedIndex - 1)
     } else {
@@ -15251,7 +15352,7 @@ async function handleGardenerKey(
     refresh()
     return
   }
-  if (key.name === "d") {
+  if (key.ctrl && key.name === "x") {
     const item = inbox[state.gardenerInboxSelectedIndex]
     if (item) {
       dismissGardenerInboxItem(options.config.stackDataRoot, gardenerThreadId(state), item)
@@ -15261,7 +15362,7 @@ async function handleGardenerKey(
     refresh()
     return
   }
-  if (key.name === "a") {
+  if (key.ctrl && key.name === "a") {
     await routeGardenerInboxItems(
       inbox,
       options,
@@ -16352,12 +16453,21 @@ function handleModelKey(
   state: AppState,
   refresh: () => void,
 ): void {
-  const action = modelPickerActionForKey(key.name, options.config)
+  const action = modelPickerActionForKey(key.name, options.config, state.modelPickerScope)
   if (action) {
     applyModelPickerAction(action, options, state, refresh)
     return
   }
   if (!isCycleKey(key)) return
+  if (state.modelPickerScope === "gardener") {
+    const current = loadGardenerConfig(options.config.stackDataRoot)
+    const models = CODEX_MODEL_OPTIONS
+    const index = Math.max(0, models.indexOf(current.model.model as (typeof CODEX_MODEL_OPTIONS)[number]))
+    const offset = key.name === "k" || key.name === "left" ? -1 : 1
+    const model = models[(index + offset + models.length) % models.length] ?? current.model.model
+    applyModelPickerAction({ kind: "model", value: model }, options, state, refresh)
+    return
+  }
   cycleModel(options.config, key.name === "k" || key.name === "left" ? -1 : 1)
   appendStackBlock(state.blocks, `model ${harnessModel(options.config)}`)
   persistStackConfig(options, state, refresh)
@@ -16626,7 +16736,7 @@ function turnExitIdle(exitCode: number | undefined): boolean {
 
 function cycleModel(config: StackConfig, direction: number): void {
   if (isCursorHarness(config)) {
-    const options = CURSOR_MODEL_OPTIONS
+    const options = switcherOptions(config, "model")
     const current = Math.max(0, options.findIndex((option) => option === config.cursorModel))
     setCursorModel(config, options[(current + direction + options.length) % options.length] ?? config.cursorModel)
     return
@@ -16643,6 +16753,16 @@ function cycleEffort(config: StackConfig, direction: number): void {
     config,
     options[(current + direction + options.length) % options.length] ?? config.codexReasoningEffort,
   )
+}
+
+function cycleCursorEffort(config: StackConfig, direction: number): boolean {
+  const currentEffort = cursorGrokReasoningEffort(config.cursorModel)
+  if (!currentEffort) return false
+  const options = CURSOR_GROK_REASONING_EFFORT_OPTIONS
+  const current = options.indexOf(currentEffort)
+  const next = options[(current + direction + options.length) % options.length] ?? currentEffort
+  setCursorModel(config, cursorGrokModelForEffort(next))
+  return true
 }
 
 function cycleSubagentModel(config: StackConfig, direction: number): void {

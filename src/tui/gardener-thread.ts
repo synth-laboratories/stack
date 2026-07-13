@@ -4,8 +4,12 @@ import type { StackThreadMetaEvent } from "../thread-events.js"
 import { formatToolSummary, type ToolLog, type TranscriptBlock } from "./transcript.js"
 import { stackTuiTheme as theme } from "./theme.js"
 
-/** Operator ↔ gardener conversation only. Dispatch noise lives on the events tab. */
-const GARDENER_CHAT_EVENT_TYPES = new Set(["gardener.message", "gardener.friction"])
+/** Operator ↔ gardener conversation plus durable worker lifecycle handoffs. */
+const GARDENER_CHAT_EVENT_TYPES = new Set([
+  "gardener.message",
+  "gardener.friction",
+  "gardener.worker_run_status",
+])
 
 /** Full narrative including garden doc updates (events tab / legacy views). */
 const NARRATIVE_EVENT_TYPES = new Set([
@@ -17,6 +21,7 @@ const NARRATIVE_EVENT_TYPES = new Set([
   "gardener.garden_updated",
   "gardener.workspace_updated",
   "gardener.maintenance_pass",
+  "gardener.worker_run_status",
   "gardener.skill_suggest",
   "skills.registered",
 ])
@@ -263,6 +268,8 @@ function formatChatEvent(event: StackThreadMetaEvent, bodyWidth: number): Garden
           text: readString(payload.summary) ?? readString(payload.pattern) ?? "friction noted",
         },
       ]
+    case "gardener.worker_run_status":
+      return [{ kind: "system", text: gardenerWorkerRunStatusText(payload) }]
     default:
       return []
   }
@@ -401,6 +408,8 @@ function formatNarrativeEvent(event: StackThreadMetaEvent, width: number): strin
       return [oneLine(`  gardener  workspace garden updated`, width)]
     case "gardener.maintenance_pass":
       return [oneLine(`  gardener  maintenance pass`, width)]
+    case "gardener.worker_run_status":
+      return [oneLine(`  gardener  ${gardenerWorkerRunStatusText(payload)}`, width)]
     case "gardener.skill_suggest":
       return [
         oneLine(
@@ -415,6 +424,18 @@ function formatNarrativeEvent(event: StackThreadMetaEvent, width: number): strin
     default:
       return []
   }
+}
+
+function gardenerWorkerRunStatusText(payload: Record<string, unknown>): string {
+  const worker = readString(payload.worker_title) ?? readString(payload.worker_thread_id)?.slice(0, 8) ?? "worker"
+  const status = readString(payload.status) ?? "updated"
+  const completed = readNumber(payload.completed_turns)
+  const max = readNumber(payload.max_turns)
+  const turns = completed === undefined || max === undefined ? "" : ` · ${completed}/${max} turns`
+  const reason = readString(payload.reason)
+  const error = readString(payload.error)
+  const detail = error ?? reason
+  return `worker ${worker} · ${status}${turns}${detail ? ` · ${detail}` : ""}`
 }
 
 function formatEventStreamLine(event: StackThreadMetaEvent, width: number): string {
@@ -503,6 +524,10 @@ function wrapText(text: string, width: number): string[] {
 
 function readString(value: unknown): string | undefined {
   return typeof value === "string" && value.trim() ? value.trim() : undefined
+}
+
+function readNumber(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined
 }
 
 function shortTime(value: string): string {

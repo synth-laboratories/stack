@@ -81,6 +81,7 @@ pub async fn poll(client: &Client, prior_cursor: Value) -> SensorPoll {
 
     match fetch_runs(client, &base_url).await {
         Ok(runs) => {
+            cursor.runs_fetch_error = None;
             let mut observed_run_ids = BTreeSet::new();
             for run in runs {
                 observed_run_ids.insert(run.run_id.clone());
@@ -138,16 +139,20 @@ pub async fn poll(client: &Client, prior_cursor: Value) -> SensorPoll {
             }
         }
         Err(error) => {
-            events.push(service_event(
-                "sensor.local_gepa.runs.fetch_failed",
-                "local_gepa_runs",
-                &observed_at,
-                json!({
-                    "service_url": base_url,
-                    "path": "/runs?limit=12",
-                    "error": error.to_string(),
-                }),
-            ));
+            let error = error.to_string();
+            if cursor.runs_fetch_error.as_deref() != Some(error.as_str()) {
+                events.push(service_event(
+                    "sensor.local_gepa.runs.fetch_failed",
+                    "local_gepa_runs",
+                    &observed_at,
+                    json!({
+                        "service_url": base_url,
+                        "path": "/runs?limit=12",
+                        "error": error,
+                    }),
+                ));
+            }
+            cursor.runs_fetch_error = Some(error);
         }
     }
 
@@ -269,6 +274,8 @@ struct LocalGepaCursor {
     service_status: Option<String>,
     service_url: Option<String>,
     #[serde(default)]
+    runs_fetch_error: Option<String>,
+    #[serde(default)]
     runs: BTreeMap<String, GepaRunCursor>,
 }
 
@@ -277,6 +284,7 @@ impl LocalGepaCursor {
         serde_json::from_value(value).unwrap_or(Self {
             service_status: None,
             service_url: None,
+            runs_fetch_error: None,
             runs: BTreeMap::new(),
         })
     }

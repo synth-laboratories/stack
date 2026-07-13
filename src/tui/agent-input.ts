@@ -5,6 +5,7 @@ import {
   agentChatPauseInstructions,
   type AgentChatPauseContext,
 } from "./agent-chat-pause.js"
+import type { SubagentLog } from "./subagents.js"
 import { stackTuiTheme as theme } from "./theme.js"
 import type { ToolLog } from "./transcript.js"
 import {
@@ -18,6 +19,7 @@ type AgentInputState = AgentChatPauseContext & {
   queuedMessages: readonly string[]
   spinnerFrame: number
   toolLogs: readonly ToolLog[]
+  subagentLogs?: readonly SubagentLog[]
   currentTurnStartedAt?: string
   agentChatPaused?: boolean
   columns?: number
@@ -34,7 +36,9 @@ function queuedWorkerPromptPreview(messages: readonly string[]): string | undefi
 function workerActivityInput(input: AgentInputState): WorkerActivityStatusInput {
   return {
     status: input.status,
+    spinnerFrame: input.spinnerFrame,
     toolLogs: input.toolLogs,
+    subagentLogs: input.subagentLogs,
     currentTurnStartedAt: input.currentTurnStartedAt,
     agentChatPaused: input.agentChatPaused,
     queuedCount: input.queuedMessages.length,
@@ -50,13 +54,13 @@ function renderRunningPromptLine(
   hint: string,
 ): TextChunk[] {
   const queuedPreview = preview ? undefined : queuedWorkerPromptPreview(state.queuedMessages)
-  const chunks: TextChunk[] = [fg(promptColor)("> ")]
+  const chunks: TextChunk[] = [fg(promptColor)("› ")]
   if (preview) {
     chunks.push(fg(theme.fgInput)(preview), fg(theme.synth.gold)("_"))
   } else if (queuedPreview) {
     chunks.push(fg(theme.fgMuted)("queued: "), fg(theme.fgInput)(queuedPreview))
   } else {
-    chunks.push(dim(fg(theme.fgMuted)(hint)))
+    chunks.push(fg(theme.fgMuted)(hint))
   }
   return chunks
 }
@@ -94,12 +98,12 @@ export function renderWorkerAgentInputStyled(
     return new StyledText([
       ...workerActivityStatusChunks(workerActivityInput(state)),
       fg(theme.fgPrimary)("\n"),
-      ...renderRunningPromptLine(state, preview, promptColor, "type to steer · ctrl+enter queue"),
+      ...renderRunningPromptLine(state, preview, promptColor, "Add a follow-up"),
     ])
   }
 
   if (!preview) {
-    return new StyledText([fg(promptColor)("› "), dim(fg(theme.fgMuted)(input.idleHint))])
+    return new StyledText([fg(promptColor)("› "), fg(theme.fgMuted)(input.idleHint)])
   }
 
   return new StyledText([fg(promptColor)("› "), fg(theme.fgInput)(preview), fg(theme.synth.gold)("_")])

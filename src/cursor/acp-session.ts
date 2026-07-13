@@ -72,6 +72,13 @@ export class CursorAcpSession {
     return this.queuedPrompts.shift()
   }
 
+  removeQueuedPrompt(prompt: string): boolean {
+    const index = this.queuedPrompts.lastIndexOf(prompt)
+    if (index < 0) return false
+    this.queuedPrompts.splice(index, 1)
+    return true
+  }
+
   async ensureReady(): Promise<void> {
     if (this.client || this.closed) return
     const { config } = this.options

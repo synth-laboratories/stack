@@ -19,6 +19,13 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ### Added
 
+- **First-class gardener messaging MCP.** `stack_message_gardener` durably
+  accepts idempotent operator messages for a worker's registered gardener via
+  stackd, then runs the gardener asynchronously so it can safely call nested
+  Stack tools such as `stack_worker_continue`. The receipt returns the resolved
+  gardener id and directs callers to `stack_thread_events_read` and
+  `stack_worker_run_status` for reply and liveness proof.
+
 - **Assembly Lines v0.** New AssemblyLine primitive — the process layer above
   Efforts. One station schema with `ship` and `effort` presets, typed
   transition events (`assembly.created` … `assembly.follow_up_due`), standards
@@ -44,6 +51,27 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
   audits and compose a release-readiness packet gated on five evidence lanes;
   `public_copy_allowed` stays false until the human blog/release owner
   approves. All three are in the default gardener read allow-list.
+
+### Fixed
+
+- Worker continuation now reconciles the newest lifecycle event for the current
+  run before returning `409 already running`, so a durable `worker_run.paused`
+  receipt overrides a stale `running` record and can be resumed immediately.
+
+- **Reliable monitor and gardener wake scheduling.** stackd resolves bundled
+  monitor policy scripts from the Stack install while retaining workspace
+  overrides, bootstraps new gardener cursors without replaying historical
+  lifecycle events, and excludes gardener-owned conversations from worker
+  monitor scheduling.
+- **Useful autonomous worker budgets.** Substantive worker runs and
+  continuations now default to the 100-turn ceiling instead of stopping after
+  three turns, and gardener guidance no longer invents 1-3 turn safety caps.
+  Workers still stop early when work completes, is paused, or errors.
+- **Visible and authoritative monitor progress.** The gardener landing view now
+  shows the latest human-facing monitor update beneath each monitor row. The
+  isolated sidecar auto-approves only its filtered progress and self-pause
+  tools, and stackd stops a worker immediately when the current monitor pass
+  audits `goal_met` instead of spending the remaining turn budget.
 
 ## [0.2.0-dev.20260706.1] - 2026-07-06
 

@@ -28,6 +28,16 @@ pub async fn tick_runtime(state: Arc<AppState>) -> anyhow::Result<RuntimeTickRes
     drafts.extend(remote.events);
 
     let appended = store.append_events(&drafts)?;
+    if appended.is_empty() {
+        store.save_cursor("sensor.local_gepa", &local.cursor)?;
+        store.save_cursor("sensor.remote_synth", &remote.cursor)?;
+        if let Some(record) = store.load_snapshot_record()? {
+            return Ok(RuntimeTickResult {
+                snapshot: record.snapshot,
+                events_appended: 0,
+            });
+        }
+    }
     let events = store.load_events_for_reduction()?;
     let snapshot = reducer::reduce(&events);
     store.save_snapshot(&snapshot, appended.len())?;

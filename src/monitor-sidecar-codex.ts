@@ -162,6 +162,7 @@ async function runMonitorCodexSidecarPrompt(input: {
   let stdout = ""
   let stderr = ""
   let codexThreadId = input.codexThreadId
+  let pendingSafeStackTool: string | undefined
   assertStackCodexIsolation(input.stackConfig, "monitor", { transport: "app_server" })
   const client = await CodexAppServerClient.start({
     launch: {
@@ -177,11 +178,28 @@ async function runMonitorCodexSidecarPrompt(input: {
     clientTitle: "Stack Sidecar Monitor",
     clientVersion: stackVersion(input.stackConfig.appRoot),
     onNotification(message: JsonRpcNotification) {
+      pendingSafeStackTool = safeMonitorStackToolFromNotification(message) ?? pendingSafeStackTool
       const line = bridge.toExecJsonl(message)
       if (line) stdout += `${line}\n`
     },
     onServerRequest(message: JsonRpcServerRequest) {
-      stdout += `${JSON.stringify({ type: "stack", message: `sidecar codex request: ${message.method}` })}\n`
+      stdout += `${JSON.stringify({
+        type: "stack",
+        message: `sidecar codex request: ${message.method}`,
+        params: message.params,
+      })}\n`
+      if (
+        message.method === "mcpServer/elicitation/request" &&
+        pendingSafeStackTool &&
+        readStringField(message.params, "serverName") === "stack_live_ops"
+      ) {
+        const response = {
+          action: "accept",
+          content: acceptedElicitationContent(message.params),
+        }
+        pendingSafeStackTool = undefined
+        return Promise.resolve(response)
+      }
       return Promise.resolve(autoApproveServerRequest(message.method, message.params))
     },
   })
@@ -270,6 +288,52 @@ async function runMonitorCodexSidecarPrompt(input: {
   } finally {
     await client.close().catch(() => undefined)
   }
+}
+
+const AUTO_APPROVED_MONITOR_STACK_TOOLS = new Set([
+  "stack_monitor_goal_status",
+  "stack_sidecar_pause_for_restart",
+])
+
+function safeMonitorStackToolFromNotification(message: JsonRpcNotification): string | undefined {
+  if (message.method !== "item/started") return undefined
+  const params = recordValue(message.params)
+  const item = recordValue(params?.item)
+  if (item?.type !== "mcpToolCall" && item?.type !== "functionCall") return undefined
+  const raw = typeof item.tool === "string" ? item.tool : typeof item.name === "string" ? item.name : ""
+  return [...AUTO_APPROVED_MONITOR_STACK_TOOLS].find(
+    (candidate) => raw === candidate || raw.endsWith(`/${candidate}`),
+  )
+}
+
+function acceptedElicitationContent(params: unknown): Record<string, unknown> {
+  const schema = recordValue(recordValue(params)?.requestedSchema)
+  const properties = recordValue(schema?.properties)
+  const required = Array.isArray(schema?.required)
+    ? schema.required.filter((value): value is string => typeof value === "string")
+    : []
+  const content: Record<string, unknown> = {}
+  for (const key of required) {
+    const property = recordValue(properties?.[key])
+    if (property?.type === "boolean") content[key] = true
+    else if (Array.isArray(property?.enum) && property.enum.length > 0) content[key] = property.enum[0]
+    else if (property && "const" in property) content[key] = property.const
+    else if (property?.type === "number" || property?.type === "integer") content[key] = 1
+    else if (property?.type === "array") content[key] = []
+    else content[key] = "approved"
+  }
+  return content
+}
+
+function recordValue(value: unknown): Record<string, unknown> | undefined {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : undefined
+}
+
+function readStringField(value: unknown, key: string): string | undefined {
+  const field = recordValue(value)?.[key]
+  return typeof field === "string" ? field : undefined
 }
 
 // Monitor profile-as-data (C7): the sidecar's Stack MCP tool surface is the TOML

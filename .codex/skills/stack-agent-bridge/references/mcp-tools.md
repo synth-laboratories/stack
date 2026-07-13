@@ -25,6 +25,7 @@ Use these tools through the Stack MCP server when available.
 - `stack_decide_run_approval`: approve or deny one run approval.
 - `stack_list_factories`: remote Research Factories with project/run routing hints; runtime-first with direct API fallback, supports `tick`.
 - `stack_list_hosted_optimizer_runs`: hosted optimizer runs; runtime-first with direct API fallback for artifact/event hints, supports `tick`.
+- `stack_message_gardener`: durably send an idempotent message to a registered local gardener. Acceptance is asynchronous so the gardener can safely call nested Stack MCP tools; follow with `stack_thread_events_read` and `stack_worker_run_status`.
 
 ## README-Smoke
 

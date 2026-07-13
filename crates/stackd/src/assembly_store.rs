@@ -72,24 +72,21 @@ impl AssemblyStore {
     ) -> Result<(AssemblyLineRecord, AssemblyEvent), AssemblyStoreError> {
         let title = request.title.trim();
         if title.is_empty() {
-            return Err(AssemblyLineError::InvalidField(
-                "title must be non-empty".to_string(),
-            )
-            .into());
+            return Err(
+                AssemblyLineError::InvalidField("title must be non-empty".to_string()).into(),
+            );
         }
         let owner = request.owner.trim();
         if owner.is_empty() {
-            return Err(AssemblyLineError::InvalidField(
-                "owner must be non-empty".to_string(),
-            )
-            .into());
+            return Err(
+                AssemblyLineError::InvalidField("owner must be non-empty".to_string()).into(),
+            );
         }
         let actor_id = request.actor_id.trim();
         if actor_id.is_empty() {
-            return Err(AssemblyLineError::InvalidField(
-                "actor_id must be non-empty".to_string(),
-            )
-            .into());
+            return Err(
+                AssemblyLineError::InvalidField("actor_id must be non-empty".to_string()).into(),
+            );
         }
         let now = Utc::now();
         let created_at = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
@@ -131,10 +128,12 @@ impl AssemblyStore {
         Ok((record, event))
     }
 
-    pub fn list_lines(&self) -> Result<Vec<(AssemblyLineRecord, Vec<AssemblyEvent>)>, AssemblyStoreError> {
+    pub fn list_lines(
+        &self,
+    ) -> Result<Vec<(AssemblyLineRecord, Vec<AssemblyEvent>)>, AssemblyStoreError> {
         let conn = self.connect()?;
-        let mut stmt =
-            conn.prepare("SELECT record_json FROM assembly_lines ORDER BY created_at DESC, id DESC")?;
+        let mut stmt = conn
+            .prepare("SELECT record_json FROM assembly_lines ORDER BY created_at DESC, id DESC")?;
         let rows = stmt.query_map([], |row| row.get::<_, String>(0))?;
         let mut lines = Vec::new();
         for row in rows {

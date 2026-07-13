@@ -1,6 +1,6 @@
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { createHash } from "node:crypto"
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs"
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, isAbsolute, join, resolve } from "node:path"
 import type { StackConfig } from "./config.js"
 
@@ -23,13 +23,15 @@ export type JesterkyWorkflowLaunchOptions = {
   cd?: string
   follow?: boolean
   width?: number
+  /** Background execution is the default so Stack can render event progress while it runs. */
+  background?: boolean
   ownerActorRole?: JesterkyWorkflowOwnerRole
   ownerThreadId?: string
 }
 
 export type JesterkyWorkflowOwnerRole = "gardener" | "worker" | "external"
 
-export type JesterkyWorkflowRunStatus = "running" | "done" | "error"
+export type JesterkyWorkflowRunStatus = "running" | "done" | "error" | "stale"
 
 export type JesterkyWorkflowRunRecord = {
   schema_version: "stack.jesterky.run.v1"
@@ -44,6 +46,14 @@ export type JesterkyWorkflowRunRecord = {
   events_path: string
   record_path: string
   status: JesterkyWorkflowRunStatus
+  actor?: "fake" | "codex"
+  /** Explicit model passed to the workflow actor; absent means the workflow did not declare one. */
+  model?: string
+  process_id?: number
+  heartbeat_at?: string
+  last_event_at?: string
+  stdout_path?: string
+  stderr_path?: string
   started_at: string
   updated_at: string
   completed_at?: string
@@ -114,6 +124,8 @@ export function launchJesterkyWorkflow(
   const manifestPath = join(runDir, "manifest.json")
   const eventsPath = join(runDir, "events.ndjson")
   const recordPath = join(runDir, "run.json")
+  const stdoutPath = join(runDir, "stdout.log")
+  const stderrPath = join(runDir, "stderr.log")
   const ownerActorRole = options.ownerActorRole ?? "external"
   if (ownerActorRole !== "external" && !options.ownerThreadId?.trim()) {
     throw new Error(`owner_thread_id is required when owner_actor_role=${ownerActorRole}`)
@@ -132,6 +144,10 @@ export function launchJesterkyWorkflow(
     events_path: eventsPath,
     record_path: recordPath,
     status: "running",
+    ...(options.actor ? { actor: options.actor } : {}),
+    ...(options.model ? { model: options.model } : {}),
+    stdout_path: stdoutPath,
+    stderr_path: stderrPath,
     started_at: startedAt,
     updated_at: startedAt,
     event_count: 0,
@@ -150,6 +166,43 @@ export function launchJesterkyWorkflow(
   if (options.follow === true) args.push("--follow")
   if (options.follow === false) args.push("--no-follow")
   if (options.width !== undefined) args.push("--width", String(options.width))
+
+  if (options.background !== false) {
+    const stdoutFd = openSync(stdoutPath, "a")
+    const stderrFd = openSync(stderrPath, "a")
+    try {
+      const child = spawn(jesterkyCommand(), args, {
+        cwd: config.workingDir,
+        detached: true,
+        stdio: ["ignore", stdoutFd, stderrFd],
+      })
+      const running = {
+        ...initialRecord,
+        process_id: child.pid,
+        heartbeat_at: new Date().toISOString(),
+      }
+      writeJson(recordPath, running)
+      child.once("exit", (code) => {
+        finalizeJesterkyRun(recordPath, code ?? 1)
+      })
+      child.unref()
+      return workflowLaunchResponse(running, { ok: true, status: "running" })
+    } catch (error) {
+      const completedAt = new Date().toISOString()
+      const failed: JesterkyWorkflowRunRecord = {
+        ...initialRecord,
+        status: "error",
+        updated_at: completedAt,
+        completed_at: completedAt,
+        error: error instanceof Error ? error.message : String(error),
+      }
+      writeJson(recordPath, failed)
+      return workflowLaunchResponse(failed, { ok: false, status: "error" })
+    } finally {
+      closeSync(stdoutFd)
+      closeSync(stderrFd)
+    }
+  }
 
   const command = runJesterky(config, args, { allowFailure: true })
   let manifest: JsonRecord | null = null
@@ -200,16 +253,7 @@ export function launchJesterkyWorkflow(
   }
   writeJson(recordPath, record)
   return {
-    ok: completed,
-    status: command.status,
-    workflow_id: workflow.workflowId,
-    run_id: runId,
-    run_dir: runDir,
-    manifest_path: manifestPath,
-    events_path: eventsPath,
-    run_record_path: recordPath,
-    owner_actor_role: ownerActorRole,
-    owner_thread_id: initialRecord.owner_thread_id ?? null,
+    ...workflowLaunchResponse(record, { ok: completed, status: command.status }),
     summary,
     stdout: command.stdout,
     stderr: command.stderr,
@@ -236,11 +280,7 @@ export function listJesterkyWorkflowRuns(
           const parsed = readJson(recordPath)
           const record = parseJesterkyRunRecord(parsed)
           if (!record) continue
-          records.push(
-            record.status === "running"
-              ? { ...record, ...readJesterkyEventProgress(record.events_path) }
-              : record,
-          )
+          records.push(reconcileJesterkyRun(record))
         } catch {
           // One partially written or manually edited record must not hide the remaining workflow rail.
         }
@@ -253,6 +293,134 @@ export function listJesterkyWorkflowRuns(
     return Date.parse(right.updated_at) - Date.parse(left.updated_at)
   })
   return records.slice(0, Math.max(1, options.limit ?? 100))
+}
+
+function workflowLaunchResponse(
+  record: JesterkyWorkflowRunRecord,
+  outcome: { ok: boolean; status: number | "running" | "error" },
+): JsonRecord {
+  return {
+    ok: outcome.ok,
+    status: outcome.status,
+    workflow_id: record.workflow_id,
+    run_id: record.run_id,
+    run_dir: record.run_dir,
+    manifest_path: record.manifest_path,
+    events_path: record.events_path,
+    run_record_path: record.record_path,
+    owner_actor_role: record.owner_actor_role,
+    owner_thread_id: record.owner_thread_id ?? null,
+    actor: record.actor ?? null,
+    model: record.model ?? null,
+    process_id: record.process_id ?? null,
+  }
+}
+
+function reconcileJesterkyRun(record: JesterkyWorkflowRunRecord): JesterkyWorkflowRunRecord {
+  if (record.status !== "running") return record
+  if (record.process_id && isProcessAlive(record.process_id)) {
+    const now = new Date().toISOString()
+    const next = { ...record, ...readJesterkyEventProgress(record.events_path), heartbeat_at: now }
+    if (JSON.stringify(next) !== JSON.stringify(record)) writeJson(record.record_path, next)
+    return next
+  }
+  if (record.process_id) {
+    return finalizeJesterkyRun(record.record_path) ?? staleJesterkyRun(record)
+  }
+  const progress = readJesterkyEventProgress(record.events_path)
+  const lastActivity = progress.last_event_at ?? record.heartbeat_at ?? record.updated_at
+  if (Date.now() - Date.parse(lastActivity) < jesterkyStaleMs()) {
+    return { ...record, ...progress }
+  }
+  return staleJesterkyRun({ ...record, ...progress })
+}
+
+function finalizeJesterkyRun(recordPath: string, exitStatus?: number): JesterkyWorkflowRunRecord | undefined {
+  if (!existsSync(recordPath)) return undefined
+  let record: JesterkyWorkflowRunRecord | undefined
+  try {
+    record = parseJesterkyRunRecord(readJson(recordPath))
+  } catch {
+    return undefined
+  }
+  if (!record || record.status !== "running") return record
+  const completedAt = new Date().toISOString()
+  let manifest: JsonRecord | undefined
+  let manifestReadError: string | undefined
+  if (existsSync(record.manifest_path)) {
+    try {
+      manifest = readJson(record.manifest_path)
+    } catch (error) {
+      manifestReadError = error instanceof Error ? error.message : String(error)
+    }
+  }
+  const manifestStatus = manifest ? readString(manifest.status) : undefined
+  const stopReason = manifest ? readString(manifest.stop_reason) : undefined
+  const invariantFailure = (manifest?.invariants as JsonRecord | undefined)?.all_ok === false
+  const failedStopReason = stopReason === "node_failed" || stopReason === "goal_unmet" || stopReason === "budget_exhausted"
+  const completed = (exitStatus === undefined || exitStatus === 0)
+    && Boolean(manifest)
+    && manifestStatus !== "failed"
+    && !invariantFailure
+    && !failedStopReason
+  const progress = readJesterkyEventProgress(record.events_path)
+  const next: JesterkyWorkflowRunRecord = {
+    ...record,
+    status: completed ? "done" : "error",
+    updated_at: completedAt,
+    completed_at: completedAt,
+    ...(exitStatus !== undefined ? { exit_status: exitStatus } : {}),
+    ...(manifestStatus ? { manifest_status: manifestStatus } : {}),
+    ...(stopReason ? { stop_reason: stopReason } : {}),
+    ...progress,
+    ...(!completed
+      ? {
+          error: readJesterkyLogTail(record.stderr_path)
+            || (manifestReadError ? `jesterky manifest could not be read: ${manifestReadError}` : undefined)
+            || (invariantFailure ? "jesterky manifest invariants failed" : undefined)
+            || (failedStopReason ? `jesterky stopped with ${stopReason}` : undefined)
+            || "jesterky process exited without a completed manifest",
+        }
+      : {}),
+  }
+  writeJson(recordPath, next)
+  return next
+}
+
+function staleJesterkyRun(record: JesterkyWorkflowRunRecord): JesterkyWorkflowRunRecord {
+  const now = new Date().toISOString()
+  const next: JesterkyWorkflowRunRecord = {
+    ...record,
+    status: "stale",
+    updated_at: now,
+    error: "workflow record has no live process or recent heartbeat",
+  }
+  writeJson(record.record_path, next)
+  return next
+}
+
+function isProcessAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM"
+  }
+}
+
+function jesterkyStaleMs(): number {
+  const parsed = Number.parseInt(process.env.STACK_JESTERKY_STALE_MS ?? "60000", 10)
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : 60_000
+}
+
+function readJesterkyLogTail(path: string | undefined): string | undefined {
+  if (!path || !existsSync(path)) return undefined
+  try {
+    const text = readFileSync(path, "utf8").trim()
+    return text ? text.slice(-2_000) : undefined
+  } catch {
+    return undefined
+  }
 }
 
 export function inspectJesterkyRun(config: StackConfig, selection: JesterkyManifestSelection): JsonRecord {
@@ -358,7 +526,7 @@ function parseJesterkyRunRecord(value: JsonRecord): JesterkyWorkflowRunRecord | 
   const ownerActorRole = readString(value.owner_actor_role)
   const status = readString(value.status)
   if (ownerActorRole !== "gardener" && ownerActorRole !== "worker" && ownerActorRole !== "external") return undefined
-  if (status !== "running" && status !== "done" && status !== "error") return undefined
+  if (status !== "running" && status !== "done" && status !== "error" && status !== "stale") return undefined
   const required = {
     workflow_id: readString(value.workflow_id),
     workflow_name: readString(value.workflow_name),
@@ -385,6 +553,15 @@ function parseJesterkyRunRecord(value: JsonRecord): JesterkyWorkflowRunRecord | 
     events_path: required.events_path!,
     record_path: required.record_path!,
     status,
+    ...(readString(value.actor) === "fake" || readString(value.actor) === "codex"
+      ? { actor: readString(value.actor) as "fake" | "codex" }
+      : {}),
+    ...(readString(value.model) ? { model: readString(value.model) } : {}),
+    ...(typeof value.process_id === "number" ? { process_id: value.process_id } : {}),
+    ...(readString(value.heartbeat_at) ? { heartbeat_at: readString(value.heartbeat_at) } : {}),
+    ...(readString(value.last_event_at) ? { last_event_at: readString(value.last_event_at) } : {}),
+    ...(readString(value.stdout_path) ? { stdout_path: readString(value.stdout_path) } : {}),
+    ...(readString(value.stderr_path) ? { stderr_path: readString(value.stderr_path) } : {}),
     started_at: required.started_at!,
     updated_at: required.updated_at!,
     ...(readString(value.completed_at) ? { completed_at: readString(value.completed_at) } : {}),
@@ -400,7 +577,7 @@ function parseJesterkyRunRecord(value: JsonRecord): JesterkyWorkflowRunRecord | 
 
 function readJesterkyEventProgress(eventsPath: string): Pick<
   JesterkyWorkflowRunRecord,
-  "event_count" | "latest_event_kind" | "current_node"
+  "event_count" | "latest_event_kind" | "current_node" | "last_event_at"
 > {
   if (!existsSync(eventsPath)) return { event_count: 0 }
   const lines = readFileSync(eventsPath, "utf8").split(/\r?\n/).filter((line) => line.trim())
@@ -421,6 +598,7 @@ function readJesterkyEventProgress(eventsPath: string): Pick<
   }
   return {
     event_count: lines.length,
+    ...(lines.length > 0 ? { last_event_at: statSync(eventsPath).mtime.toISOString() } : {}),
     ...(latestEventKind ? { latest_event_kind: latestEventKind } : {}),
     ...(currentNode ? { current_node: currentNode } : {}),
   }
@@ -439,7 +617,7 @@ function runJesterky(
   args: string[],
   options: { allowFailure?: boolean } = {},
 ): { status: number; stdout: string; stderr: string } {
-  const command = process.env.STACK_JESTERKY_COMMAND ?? "jesterky"
+  const command = jesterkyCommand()
   const result = spawnSync(command, args, {
     cwd: config.workingDir,
     encoding: "utf8",
@@ -452,6 +630,10 @@ function runJesterky(
     throw new Error(`${command} ${args.join(" ")} failed with ${status}: ${stderr || stdout}`)
   }
   return { status, stdout, stderr }
+}
+
+function jesterkyCommand(): string {
+  return process.env.STACK_JESTERKY_COMMAND ?? "jesterky"
 }
 
 function summarizeManifest(manifest: JsonRecord): JsonRecord {

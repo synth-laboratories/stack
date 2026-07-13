@@ -1,7 +1,20 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::SystemTime;
 use tokio::fs;
+
+#[derive(Clone)]
+struct CachedSessionSummary {
+    modified_at: Option<SystemTime>,
+    len: u64,
+    summary: Option<StackSessionSummary>,
+}
+
+static SESSION_SUMMARY_CACHE: OnceLock<Mutex<HashMap<PathBuf, CachedSessionSummary>>> =
+    OnceLock::new();
 
 #[derive(Debug, thiserror::Error)]
 pub enum SessionError {
@@ -197,54 +210,129 @@ pub async fn read_session_value_by_id(
 pub async fn list_summaries(
     session_log_dir: &Path,
 ) -> Result<Vec<StackSessionSummary>, SessionError> {
+    list_recent_summaries(session_log_dir, usize::MAX).await
+}
+
+pub async fn list_recent_summaries(
+    session_log_dir: &Path,
+    limit: usize,
+) -> Result<Vec<StackSessionSummary>, SessionError> {
     let mut entries = match fs::read_dir(session_log_dir).await {
         Ok(entries) => entries,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
         Err(error) => return Err(error.into()),
     };
 
-    let mut summaries = Vec::new();
+    let mut candidates = Vec::new();
     while let Some(entry) = entries.next_entry().await? {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
-        let Ok(session) = read_session(&path).await else {
-            continue;
-        };
         let Ok(meta) = entry.metadata().await else {
             continue;
         };
-        let updated_at = meta
-            .modified()
+        candidates.push((path, meta.modified().ok(), meta.len()));
+    }
+    candidates.sort_by(|left, right| right.1.cmp(&left.1));
+    candidates.truncate(limit);
+
+    let mut summaries = Vec::with_capacity(candidates.len());
+    for (path, modified_at, len) in candidates {
+        let cached = SESSION_SUMMARY_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
             .ok()
-            .map(system_time_to_iso8601)
-            .unwrap_or_else(|| session.started_at.clone());
-        let last_prompt = session.turns.last().map(|turn| turn.prompt.clone());
-        let codex_thread_id = thread_id_from_session(&session);
-        let usage_summary = session
-            .usage_summary
-            .clone()
-            .or_else(|| build_usage_summary(&session));
-        summaries.push(StackSessionSummary {
-            id: session.id,
-            path: path.to_string_lossy().to_string(),
-            started_at: session.started_at,
-            updated_at,
-            turn_count: session.turns.len(),
-            last_prompt,
-            display_name: session.display_name,
-            harness: session.harness,
-            meta_thread_id: session.meta_thread_id,
-            segment_id: session.segment_id,
-            segment_role: session.segment_role,
-            codex_thread_id,
-            usage_summary,
+            .and_then(|cache| cache.get(&path).cloned())
+            .filter(|entry| entry.modified_at == modified_at && entry.len == len);
+        if let Some(cached) = cached {
+            if let Some(summary) = cached.summary {
+                summaries.push(summary);
+            }
+            continue;
+        }
+
+        let summary = read_session(&path).await.ok().map(|session| {
+            let updated_at = modified_at
+                .map(system_time_to_iso8601)
+                .unwrap_or_else(|| session.started_at.clone());
+            let last_prompt = session.turns.last().map(|turn| turn.prompt.clone());
+            let codex_thread_id = thread_id_from_session(&session);
+            let usage_summary = session
+                .usage_summary
+                .clone()
+                .or_else(|| build_usage_summary(&session));
+            StackSessionSummary {
+                id: session.id,
+                path: path.to_string_lossy().to_string(),
+                started_at: session.started_at,
+                updated_at,
+                turn_count: session.turns.len(),
+                last_prompt,
+                display_name: session.display_name,
+                harness: session.harness,
+                meta_thread_id: session.meta_thread_id,
+                segment_id: session.segment_id,
+                segment_role: session.segment_role,
+                codex_thread_id,
+                usage_summary,
+            }
         });
+        if let Ok(mut cache) = SESSION_SUMMARY_CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+        {
+            cache.insert(
+                path,
+                CachedSessionSummary {
+                    modified_at,
+                    len,
+                    summary: summary.clone(),
+                },
+            );
+        }
+        if let Some(summary) = summary {
+            summaries.push(summary);
+        }
     }
 
-    summaries.sort_by(|left, right| right.updated_at.cmp(&left.updated_at));
     Ok(summaries)
+}
+
+pub async fn list_recent_session_ids(
+    session_log_dir: &Path,
+    limit: usize,
+) -> Result<Vec<String>, SessionError> {
+    let mut entries = match fs::read_dir(session_log_dir).await {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut candidates = Vec::new();
+    while let Some(entry) = entries.next_entry().await? {
+        let path = entry.path();
+        if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
+            continue;
+        }
+        let Some(id) = path.file_stem().and_then(|stem| stem.to_str()) else {
+            continue;
+        };
+        let modified_at = entry
+            .metadata()
+            .await
+            .ok()
+            .and_then(|meta| meta.modified().ok());
+        candidates.push((id.to_string(), modified_at));
+    }
+    candidates.sort_by(|left, right| right.1.cmp(&left.1));
+    candidates.truncate(limit);
+    Ok(candidates.into_iter().map(|(id, _)| id).collect())
+}
+
+pub async fn count_sessions(session_log_dir: &Path) -> Result<usize, SessionError> {
+    Ok(list_recent_session_ids(session_log_dir, usize::MAX)
+        .await?
+        .len())
 }
 
 pub fn thread_id_from_session(session: &StackLocalSession) -> Option<String> {

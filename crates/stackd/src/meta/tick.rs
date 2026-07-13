@@ -158,7 +158,8 @@ async fn read_actor_states(state: &AppState, thread_id: &str) -> Vec<(ActorRole,
 }
 
 /// Gardener trigger producer: queue a `gardener.trigger_queued` for wake sources the
-/// gardener owns — a monitor handoff request or an operator gardener-chat message —
+/// gardener owns — a monitor handoff request, an operator gardener-chat message,
+/// or a terminal worker-run receipt —
 /// that no prior gardener queue/wake has consumed. The gardener pass itself runs TS-side.
 async fn queue_gardener_triggers(state: &AppState, thread_id: &str) -> anyhow::Result<()> {
     let Ok(events) = read_thread_events(&state.paths.stack_dir, thread_id).await else {
@@ -168,16 +169,42 @@ async fn queue_gardener_triggers(state: &AppState, thread_id: &str) -> anyhow::R
         return Ok(());
     }
     let actor_id = "gardener_default";
+    let actor_path = thread_actor_dir_path(&state.paths.stack_dir, thread_id, ActorRole::Gardener)?
+        .join(format!("{actor_id}.json"));
+    let actor = read_actor_state(&actor_path).await;
+    let cursor = actor
+        .as_ref()
+        .and_then(|value| value.get("last_event_id"))
+        .and_then(Value::as_str);
     let queued: std::collections::HashSet<String> =
         stack_core::actor_runtime::triggered_event_ids(&events, ActorRole::Gardener, actor_id)
             .into_iter()
             .collect();
-    let pending: Vec<&Value> = events
+    let prior_trigger_index = cursor
+        .is_none()
+        .then(|| {
+            events
+                .iter()
+                .rposition(|event| event_id(event).is_some_and(|id| queued.contains(id)))
+        })
+        .flatten();
+    let cursor_index = cursor
+        .and_then(|id| events.iter().position(|event| event_id(event) == Some(id)))
+        .or(prior_trigger_index)
+        .map(|index| index + 1)
+        .unwrap_or(0);
+    let mut pending: Vec<&Value> = events
         .iter()
+        .skip(cursor_index)
         .filter(|event| {
             matches!(
                 event_type(event),
-                Some("monitor.handoff_requested" | "gardener.chat_message")
+                Some(
+                    "monitor.handoff_requested"
+                        | "gardener.chat_message"
+                        | "gardener.message"
+                        | "gardener.worker_run_status"
+                )
             )
         })
         .filter(|event| {
@@ -185,8 +212,42 @@ async fn queue_gardener_triggers(state: &AppState, thread_id: &str) -> anyhow::R
             event_type(event) != Some("gardener.chat_message")
                 || event.get("actor_role").and_then(Value::as_str) != Some("gardener")
         })
+        .filter(|event| {
+            event_type(event) != Some("gardener.message")
+                || event
+                    .get("payload")
+                    .and_then(|payload| payload.get("role"))
+                    .and_then(Value::as_str)
+                    == Some("user")
+        })
+        .filter(|event| {
+            event_type(event) != Some("gardener.worker_run_status")
+                || matches!(
+                    event
+                        .get("payload")
+                        .and_then(|payload| payload.get("status"))
+                        .and_then(Value::as_str),
+                    Some("idle" | "paused" | "done" | "error")
+                )
+        })
         .filter(|event| event_id(event).is_some_and(|id| !queued.contains(id)))
         .collect();
+    let bootstrap_cursor = if cursor.is_none() && prior_trigger_index.is_none() {
+        let Some(latest) = pending.pop() else {
+            return Ok(());
+        };
+        let latest_index = events
+            .iter()
+            .position(|event| std::ptr::eq(event, latest))
+            .unwrap_or(0);
+        pending.clear();
+        pending.push(latest);
+        events[..latest_index].iter().rev().find_map(event_id)
+    } else if cursor.is_none() {
+        prior_trigger_index.and_then(|index| event_id(&events[index]))
+    } else {
+        None
+    };
     if pending.is_empty() {
         return Ok(());
     }
@@ -199,6 +260,11 @@ async fn queue_gardener_triggers(state: &AppState, thread_id: &str) -> anyhow::R
         .any(|event| event_type(event) == Some("monitor.handoff_requested"))
     {
         "handoff_requested"
+    } else if pending
+        .iter()
+        .any(|event| event_type(event) == Some("gardener.worker_run_status"))
+    {
+        "worker_run_terminal"
     } else {
         "operator_chat"
     };
@@ -221,37 +287,50 @@ async fn queue_gardener_triggers(state: &AppState, thread_id: &str) -> anyhow::R
         }),
     )
     .await?;
-    ensure_gardener_actor_state(state, thread_id, actor_id).await?;
+    ensure_gardener_actor_state(state, thread_id, actor_id, bootstrap_cursor).await?;
     Ok(())
 }
 
 /// Seed the durable gardener actor state on first queue so the reducer lists the
-/// actor; the cursor stays unset until a gardener pass records completion.
+/// actor. The bootstrap cursor excludes historical wake sources while leaving the
+/// newest source pending for the first pass.
 async fn ensure_gardener_actor_state(
     state: &AppState,
     thread_id: &str,
     actor_id: &str,
+    bootstrap_cursor: Option<&str>,
 ) -> anyhow::Result<()> {
     let dir = thread_actor_dir_path(&state.paths.stack_dir, thread_id, ActorRole::Gardener)?;
     let path = dir.join(format!("{actor_id}.json"));
-    if fs::try_exists(&path).await.unwrap_or(false) {
-        return Ok(());
-    }
     fs::create_dir_all(&dir).await?;
-    let actor = json!({
-        "schema": ActorRole::Gardener.state_schema(),
-        "thread_id": thread_id,
-        "actor_id": actor_id,
-        "state": "idle",
-        "wake_counts": 0,
-        "queue_counts": 0,
-    });
+    let mut actor = match fs::read_to_string(&path).await {
+        Ok(text) => serde_json::from_str::<Value>(&text)?,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => json!({
+            "schema": ActorRole::Gardener.state_schema(),
+            "thread_id": thread_id,
+            "actor_id": actor_id,
+            "state": "idle",
+            "wake_counts": 0,
+            "queue_counts": 0,
+        }),
+        Err(error) => return Err(error.into()),
+    };
+    if actor.get("last_event_id").and_then(Value::as_str).is_none() {
+        if let Some(cursor) = bootstrap_cursor {
+            actor["last_event_id"] = json!(cursor);
+        }
+    }
     fs::write(
         &path,
         format!("{}\n", serde_json::to_string_pretty(&actor)?),
     )
     .await?;
     Ok(())
+}
+
+async fn read_actor_state(path: &std::path::Path) -> Option<Value> {
+    let text = fs::read_to_string(path).await.ok()?;
+    serde_json::from_str(&text).ok()
 }
 
 async fn write_status_projection(state: &AppState, status: &MetaStatus) -> anyhow::Result<()> {

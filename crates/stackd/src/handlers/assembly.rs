@@ -82,9 +82,7 @@ pub async fn create_assembly_line(
 ) -> Result<Json<serde_json::Value>, ApiError> {
     let store = open_store(&state)?;
     let preset = parse_preset(&request.preset)?;
-    let actor_id = request
-        .actor_id
-        .unwrap_or_else(|| "operator".to_string());
+    let actor_id = request.actor_id.unwrap_or_else(|| "operator".to_string());
     let (record, event) = store.create_line(CreateAssemblyLine {
         title: request.title,
         preset,
@@ -121,9 +119,9 @@ pub async fn get_assembly_line_snapshot(
     let store = open_store(&state)?;
     let (record, events) = store.get_line(&line_id)?;
     let snapshot = project_snapshot(&record, &events, chrono::Utc::now());
-    Ok(Json(serde_json::to_value(snapshot).map_err(|error| {
-        ApiError::internal(error.to_string())
-    })?))
+    Ok(Json(
+        serde_json::to_value(snapshot).map_err(|error| ApiError::internal(error.to_string()))?,
+    ))
 }
 
 pub async fn post_assembly_transition(

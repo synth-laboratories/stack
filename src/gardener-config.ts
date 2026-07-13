@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import {
   actorToolAllowed,
@@ -167,11 +167,20 @@ const GARDENER_WORKER_CREATE_PROMPT =
 const GARDENER_WORKER_RUN_STATUS_PROMPT =
   "A durable worker lane is not the same thing as an executing worker. A worker with turns:0 is idle even when its meta-thread goal is active; goal-active is not run-active. Call stack_worker_run to execute a durable worker in the background, stack_worker_continue to resume it, stack_worker_pause to stop it after the current turn, then call stack_worker_run_status and report its state/turns. When asked whether a worker is working, use stack_worker_run_status instead of inferring liveness from create, route, steer, queue, or active_goal status."
 
+const GARDENER_GOAL_CLOSE_PROMPT =
+  "When a worker's declared acceptance is satisfied and stack_effort_audit passes, close the durable meta-goal yourself: call stack_meta_thread_update_goal with that meta_thread_id, status=done, the concrete result summary, completed acceptance criteria, and blockers=[]. Then report the worker lifecycle receipt and audit. Do not claim this owner route is unavailable, do not archive the thread, and do not start another worker run merely to close a completed goal."
+
 const GARDENER_PANEL_CONTROL_PROMPT =
   "You control the operator's side panel through stack_ui_open_panel and stack_ui_close_panel. When portfolio orientation would help the operator SEE the answer — a routing decision, a handoff review, or a 'what is running / where should I look' question — call stack_ui_open_panel with actor_role=\"gardener\", panel=\"gardener\", view=\"portfolio\", and a one-sentence reason. To point the operator at one worker's live progress, open panel=\"monitor\" with that worker's thread_id instead. Open at most once per distinct moment — never for routine replies; the operator's Esc closes the panel and wins until your next open. When the moment has passed, close a panel you opened with stack_ui_close_panel (you may only close panels you opened)."
 
 const GARDENER_LIGHTS_THREAD_VIEW_PROMPT =
   'For Lights thread orientation ("show this thread in Lights", mark viewed, expand dropdown), use stack_lights_thread_view with actor_role="gardener" and the worker thread_id — not panel="threads" (operator-only). viewed=true opens Lights, marks the thread viewed, and expands its dropdown; viewed=false clears the marker. Alternatively stack_ui_open_panel with panel="lights", view="threads", and the worker thread_id.'
+
+const GARDENER_VISIBILITY_PROMPT =
+  "Each gardener chat turn includes passive target-worker trace, recent monitor events, and a compact effort audit snapshot when a default worker target is associated. For deeper inspection call stack_thread_events_read with the worker thread_id (types such as monitor.* or worker_run.*). To attach monitor policy or enable the sidecar on an existing meta-thread, call stack_meta_thread_set_monitor with meta_thread_id or thread_id and monitor_profile (enable defaults on when a profile is set)."
+
+const GARDENER_GEMINI_POLICY_PROMPT =
+  "Gemini is a local policy/benchmark route, separate from Stack's hosted Synth inference catalog. Before claiming it is unavailable, call stack_local_model_capabilities; it safely reports whether GEMINI_API_KEY is available without revealing it. When available, use gemini-3.1-flash-lite through a local GEPA or policy harness configuration with policy.provider=google and policy.api_key_env=GEMINI_API_KEY. It is NOT a Codex agent model: never set the Stack gardener/worker Codex model to Gemini or invoke `codex exec -m gemini-3.1-flash-lite`."
 
 const GARDENER_EFFORT_TOOLS = [
   "stack_tagged_effort_get",
@@ -211,6 +220,9 @@ const GARDENER_TAGGED_EFFORT_PROMPT =
 const GARDENER_EFFORT_PROMPT =
   'Efforts are durable workstream containers across threads, runs, ideas, research logs, and proof artifacts. Use stack_effort_templates to choose the right playbook/template, then stack_effort_list, stack_effort_get, stack_effort_remaining, stack_effort_audit, and stack_effort_activity to orient the operator around active workstreams, open acceptance, coherence, and timeline. When the operator asks what remains, call stack_effort_remaining before proposing next actions. When stack_effort_audit reports finding_receipt_digests drift after local/ad-hoc artifact changes, call stack_effort_refresh_receipts before refreshing handoff. When the operator asks to start or organize a durable workstream, create one with stack_effort_create, bind working meta-threads with stack_effort_bind_thread, attach concrete Factory/Project/optimizer/SMR/Tinker ids with stack_effort_update_refs, record operator-origin ideas with stack_effort_record_idea origin="HUMAN", preserve operator context with stack_effort_record_note kind="human", create an effort_session id with stack_effort_record_effort_session when gardener/worker/benchmark work needs one shared correlation tag, append research log entries with stack_effort_record_research_log, attach local repo/worktree pointers with stack_effort_record_repo, record evidence with stack_effort_record_finding, use stack_effort_record_capture for terminal, browser, screenshot, video, local, monitor, memory, text, benchmark, or optimizer evidence when capture-oriented provenance helps, use stack_effort_record_benchmark when benchmark source, license, task shape, splits, metrics, and metadata intake must survive handoffs, use stack_effort_record_optimizer_candidate for GEPA/hosted optimizer candidates when candidate id, score, split, and source artifact provenance matter, use stack_effort_record_run_evidence for run proof from any run system (smr, tinker, local, ...) when run id, project/output ids, metric, claim label, and source receipt provenance matter, and use stack_effort_record_acceptance after proof artifacts exist to update declared acceptance claims; recorded claims are rejected until their declared needs_refs and needs_evidence requirements are satisfied. For Engineering Efforts or "what changed?" reviews, call stack_effort_write_engineering_packet to record changed files, diff stat, validation, skipped gates, risks, and next action under findings/results. Use path for local/ad-hoc evidence and stack_pull_artifact plus receipt_path when evidence comes from a hosted or saved artifact. Refresh handoff packets with stack_effort_write_handoff. Efforts never use blocked status; record external blockers with stack_effort_record_blocker so blocker, evidence, next owner, and next safe action are preserved while the Effort remains active or paused, then call stack_effort_resolve_blocker with resolution evidence once that blocker is cleared or superseded.'
 
+const GARDENER_JESTERKY_PROMPT =
+  "Use stack_jesterky_register, stack_jesterky_launch, stack_jesterky_inspect, stack_jesterky_replay, and stack_jesterky_compare when the operator asks for local workflow proof, replay proof, or data-analysis workflow evidence. Prefer fake actor for smoke/eval plumbing unless the operator explicitly asks for live model cost. Report workflow_id, run_id, manifest_path, stop_reason, invariant status, replay status, and compare node_diff_count."
+
 const GARDENER_EFFORT_TEMPLATE_PROMPT =
   "Before creating an Effort, use stack_effort_templates to choose the right playbook/template and see whether it seeds a research log or acceptance criteria."
 
@@ -225,6 +237,8 @@ const DEFAULT_GARDENER_BUILTIN_PROMPT = [
   "",
   GARDENER_THREAD_CREATE_PROMPT,
   "",
+  GARDENER_GOAL_CLOSE_PROMPT,
+  "",
   GARDENER_PANEL_CONTROL_PROMPT,
   "",
   GARDENER_LIGHTS_THREAD_VIEW_PROMPT,
@@ -232,6 +246,12 @@ const DEFAULT_GARDENER_BUILTIN_PROMPT = [
   GARDENER_EFFORT_PROMPT,
   "",
   GARDENER_TAGGED_EFFORT_PROMPT,
+  "",
+  GARDENER_VISIBILITY_PROMPT,
+  "",
+  GARDENER_GEMINI_POLICY_PROMPT,
+  "",
+  GARDENER_JESTERKY_PROMPT,
 ].join("\n")
 
 export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
@@ -268,6 +288,8 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
       "stack_meta_thread_update_goal",
       "stack_meta_thread_set_lifecycle",
       "stack_meta_thread_set_title",
+      "stack_meta_thread_set_monitor",
+      "stack_thread_events_read",
       ...GARDENER_EFFORT_TOOLS,
       "stack_status",
       "stack_runtime_status",
@@ -281,10 +303,16 @@ export const DEFAULT_GARDENER_CONFIG: StackGardenerConfig = {
       "stack_pull_artifact",
       "stack_inference_catalog",
       "stack_inference_usage",
+      "stack_local_model_capabilities",
       "stack_remote_gardener_handoff",
       "stack_ui_open_panel",
       "stack_ui_close_panel",
       "stack_lights_thread_view",
+      "stack_jesterky_register",
+      "stack_jesterky_launch",
+      "stack_jesterky_inspect",
+      "stack_jesterky_replay",
+      "stack_jesterky_compare",
       "stack_memory_record",
       "stack_memory_kinds",
       "stack_memory_list",
@@ -413,6 +441,9 @@ export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
   backfillGardenerLightsThreadViewTool(config)
   backfillGardenerEffortTools(config)
   backfillGardenerCoreOwnerTools(config)
+  backfillGardenerVisibilityTools(config)
+  backfillGardenerJesterkyTools(config)
+  backfillGardenerLocalModelTools(config)
   const enabledOverride = process.env.STACK_GARDENER_ENABLED?.trim()
   if (enabledOverride === "0" || enabledOverride === "false") config.enabled = false
   if (enabledOverride === "1" || enabledOverride === "true") config.enabled = true
@@ -426,6 +457,60 @@ export function loadGardenerConfig(stackRoot: string): StackGardenerConfig {
   return config
 }
 
+/**
+ * Persist the harness for the active gardener profile. Environment overrides still take
+ * precedence at run time; callers can compare the returned config to the requested values
+ * and surface that explicitly rather than silently changing a different owner.
+ */
+export function updateGardenerModelConfig(
+  stackRoot: string,
+  update: Pick<ActorModelConfig, "model" | "reasoningEffort">,
+): StackGardenerConfig {
+  const profile = process.env.STACK_GARDENER_PROFILE?.trim() || readStackProfile(stackRoot).active
+  ensureDefaultGardenerConfig(stackRoot)
+  const configPath = join(stackRoot, ".stack", "gardeners", `${profile}.toml`)
+  if (!existsSync(configPath)) {
+    throw new Error(`gardener profile not found: ${profile} (${configPath})`)
+  }
+  const current = readFileSync(configPath, "utf8")
+  const next = updateGardenerModelToml(current, update)
+  if (next !== current) writeFileSync(configPath, next, "utf8")
+  return loadGardenerConfig(stackRoot)
+}
+
+function updateGardenerModelToml(
+  text: string,
+  update: Pick<ActorModelConfig, "model" | "reasoningEffort">,
+): string {
+  const lines = text.split(/\r?\n/)
+  let modelStart = lines.findIndex((line) => line.trim() === "[model]")
+  if (modelStart < 0) {
+    if (lines.length > 0 && lines[lines.length - 1] !== "") lines.push("")
+    lines.push("[model]")
+    modelStart = lines.length - 1
+  }
+  let modelEnd = lines.findIndex((line, index) => index > modelStart && /^\s*\[.+\]\s*$/.test(line))
+  if (modelEnd < 0) modelEnd = lines.length
+
+  const values: Array<[key: "model" | "reasoning_effort", value: string]> = [
+    ["model", update.model],
+    ["reasoning_effort", update.reasoningEffort],
+  ]
+  for (const [key, value] of values) {
+    const lineIndex = lines.findIndex(
+      (line, index) => index > modelStart && index < modelEnd && new RegExp(`^\\s*${key}\\s*=`).test(line),
+    )
+    const replacement = `${key} = ${JSON.stringify(value)}`
+    if (lineIndex >= 0) {
+      lines[lineIndex] = replacement
+      continue
+    }
+    lines.splice(modelEnd, 0, replacement)
+    modelEnd += 1
+  }
+  return lines.join("\n")
+}
+
 export function gardenerHarnessLabel(config: StackGardenerConfig): string {
   return `${config.model.model}-${config.model.reasoningEffort}`
 }
@@ -437,9 +522,12 @@ export function resolveGardenerSystemPrompt(stackRoot: string, config: StackGard
   }
   prompt = ensureGardenerLightsViewPrompt(prompt)
   prompt = ensureGardenerEffortPrompt(prompt)
+  prompt = ensureGardenerJesterkyPrompt(prompt)
+  prompt = ensureGardenerGeminiPolicyPrompt(prompt)
   prompt = ensureGardenerWorkerCreatePrompt(prompt)
   prompt = ensureGardenerWorkerRunStatusPrompt(prompt)
-  return ensureGardenerTaggedEffortPrompt(prompt)
+  prompt = ensureGardenerGoalClosePrompt(prompt)
+  return ensureGardenerTaggedEffortPrompt(ensureGardenerVisibilityPrompt(prompt))
 }
 
 export function gardenerToolAllowed(config: StackGardenerConfig, toolId: string): boolean {
@@ -518,11 +606,24 @@ function backfillGardenerEffortTools(config: StackGardenerConfig): void {
   config.tools.allow = [...config.tools.allow, ...missing]
 }
 
+const GARDENER_VISIBILITY_TOOLS = [
+  "stack_meta_thread_set_monitor",
+  "stack_thread_events_read",
+]
+
+function backfillGardenerVisibilityTools(config: StackGardenerConfig): void {
+  if (!config.tools.allow.some((tool) => tool.startsWith("stack_"))) return
+  const missing = GARDENER_VISIBILITY_TOOLS.filter((tool) => !config.tools.allow.includes(tool))
+  if (missing.length === 0) return
+  config.tools.allow = [...config.tools.allow, ...missing]
+}
+
 // The durable-worker owner tools. A gardener that has stack_ MCP tools but drifted without these
 // cannot create a Stack-tracked worker and falls back to Codex's spawn_agent (an untracked collab
 // agent) — so we heal any such allowlist the same way effort/lights tools are backfilled.
 const GARDENER_CORE_OWNER_TOOLS = [
   "stack_meta_thread_create",
+  "stack_meta_thread_update_goal",
   "stack_worker_thread_create",
   "stack_worker_run",
   "stack_worker_run_status",
@@ -537,6 +638,30 @@ function backfillGardenerCoreOwnerTools(config: StackGardenerConfig): void {
   config.tools.allow = [...config.tools.allow, ...missing]
 }
 
+const GARDENER_JESTERKY_TOOLS = [
+  "stack_jesterky_register",
+  "stack_jesterky_launch",
+  "stack_jesterky_inspect",
+  "stack_jesterky_replay",
+  "stack_jesterky_compare",
+]
+
+const GARDENER_LOCAL_MODEL_TOOLS = ["stack_local_model_capabilities"]
+
+function backfillGardenerLocalModelTools(config: StackGardenerConfig): void {
+  if (!config.tools.allow.some((tool) => tool.startsWith("stack_"))) return
+  const missing = GARDENER_LOCAL_MODEL_TOOLS.filter((tool) => !config.tools.allow.includes(tool))
+  if (missing.length === 0) return
+  config.tools.allow = [...config.tools.allow, ...missing]
+}
+
+function backfillGardenerJesterkyTools(config: StackGardenerConfig): void {
+  if (!config.tools.allow.some((tool) => tool.startsWith("stack_"))) return
+  const missing = GARDENER_JESTERKY_TOOLS.filter((tool) => !config.tools.allow.includes(tool))
+  if (missing.length === 0) return
+  config.tools.allow = [...config.tools.allow, ...missing]
+}
+
 function ensureGardenerLightsViewPrompt(prompt: string): string {
   if (prompt.includes("stack_lights_thread_view")) return prompt
   if (!prompt.includes("stack_ui_open_panel")) return prompt
@@ -547,6 +672,12 @@ function ensureGardenerTaggedEffortPrompt(prompt: string): string {
   if (prompt.includes("stack_tagged_effort_get")) return prompt
   if (!prompt.includes("stack_effort_list")) return prompt
   return `${prompt.trim()}\n\n${GARDENER_TAGGED_EFFORT_PROMPT}`
+}
+
+function ensureGardenerVisibilityPrompt(prompt: string): string {
+  if (prompt.includes("stack_thread_events_read")) return prompt
+  if (!prompt.includes("stack_meta_thread_get")) return prompt
+  return `${prompt.trim()}\n\n${GARDENER_VISIBILITY_PROMPT}`
 }
 
 function ensureGardenerWorkerCreatePrompt(prompt: string): string {
@@ -568,6 +699,12 @@ function ensureGardenerWorkerRunStatusPrompt(prompt: string): string {
   return `${prompt.trim()}\n\n${GARDENER_WORKER_RUN_STATUS_PROMPT}`
 }
 
+function ensureGardenerGoalClosePrompt(prompt: string): string {
+  if (prompt.includes("When a worker's declared acceptance is satisfied")) return prompt
+  if (!prompt.includes("stack_meta_thread_update_goal")) return prompt
+  return `${prompt.trim()}\n\n${GARDENER_GOAL_CLOSE_PROMPT}`
+}
+
 function ensureGardenerEffortPrompt(prompt: string): string {
   if (prompt.includes("stack_effort_resolve_blocker")) return prompt
   if (prompt.includes("stack_effort_audit")) return `${prompt.trim()}\n\n${GARDENER_EFFORT_PROMPT}`
@@ -578,6 +715,18 @@ function ensureGardenerEffortPrompt(prompt: string): string {
   if (prompt.includes("stack_effort_list")) return `${prompt.trim()}\n\n${GARDENER_EFFORT_PROMPT}`
   if (!prompt.includes("stack_meta_threads_list")) return prompt
   return `${prompt.trim()}\n\n${GARDENER_EFFORT_PROMPT}`
+}
+
+function ensureGardenerJesterkyPrompt(prompt: string): string {
+  if (prompt.includes("stack_jesterky_register")) return prompt
+  if (!prompt.includes("stack_status")) return prompt
+  return `${prompt.trim()}\n\n${GARDENER_JESTERKY_PROMPT}`
+}
+
+function ensureGardenerGeminiPolicyPrompt(prompt: string): string {
+  if (prompt.includes("stack_local_model_capabilities")) return prompt
+  if (!prompt.includes("stack_inference_catalog")) return prompt
+  return `${prompt.trim()}\n\n${GARDENER_GEMINI_POLICY_PROMPT}`
 }
 
 function isLegacyGeneratedDefaultGardenerAllow(toolIds: readonly string[]): boolean {
@@ -652,7 +801,7 @@ function defaultGardenerToml(): string {
     'worker = "auto"',
     "",
     "[tools]",
-    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_create", "stack_worker_thread_create", "stack_worker_run", "stack_worker_run_status", "stack_worker_continue", "stack_worker_pause", "stack_meta_thread_update_goal", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_effort_templates", "stack_effort_list", "stack_effort_get", "stack_effort_remaining", "stack_effort_audit", "stack_effort_activity", "stack_effort_refresh_receipts", "stack_effort_create", "stack_effort_bind_thread", "stack_effort_update_progress", "stack_effort_record_blocker", "stack_effort_resolve_blocker", "stack_effort_record_acceptance", "stack_effort_record_idea", "stack_effort_record_note", "stack_effort_record_research_log", "stack_effort_record_repo", "stack_effort_record_finding", "stack_effort_record_capture", "stack_effort_record_benchmark", "stack_effort_record_optimizer_candidate", "stack_effort_record_run_evidence", "stack_effort_write_engineering_packet", "stack_effort_write_handoff", "stack_effort_update_refs", "stack_effort_update_status", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_audit_online_reflexion_receipt", "stack_audit_online_reflexion_receipts", "stack_build_online_reflexion_evidence_packet", "stack_pull_artifact", "stack_inference_catalog", "stack_inference_usage", "stack_remote_gardener_handoff", "stack_ui_open_panel", "stack_ui_close_panel", "stack_lights_thread_view", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
+    'allow = ["gardener.inbox", "gardener.route", "gardener.steer", "gardener.queue", "gardener.garden_rewrite", "skills.register", "skills.suggest", "stack_meta_threads_list", "stack_meta_thread_get", "stack_meta_thread_create", "stack_worker_thread_create", "stack_worker_run", "stack_worker_run_status", "stack_worker_continue", "stack_worker_pause", "stack_meta_thread_update_goal", "stack_meta_thread_set_lifecycle", "stack_meta_thread_set_title", "stack_meta_thread_set_monitor", "stack_thread_events_read", "stack_effort_templates", "stack_effort_list", "stack_effort_get", "stack_effort_remaining", "stack_effort_audit", "stack_effort_activity", "stack_effort_refresh_receipts", "stack_effort_create", "stack_effort_bind_thread", "stack_effort_update_progress", "stack_effort_record_blocker", "stack_effort_resolve_blocker", "stack_effort_record_acceptance", "stack_effort_record_idea", "stack_effort_record_note", "stack_effort_record_research_log", "stack_effort_record_repo", "stack_effort_record_finding", "stack_effort_record_capture", "stack_effort_record_benchmark", "stack_effort_record_optimizer_candidate", "stack_effort_record_run_evidence", "stack_effort_write_engineering_packet", "stack_effort_write_handoff", "stack_effort_update_refs", "stack_effort_update_status", "stack_status", "stack_runtime_status", "stack_list_remote_projects", "stack_list_live_smrs", "stack_list_factories", "stack_list_hosted_optimizer_runs", "stack_audit_online_reflexion_receipt", "stack_audit_online_reflexion_receipts", "stack_build_online_reflexion_evidence_packet", "stack_pull_artifact", "stack_inference_catalog", "stack_inference_usage", "stack_local_model_capabilities", "stack_remote_gardener_handoff", "stack_ui_open_panel", "stack_ui_close_panel", "stack_lights_thread_view", "stack_jesterky_register", "stack_jesterky_launch", "stack_jesterky_inspect", "stack_jesterky_replay", "stack_jesterky_compare", "jsk.papercut", "handoff.force", "handoff.seal", "handoff.approve", "handoff.continue"]',
     'deny = ["codex.interrupt"]',
     "",
     "[handoff]",

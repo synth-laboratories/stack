@@ -136,6 +136,9 @@ test("blocksFromTurnStdout extracts a collab spawn as a subagent (end-to-end)", 
   expect(rich.subagents.length).toBe(1)
   expect(rich.subagents[0]?.id).toBe("019f3df8-4b68-7bc3-af47-c868c69fcc4e")
   expect(rich.subagents[0]?.status).toBe("running")
-  // The wait control item is dropped, not rendered as an anonymous tool.
-  expect(rich.tools.length).toBe(0)
+  // Wait stays in toolLogs for the activity line, but must not become a transcript tool block.
+  expect(rich.tools).toEqual([
+    expect.objectContaining({ name: "wait", status: "in_progress" }),
+  ])
+  expect(rich.blocks.some((block) => block.kind === "tool" || block.kind === "tool_group")).toBe(false)
 })

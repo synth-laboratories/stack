@@ -32,14 +32,48 @@ const DEFAULT_VOICE_STT_MODEL_GROQ = "whisper-large-v3-turbo"
 const DEFAULT_VOICE_STT_MODEL_OPENAI = "gpt-4o-mini-transcribe"
 const DEFAULT_VOICE_LANGUAGE = "en"
 
-export const CODEX_MODEL_OPTIONS = ["gpt-5.4-mini", "gpt-5.5"] as const
-export const CURSOR_MODEL_OPTIONS = ["composer-2.5", "auto"] as const
+export const CODEX_MODEL_OPTIONS = [
+  "gpt-5.4-mini",
+  "gpt-5.5",
+  "gpt-5.6-luna",
+  "gpt-5.6-terra",
+  "gpt-5.6-sol",
+] as const
+export const CURSOR_MODEL_OPTIONS = [
+  "composer-2.5",
+  "grok-4.5-high",
+  "grok-4.5-medium",
+  "grok-4.5-xhigh",
+  "auto",
+] as const
+export const DEFAULT_CURSOR_GROK_MODEL = "grok-4.5-high"
+export const CURSOR_GROK_REASONING_EFFORT_OPTIONS = ["low", "medium", "high"] as const
+// Stack intentionally exposes Light through Extra High, excluding Max and Ultra.
 export const CODEX_REASONING_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh"] as const
 export const CURSOR_REASONING_EFFORT_OPTIONS = ["normal"] as const
 export const STACK_ENVIRONMENT_OPTIONS = ["dev", "staging", "prod"] as const
 export const STACK_HARNESS_OPTIONS = ["codex", "cursor"] as const
 
 export type StackHarnessKind = (typeof STACK_HARNESS_OPTIONS)[number]
+
+export type CursorGrokReasoningEffort = (typeof CURSOR_GROK_REASONING_EFFORT_OPTIONS)[number]
+
+export function cursorGrokModelForEffort(effort: CursorGrokReasoningEffort): string {
+  if (effort === "low") return "grok-4.5-medium"
+  if (effort === "high") return "grok-4.5-xhigh"
+  return DEFAULT_CURSOR_GROK_MODEL
+}
+
+export function cursorGrokReasoningEffort(model: string): CursorGrokReasoningEffort | undefined {
+  if (model === "grok-4.5-medium") return "low"
+  if (model === "grok-4.5-high") return "medium"
+  if (model === "grok-4.5-xhigh") return "high"
+  return undefined
+}
+
+export function cursorReasoningEffort(model: string): CursorGrokReasoningEffort | "normal" {
+  return cursorGrokReasoningEffort(model) ?? "normal"
+}
 
 export type StackEnvironmentName = (typeof STACK_ENVIRONMENT_OPTIONS)[number]
 

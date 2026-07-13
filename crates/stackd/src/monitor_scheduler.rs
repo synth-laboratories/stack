@@ -7,8 +7,7 @@ use stack_core::actor_runtime::{
     events_after_cursor, latest_next_wake_hints, triggered_event_ids, ActorRole,
 };
 use stack_core::events::read_thread_events;
-use stack_core::meta_thread::{manifest_is_archived, read_manifest};
-use stack_core::session::list_summaries;
+use stack_core::session::list_recent_session_ids;
 use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -65,16 +64,9 @@ async fn scheduler_tick(state: &AppState, scheduler_started_at: &str) -> anyhow:
     if !config.enabled || config.strictness == "off" {
         return Ok(());
     }
-    let summaries = list_summaries(&state.paths.session_log_dir).await?;
-    for summary in summaries.into_iter().take(64) {
-        if let Some(meta_thread_id) = summary.meta_thread_id.as_deref() {
-            if let Ok(manifest) = read_manifest(&state.paths.stack_dir, meta_thread_id).await {
-                if manifest_is_archived(&manifest) {
-                    continue;
-                }
-            }
-        }
-        process_thread(state, &config, &summary.id, scheduler_started_at).await?;
+    let thread_ids = list_recent_session_ids(&state.paths.session_log_dir, 64).await?;
+    for thread_id in thread_ids {
+        process_thread(state, &config, &thread_id, scheduler_started_at).await?;
     }
     Ok(())
 }
@@ -87,6 +79,20 @@ async fn process_thread(
 ) -> anyhow::Result<()> {
     let events = read_thread_events(&state.paths.stack_dir, thread_id).await?;
     if events.is_empty() {
+        return Ok(());
+    }
+    if events.iter().any(|event| {
+        event.get("actor_role").and_then(Value::as_str) == Some("gardener")
+            || matches!(
+                event_type(event),
+                Some(
+                    "gardener.message"
+                        | "gardener.chat_message"
+                        | "gardener.maintenance_pass"
+                        | "gardener.worker_run_status"
+                )
+            )
+    }) {
         return Ok(());
     }
     let actor_path = thread_actor_dir_path(&state.paths.stack_dir, thread_id, ActorRole::Monitor)?
@@ -551,12 +557,12 @@ async fn read_monitor_config(state: &AppState) -> MonitorRuntimeConfig {
         batch_cooldown_ms: toml_u64(&text, "wake", "batch_cooldown_ms")
             .unwrap_or_else(|| toml_u64(&text, "wake", "cooldown_ms").unwrap_or(250)),
         wake_policy_script: toml_string(&text, "wake", "policy_script")
-            .map(|path| resolve_config_path(&state.paths.app_root, &path))
+            .map(|path| resolve_policy_path(state, &path))
             .or_else(|| {
                 Some(
                     state
                         .paths
-                        .app_root
+                        .install_root
                         .join("scripts")
                         .join("monitor_wake_policy.py"),
                 )
@@ -719,7 +725,7 @@ fn scheduler_poll_ms() -> u64 {
     std::env::var("STACKD_MONITOR_POLL_MS")
         .ok()
         .and_then(|value| value.parse::<u64>().ok())
-        .unwrap_or(500)
+        .unwrap_or(2_000)
         .clamp(100, 10_000)
 }
 
@@ -761,13 +767,16 @@ fn toml_f64(text: &str, section: &str, key: &str) -> Option<f64> {
     toml_value(text, section, key)?.parse::<f64>().ok()
 }
 
-fn resolve_config_path(app_root: &std::path::Path, path: &str) -> PathBuf {
+fn resolve_policy_path(state: &AppState, path: &str) -> PathBuf {
     let path = PathBuf::from(path);
     if path.is_absolute() {
-        path
-    } else {
-        app_root.join(path)
+        return path;
     }
+    let workspace_path = state.paths.app_root.join(&path);
+    if workspace_path.is_file() {
+        return workspace_path;
+    }
+    state.paths.install_root.join(path)
 }
 
 fn toml_value(text: &str, section: &str, key: &str) -> Option<String> {

@@ -7,6 +7,47 @@ import { emitOptimizerRunStarted } from "../telemetry/funnel.js"
 
 export type OptimizerServiceStatus = "running" | "stopped" | "starting" | "error"
 
+export type LocalModelCapability = {
+  provider: "google"
+  model: "gemini-3.1-flash-lite"
+  role: "policy"
+  credential_env: "GEMINI_API_KEY"
+  credential_status: "available" | "missing"
+  credential_source: "process" | "env-file" | "missing"
+  agent_model_supported: false
+  route: "local-gepa-or-policy-harness"
+}
+
+/** Safe local model discovery: reports only credential presence, never secret material. */
+export function localModelCapabilities(config: StackConfig): LocalModelCapability[] {
+  const envFile = config.environment.authEnvFile
+  const processValue = process.env.GEMINI_API_KEY?.trim()
+  const fileHasValue = !processValue && envFile ? envFileHasValue(envFile, "GEMINI_API_KEY") : false
+  const credentialSource = processValue ? "process" : fileHasValue ? "env-file" : "missing"
+  return [{
+    provider: "google",
+    model: "gemini-3.1-flash-lite",
+    role: "policy",
+    credential_env: "GEMINI_API_KEY",
+    credential_status: credentialSource === "missing" ? "missing" : "available",
+    credential_source: credentialSource,
+    agent_model_supported: false,
+    route: "local-gepa-or-policy-harness",
+  }]
+}
+
+function envFileHasValue(path: string, name: string): boolean {
+  if (!existsSync(path)) return false
+  try {
+    return readFileSync(path, "utf8").split(/\r?\n/).some((line) => {
+      const match = new RegExp(`^\\s*(?:export\\s+)?${name}\\s*=\\s*(.*?)\\s*$`).exec(line)
+      return Boolean(match?.[1]?.replace(/^['"]|['"]$/g, "").trim())
+    })
+  } catch {
+    return false
+  }
+}
+
 export type OptimizerRunSummary = {
   runId: string
   requestId?: string

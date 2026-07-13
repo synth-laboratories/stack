@@ -34,3 +34,18 @@ test("resolved prompt carries the spawn_agent-vs-worker guardrail", () => {
   const prompt = resolveGardenerSystemPrompt(root, cfg)
   expect(prompt.includes("A spawn_agent thread_id alone is not a durable worker")).toBe(true)
 })
+
+test("backfill adds visibility tools to a drifted gardener that has stack_ tools", () => {
+  const root = seed(["stack_status", "stack_meta_threads_list"])
+  const cfg = loadGardenerConfig(root)
+  expect(gardenerToolAllowed(cfg, "stack_thread_events_read")).toBe(true)
+  expect(gardenerToolAllowed(cfg, "stack_meta_thread_set_monitor")).toBe(true)
+})
+
+test("resolved prompt carries passive visibility guidance", () => {
+  const root = seed(["stack_status", "stack_meta_thread_get"])
+  const cfg = loadGardenerConfig(root)
+  const prompt = resolveGardenerSystemPrompt(root, cfg)
+  expect(prompt.includes("stack_thread_events_read")).toBe(true)
+  expect(prompt.includes("stack_meta_thread_set_monitor")).toBe(true)
+})

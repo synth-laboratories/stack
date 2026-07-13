@@ -329,8 +329,8 @@ export function ensureDefaultMonitorConfig(stackRoot: string): string {
   return path
 }
 
-export function loadMonitorConfig(stackRoot: string): StackMonitorConfig {
-  const profile = process.env.STACK_MONITOR_PROFILE?.trim() || readStackProfile(stackRoot).active
+export function loadMonitorConfig(stackRoot: string, profileOverride?: string): StackMonitorConfig {
+  const profile = profileOverride?.trim() || process.env.STACK_MONITOR_PROFILE?.trim() || readStackProfile(stackRoot).active
   const path = join(stackRoot, ".stack", "monitors", `${profile}.toml`)
   const defaultPath = ensureDefaultMonitorConfig(stackRoot)
   const appRootProfilePath = join(stackAppRoot(), ".stack", "monitors", `${profile}.toml`)
@@ -382,10 +382,20 @@ export function emptyMonitorSnapshot(stackRoot: string): StackMonitorSnapshot {
 }
 
 export function refreshMonitorSnapshot(stackRoot: string, threadId: string): StackMonitorSnapshot {
-  const config = loadMonitorConfig(stackRoot)
   const events = readThreadMetaEvents(stackRoot, threadId)
+  const config = loadMonitorConfig(stackRoot, monitorProfileFromEvents(events))
   const actorId = monitorActorId(config)
   return snapshotFromEvents(config, events, readMonitorActorState(stackRoot, threadId, actorId))
+}
+
+function monitorProfileFromEvents(events: StackThreadMetaEvent[]): string | undefined {
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (!event || (event.type !== "worker_run.monitor_enabled" && event.type !== "worker_run.started")) continue
+    const profile = readString(event.payload.monitor_profile)?.trim()
+    if (profile) return profile
+  }
+  return undefined
 }
 
 export function isExplicitMonitorPrefix(prompt: string): boolean {
@@ -787,12 +797,16 @@ export async function runMonitorForNewEvents(input: {
   wakeReason?: string
   triggerEventIds?: string[]
   drainQueued?: boolean
+  monitorProfile?: string
 }): Promise<StackMonitorSnapshot> {
   const runtimeRoot = monitorRuntimeRoot(input.config)
-  const monitorConfig = loadMonitorConfig(runtimeRoot)
+  const priorEvents = readThreadMetaEvents(runtimeRoot, input.session.id)
+  const monitorConfig = loadMonitorConfig(
+    runtimeRoot,
+    input.monitorProfile ?? monitorProfileFromEvents(priorEvents),
+  )
   const threadId = input.session.id
   const goalContext = enrichGoalTaskContext(input.goalContext, input.config.workspaceRoot)
-  const priorEvents = readThreadMetaEvents(runtimeRoot, threadId)
   const effective = effectiveMonitorState(monitorConfig, priorEvents)
   const actorId = monitorActorId(monitorConfig)
   const actorState = readMonitorActorState(runtimeRoot, threadId, actorId)
