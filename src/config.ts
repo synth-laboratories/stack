@@ -41,6 +41,7 @@ export type StackEnvironmentConfig = {
   label: string
   apiBaseUrl: string
   authEnv: string
+  authDisplayEnv?: string
   authEnvFile?: string
   optimizerDbPath?: string
   optimizerServiceUrl?: string
@@ -159,7 +160,26 @@ export type StackConfigPatch = Partial<Pick<
 
 const loadedAuthEnvFiles = new Map<string, string>()
 
+export type StackConfigAuthority = {
+  environmentName: StackEnvironmentName
+  cloudSlot: CloudSlotIdentity | null
+}
+
 export async function loadConfig(appRoot: string): Promise<StackConfig> {
+  return await loadConfigResolved(appRoot, undefined)
+}
+
+export async function loadConfigForAuthority(
+  appRoot: string,
+  authority: StackConfigAuthority,
+): Promise<StackConfig> {
+  return await loadConfigResolved(appRoot, authority)
+}
+
+async function loadConfigResolved(
+  appRoot: string,
+  authority: StackConfigAuthority | undefined,
+): Promise<StackConfig> {
   const fileConfig = readConfigFile(appRoot)
   const synthDevRootRaw = process.env.STACK_SYNTH_DEV_ROOT ?? fileConfig.synthDevRoot
   const synthDevRoot = synthDevRootRaw ? resolveConfigPath(appRoot, synthDevRootRaw) : undefined
@@ -168,19 +188,31 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     process.env.STACK_WORKING_DIR ?? fileConfig.workingDir ?? appRoot,
   )
   const environments = resolveEnvironmentAuthFiles(appRoot, readEnvironments(fileConfig))
-  const environmentName = normalizeOption(
-    process.env.STACK_ENVIRONMENT ?? fileConfig.defaultEnvironment,
-    STACK_ENVIRONMENT_OPTIONS,
-    DEFAULT_ENVIRONMENT,
-    process.env.STACK_ENVIRONMENT ? "STACK_ENVIRONMENT" : "defaultEnvironment",
-  )
-  const environment = environments[environmentName]
-  const cloudSlot = normalizeOptionalOption(
-    process.env.STACK_CLOUD_SLOT ?? fileConfig.defaultCloudSlot ?? undefined,
-    CLOUD_SLOT_OPTIONS,
-    "STACK_CLOUD_SLOT/defaultCloudSlot",
-  )
-  loadEnvironmentAuth(environment)
+  const environmentName =
+    authority === undefined
+      ? normalizeOption(
+          process.env.STACK_ENVIRONMENT ?? fileConfig.defaultEnvironment,
+          STACK_ENVIRONMENT_OPTIONS,
+          DEFAULT_ENVIRONMENT,
+          process.env.STACK_ENVIRONMENT ? "STACK_ENVIRONMENT" : "defaultEnvironment",
+        )
+      : authority.environmentName
+  const configuredEnvironment = environments[environmentName]
+  const environment =
+    authority === undefined
+      ? configuredEnvironment
+      : loadEnvironmentAuthForAuthority(environmentName, configuredEnvironment)
+  const cloudSlot =
+    authority === undefined
+      ? normalizeOptionalOption(
+          process.env.STACK_CLOUD_SLOT ?? fileConfig.defaultCloudSlot ?? undefined,
+          CLOUD_SLOT_OPTIONS,
+          "STACK_CLOUD_SLOT/defaultCloudSlot",
+        )
+      : authority.cloudSlot ?? undefined
+  if (authority === undefined) {
+    loadEnvironmentAuth(environment)
+  }
   const optimizerBind = process.env.STACK_OPTIMIZER_BIND ?? DEFAULT_OPTIMIZER_BIND
   const optimizerDbPath = resolveConfigPath(
     appRoot,
@@ -481,25 +513,26 @@ export function setStackCloudSlot(config: StackConfig, cloudSlot: CloudSlotIdent
 }
 
 export function environmentAuthStatus(environment: StackEnvironmentConfig): StackAuthStatus {
+  const displayAuthEnv = environment.authDisplayEnv ?? environment.authEnv
   const loadedFrom = loadedAuthEnvFiles.get(environment.authEnv)
   if (process.env[environment.authEnv]) {
     return {
-      authEnv: environment.authEnv,
+      authEnv: displayAuthEnv,
       hasAuth: true,
       source: loadedFrom ? "env-file" : "process",
       envFile: loadedFrom ?? environment.authEnvFile,
-      message: loadedFrom ? `${environment.authEnv} loaded from ${loadedFrom}` : `${environment.authEnv} is set`,
+      message: loadedFrom ? `${displayAuthEnv} loaded from ${loadedFrom}` : `${displayAuthEnv} is set`,
     }
   }
 
   return {
-    authEnv: environment.authEnv,
+    authEnv: displayAuthEnv,
     hasAuth: false,
     source: "missing",
     envFile: environment.authEnvFile,
     message: environment.authEnvFile
-      ? `${environment.authEnv} is not set; expected ${environment.authEnvFile}`
-      : `${environment.authEnv} is not set`,
+      ? `${displayAuthEnv} is not set; expected ${environment.authEnvFile}`
+      : `${displayAuthEnv} is not set`,
   }
 }
 
@@ -509,6 +542,42 @@ export function loadEnvironmentAuth(environment: StackEnvironmentConfig): void {
   if (!value) return
   process.env[environment.authEnv] = value
   loadedAuthEnvFiles.set(environment.authEnv, environment.authEnvFile)
+}
+
+function loadEnvironmentAuthForAuthority(
+  environmentName: StackEnvironmentName,
+  environment: StackEnvironmentConfig,
+): StackEnvironmentConfig {
+  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(environment.authEnv)) {
+    throw new Error(
+      `environment ${environmentName} has invalid authEnv ${JSON.stringify(environment.authEnv)}`,
+    )
+  }
+  const scopedAuthEnv = `STACK_MCP_${environmentName.toUpperCase()}_${environment.authEnv}`
+  const rawProcessValue = process.env[environment.authEnv]
+  const processValue = rawProcessValue?.trim() ? rawProcessValue : undefined
+  const fileValue = environment.authEnvFile
+    ? readEnvFileValue(environment.authEnvFile, environment.authEnv)
+    : undefined
+  const inheritedFile = loadedAuthEnvFiles.get(environment.authEnv)
+  const processIsExplicit = processValue !== undefined && inheritedFile === undefined
+  const value = processIsExplicit ? processValue : fileValue
+  if (value) {
+    process.env[scopedAuthEnv] = value
+    if (processIsExplicit) {
+      loadedAuthEnvFiles.delete(scopedAuthEnv)
+    } else if (fileValue !== undefined && environment.authEnvFile) {
+      loadedAuthEnvFiles.set(scopedAuthEnv, environment.authEnvFile)
+    }
+  } else {
+    delete process.env[scopedAuthEnv]
+    loadedAuthEnvFiles.delete(scopedAuthEnv)
+  }
+  return {
+    ...environment,
+    authEnv: scopedAuthEnv,
+    authDisplayEnv: environment.authEnv,
+  }
 }
 
 export function isCursorHarness(config: Pick<StackConfig, "harness">): boolean {
