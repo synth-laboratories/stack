@@ -989,6 +989,16 @@ The server reads `stack.config.json` and supports both JSONL and
 - `stack_cloud_slot_claim`, `stack_cloud_slot_heartbeat`, and
   `stack_cloud_slot_release`: typed TTL ownership lifecycle; claim returns the
   fencing token required by claimed mutations
+- `stack_cloud_slot_services`: topology-declared service ids, routed endpoints,
+  health checks, and log capability
+- `stack_cloud_slot_workspace`: declared repositories plus exact branch, source
+  SHA, authority, and live Git state
+- `stack_cloud_slot_materialize`: exact branch-contained commit materialization
+  for a declared repository, fenced by the active claim token
+- `stack_cloud_slot_exec`: bounded argv execution inside the declared workspace,
+  fenced by the active claim token; shell command strings are not accepted
+- `stack_cloud_slot_logs`: bounded output for a service id returned by service
+  discovery
 - `stack_cloud_slot_deploy`: deploy or retry through the CloudDeployment owner
   route, with the active fencing token when claimed
 - `stack_cloud_slot_retire`: confirmed owned retirement; VM deletion is opt-in

@@ -18,14 +18,24 @@ import {
 import {
   acquireCloudSlotClaim,
   deployCloudSlot,
+  execCloudSlot,
   heartbeatCloudSlotClaim,
+  materializeCloudSlotWorkspace,
   observeCloudSlot,
+  readCloudSlotLogs,
+  readCloudSlotServices,
   readCloudSlotsSnapshot,
+  readCloudSlotWorkspace,
   releaseCloudSlotClaim,
   retireCloudSlot,
   type CloudSlotActionResult,
   type CloudSlotDeployment,
+  type CloudSlotExecResult,
+  type CloudSlotLogs,
+  type CloudSlotServices,
   type CloudSlotsSnapshot,
+  type CloudSlotWorkspace,
+  type CloudSlotWorkspaceMaterialization,
 } from "../remote/cloud-slots.js"
 import {
   discoverStackSkills,
@@ -2278,6 +2288,79 @@ export class StackMcpServer {
       config,
       requiredSelectedCloudSlot(args, config),
       requiredString(args, "claim_id"),
+    ))) ?? null
+  }
+
+  async cloudSlotServices(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(cloudSlotServicesMcpPayload(await readCloudSlotServices(
+      config,
+      requiredSelectedCloudSlot(args, config),
+    ))) ?? null
+  }
+
+  async cloudSlotWorkspace(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(cloudSlotWorkspaceMcpPayload(await readCloudSlotWorkspace(
+      config,
+      requiredSelectedCloudSlot(args, config),
+    ))) ?? null
+  }
+
+  async cloudSlotMaterialize(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const sourceCommitSha = requiredString(args, "source_commit_sha")
+    if (!/^[0-9a-fA-F]{40}$/.test(sourceCommitSha)) {
+      throw new RpcError(-32602, "source_commit_sha must be a full 40-character Git commit SHA")
+    }
+    return toJsonValue(cloudSlotMaterializationMcpPayload(await materializeCloudSlotWorkspace(
+      config,
+      requiredSelectedCloudSlot(args, config),
+      {
+        repository: requiredString(args, "repository"),
+        branch: requiredString(args, "branch"),
+        sourceCommitSha: sourceCommitSha.toLowerCase(),
+        fencingToken: requiredPositiveInteger(args, "fencing_token"),
+      },
+    ))) ?? null
+  }
+
+  async cloudSlotExec(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const argv = optionalStringArray(args, "argv")
+    if (!argv || argv.length < 1 || argv.length > 128) {
+      throw new RpcError(-32602, "argv must contain between 1 and 128 string items")
+    }
+    if (argv.some((item) => item.includes("\0") || Buffer.byteLength(item, "utf8") > 4096)) {
+      throw new RpcError(-32602, "argv items must be at most 4096 bytes and contain no NUL")
+    }
+    const timeoutSeconds = optionalPositiveInteger(args, "timeout_seconds") ?? 300
+    if (timeoutSeconds > 900) throw new RpcError(-32602, "timeout_seconds must be at most 900")
+    const maxOutputBytes = optionalPositiveInteger(args, "max_output_bytes") ?? 65_536
+    if (maxOutputBytes < 1024 || maxOutputBytes > 262_144) {
+      throw new RpcError(-32602, "max_output_bytes must be between 1024 and 262144")
+    }
+    return toJsonValue(cloudSlotExecMcpPayload(await execCloudSlot(
+      config,
+      requiredSelectedCloudSlot(args, config),
+      {
+        argv,
+        cwd: optionalString(args, "cwd"),
+        timeoutSeconds,
+        maxOutputBytes,
+        fencingToken: requiredPositiveInteger(args, "fencing_token"),
+      },
+    ))) ?? null
+  }
+
+  async cloudSlotLogs(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const tail = optionalPositiveInteger(args, "tail") ?? 200
+    if (tail > 5000) throw new RpcError(-32602, "tail must be at most 5000")
+    return toJsonValue(cloudSlotLogsMcpPayload(await readCloudSlotLogs(
+      config,
+      requiredSelectedCloudSlot(args, config),
+      { serviceId: requiredString(args, "service_id"), tail },
     ))) ?? null
   }
 
@@ -5668,6 +5751,75 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.cloudSlotRelease(args),
     },
     {
+      name: "stack_cloud_slot_services",
+      description: "Discover topology-declared services, routed endpoints, health checks, and log support for the selected cloud slot.",
+      inputSchema: objectSchema({ environment: environmentProperty(), cloud_slot: cloudSlotProperty() }),
+      handler: (args) => server.cloudSlotServices(args),
+    },
+    {
+      name: "stack_cloud_slot_workspace",
+      description: "Inspect exact declared repository identities and live Git state for the selected cloud slot workspace.",
+      inputSchema: objectSchema({ environment: environmentProperty(), cloud_slot: cloudSlotProperty() }),
+      handler: (args) => server.cloudSlotWorkspace(args),
+    },
+    {
+      name: "stack_cloud_slot_materialize",
+      description: "Materialize an exact commit for a topology-declared repository in the selected cloud slot; requires its active claim fencing token.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          cloud_slot: cloudSlotProperty(),
+          repository: stringProperty("Topology-declared repository selector."),
+          branch: stringProperty("Declared branch containing the exact commit."),
+          source_commit_sha: {
+            type: "string",
+            pattern: "^[0-9a-fA-F]{40}$",
+            description: "Exact full Git commit SHA to materialize.",
+          },
+          fencing_token: { type: "integer", minimum: 1, description: "Active claim fencing token." },
+        },
+        ["repository", "branch", "source_commit_sha", "fencing_token"],
+      ),
+      handler: (args) => server.cloudSlotMaterialize(args),
+    },
+    {
+      name: "stack_cloud_slot_exec",
+      description: "Execute bounded argv in the selected cloud slot workspace; shell command strings are not accepted and the active claim fencing token is required.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          cloud_slot: cloudSlotProperty(),
+          argv: {
+            type: "array",
+            minItems: 1,
+            maxItems: 128,
+            items: { type: "string", maxLength: 4096 },
+            description: "Command argv; each item is passed without shell interpolation.",
+          },
+          cwd: stringProperty("Optional path relative to the declared workspace root."),
+          timeout_seconds: { type: "integer", minimum: 1, maximum: 900, default: 300 },
+          max_output_bytes: { type: "integer", minimum: 1024, maximum: 262144, default: 65536 },
+          fencing_token: { type: "integer", minimum: 1, description: "Active claim fencing token." },
+        },
+        ["argv", "fencing_token"],
+      ),
+      handler: (args) => server.cloudSlotExec(args),
+    },
+    {
+      name: "stack_cloud_slot_logs",
+      description: "Read bounded logs for a topology-declared service in the selected cloud slot.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          cloud_slot: cloudSlotProperty(),
+          service_id: stringProperty("Service id returned by stack_cloud_slot_services."),
+          tail: { type: "integer", minimum: 1, maximum: 5000, default: 200 },
+        },
+        ["service_id"],
+      ),
+      handler: (args) => server.cloudSlotLogs(args),
+    },
+    {
       name: "stack_cloud_slot_deploy",
       description: "Deploy or retry the selected CloudDeployment through its backend owner route. Supply the active claim fencing token when claimed.",
       inputSchema: objectSchema({
@@ -7922,6 +8074,95 @@ function cloudSlotActionMcpPayload(result: CloudSlotActionResult): Record<string
   }
 }
 
+function cloudSlotServicesMcpPayload(result: CloudSlotServices): Record<string, unknown> {
+  return {
+    schema_version: result.schemaVersion,
+    deployment_id: result.deploymentId,
+    vm_name: result.vmName,
+    service_url: result.serviceUrl ?? null,
+    services: result.services.map((service) => ({
+      service_id: service.serviceId,
+      kind: service.kind,
+      required: service.required,
+      endpoint: service.endpoint ?? null,
+      health_checks: service.healthChecks,
+      logs_supported: service.logsSupported,
+    })),
+    deployment_health: result.deploymentHealth,
+  }
+}
+
+function cloudSlotWorkspaceMcpPayload(result: CloudSlotWorkspace): Record<string, unknown> {
+  return {
+    schema_version: result.schemaVersion,
+    deployment_id: result.deploymentId,
+    vm_name: result.vmName,
+    workspace_root: result.workspaceRoot,
+    repositories: result.repositories.map((repository) => ({
+      repository: repository.repository,
+      path: repository.path,
+      remote_repo: repository.remoteRepo,
+      declared_branch: repository.declaredBranch,
+      declared_source_commit_sha: repository.declaredSourceCommitSha,
+      authority: repository.authority,
+      live: {
+        available: repository.live.available,
+        head_commit_sha: repository.live.headCommitSha ?? null,
+        branch: repository.live.branch ?? null,
+        detached: repository.live.detached,
+        dirty_path_count: repository.live.dirtyPathCount ?? null,
+      },
+    })),
+  }
+}
+
+function cloudSlotMaterializationMcpPayload(
+  result: CloudSlotWorkspaceMaterialization,
+): Record<string, unknown> {
+  return {
+    schema_version: result.schemaVersion,
+    deployment_id: result.deploymentId,
+    vm_name: result.vmName,
+    repository: result.repository,
+    path: result.path,
+    branch: result.branch,
+    source_commit_sha: result.sourceCommitSha,
+    clean: result.clean,
+    detached: result.detached,
+  }
+}
+
+function cloudSlotExecMcpPayload(result: CloudSlotExecResult): Record<string, unknown> {
+  return {
+    schema_version: result.schemaVersion,
+    deployment_id: result.deploymentId,
+    vm_name: result.vmName,
+    working_directory: result.workingDirectory,
+    argv_count: result.argvCount,
+    timeout_seconds: result.timeoutSeconds,
+    exit_code: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    stdout_truncated: result.stdoutTruncated,
+    stderr_truncated: result.stderrTruncated,
+  }
+}
+
+function cloudSlotLogsMcpPayload(result: CloudSlotLogs): Record<string, unknown> {
+  return {
+    schema_version: result.schemaVersion,
+    deployment_id: result.deploymentId,
+    vm_name: result.vmName,
+    service_id: result.serviceId,
+    tail: result.tail,
+    exit_code: result.exitCode,
+    stdout: result.stdout,
+    stderr: result.stderr,
+    stdout_truncated: result.stdoutTruncated,
+    stderr_truncated: result.stderrTruncated,
+  }
+}
+
 function cloudSlotDeploymentMcpPayload(slot: CloudSlotDeployment): Record<string, unknown> {
   return {
     cloud_slot: slot.cloudSlot,
@@ -8149,6 +8390,12 @@ function optionalInteger(args: JsonObject, key: string): number | undefined {
 function optionalPositiveInteger(args: JsonObject, key: string): number | undefined {
   const value = optionalInteger(args, key)
   if (value !== undefined && value < 1) throw new RpcError(-32602, `${key} must be a positive integer`)
+  return value
+}
+
+function requiredPositiveInteger(args: JsonObject, key: string): number {
+  const value = optionalPositiveInteger(args, key)
+  if (value === undefined) throw new RpcError(-32602, `${key} is required`)
   return value
 }
 
