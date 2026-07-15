@@ -5,6 +5,9 @@ import {
   type StackConfig,
 } from "../config.js"
 
+const DEFAULT_REQUEST_TIMEOUT_MS = 30_000
+const MATERIALIZATION_REQUEST_TIMEOUT_MS = 930_000
+
 export type CloudSlotClaim = {
   claimId: string
   holder: string
@@ -48,6 +51,89 @@ export type CloudSlotActionResult = {
   message: string
   deployment?: CloudSlotDeployment
   claim?: CloudSlotClaim
+}
+
+export type CloudSlotService = {
+  serviceId: string
+  kind: string
+  required: boolean
+  endpoint?: string
+  healthChecks: Record<string, unknown>[]
+  logsSupported: boolean
+}
+
+export type CloudSlotServices = {
+  schemaVersion: "cloud-deployment-services-v1"
+  deploymentId: string
+  vmName: string
+  serviceUrl?: string
+  services: CloudSlotService[]
+  deploymentHealth: Record<string, unknown>
+}
+
+export type CloudSlotWorkspaceLiveState = {
+  available: boolean
+  headCommitSha?: string
+  branch?: string
+  detached: boolean
+  dirtyPathCount?: number
+}
+
+export type CloudSlotWorkspaceRepository = {
+  repository: string
+  path: string
+  remoteRepo: string
+  declaredBranch: string
+  declaredSourceCommitSha: string
+  authority: string
+  live: CloudSlotWorkspaceLiveState
+}
+
+export type CloudSlotWorkspace = {
+  schemaVersion: "cloud-deployment-workspace-v1"
+  deploymentId: string
+  vmName: string
+  workspaceRoot: string
+  repositories: CloudSlotWorkspaceRepository[]
+}
+
+export type CloudSlotWorkspaceMaterialization = {
+  schemaVersion: "cloud-deployment-workspace-materialization-v1"
+  deploymentId: string
+  vmName: string
+  repository: string
+  path: string
+  branch: string
+  sourceCommitSha: string
+  clean: boolean
+  detached: boolean
+}
+
+export type CloudSlotExecResult = {
+  schemaVersion: "cloud-deployment-exec-v1"
+  deploymentId: string
+  vmName: string
+  workingDirectory: string
+  argvCount: number
+  timeoutSeconds: number
+  exitCode: number
+  stdout: string
+  stderr: string
+  stdoutTruncated: boolean
+  stderrTruncated: boolean
+}
+
+export type CloudSlotLogs = {
+  schemaVersion: "cloud-deployment-logs-v1"
+  deploymentId: string
+  vmName: string
+  serviceId: string
+  tail: number
+  exitCode: number
+  stdout: string
+  stderr: string
+  stdoutTruncated: boolean
+  stderrTruncated: boolean
 }
 
 export function isCloudSlotIdentity(value: unknown): value is CloudSlotIdentity {
@@ -169,6 +255,102 @@ export async function releaseCloudSlotClaim(
   return claimAction(config, deployment, `/claims/${encodeURIComponent(claimId)}/release`, {})
 }
 
+export async function readCloudSlotServices(
+  config: StackConfig,
+  cloudSlot: CloudSlotIdentity,
+): Promise<CloudSlotServices> {
+  const deployment = await requireCloudSlot(config, cloudSlot)
+  const value = await cloudSlotRequest(
+    config,
+    `/smr/v1/deployments/${encodeURIComponent(deployment.deploymentId)}/services`,
+  )
+  return parseCloudSlotServices(value, deployment)
+}
+
+export async function readCloudSlotWorkspace(
+  config: StackConfig,
+  cloudSlot: CloudSlotIdentity,
+): Promise<CloudSlotWorkspace> {
+  const deployment = await requireCloudSlot(config, cloudSlot)
+  const value = await cloudSlotRequest(
+    config,
+    `/smr/v1/deployments/${encodeURIComponent(deployment.deploymentId)}/workspace`,
+  )
+  return parseCloudSlotWorkspace(value, deployment)
+}
+
+export async function materializeCloudSlotWorkspace(
+  config: StackConfig,
+  cloudSlot: CloudSlotIdentity,
+  options: {
+    repository: string
+    branch: string
+    sourceCommitSha: string
+    fencingToken: number
+  },
+): Promise<CloudSlotWorkspaceMaterialization> {
+  const deployment = await requireFencedCloudSlot(config, cloudSlot, options.fencingToken)
+  const value = await cloudSlotRequest(
+    config,
+    `/smr/v1/deployments/${encodeURIComponent(deployment.deploymentId)}/workspace/materialize`,
+    {
+      method: "POST",
+      body: {
+        repository: options.repository,
+        branch: options.branch,
+        source_commit_sha: options.sourceCommitSha,
+      },
+      fencingToken: options.fencingToken,
+      timeoutMs: MATERIALIZATION_REQUEST_TIMEOUT_MS,
+    },
+  )
+  return parseCloudSlotWorkspaceMaterialization(value, deployment)
+}
+
+export async function execCloudSlot(
+  config: StackConfig,
+  cloudSlot: CloudSlotIdentity,
+  options: {
+    argv: string[]
+    cwd?: string
+    timeoutSeconds: number
+    maxOutputBytes: number
+    fencingToken: number
+  },
+): Promise<CloudSlotExecResult> {
+  const deployment = await requireFencedCloudSlot(config, cloudSlot, options.fencingToken)
+  const value = await cloudSlotRequest(
+    config,
+    `/smr/v1/deployments/${encodeURIComponent(deployment.deploymentId)}/exec`,
+    {
+      method: "POST",
+      body: {
+        argv: options.argv,
+        cwd: options.cwd,
+        timeout_seconds: options.timeoutSeconds,
+        max_output_bytes: options.maxOutputBytes,
+      },
+      fencingToken: options.fencingToken,
+      timeoutMs: options.timeoutSeconds * 1000 + DEFAULT_REQUEST_TIMEOUT_MS,
+    },
+  )
+  return parseCloudSlotExecResult(value, deployment)
+}
+
+export async function readCloudSlotLogs(
+  config: StackConfig,
+  cloudSlot: CloudSlotIdentity,
+  options: { serviceId: string; tail: number },
+): Promise<CloudSlotLogs> {
+  const deployment = await requireCloudSlot(config, cloudSlot)
+  const query = new URLSearchParams({ service_id: options.serviceId, tail: String(options.tail) })
+  const value = await cloudSlotRequest(
+    config,
+    `/smr/v1/deployments/${encodeURIComponent(deployment.deploymentId)}/logs?${query.toString()}`,
+  )
+  return parseCloudSlotLogs(value, deployment)
+}
+
 async function deploymentAction(
   config: StackConfig,
   cloudSlot: CloudSlotIdentity,
@@ -234,10 +416,30 @@ async function requireCloudSlot(
   return deployment
 }
 
+async function requireFencedCloudSlot(
+  config: StackConfig,
+  cloudSlot: CloudSlotIdentity,
+  fencingToken: number,
+): Promise<CloudSlotDeployment> {
+  const deployment = await requireCloudSlot(config, cloudSlot)
+  if (!deployment.activeClaim) {
+    throw new Error(`${cloudSlot} has no active claim; acquire a claim before mutating its workspace`)
+  }
+  if (deployment.activeClaim.fencingToken !== fencingToken) {
+    throw new Error(`${cloudSlot} fencing token does not match its active claim`)
+  }
+  return deployment
+}
+
 async function cloudSlotRequest(
   config: StackConfig,
   path: string,
-  options: { method?: "GET" | "POST"; body?: Record<string, unknown>; fencingToken?: number } = {},
+  options: {
+    method?: "GET" | "POST"
+    body?: Record<string, unknown>
+    fencingToken?: number
+    timeoutMs?: number
+  } = {},
 ): Promise<unknown> {
   const auth = environmentAuthStatus(config.environment)
   const token = process.env[config.environment.authEnv]
@@ -252,7 +454,7 @@ async function cloudSlotRequest(
     method: options.method ?? "GET",
     headers,
     body: options.body ? JSON.stringify(dropUndefined(options.body)) : undefined,
-    signal: AbortSignal.timeout(30_000),
+    signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
   })
   const text = await response.text()
   const payload = parsePayload(text)
@@ -345,6 +547,184 @@ function readCloudSlotClaim(value: unknown): CloudSlotClaim | undefined {
     state: readString(row.state) ?? "unknown",
     expiresAt: readString(row.expires_at),
   }
+}
+
+function parseCloudSlotServices(value: unknown, deployment: CloudSlotDeployment): CloudSlotServices {
+  const row = requireProjection(value, "cloud-deployment-services-v1", deployment)
+  const services = requireArray(row.services, "services").map((value, index) => {
+    const service = requireRecord(value, `services[${index}]`)
+    return {
+      serviceId: requireString(service.service_id, `services[${index}].service_id`),
+      kind: requireString(service.kind, `services[${index}].kind`),
+      required: requireBoolean(service.required, `services[${index}].required`),
+      endpoint: optionalProjectionString(service.endpoint, `services[${index}].endpoint`),
+      healthChecks: requireArray(service.health_checks, `services[${index}].health_checks`)
+        .map((check, checkIndex) => requireRecord(check, `services[${index}].health_checks[${checkIndex}]`)),
+      logsSupported: requireBoolean(service.logs_supported, `services[${index}].logs_supported`),
+    }
+  })
+  return {
+    schemaVersion: "cloud-deployment-services-v1",
+    deploymentId: deployment.deploymentId,
+    vmName: requireString(row.vm_name, "vm_name"),
+    serviceUrl: optionalProjectionString(row.service_url, "service_url"),
+    services,
+    deploymentHealth: requireRecord(row.deployment_health, "deployment_health"),
+  }
+}
+
+function parseCloudSlotWorkspace(value: unknown, deployment: CloudSlotDeployment): CloudSlotWorkspace {
+  const row = requireProjection(value, "cloud-deployment-workspace-v1", deployment)
+  const repositories = requireArray(row.repositories, "repositories").map((value, index) => {
+    const repository = requireRecord(value, `repositories[${index}]`)
+    const live = requireRecord(repository.live, `repositories[${index}].live`)
+    return {
+      repository: requireString(repository.repository, `repositories[${index}].repository`),
+      path: requireString(repository.path, `repositories[${index}].path`),
+      remoteRepo: requireString(repository.remote_repo, `repositories[${index}].remote_repo`),
+      declaredBranch: requireString(repository.declared_branch, `repositories[${index}].declared_branch`),
+      declaredSourceCommitSha: requireString(
+        repository.declared_source_commit_sha,
+        `repositories[${index}].declared_source_commit_sha`,
+      ),
+      authority: requireString(repository.authority, `repositories[${index}].authority`),
+      live: {
+        available: requireBoolean(live.available, `repositories[${index}].live.available`),
+        headCommitSha: optionalProjectionString(
+          live.head_commit_sha,
+          `repositories[${index}].live.head_commit_sha`,
+        ),
+        branch: optionalProjectionString(live.branch, `repositories[${index}].live.branch`),
+        detached: requireBoolean(live.detached, `repositories[${index}].live.detached`),
+        dirtyPathCount: optionalProjectionInteger(
+          live.dirty_path_count,
+          `repositories[${index}].live.dirty_path_count`,
+        ),
+      },
+    }
+  })
+  return {
+    schemaVersion: "cloud-deployment-workspace-v1",
+    deploymentId: deployment.deploymentId,
+    vmName: requireString(row.vm_name, "vm_name"),
+    workspaceRoot: requireString(row.workspace_root, "workspace_root"),
+    repositories,
+  }
+}
+
+function parseCloudSlotWorkspaceMaterialization(
+  value: unknown,
+  deployment: CloudSlotDeployment,
+): CloudSlotWorkspaceMaterialization {
+  const row = requireProjection(value, "cloud-deployment-workspace-materialization-v1", deployment)
+  return {
+    schemaVersion: "cloud-deployment-workspace-materialization-v1",
+    deploymentId: deployment.deploymentId,
+    vmName: requireString(row.vm_name, "vm_name"),
+    repository: requireString(row.repository, "repository"),
+    path: requireString(row.path, "path"),
+    branch: requireString(row.branch, "branch"),
+    sourceCommitSha: requireString(row.source_commit_sha, "source_commit_sha"),
+    clean: requireBoolean(row.clean, "clean"),
+    detached: requireBoolean(row.detached, "detached"),
+  }
+}
+
+function parseCloudSlotExecResult(value: unknown, deployment: CloudSlotDeployment): CloudSlotExecResult {
+  const row = requireProjection(value, "cloud-deployment-exec-v1", deployment)
+  return {
+    schemaVersion: "cloud-deployment-exec-v1",
+    deploymentId: deployment.deploymentId,
+    vmName: requireString(row.vm_name, "vm_name"),
+    workingDirectory: requireString(row.working_directory, "working_directory"),
+    argvCount: requireInteger(row.argv_count, "argv_count"),
+    timeoutSeconds: requireNumber(row.timeout_seconds, "timeout_seconds"),
+    exitCode: requireInteger(row.exit_code, "exit_code"),
+    stdout: requireProjectionString(row.stdout, "stdout"),
+    stderr: requireProjectionString(row.stderr, "stderr"),
+    stdoutTruncated: requireBoolean(row.stdout_truncated, "stdout_truncated"),
+    stderrTruncated: requireBoolean(row.stderr_truncated, "stderr_truncated"),
+  }
+}
+
+function parseCloudSlotLogs(value: unknown, deployment: CloudSlotDeployment): CloudSlotLogs {
+  const row = requireProjection(value, "cloud-deployment-logs-v1", deployment)
+  return {
+    schemaVersion: "cloud-deployment-logs-v1",
+    deploymentId: deployment.deploymentId,
+    vmName: requireString(row.vm_name, "vm_name"),
+    serviceId: requireString(row.service_id, "service_id"),
+    tail: requireInteger(row.tail, "tail"),
+    exitCode: requireInteger(row.exit_code, "exit_code"),
+    stdout: requireProjectionString(row.stdout, "stdout"),
+    stderr: requireProjectionString(row.stderr, "stderr"),
+    stdoutTruncated: requireBoolean(row.stdout_truncated, "stdout_truncated"),
+    stderrTruncated: requireBoolean(row.stderr_truncated, "stderr_truncated"),
+  }
+}
+
+function requireProjection(
+  value: unknown,
+  schemaVersion: string,
+  deployment: CloudSlotDeployment,
+): Record<string, unknown> {
+  const row = requireRecord(value, schemaVersion)
+  if (row.schema_version !== schemaVersion) {
+    throw new Error(`${deployment.cloudSlot} owner projection expected schema_version=${schemaVersion}`)
+  }
+  if (row.deployment_id !== deployment.deploymentId) {
+    throw new Error(`${deployment.cloudSlot} owner projection deployment_id does not match its binding`)
+  }
+  return row
+}
+
+function requireRecord(value: unknown, field: string): Record<string, unknown> {
+  const row = asRecord(value)
+  if (!row) throw new Error(`CloudDeployment owner projection ${field} must be an object`)
+  return row
+}
+
+function requireArray(value: unknown, field: string): unknown[] {
+  if (!Array.isArray(value)) throw new Error(`CloudDeployment owner projection ${field} must be an array`)
+  return value
+}
+
+function requireString(value: unknown, field: string): string {
+  const result = readString(value)
+  if (!result) throw new Error(`CloudDeployment owner projection ${field} must be a non-empty string`)
+  return result
+}
+
+function requireProjectionString(value: unknown, field: string): string {
+  if (typeof value !== "string") throw new Error(`CloudDeployment owner projection ${field} must be a string`)
+  return value
+}
+
+function optionalProjectionString(value: unknown, field: string): string | undefined {
+  if (value === null || value === undefined) return undefined
+  return requireString(value, field)
+}
+
+function requireBoolean(value: unknown, field: string): boolean {
+  if (typeof value !== "boolean") throw new Error(`CloudDeployment owner projection ${field} must be a boolean`)
+  return value
+}
+
+function requireNumber(value: unknown, field: string): number {
+  const result = readNumber(value)
+  if (result === undefined) throw new Error(`CloudDeployment owner projection ${field} must be a number`)
+  return result
+}
+
+function requireInteger(value: unknown, field: string): number {
+  const result = requireNumber(value, field)
+  if (!Number.isInteger(result)) throw new Error(`CloudDeployment owner projection ${field} must be an integer`)
+  return result
+}
+
+function optionalProjectionInteger(value: unknown, field: string): number | undefined {
+  if (value === null || value === undefined) return undefined
+  return requireInteger(value, field)
 }
 
 function actionError(error: unknown): CloudSlotActionResult {
