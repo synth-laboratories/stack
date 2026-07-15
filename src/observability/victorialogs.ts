@@ -78,8 +78,12 @@ export function projectMetaEventToVictoriaLogs(stackRoot: string, event: StackTh
   projectLogDocumentToVictoriaLogs(stackRoot, document)
 }
 
-export function projectLogDocumentToVictoriaLogs(stackRoot: string, document: Record<string, unknown>): void {
-  const writeUrl = victorialogsWriteUrl(stackRoot)
+export function projectLogDocumentToVictoriaLogs(
+  stackRoot: string,
+  document: Record<string, unknown>,
+  slot?: string,
+): void {
+  const writeUrl = victorialogsWriteUrl(stackRoot, slot)
   if (!writeUrl) return
   if (typeof document.event_domain !== "string" || !document.event_domain.trim()) return
   const url = insertUrl(writeUrl)
@@ -163,9 +167,13 @@ function metaEventMessage(eventType: string, payload: Record<string, unknown>): 
   return subject ? `${eventType} ${subject}` : eventType
 }
 
-function victorialogsWriteUrl(stackRoot: string): string | undefined {
+function victorialogsWriteUrl(stackRoot: string, slot?: string): string | undefined {
   const explicit = process.env.VICTORIA_LOGS_WRITE_URL ?? process.env.STACK_VICTORIA_LOGS_WRITE_URL
   if (explicit?.trim()) return explicit.trim()
+  if (slot) {
+    const port = readSlotVictoriaLogsPort(stackRoot, normalizeSlot(slot))
+    return port ? `http://127.0.0.1:${port}` : undefined
+  }
   const port = readSlotVictoriaLogsPort(stackRoot, normalizeSlot(process.env.STACK_VL_SLOT))
   return port ? `http://127.0.0.1:${port}` : undefined
 }

@@ -8,9 +8,7 @@ import {
   environmentAuthStatus,
   harnessModel,
   harnessSessionCommand,
-  loadConfig,
-  setStackEnvironment,
-  setStackCloudSlot,
+  loadConfigForAuthority,
   type CloudSlotIdentity,
   type StackConfig,
   type StackEnvironmentName,
@@ -341,9 +339,14 @@ export class StackMcpServer {
     })
   }
 
-  async callTool(name: string, args: JsonObject = {}): Promise<JsonValue> {
+  async callTool(name: string, args: JsonObject): Promise<JsonValue> {
     const tool = this.tools.get(name)
     if (!tool) throw new RpcError(-32601, `Unknown tool: ${name}`)
+    readEnvironmentName(requiredString(args, "environment"))
+    const properties = asRecord(tool.inputSchema.properties)
+    if (properties && properties.cloud_slot !== undefined) {
+      readCloudSlotIdentity(requiredString(args, "cloud_slot"))
+    }
     return await tool.handler(args)
   }
 
@@ -351,17 +354,17 @@ export class StackMcpServer {
     return [...this.tools.values()].map((tool) => ({
       name: tool.name,
       description: tool.description,
-      inputSchema: tool.inputSchema,
+      inputSchema: explicitOperationalAuthoritySchema(tool.inputSchema),
     }))
   }
 
   private async config(args: JsonObject): Promise<StackConfig> {
-    const config = await loadConfig(this.appRoot)
-    const environment = optionalString(args, "environment")
-    if (environment) setStackEnvironment(config, readEnvironmentName(environment))
+    const environmentName = readEnvironmentName(requiredString(args, "environment"))
     const cloudSlot = optionalString(args, "cloud_slot")
-    if (cloudSlot) setStackCloudSlot(config, readCloudSlotIdentity(cloudSlot))
-    return config
+    return await loadConfigForAuthority(this.appRoot, {
+      environmentName,
+      cloudSlot: cloudSlot ? readCloudSlotIdentity(cloudSlot) : null,
+    })
   }
 
   async sidecarPauseForRestart(args: JsonObject): Promise<JsonObject> {
@@ -4545,7 +4548,7 @@ export class StackMcpServer {
     const minutes = optionalInteger(args, "minutes") ?? 60
     if (minutes < 1 || minutes > 10_080) throw new RpcError(-32602, "minutes must be between 1 and 10080")
     const result = await queryStackLogs(config, {
-      slot: optionalString(args, "slot"),
+      slot: readLocalSlotIdentity(requiredString(args, "slot")),
       query: optionalString(args, "query"),
       eventDomain: optionalString(args, "event_domain"),
       service: optionalString(args, "service"),
@@ -4567,6 +4570,7 @@ export class StackMcpServer {
 
   async runWithLogs(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
+    const slot = readLocalSlotIdentity(requiredString(args, "slot"))
     const command = requiredString(args, "command")
     const argv = optionalStringArray(args, "args") ?? []
     const cwd = resolve(config.workingDir, optionalString(args, "cwd") ?? ".")
@@ -4574,7 +4578,7 @@ export class StackMcpServer {
     const timeoutSeconds = clampNumber(optionalInteger(args, "timeout_seconds") ?? 300, 1, 3600)
     const tailBytes = clampNumber(optionalInteger(args, "tail_bytes") ?? 4000, 0, 20000)
     const startedAt = new Date().toISOString()
-    projectHarnessCommandEvent(config.appRoot, {
+    projectHarnessCommandEvent(config.appRoot, slot, {
       eventType: "command.start",
       phase: "started",
       runId,
@@ -4588,7 +4592,7 @@ export class StackMcpServer {
       cwd,
       stdout: "pipe",
       stderr: "pipe",
-      env: process.env,
+      env: commandChildEnvironment(config, slot),
     })
     const timeout = setTimeout(() => proc.kill(), timeoutSeconds * 1000)
     const [stdout, stderr, exitCode] = await Promise.all([
@@ -4599,7 +4603,7 @@ export class StackMcpServer {
     const durationMs = Date.now() - startedMs
     const completedAt = new Date().toISOString()
     const timedOut = durationMs >= timeoutSeconds * 1000 && exitCode !== 0
-    projectHarnessCommandEvent(config.appRoot, {
+    projectHarnessCommandEvent(config.appRoot, slot, {
       eventType: exitCode === 0 ? "command.exit" : "command.failed",
       phase: "completed",
       runId,
@@ -6342,7 +6346,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       description: "Query VictoriaLogs through stackd's native LogSQL client for agent-legible cloud, local optimizer, and meta-harness telemetry.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
-        slot: stringProperty("Local synth-dev slot id. Defaults to STACK_VL_SLOT or slot1."),
+        slot: stringProperty("Required explicit local synth-dev slot id."),
         query: stringProperty("Optional LogSQL query expression. Defaults to * plus supplied field filters."),
         event_domain: enumProperty(["cloud_sdk", "local_optimizer", "meta_harness"], "Optional event_domain filter."),
         service: stringProperty("Optional service filter, e.g. gepa, stackd, backend-api."),
@@ -6351,7 +6355,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         minutes: numberProperty("Lookback window in minutes. Defaults to 60, max 10080."),
         limit: numberProperty("Maximum records to return. Defaults to 100, max 500."),
         timeout_seconds: numberProperty("VictoriaLogs query timeout. Defaults to 20 seconds."),
-      }),
+      }, ["slot"]),
       handler: (args) => server.queryLogs(args),
     },
     {
@@ -6359,6 +6363,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       description: "Run a bounded local command and emit harness-cmd start/exit summaries to VictoriaLogs with event_domain=local_optimizer.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
+        slot: stringProperty("Required explicit local synth-dev slot id for emitted harness logs."),
         command: { type: "string", description: "Executable to run without shell expansion." },
         args: {
           type: "array",
@@ -6369,7 +6374,7 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         run_id: stringProperty("Optional run correlation id. Defaults to harnesscmd_<timestamp>."),
         timeout_seconds: numberProperty("Timeout in seconds. Defaults to 300, max 3600."),
         tail_bytes: numberProperty("Bytes of stdout/stderr tail returned and logged. Defaults to 4000, max 20000."),
-      }),
+      }, ["slot"]),
       handler: (args) => server.runWithLogs(args),
     },
     {
@@ -7839,6 +7844,25 @@ function objectSchema(properties: Record<string, JsonObject>, required: string[]
   }
 }
 
+function explicitOperationalAuthoritySchema(inputSchema: JsonObject): JsonObject {
+  const properties = asRecord(inputSchema.properties) ?? {}
+  const required = Array.isArray(inputSchema.required)
+    ? inputSchema.required.filter((value): value is string => typeof value === "string")
+    : []
+  const authorityFields = [
+    "environment",
+    ...(properties.cloud_slot !== undefined ? ["cloud_slot"] : []),
+  ]
+  return {
+    ...inputSchema,
+    properties: {
+      ...properties,
+      environment: properties.environment ?? environmentProperty(),
+    },
+    required: [...new Set([...required, ...authorityFields])],
+  }
+}
+
 function stringProperty(description: string): JsonObject {
   return { type: "string", description }
 }
@@ -7867,7 +7891,7 @@ function environmentProperty(): JsonObject {
   return {
     type: "string",
     enum: ["dev", "staging", "prod"],
-    description: "Optional Stack environment. Defaults to stack.config.json or STACK_ENVIRONMENT.",
+    description: "Required explicit Stack environment; MCP tools never select one from ambient defaults.",
   }
 }
 
@@ -7875,7 +7899,7 @@ function cloudSlotProperty(): JsonObject {
   return {
     type: "string",
     enum: [...CLOUD_SLOT_OPTIONS],
-    description: "Canonical cloud slot. Defaults to STACK_CLOUD_SLOT/defaultCloudSlot when selected.",
+    description: "Required explicit canonical cloud slot for cloud-slot MCP tools.",
   }
 }
 
@@ -8394,13 +8418,17 @@ type HarnessCommandEvent = {
   stderrTail?: string
 }
 
-function projectHarnessCommandEvent(stackRoot: string, event: HarnessCommandEvent): void {
+function projectHarnessCommandEvent(
+  stackRoot: string,
+  slot: string,
+  event: HarnessCommandEvent,
+): void {
   projectLogDocumentToVictoriaLogs(stackRoot, {
     _time: event.completedAt ?? event.startedAt,
     _msg: `harness-cmd ${event.phase} ${event.runId}`,
     level: event.eventType === "command.exit" ? "info" : event.eventType === "command.start" ? "info" : "error",
     logger: "stack.harness_cmd",
-    slot: process.env.STACK_VL_SLOT ?? "slot1",
+    slot,
     service: "harness-cmd",
     event_domain: "local_optimizer",
     event_type: event.eventType,
@@ -8416,7 +8444,31 @@ function projectHarnessCommandEvent(stackRoot: string, event: HarnessCommandEven
     ...(event.timedOut !== undefined ? { timed_out: event.timedOut } : {}),
     ...(event.stdoutTail ? { stdout_tail: event.stdoutTail } : {}),
     ...(event.stderrTail ? { stderr_tail: event.stderrTail } : {}),
-  })
+  }, slot)
+}
+
+function commandChildEnvironment(
+  config: StackConfig,
+  slot: string,
+): Record<string, string | undefined> {
+  const child = Object.fromEntries(
+    Object.entries(process.env).filter(
+      ([key]) => !/^STACK_MCP_(?:DEV|STAGING|PROD)_/.test(key),
+    ),
+  )
+  const prefix = `STACK_MCP_${config.environmentName.toUpperCase()}_`
+  const scopedAuthEnv = config.environment.authEnv
+  const selectedAuthEnv = config.environment.authDisplayEnv ?? scopedAuthEnv
+  const selectedAuth = process.env[scopedAuthEnv]
+  delete child[selectedAuthEnv]
+  if (scopedAuthEnv.startsWith(prefix) && selectedAuth?.trim()) {
+    child[selectedAuthEnv] = selectedAuth
+  }
+  child.STACK_ENVIRONMENT = config.environmentName
+  child.STACK_VL_SLOT = slot
+  if (config.cloudSlot) child.STACK_CLOUD_SLOT = config.cloudSlot
+  else delete child.STACK_CLOUD_SLOT
+  return child
 }
 
 function clampNumber(value: number, min: number, max: number): number {
@@ -8437,6 +8489,11 @@ function readEnvironmentName(value: string): StackEnvironmentName {
 function readCloudSlotIdentity(value: string): CloudSlotIdentity {
   if (CLOUD_SLOT_OPTIONS.includes(value as CloudSlotIdentity)) return value as CloudSlotIdentity
   throw new RpcError(-32602, `cloud_slot must be one of ${CLOUD_SLOT_OPTIONS.join(", ")}`)
+}
+
+function readLocalSlotIdentity(value: string): string {
+  if (/^[A-Za-z0-9_.-]+$/.test(value)) return value
+  throw new RpcError(-32602, "slot must contain only letters, digits, dot, underscore, or hyphen")
 }
 
 function selectedCloudSlot(args: JsonObject, config: StackConfig): CloudSlotIdentity | undefined {
