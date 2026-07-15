@@ -22,6 +22,8 @@ import {
   heartbeatCloudSlotClaim,
   materializeCloudSlotWorkspace,
   observeCloudSlot,
+  readCloudSlotArtifactContent,
+  readCloudSlotArtifacts,
   readCloudSlotLogs,
   readCloudSlotServices,
   readCloudSlotsSnapshot,
@@ -29,6 +31,8 @@ import {
   releaseCloudSlotClaim,
   retireCloudSlot,
   type CloudSlotActionResult,
+  type CloudSlotArtifactContent,
+  type CloudSlotArtifacts,
   type CloudSlotDeployment,
   type CloudSlotExecResult,
   type CloudSlotLogs,
@@ -2361,6 +2365,42 @@ export class StackMcpServer {
       config,
       requiredSelectedCloudSlot(args, config),
       { serviceId: requiredString(args, "service_id"), tail },
+    ))) ?? null
+  }
+
+  async cloudSlotArtifacts(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const limit = optionalPositiveInteger(args, "limit") ?? 100
+    if (limit > 200) throw new RpcError(-32602, "limit must be at most 200")
+    const rootId = optionalString(args, "root_id")
+    const relativePrefix = optionalString(args, "relative_prefix")
+    const after = optionalString(args, "after")
+    if ((relativePrefix || after) && !rootId) {
+      throw new RpcError(-32602, "root_id is required when relative_prefix or after is supplied")
+    }
+    return toJsonValue(cloudSlotArtifactsMcpPayload(await readCloudSlotArtifacts(
+      config,
+      requiredSelectedCloudSlot(args, config),
+      { rootId, relativePrefix, after, limit },
+    ))) ?? null
+  }
+
+  async cloudSlotArtifactContent(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const offset = optionalInteger(args, "offset") ?? 0
+    if (offset < 0) throw new RpcError(-32602, "offset must be non-negative")
+    const maxBytes = optionalPositiveInteger(args, "max_bytes") ?? 65_536
+    if (maxBytes > 131_072) throw new RpcError(-32602, "max_bytes must be at most 131072")
+    return toJsonValue(cloudSlotArtifactContentMcpPayload(await readCloudSlotArtifactContent(
+      config,
+      requiredSelectedCloudSlot(args, config),
+      {
+        rootId: requiredString(args, "root_id"),
+        relativePath: requiredString(args, "relative_path"),
+        offset,
+        maxBytes,
+        includeSha256: optionalBoolean(args, "include_sha256") ?? false,
+      },
     ))) ?? null
   }
 
@@ -5820,6 +5860,36 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.cloudSlotLogs(args),
     },
     {
+      name: "stack_cloud_slot_artifacts",
+      description: "List topology-declared artifact roots or a bounded, paginated file inventory for the selected cloud slot.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        cloud_slot: cloudSlotProperty(),
+        root_id: stringProperty("Optional declared root id; omit to inspect root availability."),
+        relative_prefix: stringProperty("Optional directory prefix within the declared root."),
+        after: stringProperty("Prior next_after cursor; requires root_id."),
+        limit: { type: "integer", minimum: 1, maximum: 200, default: 100 },
+      }),
+      handler: (args) => server.cloudSlotArtifacts(args),
+    },
+    {
+      name: "stack_cloud_slot_artifact_content",
+      description: "Read one bounded base64 chunk from a file under a topology-declared artifact root in the selected cloud slot.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          cloud_slot: cloudSlotProperty(),
+          root_id: stringProperty("Declared artifact root id."),
+          relative_path: stringProperty("Repository-relative file path within the root."),
+          offset: { type: "integer", minimum: 0, default: 0 },
+          max_bytes: { type: "integer", minimum: 1, maximum: 131072, default: 65536 },
+          include_sha256: { type: "boolean", description: "Compute and return the full-file SHA-256." },
+        },
+        ["root_id", "relative_path"],
+      ),
+      handler: (args) => server.cloudSlotArtifactContent(args),
+    },
+    {
       name: "stack_cloud_slot_deploy",
       description: "Deploy or retry the selected CloudDeployment through its backend owner route. Supply the active claim fencing token when claimed.",
       inputSchema: objectSchema({
@@ -8160,6 +8230,52 @@ function cloudSlotLogsMcpPayload(result: CloudSlotLogs): Record<string, unknown>
     stderr: result.stderr,
     stdout_truncated: result.stdoutTruncated,
     stderr_truncated: result.stderrTruncated,
+  }
+}
+
+function cloudSlotArtifactsMcpPayload(result: CloudSlotArtifacts): Record<string, unknown> {
+  return {
+    schema_version: result.schemaVersion,
+    deployment_id: result.deploymentId,
+    vm_name: result.vmName,
+    relative_prefix: result.relativePrefix,
+    roots: result.roots.map((root) => ({
+      root_id: root.rootId,
+      repository: root.repository,
+      path: root.path,
+      relative_path: root.relativePath,
+      description: root.description,
+      authority: root.authority,
+      available: root.available,
+      prefix_available: root.prefixAvailable,
+    })),
+    artifacts: result.artifacts.map((artifact) => ({
+      root_id: artifact.rootId,
+      relative_path: artifact.relativePath,
+      size_bytes: artifact.sizeBytes,
+      modified_at_epoch_seconds: artifact.modifiedAtEpochSeconds,
+    })),
+    truncated: result.truncated,
+    next_after: result.nextAfter ?? null,
+  }
+}
+
+function cloudSlotArtifactContentMcpPayload(result: CloudSlotArtifactContent): Record<string, unknown> {
+  return {
+    schema_version: result.schemaVersion,
+    deployment_id: result.deploymentId,
+    vm_name: result.vmName,
+    root_id: result.rootId,
+    relative_path: result.relativePath,
+    size_bytes: result.sizeBytes,
+    sha256: result.sha256 ?? null,
+    modified_at_ns: result.modifiedAtNs,
+    content_type: result.contentType,
+    encoding: result.encoding,
+    offset: result.offset,
+    bytes_returned: result.bytesReturned,
+    eof: result.eof,
+    content_base64: result.contentBase64,
   }
 }
 

@@ -136,6 +136,52 @@ export type CloudSlotLogs = {
   stderrTruncated: boolean
 }
 
+export type CloudSlotArtifactRoot = {
+  rootId: string
+  repository: string
+  path: string
+  relativePath: string
+  description: string
+  authority: string
+  available: boolean
+  prefixAvailable: boolean
+}
+
+export type CloudSlotArtifactDescriptor = {
+  rootId: string
+  relativePath: string
+  sizeBytes: number
+  modifiedAtEpochSeconds: number
+}
+
+export type CloudSlotArtifacts = {
+  schemaVersion: "cloud-deployment-artifacts-v1"
+  deploymentId: string
+  vmName: string
+  relativePrefix: string
+  roots: CloudSlotArtifactRoot[]
+  artifacts: CloudSlotArtifactDescriptor[]
+  truncated: boolean
+  nextAfter?: string
+}
+
+export type CloudSlotArtifactContent = {
+  schemaVersion: "cloud-deployment-artifact-content-v1"
+  deploymentId: string
+  vmName: string
+  rootId: string
+  relativePath: string
+  sizeBytes: number
+  sha256?: string
+  modifiedAtNs: string
+  contentType: string
+  encoding: "base64"
+  offset: number
+  bytesReturned: number
+  eof: boolean
+  contentBase64: string
+}
+
 export function isCloudSlotIdentity(value: unknown): value is CloudSlotIdentity {
   return typeof value === "string" && CLOUD_SLOT_OPTIONS.includes(value as CloudSlotIdentity)
 }
@@ -351,6 +397,50 @@ export async function readCloudSlotLogs(
   return parseCloudSlotLogs(value, deployment)
 }
 
+export async function readCloudSlotArtifacts(
+  config: StackConfig,
+  cloudSlot: CloudSlotIdentity,
+  options: { rootId?: string; relativePrefix?: string; after?: string; limit: number },
+): Promise<CloudSlotArtifacts> {
+  const deployment = await requireCloudSlot(config, cloudSlot)
+  const query = new URLSearchParams({ limit: String(options.limit) })
+  if (options.rootId) query.set("root_id", options.rootId)
+  if (options.relativePrefix) query.set("relative_prefix", options.relativePrefix)
+  if (options.after) query.set("after", options.after)
+  const value = await cloudSlotRequest(
+    config,
+    `/smr/v1/deployments/${encodeURIComponent(deployment.deploymentId)}/artifacts?${query.toString()}`,
+  )
+  return parseCloudSlotArtifacts(value, deployment, options)
+}
+
+export async function readCloudSlotArtifactContent(
+  config: StackConfig,
+  cloudSlot: CloudSlotIdentity,
+  options: {
+    rootId: string
+    relativePath: string
+    offset: number
+    maxBytes: number
+    includeSha256: boolean
+  },
+): Promise<CloudSlotArtifactContent> {
+  const deployment = await requireCloudSlot(config, cloudSlot)
+  const query = new URLSearchParams({
+    root_id: options.rootId,
+    relative_path: options.relativePath,
+    offset: String(options.offset),
+    max_bytes: String(options.maxBytes),
+    include_sha256: String(options.includeSha256),
+  })
+  const value = await cloudSlotRequest(
+    config,
+    `/smr/v1/deployments/${encodeURIComponent(deployment.deploymentId)}/artifacts/content?${query.toString()}`,
+    { preserveIntegerFields: ["modified_at_ns"] },
+  )
+  return parseCloudSlotArtifactContent(value, deployment, options)
+}
+
 async function deploymentAction(
   config: StackConfig,
   cloudSlot: CloudSlotIdentity,
@@ -439,6 +529,7 @@ async function cloudSlotRequest(
     body?: Record<string, unknown>
     fencingToken?: number
     timeoutMs?: number
+    preserveIntegerFields?: string[]
   } = {},
 ): Promise<unknown> {
   const auth = environmentAuthStatus(config.environment)
@@ -457,7 +548,7 @@ async function cloudSlotRequest(
     signal: AbortSignal.timeout(options.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS),
   })
   const text = await response.text()
-  const payload = parsePayload(text)
+  const payload = parsePayload(text, options.preserveIntegerFields)
   if (!response.ok) {
     const error = new Error(`${path} ${response.status} ${response.statusText}: ${payloadMessage(payload)}`)
     Object.assign(error, { status: response.status, payload })
@@ -663,6 +754,103 @@ function parseCloudSlotLogs(value: unknown, deployment: CloudSlotDeployment): Cl
   }
 }
 
+function parseCloudSlotArtifacts(
+  value: unknown,
+  deployment: CloudSlotDeployment,
+  expected: { rootId?: string; relativePrefix?: string; after?: string; limit: number },
+): CloudSlotArtifacts {
+  const row = requireProjection(value, "cloud-deployment-artifacts-v1", deployment)
+  const roots = requireArray(row.roots, "roots").map((value, index) => {
+    const root = requireRecord(value, `roots[${index}]`)
+    return {
+      rootId: requireString(root.root_id, `roots[${index}].root_id`),
+      repository: requireString(root.repository, `roots[${index}].repository`),
+      path: requireString(root.path, `roots[${index}].path`),
+      relativePath: requireProjectionString(root.relative_path, `roots[${index}].relative_path`),
+      description: requireString(root.description, `roots[${index}].description`),
+      authority: requireString(root.authority, `roots[${index}].authority`),
+      available: requireBoolean(root.available, `roots[${index}].available`),
+      prefixAvailable: requireBoolean(root.prefix_available, `roots[${index}].prefix_available`),
+    }
+  })
+  const artifacts = requireArray(row.artifacts, "artifacts").map((value, index) => {
+    const artifact = requireRecord(value, `artifacts[${index}]`)
+    return {
+      rootId: requireString(artifact.root_id, `artifacts[${index}].root_id`),
+      relativePath: requireString(artifact.relative_path, `artifacts[${index}].relative_path`),
+      sizeBytes: requireNonNegativeInteger(artifact.size_bytes, `artifacts[${index}].size_bytes`),
+      modifiedAtEpochSeconds: requireNumber(
+        artifact.modified_at_epoch_seconds,
+        `artifacts[${index}].modified_at_epoch_seconds`,
+      ),
+    }
+  })
+  const relativePrefix = requireProjectionString(row.relative_prefix, "relative_prefix")
+  if (relativePrefix !== (expected.relativePrefix ?? "")) {
+    throw new Error(`${deployment.cloudSlot} artifact projection relative_prefix does not match its request`)
+  }
+  if (expected.rootId && artifacts.some((artifact) => artifact.rootId !== expected.rootId)) {
+    throw new Error(`${deployment.cloudSlot} artifact inventory returned an unexpected root`)
+  }
+  const truncated = requireBoolean(row.truncated, "truncated")
+  const nextAfter = optionalProjectionString(row.next_after, "next_after")
+  if (truncated && !nextAfter) {
+    throw new Error(`${deployment.cloudSlot} truncated artifact inventory is missing next_after`)
+  }
+  if (artifacts.length > expected.limit) {
+    throw new Error(`${deployment.cloudSlot} artifact inventory exceeded its requested limit`)
+  }
+  return {
+    schemaVersion: "cloud-deployment-artifacts-v1",
+    deploymentId: deployment.deploymentId,
+    vmName: requireString(row.vm_name, "vm_name"),
+    relativePrefix,
+    roots,
+    artifacts,
+    truncated,
+    nextAfter,
+  }
+}
+
+function parseCloudSlotArtifactContent(
+  value: unknown,
+  deployment: CloudSlotDeployment,
+  expected: { rootId: string; relativePath: string; offset: number; maxBytes: number },
+): CloudSlotArtifactContent {
+  const row = requireProjection(value, "cloud-deployment-artifact-content-v1", deployment)
+  const rootId = requireString(row.root_id, "root_id")
+  const relativePath = requireString(row.relative_path, "relative_path")
+  const offset = requireNonNegativeInteger(row.offset, "offset")
+  const bytesReturned = requireNonNegativeInteger(row.bytes_returned, "bytes_returned")
+  const contentBase64 = requireProjectionString(row.content_base64, "content_base64")
+  const contentBytes = requireCanonicalBase64(contentBase64, "content_base64")
+  if (rootId !== expected.rootId || relativePath !== expected.relativePath || offset !== expected.offset) {
+    throw new Error(`${deployment.cloudSlot} artifact content projection does not match its request`)
+  }
+  if (bytesReturned > expected.maxBytes || contentBytes.length !== bytesReturned) {
+    throw new Error(`${deployment.cloudSlot} artifact content violates its declared byte bound`)
+  }
+  if (row.encoding !== "base64") {
+    throw new Error(`${deployment.cloudSlot} artifact content encoding must be base64`)
+  }
+  return {
+    schemaVersion: "cloud-deployment-artifact-content-v1",
+    deploymentId: deployment.deploymentId,
+    vmName: requireString(row.vm_name, "vm_name"),
+    rootId,
+    relativePath,
+    sizeBytes: requireNonNegativeInteger(row.size_bytes, "size_bytes"),
+    sha256: optionalProjectionString(row.sha256, "sha256"),
+    modifiedAtNs: requireNonNegativeIntegerString(row.modified_at_ns, "modified_at_ns"),
+    contentType: requireString(row.content_type, "content_type"),
+    encoding: "base64",
+    offset,
+    bytesReturned,
+    eof: requireBoolean(row.eof, "eof"),
+    contentBase64,
+  }
+}
+
 function requireProjection(
   value: unknown,
   schemaVersion: string,
@@ -722,6 +910,30 @@ function requireInteger(value: unknown, field: string): number {
   return result
 }
 
+function requireNonNegativeInteger(value: unknown, field: string): number {
+  const result = requireInteger(value, field)
+  if (result < 0) throw new Error(`CloudDeployment owner projection ${field} must be non-negative`)
+  return result
+}
+
+function requireNonNegativeIntegerString(value: unknown, field: string): string {
+  if (typeof value !== "string" || !/^\d+$/.test(value)) {
+    throw new Error(`CloudDeployment owner projection ${field} must be a non-negative integer string`)
+  }
+  return value
+}
+
+function requireCanonicalBase64(value: string, field: string): Buffer {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(value)) {
+    throw new Error(`CloudDeployment owner projection ${field} must be canonical base64`)
+  }
+  const bytes = Buffer.from(value, "base64")
+  if (bytes.toString("base64") !== value) {
+    throw new Error(`CloudDeployment owner projection ${field} must be canonical base64`)
+  }
+  return bytes
+}
+
 function optionalProjectionInteger(value: unknown, field: string): number | undefined {
   if (value === null || value === undefined) return undefined
   return requireInteger(value, field)
@@ -732,10 +944,17 @@ function actionError(error: unknown): CloudSlotActionResult {
   return { ok: false, status, message: errorMessage(error) }
 }
 
-function parsePayload(text: string): unknown {
+function parsePayload(text: string, preserveIntegerFields: string[] = []): unknown {
   if (!text) return undefined
   try {
-    return JSON.parse(text) as unknown
+    const exactText = preserveIntegerFields.reduce(
+      (current, field) => current.replace(
+        new RegExp(`("${field}"\\s*:\\s*)(-?\\d+)(?=\\s*[,}])`, "g"),
+        "$1\"$2\"",
+      ),
+      text,
+    )
+    return JSON.parse(exactText) as unknown
   } catch {
     return text
   }
