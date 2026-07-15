@@ -29,7 +29,7 @@ export type CloudSlotDeployment = {
   updatedAt?: string
   retiredAt?: string
   activeClaim?: CloudSlotClaim
-  lastFencingToken: number
+  lastFencingToken: number | null
 }
 
 export type CloudSlotsSnapshot = {
@@ -271,7 +271,9 @@ function readCloudSlotDeployment(value: unknown): CloudSlotDeployment | undefine
   if (!row || !isCloudSlotIdentity(cloudSlot) || !deploymentId) return undefined
   const metadata = asRecord(row.metadata)
   const requestPayload = asRecord(row.request_payload)
-  const source = asRecord(requestPayload?.source) ?? asRecord(metadata?.source)
+  const source = asRecord(requestPayload?.resolved_source) ??
+    asRecord(requestPayload?.source) ??
+    asRecord(metadata?.source)
   const health = asRecord(row.health)
   return {
     cloudSlot,
@@ -287,16 +289,44 @@ function readCloudSlotDeployment(value: unknown): CloudSlotDeployment | undefine
     healthStatus: readString(health?.status) ?? readString(health?.state),
     updatedAt: readString(row.updated_at),
     retiredAt: readString(row.retired_at),
-    lastFencingToken: 0,
+    lastFencingToken: null,
   }
 }
 
 function mergeClaimProjection(deployment: CloudSlotDeployment, value: unknown): CloudSlotDeployment {
   const projection = asRecord(value)
+  if (!projection) {
+    throw new Error(`${deployment.cloudSlot} claim projection is not an object`)
+  }
+  if (readString(projection.deployment_id) !== deployment.deploymentId) {
+    throw new Error(`${deployment.cloudSlot} claim projection deployment_id does not match its CloudDeployment`)
+  }
+  if (!Object.hasOwn(projection, "active_claim")) {
+    throw new Error(`${deployment.cloudSlot} claim projection is missing active_claim`)
+  }
+  if (!Object.hasOwn(projection, "last_fencing_token")) {
+    throw new Error(`${deployment.cloudSlot} claim projection is missing last_fencing_token`)
+  }
+  const activeClaimValue = projection.active_claim
+  const activeClaim = activeClaimValue === null ? undefined : readCloudSlotClaim(activeClaimValue)
+  if (activeClaimValue !== null && !activeClaim) {
+    throw new Error(`${deployment.cloudSlot} claim projection has malformed active_claim`)
+  }
+  const lastFencingTokenValue = projection.last_fencing_token
+  let lastFencingToken: number | null
+  if (lastFencingTokenValue === null) {
+    lastFencingToken = null
+  } else {
+    const parsed = readNonNegativeInteger(lastFencingTokenValue)
+    if (parsed === undefined) {
+      throw new Error(`${deployment.cloudSlot} claim projection has malformed last_fencing_token`)
+    }
+    lastFencingToken = parsed
+  }
   return {
     ...deployment,
-    activeClaim: readCloudSlotClaim(projection?.active_claim),
-    lastFencingToken: readNumber(projection?.last_fencing_token) ?? 0,
+    activeClaim,
+    lastFencingToken,
   }
 }
 
@@ -363,6 +393,10 @@ function readString(value: unknown): string | undefined {
 
 function readNumber(value: unknown): number | undefined {
   return typeof value === "number" && Number.isFinite(value) ? value : undefined
+}
+
+function readNonNegativeInteger(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined
 }
 
 function readBoolean(value: unknown): boolean | undefined {

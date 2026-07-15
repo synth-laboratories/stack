@@ -11235,7 +11235,7 @@ function selectedCloudSlotRailLine(config: StackConfig, state: AppState): string
   const endpoint = deployment.serviceUrl ? inlineText(deployment.serviceUrl, 24) : "endpoint pending"
   const claim = deployment.claimId
     ? `claim ${inlineText(deployment.claimHolder ?? "unknown", 12)} fence ${deployment.fencingToken ?? "?"}`
-    : `claim free fence ${deployment.fencingToken ?? 0}`
+    : `claim free fence ${deployment.fencingToken ?? "none"}`
   return `${config.cloudSlot} · ${deployment.status ?? "unknown"} · ${endpoint} · ${claim}`
 }
 

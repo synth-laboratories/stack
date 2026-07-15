@@ -257,7 +257,7 @@ function cloudSlotLines(snapshot: RemoteProjectsPanelSnapshot, selectedCloudSlot
     if (slot.claimId) {
       lines.push(`    claim ${oneLine(slot.claimHolder ?? "unknown", 18)} · fence ${slot.fencingToken ?? "?"} · until ${shortTime(slot.claimExpiresAt)}`)
     } else {
-      lines.push(`    claim free · last fence ${slot.fencingToken ?? 0}`)
+      lines.push(`    claim free · last fence ${slot.fencingToken ?? "none"}`)
     }
     if (slot.failureReason ?? slot.degradedReason) {
       lines.push(`    issue ${oneLine(slot.failureReason ?? slot.degradedReason ?? "unknown", 44)}`)

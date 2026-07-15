@@ -315,7 +315,7 @@ export type RemoteDeploymentSummary = {
   claimId?: string
   claimHolder?: string
   claimExpiresAt?: string
-  fencingToken?: number
+  fencingToken?: number | null
   failureReason?: string
   retiredAt?: string
 }
