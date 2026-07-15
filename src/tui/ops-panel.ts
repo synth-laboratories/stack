@@ -1,5 +1,6 @@
 import { StyledText, dim, fg, type TextChunk } from "@opentui/core"
 import type { LocalBootstrapSnapshot } from "../local/bootstrap.js"
+import { CLOUD_SLOT_OPTIONS } from "../config.js"
 import type { OptimizerRunSummary, OptimizerSnapshot } from "../local/optimizers.js"
 import type { RemoteAccountSnapshot } from "../remote/account.js"
 import type { ContainersPanelSnapshot } from "../remote/containers.js"
@@ -37,6 +38,7 @@ export type OpsPanelSetup = {
   optimizerCliAvailable: boolean
   autoStartLocalOptimizer: boolean
   autoStartDevSlot: boolean
+  selectedCloudSlot?: string
   localBootstrap?: LocalBootstrapSnapshot
 }
 
@@ -90,7 +92,7 @@ export function opsPanelText(input: {
   const body = input.mode === "actors"
     ? actorsLines(input.actors)
     : input.mode === "hosted"
-      ? [...hostedSynthLines(input.account, input.usage, input.agentUsage, input.projects, input.hosted, input.focus)]
+      ? [...hostedSynthLines(input.account, input.usage, input.agentUsage, input.projects, input.hosted, input.focus, input.setup.selectedCloudSlot)]
       : [...localSynthLines(input.containers, input.localOptimizers, input.focus)]
   const meta = metaEventLines(input.metaEvents)
   const lines = [...meta, "", ...body]
@@ -220,13 +222,48 @@ function hostedSynthLines(
   projects: RemoteProjectsPanelSnapshot,
   hosted: HostedOptimizerSnapshot,
   focus: OpsPanelFocus,
+  selectedCloudSlot?: string,
 ): string[] {
   const lines: string[] = ["Synth billing", synthUsageHeader(account, usage), ""]
   lines.push(...synthUsageBody(account, usage))
+  lines.push("", "Cloud slots", ...cloudSlotLines(projects, selectedCloudSlot))
   lines.push("", "Projects", projectsHeader(projects), "")
   lines.push(...projectsBody(projects))
   lines.push("", "Hosted Optimizers", hostedHeader(hosted), "")
   lines.push(...hostedBody(hosted, focus))
+  return lines
+}
+
+function cloudSlotLines(snapshot: RemoteProjectsPanelSnapshot, selectedCloudSlot?: string): string[] {
+  if (snapshot.cloudSlotsStatus && snapshot.cloudSlotsStatus !== "ready") {
+    return [
+      `  truth ${snapshot.cloudSlotsStatus} · ${oneLine(snapshot.cloudSlotsMessage ?? "owner API unavailable", 42)}`,
+      ...CLOUD_SLOT_OPTIONS.map((cloudSlot) =>
+        `${cloudSlot === selectedCloudSlot ? ">" : " "} ${cloudSlot} · binding unknown`),
+    ]
+  }
+  const lines: string[] = []
+  for (const cloudSlot of CLOUD_SLOT_OPTIONS) {
+    const slot = snapshot.deployments.find((deployment) => deployment.cloudSlot === cloudSlot)
+    const selected = cloudSlot === selectedCloudSlot ? ">" : " "
+    if (!slot) {
+      lines.push(`${selected} ${cloudSlot} · unbound`)
+      continue
+    }
+    const health = slot.healthStatus ? ` · health ${oneLine(slot.healthStatus, 10)}` : ""
+    lines.push(`${selected} ${cloudSlot} · ${slot.status ?? "unknown"}${health} · fresh ${shortTime(slot.updatedAt ?? snapshot.cloudSlotsCheckedAt)}`)
+    lines.push(`    endpoint ${slot.serviceUrl ? oneLine(slot.serviceUrl, 42) : "pending"}`)
+    lines.push(`    source ${slot.sourceSha ? slot.sourceSha.slice(0, 12) : "unbound"} · vm ${slot.vmDeleted ? "deleted" : oneLine(slot.vmName ?? "pending", 20)}`)
+    if (slot.claimId) {
+      lines.push(`    claim ${oneLine(slot.claimHolder ?? "unknown", 18)} · fence ${slot.fencingToken ?? "?"} · until ${shortTime(slot.claimExpiresAt)}`)
+    } else {
+      lines.push(`    claim free · last fence ${slot.fencingToken ?? "none"}`)
+    }
+    if (slot.failureReason ?? slot.degradedReason) {
+      lines.push(`    issue ${oneLine(slot.failureReason ?? slot.degradedReason ?? "unknown", 44)}`)
+    }
+  }
+  lines.push("  remote substrate · retained VM, explicit claim/fence, owned retire")
   return lines
 }
 

@@ -57,6 +57,7 @@ export function isDockerAvailable(): { ok: boolean; message?: string } {
 
 export function shouldAutoStartDevSlot(config: StackConfig): boolean {
   if (config.environmentName !== "dev") return false
+  if (config.cloudSlot) return false
   const master = process.env.STACK_AUTO_START?.trim().toLowerCase()
   if (master === "0" || master === "false" || master === "no") return false
   const flag = process.env.STACK_AUTO_START_DEV_SLOT?.trim().toLowerCase()
@@ -154,10 +155,7 @@ export async function refreshLocalBootstrapSnapshot(
   previous?: LocalBootstrapSnapshot,
 ): Promise<LocalBootstrapSnapshot> {
   const checkedAt = new Date().toISOString()
-  const docker = isDockerAvailable()
   const base = emptyLocalBootstrapSnapshot(config)
-  base.dockerAvailable = docker.ok
-  base.dockerMessage = docker.message
   base.checkedAt = checkedAt
 
   if (config.environmentName !== "dev") {
@@ -165,6 +163,16 @@ export async function refreshLocalBootstrapSnapshot(
     base.message = "dev slot auto-start only applies to dev environment"
     return base
   }
+
+  if (config.cloudSlot) {
+    base.devApiStatus = "skipped"
+    base.message = `${config.cloudSlot} selected; local dev-slot bootstrap is disabled`
+    return base
+  }
+
+  const docker = isDockerAvailable()
+  base.dockerAvailable = docker.ok
+  base.dockerMessage = docker.message
 
   const apiUp = await probeDevApiReachable(config)
   if (apiUp) {
