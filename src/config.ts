@@ -28,11 +28,13 @@ export const CURSOR_MODEL_OPTIONS = ["composer-2.5", "auto"] as const
 export const CODEX_REASONING_EFFORT_OPTIONS = ["low", "medium", "high", "xhigh"] as const
 export const CURSOR_REASONING_EFFORT_OPTIONS = ["normal"] as const
 export const STACK_ENVIRONMENT_OPTIONS = ["dev", "staging", "prod"] as const
+export const CLOUD_SLOT_OPTIONS = ["slot1-cloud", "slot2-cloud"] as const
 export const STACK_HARNESS_OPTIONS = ["codex", "cursor"] as const
 
 export type StackHarnessKind = (typeof STACK_HARNESS_OPTIONS)[number]
 
 export type StackEnvironmentName = (typeof STACK_ENVIRONMENT_OPTIONS)[number]
+export type CloudSlotIdentity = (typeof CLOUD_SLOT_OPTIONS)[number]
 
 export type StackEnvironmentConfig = {
   name: StackEnvironmentName
@@ -72,6 +74,7 @@ export type StackConfig = {
   environmentName: StackEnvironmentName
   environment: StackEnvironmentConfig
   environments: Record<StackEnvironmentName, StackEnvironmentConfig>
+  cloudSlot?: CloudSlotIdentity
   codexCommand: string
   codexArgs: string[]
   codexModel: string
@@ -112,6 +115,7 @@ type StackConfigFile = {
   workingDir?: string
   synthDevRoot?: string
   defaultEnvironment?: string
+  defaultCloudSlot?: string | null
   defaultHarness?: string
   codexModel?: string
   codexReasoningEffort?: string
@@ -141,6 +145,7 @@ type StackConfigFile = {
 export type StackConfigPatch = Partial<Pick<
   StackConfigFile,
   | "defaultEnvironment"
+  | "defaultCloudSlot"
   | "defaultHarness"
   | "codexModel"
   | "codexReasoningEffort"
@@ -170,6 +175,11 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     process.env.STACK_ENVIRONMENT ? "STACK_ENVIRONMENT" : "defaultEnvironment",
   )
   const environment = environments[environmentName]
+  const cloudSlot = normalizeOptionalOption(
+    process.env.STACK_CLOUD_SLOT ?? fileConfig.defaultCloudSlot ?? undefined,
+    CLOUD_SLOT_OPTIONS,
+    "STACK_CLOUD_SLOT/defaultCloudSlot",
+  )
   loadEnvironmentAuth(environment)
   const optimizerBind = process.env.STACK_OPTIMIZER_BIND ?? DEFAULT_OPTIMIZER_BIND
   const optimizerDbPath = resolveConfigPath(
@@ -258,6 +268,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
     environmentName,
     environment,
     environments,
+    cloudSlot,
     codexCommand: process.env.STACK_CODEX_COMMAND ?? "codex",
     codexArgs: process.env.STACK_CODEX_ARGS
       ? parseArgs(process.env.STACK_CODEX_ARGS)
@@ -274,6 +285,7 @@ export async function loadConfig(appRoot: string): Promise<StackConfig> {
                 model: synthWorkerInferenceModel,
               }
             : undefined,
+          cloudSlot,
         ),
     codexModel,
     codexReasoningEffort,
@@ -463,6 +475,11 @@ export function setStackEnvironment(config: StackConfig, environmentName: StackE
   refreshCodexArgs(config)
 }
 
+export function setStackCloudSlot(config: StackConfig, cloudSlot: CloudSlotIdentity | undefined): void {
+  config.cloudSlot = cloudSlot
+  refreshCodexArgs(config)
+}
+
 export function environmentAuthStatus(environment: StackEnvironmentConfig): StackAuthStatus {
   const loadedFrom = loadedAuthEnvFiles.get(environment.authEnv)
   if (process.env[environment.authEnv]) {
@@ -535,6 +552,7 @@ export function refreshCodexArgs(config: StackConfig): void {
           model: config.synthWorkerInferenceModel,
         }
       : undefined,
+    config.cloudSlot,
   )
 }
 
@@ -549,6 +567,7 @@ export function defaultCodexArgs(
     authEnv: string
     model: string
   },
+  cloudSlot?: CloudSlotIdentity,
 ): string[] {
   const effectiveModel = synthWorkerInference?.model ?? model
   const args = [
@@ -575,6 +594,12 @@ export function defaultCodexArgs(
       "-c",
       `mcp_servers.stack_live_ops.env.STACK_ENVIRONMENT=${tomlString(stackEnvironmentName ?? DEFAULT_ENVIRONMENT)}`,
     )
+    if (cloudSlot) {
+      args.push(
+        "-c",
+        `mcp_servers.stack_live_ops.env.STACK_CLOUD_SLOT=${tomlString(cloudSlot)}`,
+      )
+    }
   }
   if (synthWorkerInference) {
     const providerId = "synth_stack_inference"
@@ -627,6 +652,16 @@ function normalizeOption<T extends string>(
   throw new Error(
     `${label ?? "option"}=${JSON.stringify(value)} is not supported; expected one of ${options.join(", ")}`,
   )
+}
+
+function normalizeOptionalOption<T extends string>(
+  value: string | undefined,
+  options: readonly T[],
+  label: string,
+): T | undefined {
+  if (value === undefined || value.trim().length === 0) return undefined
+  if (options.includes(value as T)) return value as T
+  throw new Error(`${label}=${JSON.stringify(value)} is not supported; expected one of ${options.join(", ")}`)
 }
 
 function parseCodexModelProfile(value: string | undefined): { model?: string; reasoningEffort?: string } {

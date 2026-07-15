@@ -20,6 +20,10 @@
   through Stack MCP.
 - Environment: `j` / `k` moves across dev, staging, and prod. `r` refreshes
   account, hosted optimizer, and remote SMR state for the selected environment.
+  `s` cycles the optional remote development target across direct remote APIs,
+  `slot1-cloud`, and `slot2-cloud`. The Target switcher, top-right target chips,
+  and `/config` expose the same selection; `defaultCloudSlot` in
+  `stack.config.json` or `STACK_CLOUD_SLOT` makes it persistent for Stack MCP.
 - Local Research: `Enter` starts the local GEPA service, `r` refreshes, and
   `j` / `k` moves through recent optimizer jobs
 - Hosted Optimizers: `r` refreshes and `j` / `k` moves through recent hosted
@@ -103,7 +107,9 @@ panel. The panel summarizes:
 - **Gardeners:** gardener lifecycle, inbox count, target thread, and workspace.
 - **Actors:** active worker/runtime model counts.
 - **Cloud:** selected environment, projects, factories, runs, deployments, and
-  hosted optimizers.
+  hosted optimizers. When a canonical cloud slot is selected, its endpoint,
+  exact source SHA, lifecycle, health, failure reason, active claim, claim
+  expiry, and latest fencing token appear in this same hosted view.
 - **Local:** local optimizer/container runtime status.
 - **Usage:** account/rate-limit state.
 
@@ -898,6 +904,7 @@ the Stack repo root. Point `environments.dev.apiBaseUrl` at your Synth API
 {
   "workingDir": "..",
   "defaultEnvironment": "dev",
+  "defaultCloudSlot": "slot1-cloud",
   "environments": {
     "dev": {
       "label": "Dev",
@@ -920,6 +927,12 @@ the Stack repo root. Point `environments.dev.apiBaseUrl` at your Synth API
   }
 }
 ```
+
+`defaultCloudSlot` is optional and accepts only `slot1-cloud` or
+`slot2-cloud`. Omit it (or choose “none” in `/config`) for ordinary hosted API
+work without a bound development VM. `STACK_CLOUD_SLOT` overrides the file for
+one launch. Stack forwards the selected value to its MCP sidecar, so the Agent
+pane and MCP tools address the same CloudDeployment.
 
 Override it for one run with `STACK_WORKING_DIR=/path/to/workspace ./bin/stack`.
 Stack passes `--skip-git-repo-check` to Codex by default so parent workspaces
@@ -969,6 +982,17 @@ The server reads `stack.config.json` and supports both JSONL and
 - `stack_status`: concise Stack Agent Bridge status for Codex, including
   local optimizer state, remote SMR/Factory state, hosted optimizer state,
   auth, README-smoke state, and suggested next actions
+- `stack_cloud_slot_status`: selected canonical cloud slot plus service endpoint,
+  exact source SHA, lifecycle, health, failure, active claim, and fencing truth
+- `stack_cloud_slot_observe`: ask the CloudDeployment owner to refresh substrate
+  observation without calling the provider directly
+- `stack_cloud_slot_claim`, `stack_cloud_slot_heartbeat`, and
+  `stack_cloud_slot_release`: typed TTL ownership lifecycle; claim returns the
+  fencing token required by claimed mutations
+- `stack_cloud_slot_deploy`: deploy or retry through the CloudDeployment owner
+  route, with the active fencing token when claimed
+- `stack_cloud_slot_retire`: confirmed owned retirement; VM deletion is opt-in
+  and requires the exact VM name
 - `stack_list_live_smrs`: list recent live SMR runs with output/message/file
   counts
 - `stack_list_factories`: list remote Research Factories with routable

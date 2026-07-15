@@ -51,6 +51,7 @@ import {
   CURSOR_MODEL_OPTIONS,
   CODEX_REASONING_EFFORT_OPTIONS,
   CURSOR_REASONING_EFFORT_OPTIONS,
+  CLOUD_SLOT_OPTIONS,
   STACK_ENVIRONMENT_OPTIONS,
   STACK_HARNESS_OPTIONS,
   environmentAuthStatus,
@@ -61,6 +62,7 @@ import {
   setCodexSubagentReasoningEffort,
   setCodexSubagentsEnabled,
   setStackEnvironment,
+  setStackCloudSlot,
   isCursorHarness,
   harnessAuthPlan,
   harnessModel,
@@ -71,6 +73,7 @@ import {
   sessionHistoryScanDirs,
   type StackConfig,
   type StackEnvironmentName,
+  type CloudSlotIdentity,
   type StackHarnessKind,
 } from "../config.js"
 import { stackVersion } from "../version.js"
@@ -976,9 +979,10 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
   const remoteResearchSnapshot =
     remoteResearchSnapshotFromRuntime(runtimeFactorySnapshot, options.config, remoteResearchFromApi) ??
     remoteResearchFromApi
+  const remoteProjectsFromApi = await readRemoteProjectsPanelSnapshot(options.config)
   const remoteProjectsSnapshot =
-    remoteProjectsPanelFromRuntime(runtimeFactorySnapshot, options.config) ??
-    await readRemoteProjectsPanelSnapshot(options.config)
+    remoteProjectsPanelFromRuntime(runtimeFactorySnapshot, options.config, remoteProjectsFromApi) ??
+    remoteProjectsFromApi
   const containersSnapshot = await readContainersPanelSnapshot(options.config)
   const hostedOptimizerSnapshot =
     hostedOptimizerSnapshotFromRuntime(runtimeFactorySnapshot, options.config) ??
@@ -1346,7 +1350,7 @@ export async function runStackApp(options: StackAppOptions): Promise<void> {
       readRuntimeFactory(),
     ])
     state.remoteProjectsSnapshot =
-      remoteProjectsPanelFromRuntime(runtimeFactory.snapshot, options.config) ??
+      remoteProjectsPanelFromRuntime(runtimeFactory.snapshot, options.config, projectsFromApi) ??
       projectsFromApi
     state.runtimeFactorySnapshot = runtimeFactory.snapshot
     state.runtimeFactoryEventsAppended = runtimeFactory.eventsAppended
@@ -3157,8 +3161,10 @@ function switcherPanel(
 
   if (focusMode === "environment") {
     const envLines = [
-      "click option or j/k · r refresh",
+      "click env or cloud slot · j/k env · s cloud slot · r refresh",
       ...STACK_ENVIRONMENT_OPTIONS.map((name) => environmentOptionLine(config, state, name)),
+      `cloud slot: ${config.cloudSlot ?? "none (direct remote)"}`,
+      ...CLOUD_SLOT_OPTIONS.map((name) => `${config.cloudSlot === name ? ">" : " "} ${name}`),
     ]
     return Box(
       {
@@ -3173,17 +3179,28 @@ function switcherPanel(
         gap: 0,
       },
       ...envLines.map((line, index) => {
-        const environmentName = index === 0 ? undefined : STACK_ENVIRONMENT_OPTIONS[index - 1]
+        const environmentName = index > 0 && index <= STACK_ENVIRONMENT_OPTIONS.length
+          ? STACK_ENVIRONMENT_OPTIONS[index - 1]
+          : undefined
+        const cloudSlotIndex = index - STACK_ENVIRONMENT_OPTIONS.length - 2
+        const cloudSlot = cloudSlotIndex >= 0 ? CLOUD_SLOT_OPTIONS[cloudSlotIndex] : undefined
         return switcherLine(
           line,
-          environmentName !== undefined && environmentName === config.environmentName,
+          (environmentName !== undefined && environmentName === config.environmentName) ||
+            (cloudSlot !== undefined && cloudSlot === config.cloudSlot),
           environmentName
             ? () => {
                 if (environmentName !== config.environmentName) {
                   void applyStackEnvironmentFromUi(environmentName)
                 }
               }
-            : undefined,
+            : cloudSlot
+              ? () => {
+                  if (cloudSlot === config.cloudSlot) return
+                  setStackCloudSlot(config, cloudSlot)
+                  void applyStackEnvironmentFromUi(config.environmentName)
+                }
+              : undefined,
         )
       }),
     )
@@ -3385,6 +3402,7 @@ function modelPickerActionForKey(keyName: string | undefined, config: StackConfi
 type ConfigRowId =
   | "provider"
   | "environment"
+  | "cloud-slot"
   | "model"
   | "effort"
   | "subagents"
@@ -3484,6 +3502,17 @@ function configRows(
       },
     },
     {
+      id: "cloud-slot",
+      text: `cloud slot: ${config.cloudSlot ?? "none (direct remote)"}`,
+      active: Boolean(config.cloudSlot),
+      onSelect: () => {
+        const choices: Array<CloudSlotIdentity | undefined> = [undefined, ...CLOUD_SLOT_OPTIONS]
+        const current = choices.indexOf(config.cloudSlot)
+        setStackCloudSlot(config, choices[(current + 1) % choices.length])
+        void applyStackEnvironmentFromUi(config.environmentName).then(() => persistStackConfig(options, state, refresh))
+      },
+    },
+    {
       id: "model",
       text: `worker model: ${harnessModel(config)}`,
       onSelect: () => {
@@ -3564,6 +3593,7 @@ function persistStackConfig(options: StackAppOptions, state: AppState, refresh: 
   try {
     const path = writeStackConfigPatch(config.appRoot, {
       defaultEnvironment: config.environmentName,
+      defaultCloudSlot: config.cloudSlot ?? null,
       defaultHarness: config.harness,
       codexModel: config.codexModel,
       codexReasoningEffort: config.codexReasoningEffort,
@@ -3876,7 +3906,8 @@ function optionSwitcherLines<T extends string>(label: string, current: T, option
 function environmentSwitcherLines(config: StackConfig, state: AppState): string[] {
   return [
     `env: ${config.environmentName} (${config.environment.label})`,
-    "j/k or [ ] change env. r refreshes remote checks. O opens hosted artifact for selected run.",
+    `cloud slot: ${config.cloudSlot ?? "none (direct remote)"}`,
+    "j/k or [ ] change env. s cycles cloud slot. r refreshes remote checks. O opens hosted artifact for selected run.",
     ...STACK_ENVIRONMENT_OPTIONS.map((name) => environmentOptionLine(config, state, name)),
     `bridge: ${state.liveOpsMode} (x toggles)`,
     `remote: ${state.remoteResearchSnapshot.status} jobs ${state.remoteResearchSnapshot.jobs.length}`,
@@ -8530,6 +8561,19 @@ function globalConnectionBar(
           }),
         ),
       ),
+      Box(
+        {
+          flexDirection: "row",
+          gap: stackTuiLayout.panelGap,
+          flexShrink: 0,
+        },
+        ...CLOUD_SLOT_OPTIONS.map((name) =>
+          environmentChip(name, name === config.cloudSlot, () => {
+            setStackCloudSlot(config, name === config.cloudSlot ? undefined : name)
+            void applyStackEnvironmentFromUi(config.environmentName).then(refresh)
+          }),
+        ),
+      ),
     ),
   )
 }
@@ -8670,7 +8714,7 @@ function exitButtonChip(exitStack: () => void): ReturnType<typeof Text> {
 }
 
 function environmentChip(
-  label: StackEnvironmentName,
+  label: string,
   active: boolean,
   onSelect: () => void,
 ): ReturnType<typeof Text> {
@@ -10870,6 +10914,7 @@ function buildOpsPanelInput(options: StackAppOptions, state: AppState) {
       optimizerCliAvailable: state.optimizerCliAvailable,
       autoStartLocalOptimizer: shouldAutoStartLocalOptimizer(options.config),
       autoStartDevSlot: shouldAutoStartDevSlot(options.config),
+      selectedCloudSlot: options.config.cloudSlot,
       localBootstrap: state.localBootstrapSnapshot,
     },
     account: state.remoteAccountSnapshot,
@@ -11084,6 +11129,7 @@ function statusLine(options: StackAppOptions, state: AppState): string {
     `auth=${options.config.codexAuthPlan}`,
     `effort=${options.config.codexReasoningEffort}`,
     `env=${options.config.environmentName}`,
+    `slot=${options.config.cloudSlot ?? options.config.devSlotInstance}`,
     `synth=${synthHeaderAuthLabel(state.remoteAccountSnapshot)}`,
     `codex=${options.config.codexCommand} ${options.config.codexArgs.join(" ")}`,
     `bridge=${state.liveOpsMode}`,
@@ -11111,6 +11157,7 @@ function mediationTopStrip(options: StackAppOptions, state: AppState): string {
   return [
     "bridge remote",
     `env ${options.config.environmentName}`,
+    `slot ${selectedCloudSlotRailLine(options.config, state)}`,
     `tool ${bridgeStatusToolName(state)}`,
     `mcp ${stackMcpStatusLabel(options.config)}`,
     `auth ${authRailLabel(options.config)}`,
@@ -11149,6 +11196,7 @@ function liveOperationsRailText(options: StackAppOptions, state: AppState): stri
     `mcp ${stackMcpStatusLabel(options.config)}`,
     recentSkillRailLine(state),
     `x switches local bridge`,
+    `slot ${selectedCloudSlotRailLine(options.config, state)}`,
     "",
     "Mediation",
     `target ${mediationTargetLabel(state)}`,
@@ -11175,6 +11223,20 @@ function liveOperationsRailText(options: StackAppOptions, state: AppState): stri
     state.focusMode === "hosted" ? "hosted: o artifact | v preview | d download | c cancel" : "",
   ]
   return (state.liveOpsMode === "local" ? localLines : remoteLines).filter((line) => line.length > 0).join("\n")
+}
+
+function selectedCloudSlotRailLine(config: StackConfig, state: AppState): string {
+  if (!config.cloudSlot) return "none · direct remote APIs"
+  if (state.remoteProjectsSnapshot.cloudSlotsStatus && state.remoteProjectsSnapshot.cloudSlotsStatus !== "ready") {
+    return `${config.cloudSlot} · truth ${state.remoteProjectsSnapshot.cloudSlotsStatus}`
+  }
+  const deployment = state.remoteProjectsSnapshot.deployments.find((row) => row.cloudSlot === config.cloudSlot)
+  if (!deployment) return `${config.cloudSlot} · unbound`
+  const endpoint = deployment.serviceUrl ? inlineText(deployment.serviceUrl, 24) : "endpoint pending"
+  const claim = deployment.claimId
+    ? `claim ${inlineText(deployment.claimHolder ?? "unknown", 12)} fence ${deployment.fencingToken ?? "?"}`
+    : `claim free fence ${deployment.fencingToken ?? 0}`
+  return `${config.cloudSlot} · ${deployment.status ?? "unknown"} · ${endpoint} · ${claim}`
 }
 
 function renderMonitorRailStyled(snapshot: StackMonitorSnapshot, columns: number): StyledText {
@@ -14843,6 +14905,23 @@ async function handleEnvironmentKey(
     refresh()
     return
   }
+  if (key.name === "s") {
+    const choices: Array<CloudSlotIdentity | undefined> = [undefined, ...CLOUD_SLOT_OPTIONS]
+    const current = choices.indexOf(options.config.cloudSlot)
+    setStackCloudSlot(options.config, choices[(current + 1) % choices.length])
+    markEnvironmentChecking(options.config, state)
+    refresh()
+    await Promise.all([
+      refreshRemoteAccount(),
+      refreshRemoteUsage(),
+      refreshRemoteResearch(),
+      refreshRemoteProjects(),
+      refreshHostedOptimizers(),
+    ])
+    state.recentRemoteDownloads = await readRemoteDownloadHistory(options.config)
+    refresh()
+    return
+  }
   if (!isCycleKey(key)) return
   const current = options.config.environmentName
   const index = STACK_ENVIRONMENT_OPTIONS.indexOf(current)
@@ -15404,6 +15483,7 @@ function compareOptionalIsoDesc(left: string | null | undefined, right: string |
 export function remoteProjectsPanelFromRuntime(
   snapshot: StackdFactorySnapshot | null | undefined,
   config: StackConfig,
+  fallback?: RemoteProjectsPanelSnapshot,
 ): RemoteProjectsPanelSnapshot | undefined {
   const remote = snapshot?.remote_synth
   const projects = remote?.projects ?? []
@@ -15415,7 +15495,7 @@ export function remoteProjectsPanelFromRuntime(
   const runtimeEnvironment = runtimeRemoteEnvironment(remote, config)
   const runsById = new Map(runtimeRuns.map((run) => [run.run_id, run]))
   const factoriesById = new Map(runtimeFactories.map((factory) => [factory.factory_id, factory]))
-  const deploymentRows = runtimeDeployments.slice().sort(compareRuntimeDeploymentRecency).map((deployment) => ({
+  const runtimeDeploymentRows = runtimeDeployments.slice().sort(compareRuntimeDeploymentRecency).map((deployment) => ({
     deploymentId: deployment.deployment_id,
     name: deployment.name,
     status: deployment.status ?? undefined,
@@ -15428,12 +15508,21 @@ export function remoteProjectsPanelFromRuntime(
     updatedAt: deployment.updated_at ?? undefined,
     ready: deployment.ready ?? undefined,
   }))
+  const runtimeDeploymentIds = new Set(runtimeDeploymentRows.map((deployment) => deployment.deploymentId))
+  const deploymentRows = [
+    ...runtimeDeploymentRows,
+    ...(fallback?.deployments ?? []).filter((deployment) =>
+      Boolean(deployment.cloudSlot) && !runtimeDeploymentIds.has(deployment.deploymentId)),
+  ]
   return {
     status: remote.auth_status === "ready" ? "ready" : "missing-auth",
     environmentName: runtimeEnvironment.environmentName,
     apiBaseUrl: runtimeEnvironment.apiBaseUrl,
     checkedAt: snapshot.updated_at,
     message: `runtime ${projects.length} projects, ${deploymentRows.length} deployments${sync ? `, ${remoteSyncSummaryLabel(sync)}` : ""}`,
+    cloudSlotsStatus: fallback?.cloudSlotsStatus,
+    cloudSlotsMessage: fallback?.cloudSlotsMessage,
+    cloudSlotsCheckedAt: fallback?.cloudSlotsCheckedAt,
     ...(sync ? { sync } : {}),
     deployments: deploymentRows,
     projects: projects.map((project) => {

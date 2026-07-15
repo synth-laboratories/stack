@@ -4,14 +4,29 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs"
 import { fileURLToPath } from "node:url"
 import { dirname, join, relative, resolve } from "node:path"
 import {
+  CLOUD_SLOT_OPTIONS,
   environmentAuthStatus,
   harnessModel,
   harnessSessionCommand,
   loadConfig,
   setStackEnvironment,
+  setStackCloudSlot,
+  type CloudSlotIdentity,
   type StackConfig,
   type StackEnvironmentName,
 } from "../config.js"
+import {
+  acquireCloudSlotClaim,
+  deployCloudSlot,
+  heartbeatCloudSlotClaim,
+  observeCloudSlot,
+  readCloudSlotsSnapshot,
+  releaseCloudSlotClaim,
+  retireCloudSlot,
+  type CloudSlotActionResult,
+  type CloudSlotDeployment,
+  type CloudSlotsSnapshot,
+} from "../remote/cloud-slots.js"
 import {
   discoverStackSkills,
   pushSkillContext,
@@ -330,6 +345,8 @@ export class StackMcpServer {
     const config = await loadConfig(this.appRoot)
     const environment = optionalString(args, "environment")
     if (environment) setStackEnvironment(config, readEnvironmentName(environment))
+    const cloudSlot = optionalString(args, "cloud_slot")
+    if (cloudSlot) setStackCloudSlot(config, readCloudSlotIdentity(cloudSlot))
     return config
   }
 
@@ -2107,6 +2124,7 @@ export class StackMcpServer {
       readStackRuntimeFactory(),
       stackdTelemetryStatus().catch(() => undefined),
     ])
+    const cloudSlots = mode === "local" ? undefined : await readCloudSlotsSnapshot(config)
     const runtimeSummary = runtimeSummaryFromFactory(runtime?.snapshot, config)
     const shouldReadDirectRemote = mode !== "local" && !runtimeSummary
     const [research, hosted] = shouldReadDirectRemote
@@ -2160,6 +2178,9 @@ export class StackMcpServer {
               : null,
           }
         : undefined),
+      cloud_slots: cloudSlots
+        ? cloudSlotsMcpPayload(cloudSlots, config.cloudSlot)
+        : undefined,
       hosted_optimizers: runtimeSummary?.hostedOptimizers ?? (hosted
         ? {
             source: "direct-api",
@@ -2206,6 +2227,76 @@ export class StackMcpServer {
     const windowDays = optionalInteger(args, "window_days") ?? 7
     const view = await readCrashReportsView(config, { limit, remote, windowDays })
     return toJsonValue(view) ?? null
+  }
+
+  async cloudSlotStatus(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const snapshot = await readCloudSlotsSnapshot(config)
+    const selected = selectedCloudSlot(args, config)
+    return toJsonValue({
+      ...cloudSlotsMcpPayload(snapshot, selected),
+      substrate_difference: "cloud slots retain an exe.dev VM and require typed claim/fencing plus explicit owned retirement",
+    }) ?? null
+  }
+
+  async cloudSlotObserve(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(cloudSlotActionMcpPayload(
+      await observeCloudSlot(config, requiredSelectedCloudSlot(args, config)),
+    )) ?? null
+  }
+
+  async cloudSlotDeploy(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(cloudSlotActionMcpPayload(await deployCloudSlot(config, requiredSelectedCloudSlot(args, config), {
+      reason: optionalString(args, "reason"),
+      fencingToken: optionalPositiveInteger(args, "fencing_token"),
+    }))) ?? null
+  }
+
+  async cloudSlotClaim(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(cloudSlotActionMcpPayload(await acquireCloudSlotClaim(config, requiredSelectedCloudSlot(args, config), {
+      holder: requiredString(args, "holder"),
+      purpose: requiredString(args, "purpose"),
+      ttlSeconds: requiredCloudSlotTtl(args),
+    }))) ?? null
+  }
+
+  async cloudSlotHeartbeat(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(cloudSlotActionMcpPayload(await heartbeatCloudSlotClaim(
+      config,
+      requiredSelectedCloudSlot(args, config),
+      requiredString(args, "claim_id"),
+    ))) ?? null
+  }
+
+  async cloudSlotRelease(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    return toJsonValue(cloudSlotActionMcpPayload(await releaseCloudSlotClaim(
+      config,
+      requiredSelectedCloudSlot(args, config),
+      requiredString(args, "claim_id"),
+    ))) ?? null
+  }
+
+  async cloudSlotRetire(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    if (optionalBoolean(args, "confirm") !== true) {
+      throw new RpcError(-32602, "confirm=true is required to retire a cloud slot")
+    }
+    const deleteVm = optionalBoolean(args, "delete_vm") ?? false
+    const confirmVmName = optionalString(args, "confirm_vm_name")
+    if (deleteVm && !confirmVmName) {
+      throw new RpcError(-32602, "confirm_vm_name is required when delete_vm=true")
+    }
+    return toJsonValue(cloudSlotActionMcpPayload(await retireCloudSlot(config, requiredSelectedCloudSlot(args, config), {
+      reason: optionalString(args, "reason"),
+      deleteVm,
+      confirmVmName,
+      fencingToken: optionalPositiveInteger(args, "fencing_token"),
+    }))) ?? null
   }
 
   async listLiveSmrs(args: JsonObject): Promise<JsonValue> {
@@ -5521,6 +5612,90 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.agentStatus(args),
     },
     {
+      name: "stack_cloud_slot_status",
+      description: "Read canonical slot1-cloud/slot2-cloud CloudDeployment lifecycle, endpoint, source SHA, health, failure, active claim, and fencing truth through backend owner APIs.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        cloud_slot: cloudSlotProperty(),
+      }),
+      handler: (args) => server.cloudSlotStatus(args),
+    },
+    {
+      name: "stack_cloud_slot_observe",
+      description: "Ask the backend CloudDeployment owner to observe the selected canonical cloud slot against its substrate.",
+      inputSchema: objectSchema({ environment: environmentProperty(), cloud_slot: cloudSlotProperty() }),
+      handler: (args) => server.cloudSlotObserve(args),
+    },
+    {
+      name: "stack_cloud_slot_claim",
+      description: "Acquire the selected cloud slot's typed TTL claim and receive its fencing token.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          cloud_slot: cloudSlotProperty(),
+          holder: stringProperty("Stable operator or agent identity."),
+          purpose: stringProperty("Human-readable claim purpose."),
+          ttl_seconds: { type: "integer", minimum: 1, maximum: 86400, description: "Claim TTL in seconds." },
+        },
+        ["holder", "purpose", "ttl_seconds"],
+      ),
+      handler: (args) => server.cloudSlotClaim(args),
+    },
+    {
+      name: "stack_cloud_slot_heartbeat",
+      description: "Heartbeat the selected cloud slot's typed claim before its TTL expires.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          cloud_slot: cloudSlotProperty(),
+          claim_id: stringProperty("Claim id returned by stack_cloud_slot_claim."),
+        },
+        ["claim_id"],
+      ),
+      handler: (args) => server.cloudSlotHeartbeat(args),
+    },
+    {
+      name: "stack_cloud_slot_release",
+      description: "Release the selected cloud slot's typed claim idempotently.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          cloud_slot: cloudSlotProperty(),
+          claim_id: stringProperty("Claim id returned by stack_cloud_slot_claim."),
+        },
+        ["claim_id"],
+      ),
+      handler: (args) => server.cloudSlotRelease(args),
+    },
+    {
+      name: "stack_cloud_slot_deploy",
+      description: "Deploy or retry the selected CloudDeployment through its backend owner route. Supply the active claim fencing token when claimed.",
+      inputSchema: objectSchema({
+        environment: environmentProperty(),
+        cloud_slot: cloudSlotProperty(),
+        reason: stringProperty("Optional lifecycle reason."),
+        fencing_token: { type: "integer", minimum: 1, description: "Active claim fencing token." },
+      }),
+      handler: (args) => server.cloudSlotDeploy(args),
+    },
+    {
+      name: "stack_cloud_slot_retire",
+      description: "Retire the selected CloudDeployment through its backend owner route. VM deletion is explicit and requires the exact VM name plus confirm=true.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          cloud_slot: cloudSlotProperty(),
+          reason: stringProperty("Optional lifecycle reason."),
+          delete_vm: { type: "boolean", description: "Delete the substrate VM; defaults false." },
+          confirm_vm_name: stringProperty("Exact VM name required when delete_vm=true."),
+          fencing_token: { type: "integer", minimum: 1, description: "Active claim fencing token." },
+          confirm: { type: "boolean", description: "Must be true for retirement." },
+        },
+        ["confirm"],
+      ),
+      handler: (args) => server.cloudSlotRetire(args),
+    },
+    {
       name: "stack_crash_reports",
       description:
         "Read Stack client crash visibility: local stackd outbox tail plus optional Synth cloud summary (requires auth). Use after TUI/runtime fatals or when triaging opentui_buffer and related crash classes in prod.",
@@ -7474,6 +7649,14 @@ function environmentProperty(): JsonObject {
   }
 }
 
+function cloudSlotProperty(): JsonObject {
+  return {
+    type: "string",
+    enum: [...CLOUD_SLOT_OPTIONS],
+    description: "Canonical cloud slot. Defaults to STACK_CLOUD_SLOT/defaultCloudSlot when selected.",
+  }
+}
+
 function optionalBridgeMode(args: JsonObject): StackBridgeMode | undefined {
   const value = optionalString(args, "mode")
   if (!value) return undefined
@@ -7691,6 +7874,83 @@ function isActiveState(value: string | undefined): boolean {
   ].includes(normalized)
 }
 
+function cloudSlotsMcpPayload(
+  snapshot: CloudSlotsSnapshot,
+  selected?: CloudSlotIdentity,
+): Record<string, unknown> {
+  const selectedDeployment = selected
+    ? snapshot.slots.find((slot) => slot.cloudSlot === selected)
+    : undefined
+  return {
+    environment: snapshot.environmentName,
+    api_base_url: snapshot.apiBaseUrl,
+    selected_cloud_slot: selected ?? null,
+    status: snapshot.status,
+    message: snapshot.message,
+    checked_at: snapshot.checkedAt,
+    slots: snapshot.slots.map(cloudSlotDeploymentMcpPayload),
+    roster: CLOUD_SLOT_OPTIONS.map((cloudSlot) => {
+      const deployment = snapshot.slots.find((slot) => slot.cloudSlot === cloudSlot)
+      return {
+        cloud_slot: cloudSlot,
+        binding: snapshot.status === "ready" ? (deployment ? "bound" : "unbound") : "unknown",
+        deployment: deployment ? cloudSlotDeploymentMcpPayload(deployment) : null,
+      }
+    }),
+    selected_deployment: selectedDeployment
+      ? cloudSlotDeploymentMcpPayload(selectedDeployment)
+      : null,
+  }
+}
+
+function cloudSlotActionMcpPayload(result: CloudSlotActionResult): Record<string, unknown> {
+  return {
+    ok: result.ok,
+    status: result.status,
+    message: result.message,
+    deployment: result.deployment ? cloudSlotDeploymentMcpPayload(result.deployment) : null,
+    claim: result.claim
+      ? {
+          claim_id: result.claim.claimId,
+          holder: result.claim.holder,
+          purpose: result.claim.purpose,
+          fencing_token: result.claim.fencingToken,
+          state: result.claim.state,
+          expires_at: result.claim.expiresAt ?? null,
+        }
+      : null,
+  }
+}
+
+function cloudSlotDeploymentMcpPayload(slot: CloudSlotDeployment): Record<string, unknown> {
+  return {
+    cloud_slot: slot.cloudSlot,
+    deployment_id: slot.deploymentId,
+    project_id: slot.projectId ?? null,
+    name: slot.name,
+    lifecycle: slot.lifecycle,
+    service_url: slot.serviceUrl ?? null,
+    source_sha: slot.sourceSha ?? null,
+    vm_name: slot.vmName ?? null,
+    vm_deleted: slot.vmDeleted,
+    failure_reason: slot.failureReason ?? null,
+    health_status: slot.healthStatus ?? null,
+    updated_at: slot.updatedAt ?? null,
+    retired_at: slot.retiredAt ?? null,
+    active_claim: slot.activeClaim
+      ? {
+          claim_id: slot.activeClaim.claimId,
+          holder: slot.activeClaim.holder,
+          purpose: slot.activeClaim.purpose,
+          fencing_token: slot.activeClaim.fencingToken,
+          state: slot.activeClaim.state,
+          expires_at: slot.activeClaim.expiresAt ?? null,
+        }
+      : null,
+    last_fencing_token: slot.lastFencingToken,
+  }
+}
+
 function bridgeNextActions(
   mode: StackBridgeMode,
   hasAuth: boolean,
@@ -7817,6 +8077,22 @@ function readEnvironmentName(value: string): StackEnvironmentName {
   throw new RpcError(-32602, "environment must be dev, staging, or prod")
 }
 
+function readCloudSlotIdentity(value: string): CloudSlotIdentity {
+  if (CLOUD_SLOT_OPTIONS.includes(value as CloudSlotIdentity)) return value as CloudSlotIdentity
+  throw new RpcError(-32602, `cloud_slot must be one of ${CLOUD_SLOT_OPTIONS.join(", ")}`)
+}
+
+function selectedCloudSlot(args: JsonObject, config: StackConfig): CloudSlotIdentity | undefined {
+  const value = optionalString(args, "cloud_slot")
+  return value ? readCloudSlotIdentity(value) : config.cloudSlot
+}
+
+function requiredSelectedCloudSlot(args: JsonObject, config: StackConfig): CloudSlotIdentity {
+  const selected = selectedCloudSlot(args, config)
+  if (!selected) throw new RpcError(-32602, "cloud_slot is required when STACK_CLOUD_SLOT/defaultCloudSlot is not selected")
+  return selected
+}
+
 async function resolveLightsThreadTargetId(stackDataRoot: string, threadId: string): Promise<string> {
   const trimmed = threadId.trim()
   if (!trimmed.startsWith("mt_")) return trimmed
@@ -7867,6 +8143,19 @@ function optionalInteger(args: JsonObject, key: string): number | undefined {
   if (typeof value !== "number" || !Number.isInteger(value)) {
     throw new RpcError(-32602, `${key} must be an integer`)
   }
+  return value
+}
+
+function optionalPositiveInteger(args: JsonObject, key: string): number | undefined {
+  const value = optionalInteger(args, key)
+  if (value !== undefined && value < 1) throw new RpcError(-32602, `${key} must be a positive integer`)
+  return value
+}
+
+function requiredCloudSlotTtl(args: JsonObject): number {
+  const value = optionalPositiveInteger(args, "ttl_seconds")
+  if (value === undefined) throw new RpcError(-32602, "ttl_seconds is required")
+  if (value > 86_400) throw new RpcError(-32602, "ttl_seconds must be at most 86400")
   return value
 }
 

@@ -39,6 +39,14 @@ environment, or point `stack.config.json` at a key file via
 `environments.*.authEnvFile`. The local cockpit, demo, and OSS optimizers work
 without an account.
 
+For remote development, select `slot1-cloud` or `slot2-cloud` beside the normal
+`dev`/`staging`/`prod` target. The same hosted cockpit continues to show SMRs,
+Factories, WorkProducts, and artifacts while adding the selected
+CloudDeployment's endpoint, exact source SHA, lifecycle, health, claim, fencing,
+and failure truth. Cloud slots are retained remote VMs, so claim/heartbeat and
+owned retirement are explicit; Stack sends those operations only through the
+typed Synth owner routes.
+
 <details>
 <summary>First-party installer (planned)</summary>
 

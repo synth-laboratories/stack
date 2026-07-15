@@ -1,4 +1,5 @@
 import { environmentAuthStatus, type StackConfig } from "../config.js"
+import { readCloudSlotsSnapshot } from "./cloud-slots.js"
 
 export type RemoteResearchStatus = "ready" | "missing-auth" | "offline"
 export type RemoteJsonValue =
@@ -305,6 +306,18 @@ export type RemoteDeploymentSummary = {
   substrate?: string
   updatedAt?: string
   ready?: boolean
+  cloudSlot?: string
+  serviceUrl?: string
+  sourceSha?: string
+  vmName?: string
+  vmDeleted?: boolean
+  healthStatus?: string
+  claimId?: string
+  claimHolder?: string
+  claimExpiresAt?: string
+  fencingToken?: number
+  failureReason?: string
+  retiredAt?: string
 }
 
 export type RemoteSyncRequestSummary = {
@@ -414,6 +427,9 @@ export type RemoteProjectsPanelSnapshot = {
   message?: string
   projects: RemoteProjectPanelEntry[]
   deployments: RemoteDeploymentSummary[]
+  cloudSlotsStatus?: "ready" | "missing-auth" | "offline"
+  cloudSlotsMessage?: string
+  cloudSlotsCheckedAt?: string
   tagScope?: RemoteTagScopeSummary
   sync?: RemoteSyncSnapshot
 }
@@ -448,15 +464,19 @@ export async function readRemoteProjectsPanelSnapshot(config: StackConfig): Prom
     message: auth.hasAuth ? "not checked yet" : auth.message,
     projects: [],
     deployments: [],
+    cloudSlotsStatus: auth.hasAuth ? "offline" : "missing-auth",
+    cloudSlotsMessage: auth.hasAuth ? "cloud slots not checked" : auth.message,
+    cloudSlotsCheckedAt: new Date().toISOString(),
   }
 
   if (!auth.hasAuth) return base
 
   try {
-    const [projectsPayload, factoriesPayload, tagScope] = await Promise.all([
+    const [projectsPayload, factoriesPayload, tagScope, cloudSlots] = await Promise.all([
       getJson(config, `/smr/projects?limit=${LIVE_PROJECT_LIMIT}&include_archived=false`),
       getJson(config, "/smr/factories?include_archived=false"),
       readDefaultTagScope(config),
+      readCloudSlotsSnapshot(config),
     ])
     const projects = readProjects(projectsPayload).slice(0, LIVE_PROJECT_LIMIT)
     const factories = readFactories(factoriesPayload).slice(0, FACTORY_LINK_PROBE_LIMIT)
@@ -490,8 +510,34 @@ export async function readRemoteProjectsPanelSnapshot(config: StackConfig): Prom
       ...base,
       status: "ready",
       checkedAt: new Date().toISOString(),
-      message: `${entries.length} projects`,
+      message: `${entries.length} projects · cloud slots ${cloudSlots.status}`,
       projects: entries,
+      cloudSlotsStatus: cloudSlots.status,
+      cloudSlotsMessage: cloudSlots.message,
+      cloudSlotsCheckedAt: cloudSlots.checkedAt,
+      deployments: cloudSlots.slots.map((slot) => ({
+        deploymentId: slot.deploymentId,
+        name: slot.name,
+        status: slot.lifecycle,
+        degradedReason: slot.failureReason,
+        failureReason: slot.failureReason,
+        projectId: slot.projectId,
+        topology: "synth-dev",
+        substrate: "exe.dev",
+        updatedAt: slot.updatedAt,
+        ready: slot.lifecycle === "running" && !slot.failureReason,
+        cloudSlot: slot.cloudSlot,
+        serviceUrl: slot.serviceUrl,
+        sourceSha: slot.sourceSha,
+        vmName: slot.vmName,
+        vmDeleted: slot.vmDeleted,
+        healthStatus: slot.healthStatus,
+        claimId: slot.activeClaim?.claimId,
+        claimHolder: slot.activeClaim?.holder,
+        claimExpiresAt: slot.activeClaim?.expiresAt,
+        fencingToken: slot.activeClaim?.fencingToken ?? slot.lastFencingToken,
+        retiredAt: slot.retiredAt,
+      })),
       tagScope,
     }
   } catch (error) {
