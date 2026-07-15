@@ -999,6 +999,10 @@ The server reads `stack.config.json` and supports both JSONL and
   fenced by the active claim token; shell command strings are not accepted
 - `stack_cloud_slot_logs`: bounded output for a service id returned by service
   discovery
+- `stack_cloud_slot_artifacts`: declared output roots plus bounded, paginated
+  artifact inventory under one root
+- `stack_cloud_slot_artifact_content`: bounded base64 chunks for preview or
+  download assembly, with optional full-file SHA-256
 - `stack_cloud_slot_deploy`: deploy or retry through the CloudDeployment owner
   route, with the active fencing token when claimed
 - `stack_cloud_slot_retire`: confirmed owned retirement; VM deletion is opt-in

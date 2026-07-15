@@ -45,7 +45,9 @@ Factories, WorkProducts, and artifacts while adding the selected
 CloudDeployment's endpoint, exact source SHA, lifecycle, health, claim, fencing,
 and failure truth. The Agent bridge can discover declared services, inspect or
 materialize exact repository state, execute bounded argv, and retrieve declared
-service logs without a provider-side path. Cloud slots are retained remote VMs,
+service logs or topology-declared output artifacts without a provider-side path.
+Artifact inventory is paginated and content preview is bounded, chunked, and
+optionally checksummed. Cloud slots are retained remote VMs,
 so claim/heartbeat, fenced mutations, and owned retirement are explicit; Stack
 sends those operations only through the typed Synth owner routes.
 
