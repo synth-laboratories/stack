@@ -185,6 +185,7 @@ import {
   listRemoteRunApprovals,
   listRemoteRunQuestions,
   openUrlInSystemBrowser,
+  previewRemotePromotionDiscount,
   previewRemoteOutput,
   previewSavedRemoteDownload,
   readRemoteDownloadHistory,
@@ -198,6 +199,7 @@ import {
   type RemoteDownloadRecord,
   type RemoteFactoryCreateRequest,
   type RemoteOutputSelection,
+  type RemotePromotionDiscountPreviewRequest,
   type RemoteProjectCreateRequest,
 } from "../remote/actions.js"
 import {
@@ -3117,6 +3119,24 @@ export class StackMcpServer {
     const config = await this.config(args)
     void emitFeatureUsed("cloud_launch_promo")
     return actionResultWithData(await getRemoteLaunchPromoStatus(config))
+  }
+
+  async previewPromotionDiscount(args: JsonObject): Promise<JsonValue> {
+    const config = await this.config(args)
+    const request: RemotePromotionDiscountPreviewRequest = {
+      campaign_id: requiredString(args, "campaign_id"),
+      nominal_customer_debit_microcents: requiredNonNegativeSafeInteger(
+        args,
+        "nominal_customer_debit_microcents",
+      ),
+      provider_cost_pico_usd: requiredNonNegativeSafeInteger(
+        args,
+        "provider_cost_pico_usd",
+      ),
+    }
+    return actionResultWithData(
+      await previewRemotePromotionDiscount(config, request),
+    )
   }
 
   async claimLaunchPromo(args: JsonObject): Promise<JsonValue> {
@@ -6138,6 +6158,34 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
       handler: (args) => server.launchPromoStatus(args),
     },
     {
+      name: "stack_preview_admin_promotion_discount",
+      description: "Preview backend-authored draft promotion economics through the admin owner route. This is read-only despite using POST and does not activate or enforce a campaign, consume caps, grant benefits, or debit usage.",
+      inputSchema: objectSchema(
+        {
+          environment: environmentProperty(),
+          campaign_id: stringProperty("Draft promotion campaign id."),
+          nominal_customer_debit_microcents: {
+            type: "integer",
+            minimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+            description: "Nominal customer debit scenario in microcents.",
+          },
+          provider_cost_pico_usd: {
+            type: "integer",
+            minimum: 0,
+            maximum: Number.MAX_SAFE_INTEGER,
+            description: "Provider cost scenario in pico-USD.",
+          },
+        },
+        [
+          "campaign_id",
+          "nominal_customer_debit_microcents",
+          "provider_cost_pico_usd",
+        ],
+      ),
+      handler: (args) => server.previewPromotionDiscount(args),
+    },
+    {
       name: "stack_claim_launch_promo",
       description: "Claim Managed Research launch promo entitlement through the Stack cloud owner route. Requires confirm=true.",
       inputSchema: objectSchema({
@@ -8569,6 +8617,18 @@ function optionalPositiveInteger(args: JsonObject, key: string): number | undefi
 function requiredPositiveInteger(args: JsonObject, key: string): number {
   const value = optionalPositiveInteger(args, key)
   if (value === undefined) throw new RpcError(-32602, `${key} is required`)
+  return value
+}
+
+function requiredNonNegativeSafeInteger(args: JsonObject, key: string): number {
+  const value = args[key]
+  if (
+    typeof value !== "number"
+    || !Number.isSafeInteger(value)
+    || value < 0
+  ) {
+    throw new RpcError(-32602, `${key} must be a non-negative safe integer`)
+  }
   return value
 }
 

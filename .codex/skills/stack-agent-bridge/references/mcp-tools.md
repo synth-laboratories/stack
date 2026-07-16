@@ -16,6 +16,7 @@ Use these tools through the Stack MCP server when available.
 - `stack_deploy_container_pool_runtime`: create a pool runtime image release and bind it; returns the `release_id` needed for pool-backed scoring.
 - `stack_prepare_cloud_promotion_packet`: local-to-cloud promotion packet from StackEval + runtime state; no mutation.
 - `stack_launch_cloud_promotion`: create a cloud launch from a promotion packet; dry-run by default and requires explicit confirm to mutate.
+- `stack_preview_admin_promotion_discount`: preview backend-authored draft promotion economics through the admin owner route; no activation, enforcement, cap consumption, grant, or debit mutation.
 - `stack_get_cloud_launch`: inspect one Managed Research cloud launch.
 - `stack_terminate_cloud_launch`: terminate one Managed Research cloud launch.
 - `stack_list_live_smrs`: recent remote SMR runs; runtime-first with direct API fallback for output/message/file counts, supports `tick`.

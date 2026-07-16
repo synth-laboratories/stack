@@ -92,6 +92,12 @@ export type RemoteLaunchRequest = {
 
 export type RemoteProjectCreateRequest = Record<string, unknown>
 
+export type RemotePromotionDiscountPreviewRequest = {
+  campaign_id: string
+  nominal_customer_debit_microcents: number
+  provider_cost_pico_usd: number
+}
+
 export type RemoteFactoryCreateRequest = {
   name: string
   description?: string
@@ -163,6 +169,26 @@ export async function createRemoteLaunch(
 
 export async function getRemoteLaunchPromoStatus(config: StackConfig): Promise<RemoteActionResult> {
   return getRemote(config, "/smr/launch-promo/status")
+}
+
+export async function previewRemotePromotionDiscount(
+  config: StackConfig,
+  request: RemotePromotionDiscountPreviewRequest,
+): Promise<RemoteActionResult> {
+  const result = await postRemote(
+    config,
+    "/smr/promotions/admin/discount-preview",
+    { ...request },
+  )
+  if (!result.ok) return result
+  if (result.data?.enforcement_status !== "not_implemented") {
+    return {
+      ...result,
+      ok: false,
+      message: "promotion discount preview rejected unexpected enforcement status",
+    }
+  }
+  return result
 }
 
 export async function claimRemoteLaunchPromo(config: StackConfig): Promise<RemoteActionResult> {
