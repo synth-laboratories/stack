@@ -538,6 +538,11 @@ fn remote_factory_snapshot(event: &RuntimeEvent) -> RemoteFactorySnapshot {
             .get("is_running")
             .and_then(serde_json::Value::as_bool),
         project_ids,
+        owner_status: event
+            .payload
+            .get("owner_status")
+            .filter(|value| !value.is_null())
+            .cloned(),
     }
 }
 

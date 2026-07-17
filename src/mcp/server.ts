@@ -3555,6 +3555,10 @@ export class StackMcpServer {
         next_wake_at: factory.nextWakeAt,
         active_efforts: factory.activeEfforts ?? 0,
         paused_or_waiting: factory.pausedOrWaiting ?? 0,
+        // Backend owner payload, pass-through (FactoryOwnerStatus).
+        // null = status route not probed for this factory; when present,
+        // owner_status.status_error discriminates fetch success vs failure.
+        owner_status: factory.ownerStatus ?? null,
       })),
     }) ?? null
   }
@@ -5537,6 +5541,12 @@ function factoriesMcpFromRuntime(
       cloud_dev_label: factory.cloud_dev_label,
       is_running: factory.is_running ?? false,
       project_ids: factory.project_ids,
+      // Backend owner payload, pass-through (FactoryOwnerStatus) — the same
+      // shape the direct-API path emits, so runtime-vs-direct fallback never
+      // changes the contract. null = stackd has not captured a status probe;
+      // when present, owner_status.status_error discriminates fetch success
+      // vs failure.
+      owner_status: factory.owner_status ?? null,
     })),
   })
 }

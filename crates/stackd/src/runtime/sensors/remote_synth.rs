@@ -267,20 +267,34 @@ pub async fn poll(client: &Client, prior_cursor: Value, paths: &StackPaths) -> S
                 {
                     Ok(status) => {
                         factory.apply_status_payload(&status);
+                        factory.owner_status = Some(factory_owner_status(
+                            &factory.factory_id,
+                            &status,
+                            &observed_at,
+                        ));
                     }
-                    Err(error) => events.push(fetch_failed_event(
-                        "sensor.remote.factory_status.fetch_failed",
-                        "remote_factory",
-                        &factory.factory_id,
-                        &observed_at,
-                        &format!("/smr/factories/{}/status", factory.factory_id),
-                        error,
-                        &profile,
-                        RuntimeCorrelation {
-                            factory_id: Some(factory.factory_id.clone()),
-                            ..RuntimeCorrelation::default()
-                        },
-                    )),
+                    Err(error) => {
+                        let status_path = format!("/smr/factories/{}/status", factory.factory_id);
+                        factory.owner_status = Some(factory_owner_status_error(
+                            &factory.factory_id,
+                            &status_path,
+                            &error.to_string(),
+                            &observed_at,
+                        ));
+                        events.push(fetch_failed_event(
+                            "sensor.remote.factory_status.fetch_failed",
+                            "remote_factory",
+                            &factory.factory_id,
+                            &observed_at,
+                            &status_path,
+                            error,
+                            &profile,
+                            RuntimeCorrelation {
+                                factory_id: Some(factory.factory_id.clone()),
+                                ..RuntimeCorrelation::default()
+                            },
+                        ));
+                    }
                 }
                 if let Some(prior) = previous.as_ref() {
                     factory.preserve_missing_enrichment(prior);
@@ -860,9 +874,57 @@ fn factory_event(
             "cloud_dev_label": factory.cloud_dev_label,
             "is_running": factory.is_running,
             "project_ids": factory.project_ids,
+            "owner_status": factory.owner_status,
             "previous": previous,
         }),
     }
+}
+
+/// Verbatim projection of the backend `/smr/factories/{id}/status` owner
+/// payload (`stack.factory_owner_status.v1`). Sub-objects are cloned exactly
+/// as the backend serialized them — wire names untouched, nothing recomputed.
+fn factory_owner_status(factory_id: &str, payload: &Value, observed_at: &str) -> Value {
+    json!({
+        "schema": "stack.factory_owner_status.v1",
+        "factory_id": factory_id,
+        "observed_at": observed_at,
+        "runtime": payload.get("runtime").cloned().unwrap_or(Value::Null),
+        "factory_health": payload.get("factory_health").cloned().unwrap_or(Value::Null),
+        "operating_window": payload.get("operating_window").cloned().unwrap_or(Value::Null),
+        "efforts_by_status": payload.get("efforts_by_status").cloned().unwrap_or(Value::Null),
+        "next_wake_at": payload.get("next_wake_at").cloned().unwrap_or(Value::Null),
+        "results": payload.get("results").cloned().unwrap_or(Value::Null),
+        "current_best": payload.get("current_best").cloned().unwrap_or(Value::Null),
+        "status_error": {"present": false},
+    })
+}
+
+/// Owner payload when the status fetch itself failed: every owner field is
+/// null and `status_error.present=true` names the failure explicitly.
+fn factory_owner_status_error(
+    factory_id: &str,
+    path: &str,
+    message: &str,
+    observed_at: &str,
+) -> Value {
+    json!({
+        "schema": "stack.factory_owner_status.v1",
+        "factory_id": factory_id,
+        "observed_at": observed_at,
+        "runtime": Value::Null,
+        "factory_health": Value::Null,
+        "operating_window": Value::Null,
+        "efforts_by_status": Value::Null,
+        "next_wake_at": Value::Null,
+        "results": Value::Null,
+        "current_best": Value::Null,
+        "status_error": {
+            "present": true,
+            "path": path,
+            "message": message,
+            "observed_at": observed_at,
+        },
+    })
 }
 
 fn optimizer_event(
@@ -1076,6 +1138,8 @@ struct RemoteFactoryCursor {
     is_running: Option<bool>,
     #[serde(default)]
     project_ids: Vec<String>,
+    #[serde(default)]
+    owner_status: Option<Value>,
 }
 
 impl RemoteFactoryCursor {
@@ -1092,6 +1156,7 @@ impl RemoteFactoryCursor {
             || self.cloud_dev_label != prior.cloud_dev_label
             || self.is_running != prior.is_running
             || self.project_ids != prior.project_ids
+            || self.owner_status != prior.owner_status
     }
 
     fn preserve_missing_enrichment(&mut self, prior: &Self) {
@@ -1125,6 +1190,9 @@ impl RemoteFactoryCursor {
         if self.project_ids.is_empty() {
             self.project_ids = prior.project_ids.clone();
         }
+        // owner_status is intentionally NOT backfilled from the prior cycle:
+        // a failed status fetch must surface as status_error.present=true
+        // instead of silently replaying stale owner authority.
     }
 
     fn apply_status_payload(&mut self, payload: &Value) {
@@ -1310,6 +1378,7 @@ fn read_factories(value: &Value) -> Vec<RemoteFactoryCursor> {
                 cloud_dev_label: None,
                 is_running: None,
                 project_ids: Vec::new(),
+                owner_status: None,
             })
         })
         .collect()
