@@ -1,3 +1,10 @@
+import type {
+  FactoryOwnerHealth,
+  FactoryOwnerOperatingWindow,
+  FactoryOwnerResult,
+  FactoryOwnerRuntimeProjection,
+  FactoryOwnerStatus,
+} from "../client/stackd.js"
 import { environmentAuthStatus, type StackConfig } from "../config.js"
 
 export type RemoteResearchStatus = "ready" | "missing-auth" | "offline"
@@ -165,6 +172,12 @@ export type RemoteFactorySummary = {
   hasCloudDevEnv?: boolean
   cloudDevLabel?: string
   isRunning?: boolean
+  /**
+   * Backend owner payload, present only when the factory status route was
+   * probed. Same authoritative shape as the runtime snapshot's
+   * `owner_status` (see FactoryOwnerStatus in client/stackd.ts).
+   */
+  ownerStatus?: FactoryOwnerStatus
 }
 
 export type RemoteDeploymentSummary = {
@@ -739,9 +752,15 @@ export async function publishHostedArtifactPublic(
 }
 
 async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySummary): Promise<RemoteFactorySummary> {
+  const statusPath = `/smr/factories/${encodeURIComponent(factory.factoryId)}/status`
   try {
-    const payload = asRecord(await getJson(config, `/smr/factories/${encodeURIComponent(factory.factoryId)}/status`))
-    if (!payload) return factory
+    const payload = asRecord(await getJson(config, statusPath))
+    if (!payload) {
+      return {
+        ...factory,
+        ownerStatus: factoryOwnerStatusFetchError(factory.factoryId, statusPath, "status payload was not an object"),
+      }
+    }
     const latestRuns = asArray(payload.latest_runs)
     const projects = asArray(payload.projects)
     const linkedProjects = asArray(payload.linked_projects)
@@ -780,9 +799,51 @@ async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySumm
       hasCloudDevEnv: cloudDev.hasCloudDevEnv,
       cloudDevLabel: cloudDev.label,
       isRunning,
+      ownerStatus: factoryOwnerStatusFromPayload(factory.factoryId, payload),
     }
-  } catch {
-    return factory
+  } catch (error) {
+    return {
+      ...factory,
+      ownerStatus: factoryOwnerStatusFetchError(factory.factoryId, statusPath, errorMessage(error)),
+    }
+  }
+}
+
+/**
+ * Verbatim pass-through of the backend owner payload. Sub-objects are carried
+ * exactly as the backend serialized them (wire names untouched); Stack never
+ * computes health/window/status. A field the backend omitted stays null.
+ */
+function factoryOwnerStatusFromPayload(factoryId: string, payload: Record<string, unknown>): FactoryOwnerStatus {
+  return {
+    schema: "stack.factory_owner_status.v1",
+    factory_id: factoryId,
+    observed_at: new Date().toISOString(),
+    runtime: (asRecord(payload.runtime) as FactoryOwnerRuntimeProjection | undefined) ?? null,
+    factory_health: (asRecord(payload.factory_health) as FactoryOwnerHealth | undefined) ?? null,
+    operating_window: (asRecord(payload.operating_window) as FactoryOwnerOperatingWindow | undefined) ?? null,
+    efforts_by_status: (asRecord(payload.efforts_by_status) as Readonly<Record<string, number>> | undefined) ?? null,
+    next_wake_at: readString(payload.next_wake_at) ?? null,
+    results: Array.isArray(payload.results) ? (payload.results as FactoryOwnerResult[]) : null,
+    current_best: (asRecord(payload.current_best) as FactoryOwnerResult | undefined) ?? null,
+    status_error: { present: false },
+  }
+}
+
+function factoryOwnerStatusFetchError(factoryId: string, path: string, message: string): FactoryOwnerStatus {
+  const observedAt = new Date().toISOString()
+  return {
+    schema: "stack.factory_owner_status.v1",
+    factory_id: factoryId,
+    observed_at: observedAt,
+    runtime: null,
+    factory_health: null,
+    operating_window: null,
+    efforts_by_status: null,
+    next_wake_at: null,
+    results: null,
+    current_best: null,
+    status_error: { present: true, path, message, observed_at: observedAt },
   }
 }
 

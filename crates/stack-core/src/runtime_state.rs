@@ -88,6 +88,13 @@ pub struct RemoteFactorySnapshot {
     pub cloud_dev_label: Option<String>,
     pub is_running: Option<bool>,
     pub project_ids: Vec<String>,
+    /// Verbatim backend owner payload (`stack.factory_owner_status.v1`): the
+    /// `/smr/factories/{id}/status` projection of `runtime` (incl.
+    /// `control_loop_flags`), `factory_health`, `operating_window`,
+    /// `efforts_by_status`, `results`/`current_best`, plus a typed
+    /// `status_error` presence marker. Pass-through only — never recomputed.
+    #[serde(default)]
+    pub owner_status: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -253,6 +253,157 @@ export type StackdRemoteFactorySnapshot = {
   cloud_dev_label?: string | null
   is_running?: boolean | null
   project_ids: string[]
+  owner_status?: FactoryOwnerStatus | null
+}
+
+/**
+ * Authoritative pass-through projection of the backend Factory owner payload
+ * (`/smr/factories/{id}/status`, backend `SmrFactoryStatusResponse`).
+ *
+ * Both sources — the stackd runtime snapshot (`owner_status` on
+ * `StackdRemoteFactorySnapshot`) and the direct API mapper
+ * (`RemoteFactorySummary.ownerStatus`) — produce this exact shape, so falling
+ * back between them never changes the contract. Field names mirror the backend
+ * wire exactly; Stack never recomputes health/window/status, it only carries
+ * what the backend owner asserted. A missing sub-payload is `null` (backend
+ * did not send it); a failed status fetch is `status_error.present === true`.
+ */
+/** JSON wire value carried verbatim from the backend (no `any`, no unknown). */
+export type FactoryOwnerWireValue =
+  | null
+  | boolean
+  | number
+  | string
+  | FactoryOwnerWireValue[]
+  | { [key: string]: FactoryOwnerWireValue }
+
+/** JSON wire object carried verbatim from the backend. */
+export type FactoryOwnerWireObject = { [key: string]: FactoryOwnerWireValue }
+
+export type FactoryOwnerStatus = {
+  readonly schema: "stack.factory_owner_status.v1" | string
+  readonly factory_id: string
+  readonly observed_at: string
+  readonly runtime: FactoryOwnerRuntimeProjection | null
+  readonly factory_health: FactoryOwnerHealth | null
+  readonly operating_window: FactoryOwnerOperatingWindow | null
+  readonly efforts_by_status: Record<string, number> | null
+  readonly next_wake_at: string | null
+  readonly results: FactoryOwnerResult[] | null
+  readonly current_best: FactoryOwnerResult | null
+  readonly status_error: FactoryOwnerStatusError
+}
+
+/**
+ * Explicit absence/presence marker for the owner status fetch. `present:
+ * false` means the backend answered and the owner fields above are exactly
+ * what it sent; `present: true` names the failed probe. A factory whose
+ * status route was never probed carries no FactoryOwnerStatus at all.
+ */
+export type FactoryOwnerStatusError =
+  | { readonly present: false }
+  | {
+      readonly present: true
+      readonly path: string
+      readonly message: string
+      readonly observed_at: string
+    }
+
+/** Backend `runtime` control-loop projection, verbatim wire names. */
+export type FactoryOwnerRuntimeProjection = {
+  readonly kind?: string
+  readonly owner?: string
+  readonly mode?: string
+  readonly state?: string
+  readonly enabled?: boolean
+  readonly observed_at?: string
+  readonly last_observed_at?: string | null
+  readonly last_cycle?: FactoryOwnerWireObject | null
+  readonly next_event?: FactoryOwnerWireObject | null
+  readonly schedule?: FactoryOwnerWireObject[]
+  readonly reactor?: FactoryOwnerWireObject | null
+  readonly control_loop_flags?: FactoryOwnerControlLoopFlags
+}
+
+/** Backend `factory_control_loop_flags.v1` receipt, verbatim wire names. */
+export type FactoryOwnerControlLoopFlags = {
+  readonly schema_version?: "factory_control_loop_flags.v1" | string
+  readonly service_type?: string
+  readonly environment?: string
+  readonly scheduler_enabled?: boolean
+  readonly reactor_enabled?: boolean
+  readonly flag_names?: Record<string, string>
+  readonly observed_at?: string
+}
+
+/** Backend `factory_health.v1` (`SmrFactoryHealthResponse`), verbatim. */
+export type FactoryOwnerHealth = {
+  readonly schema_version?: "factory_health.v1" | string
+  readonly evaluated_at?: string
+  readonly status?: "healthy" | "degraded" | "unknown" | string
+  readonly health_score?: number
+  readonly threshold?: number
+  readonly policy?: FactoryOwnerWireObject
+  readonly vitals?: Record<string, FactoryOwnerVital>
+  readonly triggers?: FactoryOwnerWireObject
+  readonly recommended_actions?: FactoryOwnerWireObject[]
+}
+
+/** Backend `SmrFactoryVitalResponse`, verbatim. */
+export type FactoryOwnerVital = {
+  readonly name?: string
+  readonly owner?: string | null
+  readonly action?: string | null
+  readonly status?: "in_band" | "out_of_band" | "unknown" | string
+  readonly in_band?: boolean
+  readonly band?: FactoryOwnerWireObject
+  readonly observed?: FactoryOwnerWireObject
+  readonly reason?: string | null
+}
+
+/** Backend `factory_operating_window.v1` (`SmrFactoryOperatingWindowResponse`), verbatim. */
+export type FactoryOwnerOperatingWindow = {
+  readonly schema_version?: "factory_operating_window.v1" | string
+  readonly evaluated_at?: string
+  readonly window_started_at?: string
+  readonly window_days?: number
+  readonly required_cycles?: number
+  readonly terminal_attempts?: number
+  readonly observed_cycles?: number
+  readonly rejected_cycles?: number
+  readonly remaining_cycles?: number
+  readonly status?: "collecting" | "satisfied" | string
+  readonly first_cycle_at?: string | null
+  readonly latest_cycle_at?: string | null
+  readonly cycle_run_ids?: string[]
+  readonly rejected_cycle_run_ids?: string[]
+  readonly cycle_evidence?: FactoryOwnerWireObject[]
+}
+
+/** Backend `SmrFactoryResultResponse` summary, verbatim identities. */
+export type FactoryOwnerResult = {
+  readonly result_id?: string
+  readonly factory_id?: string
+  readonly project_id?: string | null
+  readonly effort_id?: string | null
+  readonly run_id?: string | null
+  readonly kind?: string
+  readonly subtype_kind?: string | null
+  readonly title?: string
+  readonly summary?: string | null
+  readonly status?: string
+  readonly readiness?: string
+  readonly work_product_id?: string | null
+  readonly content_url?: string | null
+  readonly artifact_id?: string | null
+  readonly artifact_links?: FactoryOwnerWireObject[]
+  readonly evaluation?: FactoryOwnerWireObject | null
+  readonly selection?: FactoryOwnerWireObject | null
+  readonly compatibility?: FactoryOwnerWireObject | null
+  readonly blocker?: FactoryOwnerWireObject | null
+  readonly metadata?: FactoryOwnerWireObject
+  readonly created_at?: string
+  readonly updated_at?: string
 }
 
 export type StackdRemoteHostedOptimizerSnapshot = {
