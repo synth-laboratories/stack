@@ -1156,7 +1156,8 @@ impl RemoteFactoryCursor {
             || self.cloud_dev_label != prior.cloud_dev_label
             || self.is_running != prior.is_running
             || self.project_ids != prior.project_ids
-            || self.owner_status != prior.owner_status
+            || owner_status_change_projection(&self.owner_status)
+                != owner_status_change_projection(&prior.owner_status)
     }
 
     fn preserve_missing_enrichment(&mut self, prior: &Self) {
@@ -1239,6 +1240,41 @@ impl RemoteFactoryCursor {
                 .and_then(Value::as_bool),
             self.active_efforts,
         ));
+    }
+}
+
+fn owner_status_change_projection(owner_status: &Option<Value>) -> Option<Value> {
+    let mut projection = owner_status.clone()?;
+    strip_volatile_observation_fields(&mut projection);
+    Some(projection)
+}
+
+fn strip_volatile_observation_fields(value: &mut Value) {
+    match value {
+        Value::Object(object) => {
+            for key in [
+                "observed_at",
+                "evaluated_at",
+                "executed_at",
+                "fires_in_seconds",
+                "generated_at",
+                "last_observed_at",
+                "occurrences",
+                "receipt_id",
+                "window_started_at",
+            ] {
+                object.remove(key);
+            }
+            for child in object.values_mut() {
+                strip_volatile_observation_fields(child);
+            }
+        }
+        Value::Array(items) => {
+            for item in items {
+                strip_volatile_observation_fields(item);
+            }
+        }
+        _ => {}
     }
 }
 
