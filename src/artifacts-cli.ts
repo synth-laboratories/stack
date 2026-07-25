@@ -7,7 +7,6 @@ import {
   readArtifactStatus,
   readLatestArtifacts,
   serveArtifactSite,
-  shareArtifact,
   stopArtifactSite,
   writeArtifactPage,
 } from "./artifacts.js"
@@ -117,7 +116,7 @@ export async function runArtifactsCli(config: StackConfig, argv: string[]): Prom
       return result.ok ? 0 : 1
     }
 
-    if (action === "publish" || action === "share") {
+    if (action === "publish") {
       const slug = parsed.args[0]
       if (!slug) return usageError(`usage: stack artifacts ${action} <slug> [--project-id <id>] [--visibility org|private|public] [--json]`)
       const request = {
@@ -127,11 +126,9 @@ export async function runArtifactsCli(config: StackConfig, argv: string[]): Prom
         hostedEffortId: readFlagString(parsed, "hosted-effort-id"),
         sourceRunIds: readFlagList(parsed, "source-run-id"),
         traceId: readFlagString(parsed, "trace-id"),
-        publicSlug: readFlagString(parsed, "public"),
         confirmPublish: true,
-        confirmPublic: readFlagBoolean(parsed, "confirm-public"),
       }
-      const result = action === "share" ? await shareArtifact(config, request) : await publishArtifact(config, request)
+      const result = await publishArtifact(config, request)
       if (json) console.log(JSON.stringify(result, null, 2))
       else printPublishResult(result)
       return result.ok ? 0 : 1
@@ -220,12 +217,10 @@ function printPublishResult(result: Awaited<ReturnType<typeof publishArtifact>>)
     console.log(`failed ${result.artifact.slug}: ${result.message}`)
     for (const error of result.lint.errors) console.log(`  ${error}`)
     if (result.hosted && !result.hosted.ok) console.log(`  hosted: ${result.hosted.message}`)
-    if (result.public && !result.public.ok) console.log(`  public: ${result.public.message}`)
     return
   }
   console.log(result.message)
   if (result.artifact.hosted_url) console.log(result.artifact.hosted_url)
-  if (result.artifact.public_url) console.log(result.artifact.public_url)
   if (result.artifact.artifact_version) console.log(`version: ${result.artifact.artifact_version}`)
   if (result.receipt) console.log(result.receipt)
   if (result.evidencePath) console.log(`effort evidence: ${result.evidencePath}`)
@@ -249,5 +244,4 @@ function printArtifactsUsage(): void {
   console.error("  stack artifacts open [slug] [--json]")
   console.error("  stack artifacts lint <slug> [--json]")
   console.error("  stack artifacts publish <slug> [--project-id <id>] [--hosted-effort-id <id>] [--visibility org|private|public] [--source-run-id <id>] [--json]")
-  console.error("  stack artifacts share <slug> [--project-id <id>] [--public <slug> --confirm-public] [--json]")
 }
