@@ -12087,7 +12087,7 @@ function latestLocalArtifact(config: StackConfig): StackArtifactManifestEntry | 
 }
 
 function artifactDisplayUrl(artifact: StackArtifactManifestEntry): string {
-  return artifact.public_url ?? artifact.hosted_url ?? artifact.local_url
+  return artifact.hosted_url ?? artifact.local_url
 }
 
 async function openLatestLocalArtifact(
@@ -13266,7 +13266,7 @@ async function openSelectedRemoteHostedArtifact(
       ha = null
     }
   }
-  const url = ha?.hostedUrl ?? ha?.publicUrl
+  const url = ha?.hostedUrl
   if (!url) {
     state.remoteActionMessage = `no hosted artifact url yet for ${run.runId.slice(0, 8)} (status=${ha?.status ?? "none"})`
     refresh()

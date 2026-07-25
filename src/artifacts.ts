@@ -20,7 +20,6 @@ import type { StackConfig } from "./config.js"
 import { recordEffortArtifact } from "./effort.js"
 import {
   publishHostedArtifact,
-  publishHostedArtifactPublic,
   type PublishHostedArtifactResult,
 } from "./remote/research.js"
 import { bundledDefaultsRoot } from "./seed/defaults.js"
@@ -35,8 +34,6 @@ export type StackArtifactHostedEnvironment = {
   hosted_artifact_id?: string
   hosted_url?: string
   canonical_url?: string
-  public_url?: string
-  public_slug?: string
   cloud_visibility?: string
   artifact_version?: number
 }
@@ -57,8 +54,6 @@ export type StackArtifactManifestEntry = {
   hosted_artifact_id?: string
   hosted_url?: string
   canonical_url?: string
-  public_url?: string
-  public_slug?: string
   cloud_visibility?: string
   artifact_version?: number
   compiled_sha256?: string
@@ -144,9 +139,7 @@ export type StackArtifactPublishRequest = {
   hostedEffortId?: string
   sourceRunIds?: string[]
   traceId?: string
-  publicSlug?: string
   confirmPublish?: boolean
-  confirmPublic?: boolean
 }
 
 export type StackArtifactPublishResult = {
@@ -155,7 +148,6 @@ export type StackArtifactPublishResult = {
   message: string
   artifact: StackArtifactManifestEntry
   hosted?: PublishHostedArtifactResult
-  public?: PublishHostedArtifactResult
   lint: StackArtifactLintResult
   receipt: string | null
   evidencePath?: string
@@ -223,7 +215,9 @@ export function readArtifactManifestEntries(config: StackConfig): StackArtifactM
     const trimmed = line.trim()
     if (!trimmed) continue
     try {
-      const parsed = JSON.parse(trimmed) as Partial<StackArtifactManifestEntry>
+      const parsed = sanitizeArtifactManifestEntry(
+        JSON.parse(trimmed) as Partial<StackArtifactManifestEntry> & Record<string, unknown>,
+      )
       if (parsed.schema === "stack/artifact-page/v1" && parsed.slug && parsed.title) {
         entries.push(parsed as StackArtifactManifestEntry)
       }
@@ -232,6 +226,27 @@ export function readArtifactManifestEntries(config: StackConfig): StackArtifactM
     }
   }
   return entries
+}
+
+function sanitizeArtifactManifestEntry(
+  parsed: Partial<StackArtifactManifestEntry> & Record<string, unknown>,
+): Partial<StackArtifactManifestEntry> {
+  const active = { ...parsed }
+  delete active.public_url
+  delete active.public_slug
+  if (active.hosted_environments) {
+    active.hosted_environments = Object.fromEntries(
+      Object.entries(active.hosted_environments).map(([environment, value]) => {
+        const hosted = {
+          ...value,
+        } as StackArtifactHostedEnvironment & Record<string, unknown>
+        delete hosted.public_url
+        delete hosted.public_slug
+        return [environment, hosted]
+      }),
+    )
+  }
+  return active
 }
 
 export function readLatestArtifacts(config: StackConfig): StackArtifactManifestEntry[] {
@@ -467,8 +482,6 @@ export async function writeArtifactPage(config: StackConfig, request: StackArtif
     ...(existing?.hosted_artifact_id ? { hosted_artifact_id: existing.hosted_artifact_id } : {}),
     ...(existing?.hosted_url ? { hosted_url: existing.hosted_url } : {}),
     ...(existing?.canonical_url ? { canonical_url: existing.canonical_url } : {}),
-    ...(existing?.public_url ? { public_url: existing.public_url } : {}),
-    ...(existing?.public_slug ? { public_slug: existing.public_slug } : {}),
     ...(existing?.cloud_visibility ? { cloud_visibility: existing.cloud_visibility } : {}),
     ...(existing?.artifact_version ? { artifact_version: existing.artifact_version } : {}),
     ...(existing?.compiled_sha256 ? { compiled_sha256: existing.compiled_sha256 } : {}),
@@ -620,7 +633,7 @@ export async function publishArtifact(
     compiled_bytes: compiled.bytes,
     publish_consent: true,
   })
-  const evidence = request.publicSlug ? {} : recordArtifactEvidenceIfBound(config, updated, compiled.sha256, request)
+  const evidence = recordArtifactEvidenceIfBound(config, updated, compiled.sha256, request)
   return {
     ok: true,
     status: hosted.status,
@@ -629,59 +642,6 @@ export async function publishArtifact(
     hosted,
     lint,
     receipt: `RECEIPT PASS hosted_artifact_id=${hosted.hostedArtifactId} version=${hosted.artifactVersion ?? updated.artifact_version ?? 1} hosted_url=${hosted.hostedUrl ?? hosted.canonicalUrl}`,
-    ...(evidence.path ? { evidencePath: evidence.path } : {}),
-    ...(evidence.error ? { evidenceError: evidence.error } : {}),
-  }
-}
-
-export async function shareArtifact(
-  config: StackConfig,
-  request: StackArtifactPublishRequest,
-): Promise<StackArtifactPublishResult> {
-  const published = await publishArtifact(config, request)
-  if (!published.ok || !published.hosted?.hostedArtifactId) return published
-  if (!request.publicSlug) return published
-  if (!request.confirmPublic) {
-    return {
-      ...published,
-      ok: false,
-      status: 0,
-      message: "public share requires --confirm-public",
-      receipt: null,
-    }
-  }
-  const publicResult = await publishHostedArtifactPublic(config, published.hosted.hostedArtifactId, {
-    slug: request.publicSlug,
-    kind: published.artifact.kind,
-    effortId: request.hostedEffortId,
-  })
-  if (!publicResult.ok) {
-    return {
-      ...published,
-      ok: false,
-      status: publicResult.status,
-      message: publicResult.message,
-      public: publicResult,
-      receipt: null,
-    }
-  }
-  const updated = appendArtifactManifestPatch(config, published.artifact.slug, hostedManifestPatch(config, published.artifact, {
-    public_url: publicResult.publicUrl,
-    public_slug: publicResult.slug ?? request.publicSlug,
-    hosted_artifact_id: publicResult.hostedArtifactId ?? published.hosted.hostedArtifactId,
-    hosted_url: publicResult.hostedUrl ?? published.artifact.hosted_url,
-    canonical_url: publicResult.canonicalUrl ?? published.artifact.canonical_url,
-    artifact_version: publicResult.artifactVersion ?? published.artifact.artifact_version,
-  }))
-  const evidence = recordArtifactEvidenceIfBound(config, updated, updated.compiled_sha256, request)
-  return {
-    ...published,
-    ok: true,
-    status: publicResult.status,
-    message: "shared",
-    artifact: updated,
-    public: publicResult,
-    receipt: `RECEIPT PASS hosted_artifact_id=${updated.hosted_artifact_id} public_url=${updated.public_url}`,
     ...(evidence.path ? { evidencePath: evidence.path } : {}),
     ...(evidence.error ? { evidenceError: evidence.error } : {}),
   }
@@ -741,8 +701,6 @@ function legacyHostedEnvironment(artifact: StackArtifactManifestEntry): StackArt
     hosted_artifact_id: artifact.hosted_artifact_id,
     hosted_url: artifact.hosted_url,
     canonical_url: artifact.canonical_url,
-    public_url: artifact.public_url,
-    public_slug: artifact.public_slug,
     cloud_visibility: artifact.cloud_visibility,
     artifact_version: artifact.artifact_version,
   })
@@ -763,7 +721,6 @@ function recordArtifactEvidenceIfBound(
       title: artifact.title,
       localUrl: artifact.local_url,
       hostedUrl: artifact.hosted_url,
-      publicUrl: artifact.public_url,
       hostedArtifactId: artifact.hosted_artifact_id,
       artifactVersion: artifact.artifact_version ? String(artifact.artifact_version) : undefined,
       sha256,
@@ -774,8 +731,7 @@ function recordArtifactEvidenceIfBound(
         : undefined,
       body: [
         `Artifact Site page published from local slug ${artifact.slug}.`,
-        request.publicSlug ? `Public slug requested: ${request.publicSlug}.` : "",
-      ].filter(Boolean).join("\n"),
+      ].join("\n"),
     })
     return { path: result.path }
   } catch (error) {

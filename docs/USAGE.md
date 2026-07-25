@@ -453,7 +453,6 @@ stack artifacts lint banking77-parallel-eval
 stack artifacts list
 stack artifacts open banking77-parallel-eval
 stack artifacts publish banking77-parallel-eval --project-id <project-id> --hosted-effort-id <effort-id> --visibility org
-stack artifacts share banking77-parallel-eval --public banking77-parallel-eval --confirm-public
 stack artifacts stop
 ```
 
@@ -463,8 +462,7 @@ wraps an already-rendered body in the shared document shell. `stack artifacts
 lint` rejects missing source files, unsafe external requests, oversized pages,
 and missing source receipts when a page is expected to carry one. `stack
 artifacts publish` posts the compiled page to the selected Synth environment's
-hosted artifact route; `stack artifacts share` promotes a hosted page to a
-public URL when the backend allows public publication.
+hosted artifact route.
 
 The local Artifact Site is a temporary preview server, not durable storage. It
 auto-stops after 30 minutes by default to avoid long-lived Next/Bun processes;
