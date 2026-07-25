@@ -65,8 +65,6 @@ export type HostedArtifactStatus = {
   runId: string
   status: "building" | "ready" | "published" | "none" | "unknown"
   hostedUrl?: string
-  publicUrl?: string
-  slug?: string
   visibility?: "private" | "org" | "public"
   urlStatus?: number
   message?: string
@@ -82,13 +80,10 @@ export type HostedArtifactSummary = {
   title?: string
   hostedUrl?: string
   canonicalUrl?: string
-  publicUrl?: string
-  slug?: string
   visibility?: string
   artifactVersion?: number
   sourceRunIds: string[]
   traceId?: string
-  publishedAt?: string
 }
 
 export type PublishHostedArtifactRequest = {
@@ -110,22 +105,11 @@ export type PublishHostedArtifactResult = {
   hostedArtifactId?: string
   hostedUrl?: string
   canonicalUrl?: string
-  publicUrl?: string
-  slug?: string
   visibility?: string
   artifactVersion?: number
   sourceRunIds: string[]
   traceId?: string
   response?: unknown
-}
-
-export type PublishPublicHostedArtifactRequest = {
-  slug: string
-  kind?: string
-  theme?: string
-  summary?: string
-  factoryId?: string
-  effortId?: string
 }
 
 export type HostedArtifactsSnapshot = {
@@ -722,35 +706,6 @@ export async function publishHostedArtifact(
   return hostedArtifactPublishResult(response.status, response.payload)
 }
 
-export async function publishHostedArtifactPublic(
-  config: StackConfig,
-  hostedArtifactId: string,
-  request: PublishPublicHostedArtifactRequest,
-): Promise<PublishHostedArtifactResult> {
-  const response = await postJsonBody(
-    config,
-    `/smr/hosted-artifacts/${encodeURIComponent(hostedArtifactId)}/publish-public`,
-    {
-      slug: request.slug,
-      kind: request.kind ?? "result",
-      theme: request.theme,
-      summary: request.summary,
-      factory_id: request.factoryId,
-      effort_id: request.effortId,
-    },
-  )
-  if (!response.ok) {
-    return {
-      ok: false,
-      status: response.status,
-      message: response.message,
-      sourceRunIds: [],
-      response: response.payload,
-    }
-  }
-  return hostedArtifactPublishResult(response.status, response.payload)
-}
-
 async function readFactoryStatus(config: StackConfig, factory: RemoteFactorySummary): Promise<RemoteFactorySummary> {
   const statusPath = `/smr/factories/${encodeURIComponent(factory.factoryId)}/status`
   try {
@@ -1197,13 +1152,10 @@ function readHostedArtifactRows(value: unknown): HostedArtifactSummary[] {
         title: readString(artifact.title),
         hostedUrl: readString(artifact.hosted_url) ?? readString(artifact.hostedUrl),
         canonicalUrl: readString(artifact.canonical_url) ?? readString(artifact.canonicalUrl),
-        publicUrl: readString(artifact.public_url) ?? readString(artifact.publicUrl),
-        slug: readString(artifact.slug),
         visibility: readString(artifact.visibility),
         artifactVersion: readNumber(artifact.artifact_version),
         sourceRunIds: readStringArray(artifact.source_run_ids),
         traceId: readString(artifact.trace_id),
-        publishedAt: readString(artifact.published_at),
       }
     })
     .filter((artifact): artifact is HostedArtifactSummary => Boolean(artifact))
@@ -1214,16 +1166,14 @@ function hostedArtifactPublishResult(status: number, value: unknown): PublishHos
   const hostedArtifactId = readString(payload?.hosted_artifact_id) ?? readString(payload?.hostedArtifactId)
   const hostedUrl = readString(payload?.hosted_url) ?? readString(payload?.hostedUrl)
   const canonicalUrl = readString(payload?.canonical_url) ?? readString(payload?.canonicalUrl)
-  const publicUrl = readString(payload?.public_url) ?? readString(payload?.publicUrl)
+  const displayUrl = hostedUrl ?? canonicalUrl
   return {
-    ok: Boolean(hostedArtifactId || hostedUrl || publicUrl),
+    ok: Boolean(hostedArtifactId || hostedUrl || canonicalUrl),
     status,
-    message: hostedArtifactId || hostedUrl || publicUrl ? "ok" : "missing hosted artifact fields",
+    message: hostedArtifactId || hostedUrl || canonicalUrl ? "ok" : "missing hosted artifact fields",
     hostedArtifactId,
-    hostedUrl,
+    hostedUrl: displayUrl,
     canonicalUrl,
-    publicUrl,
-    slug: readString(payload?.slug),
     visibility: readString(payload?.visibility),
     artifactVersion: readNumber(payload?.artifact_version) ?? readNumber(payload?.artifactVersion),
     sourceRunIds: readStringArray(payload?.source_run_ids),
@@ -1282,8 +1232,6 @@ export async function readRunHostedArtifactStatus(
     else if (statusRaw.includes("none") || statusRaw.includes("absent")) status = "none"
 
     const hostedUrl = readString(payload.hosted_url) ?? readString(payload.hostedUrl)
-    const publicUrl = readString(payload.public_url) ?? readString(payload.publicUrl) ?? readString(payload.openresearch_url)
-    const slug = readString(payload.slug) ?? readString(payload.public_slug)
     const visibility = (readString(payload.visibility) as HostedArtifactStatus["visibility"]) || undefined
     const urlStatus = readNumber(payload.url_status) ?? readNumber(payload.http_status) ?? (hostedUrl ? 200 : undefined)
 
@@ -1291,8 +1239,6 @@ export async function readRunHostedArtifactStatus(
       runId,
       status,
       hostedUrl,
-      publicUrl,
-      slug,
       visibility,
       urlStatus,
       message: readString(payload.message) ?? (hostedUrl ? undefined : "hosted url not present"),

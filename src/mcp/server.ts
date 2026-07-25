@@ -101,7 +101,6 @@ import {
   publishArtifact as publishStackArtifact,
   readArtifactStatus as readStackArtifactStatus,
   readLatestArtifacts as readLatestStackArtifacts,
-  shareArtifact as shareStackArtifact,
   writeArtifactPage as writeStackArtifactPage,
 } from "../artifacts.js"
 import {
@@ -2373,8 +2372,6 @@ export class StackMcpServer {
             ? {
                 status: ha.status,
                 hosted_url: ha.hostedUrl ?? null,
-                public_url: ha.publicUrl ?? null,
-                slug: ha.slug ?? null,
                 visibility: ha.visibility ?? null,
                 url_status: ha.urlStatus ?? null,
               }
@@ -2414,8 +2411,6 @@ export class StackMcpServer {
         ? {
             status: hostedArtifact.status,
             hosted_url: hostedArtifact.hostedUrl ?? null,
-            public_url: hostedArtifact.publicUrl ?? null,
-            slug: hostedArtifact.slug ?? null,
             visibility: hostedArtifact.visibility ?? null,
             url_status: hostedArtifact.urlStatus ?? null,
             message: hostedArtifact.message ?? null,
@@ -3158,18 +3153,14 @@ export class StackMcpServer {
     const config = await this.config(args)
     const runId = requiredString(args, "run_id")
     const status = await readRunHostedArtifactStatus(config, runId)
-    const prefer = optionalString(args, "prefer") ?? "hosted"
-    const targetUrl = prefer === "public_shell" && status.publicUrl ? status.publicUrl : status.hostedUrl ?? status.publicUrl
     return {
       run_id: status.runId,
       status: status.status,
       hosted_url: status.hostedUrl ?? null,
-      public_url: status.publicUrl ?? null,
-      slug: status.slug ?? null,
       visibility: status.visibility ?? null,
       url_status: status.urlStatus ?? null,
       message: status.message ?? null,
-      target_url: targetUrl ?? null,
+      target_url: status.hostedUrl ?? null,
     }
   }
 
@@ -3327,15 +3318,14 @@ export class StackMcpServer {
   async openHostedArtifact(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const runId = requiredString(args, "run_id")
-    const prefer = (optionalString(args, "prefer") ?? "hosted") as "hosted" | "public_shell"
     const status = await readRunHostedArtifactStatus(config, runId)
-    const url = prefer === "public_shell" && status.publicUrl ? status.publicUrl : status.hostedUrl ?? status.publicUrl
+    const url = status.hostedUrl
     if (!url) {
       return {
         ok: false,
         run_id: runId,
         status: status.status,
-        message: status.message || "no hosted or public url for run",
+        message: status.message || "no hosted url for run",
       }
     }
     const headStatus = await headUrlStatus(url)
@@ -3345,7 +3335,6 @@ export class StackMcpServer {
         run_id: runId,
         opened_url: null,
         target_url: url,
-        prefer,
         status: status.status,
         visibility: status.visibility ?? null,
         head_status: headStatus ?? null,
@@ -3358,7 +3347,6 @@ export class StackMcpServer {
       ok: openRes.ok,
       run_id: runId,
       opened_url: url,
-      prefer,
       status: status.status,
       visibility: status.visibility ?? null,
       head_status: headStatus,
@@ -3472,22 +3460,6 @@ export class StackMcpServer {
     return toJsonValue(result) ?? null
   }
 
-  async shareArtifact(args: JsonObject): Promise<JsonValue> {
-    const config = await this.config(args)
-    const result = await shareStackArtifact(config, {
-      slug: requiredString(args, "slug"),
-      visibility: optionalArtifactVisibility(args, "visibility"),
-      projectId: optionalString(args, "project_id"),
-      hostedEffortId: optionalString(args, "hosted_effort_id"),
-      sourceRunIds: optionalStringArray(args, "source_run_ids"),
-      traceId: optionalString(args, "trace_id"),
-      publicSlug: optionalString(args, "public_slug"),
-      confirmPublish: optionalBoolean(args, "confirm_publish") ?? false,
-      confirmPublic: optionalBoolean(args, "confirm_public") ?? false,
-    })
-    return toJsonValue(result) ?? null
-  }
-
   async recordEffortArtifact(args: JsonObject): Promise<JsonValue> {
     const config = await this.config(args)
     const effortRef = requiredString(args, "effort_ref")
@@ -3502,7 +3474,6 @@ export class StackMcpServer {
       title: artifact.title,
       localUrl: artifact.local_url,
       hostedUrl: artifact.hosted_url,
-      publicUrl: artifact.public_url,
       hostedArtifactId: artifact.hosted_artifact_id,
       artifactVersion: artifact.artifact_version ? String(artifact.artifact_version) : undefined,
       sha256: artifact.compiled_sha256 ?? artifact.sha256,
@@ -3516,7 +3487,6 @@ export class StackMcpServer {
       slug: result.slug,
       local_url: result.localUrl ?? null,
       hosted_url: result.hostedUrl ?? null,
-      public_url: result.publicUrl ?? null,
       hosted_artifact_id: result.hostedArtifactId ?? null,
       artifact_version: result.artifactVersion ?? null,
       sha256: result.sha256 ?? null,
@@ -4899,13 +4869,10 @@ function hostedArtifactToMcp(artifact: HostedArtifactSummary): JsonObject {
     title: artifact.title ?? null,
     hosted_url: artifact.hostedUrl ?? null,
     canonical_url: artifact.canonicalUrl ?? null,
-    public_url: artifact.publicUrl ?? null,
-    slug: artifact.slug ?? null,
     visibility: artifact.visibility ?? null,
     artifact_version: artifact.artifactVersion ?? null,
     source_run_ids: artifact.sourceRunIds,
     trace_id: artifact.traceId ?? null,
-    published_at: artifact.publishedAt ?? null,
   }) as JsonObject
 }
 
@@ -6062,17 +6029,16 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_get_run_artifact_status", // FRESH mcp/server.ts edit this turn for delta
-      description: "Return hosted artifact status + urls for a given SMR run (used for artifact_builder runs). Includes hosted_url, public_url, status (building|ready|published), and whether the hosted URL returned 200.",
+      description: "Return hosted artifact status for a given SMR run (used for artifact_builder runs). Includes hosted_url, status (building|ready|published), and whether the hosted URL returned 200.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         run_id: { type: "string", description: "SMR run_id to query for hosted artifact" },
-        prefer: { type: "string", enum: ["hosted", "public_shell"], description: "Which URL family to prefer for open actions" },
       }),
       handler: (args) => server.getRunArtifactStatus(args),
     },
     {
       name: "stack_list_hosted_artifacts",
-      description: "Discover hosted Synth artifacts visible to the current org, optionally scoped to a project. Rows include hosted_url, public_url, run_id, work_product_id, status, visibility, and slug.",
+      description: "Discover hosted Synth artifacts visible to the current org, optionally scoped to a project. Rows include hosted_url, run_id, work_product_id, status, and visibility.",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         project_id: stringProperty("Optional project id for project-scoped hosted artifacts."),
@@ -6148,11 +6114,10 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
     },
     {
       name: "stack_open_hosted_artifact",
-      description: "Launch the system browser to the hosted artifact (or public shell) for a run. Returns receipt string on success. Does not embed; uses external browser (same split as Codex browser vs Sites).",
+      description: "Launch the system browser to the hosted artifact for a run. Returns receipt string on success. Does not embed; uses external browser (same split as Codex browser vs Sites).",
       inputSchema: objectSchema({
         environment: environmentProperty(),
         run_id: { type: "string", description: "SMR run_id owning the artifact" },
-        prefer: { type: "string", enum: ["hosted", "public_shell"], description: "hosted (default) or public_shell for usesynth.ai/openresearch/..." },
       }),
       handler: (args) => server.openHostedArtifact(args),
     },
@@ -6224,26 +6189,6 @@ function buildTools(server: StackMcpServer): ToolDefinition[] {
         ["slug"],
       ),
       handler: (args) => server.publishArtifact(args),
-    },
-    {
-      name: "stack_artifact_share",
-      description: "Publish a local Artifact Site page if needed, then optionally promote it to a public Open Research artifact when public_slug and confirm_public=true are supplied.",
-      inputSchema: objectSchema(
-        {
-          environment: environmentProperty(),
-          slug: stringProperty("Artifact slug to share."),
-          visibility: enumProperty(["private", "org", "public"], "Hosted artifact visibility for the publish step. Defaults to org."),
-          project_id: stringProperty("Synth project id for first publish. Republish can use the manifest hosted_artifact_id."),
-          hosted_effort_id: stringProperty("Optional Synth hosted Effort id. Distinct from local Stack effort slug."),
-          source_run_ids: arrayProperty("Optional source SMR run ids to carry into lineage."),
-          trace_id: stringProperty("Optional trace id."),
-          confirm_publish: { type: "boolean", description: "Must be true for the first hosted publish of this artifact. Republish is allowed after consent is recorded in the manifest." },
-          public_slug: stringProperty("Optional public Open Research slug. Omit to publish org/private only."),
-          confirm_public: { type: "boolean", description: "Must be true to create or reuse a public Open Research slug." },
-        },
-        ["slug"],
-      ),
-      handler: (args) => server.shareArtifact(args),
     },
     {
       name: "stack_list_factories",
