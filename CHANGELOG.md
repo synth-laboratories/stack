@@ -17,6 +17,15 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+## [0.2.0-dev.20260725.1] - 2026-07-25
+
+Open Research retirement release.
+
+### Removed
+
+- Removed the retired Open Research share, launch, and product-specific command
+  surface. Supported Research, Factory, and benchmark workflows are unchanged.
+
 ## [0.2.0-dev.20260709.1] - 2026-07-09
 
 Unified Synth economics visibility dev release.
