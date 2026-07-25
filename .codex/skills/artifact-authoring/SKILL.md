@@ -28,7 +28,7 @@ Create a local artifact page first. Publish or share only after the operator exp
 - Treat `smr_experiment_bundle.v1` as backend/Factory authority. Do not invent a second Stack schema or reconstruct missing evidence from workspace files.
 - Preserve the exact candidate prompt or prompt artifact, model, config digest, container digest, run ids, trace index, economics, decision, provenance, and artifact index in the rendered page.
 - A terminal bundle fails integrity checks when evaluation or required receipts are missing. Do not reconstruct terminal evidence from prose or an older artifact page.
-- Rendering is local and safe by default. Hosted publish and public promotion remain separate operator-confirmed actions through `stack artifacts publish` and `stack artifacts share`.
+- Rendering is local and safe by default. Hosted publish is an operator-confirmed action through `stack artifacts publish`.
 - Update the same experiment artifact with `stack experiment render <bundle.json> --update`; do not mint a new identity for each refresh.
 
 ## References

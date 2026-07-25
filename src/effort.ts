@@ -574,7 +574,6 @@ export type RecordEffortArtifactInput = EffortLookupInput & {
   title: string
   localUrl?: string
   hostedUrl?: string
-  publicUrl?: string
   hostedArtifactId?: string
   artifactVersion?: string
   sha256?: string
@@ -589,7 +588,6 @@ export type RecordEffortArtifactResult = RecordEffortFindingResult & {
   title: string
   localUrl?: string
   hostedUrl?: string
-  publicUrl?: string
   hostedArtifactId?: string
   artifactVersion?: string
   sha256?: string
@@ -2494,7 +2492,6 @@ export function recordEffortArtifact(input: RecordEffortArtifactInput): RecordEf
       title,
       local_url: input.localUrl,
       hosted_url: input.hostedUrl,
-      public_url: input.publicUrl,
       hosted_artifact_id: input.hostedArtifactId,
       artifact_version: input.artifactVersion,
       sha256: input.sha256,
@@ -2515,7 +2512,6 @@ export function recordEffortArtifact(input: RecordEffortArtifactInput): RecordEf
     title,
     ...(result.fields.local_url ? { localUrl: result.fields.local_url } : {}),
     ...(result.fields.hosted_url ? { hostedUrl: result.fields.hosted_url } : {}),
-    ...(result.fields.public_url ? { publicUrl: result.fields.public_url } : {}),
     ...(result.fields.hosted_artifact_id ? { hostedArtifactId: result.fields.hosted_artifact_id } : {}),
     ...(result.fields.artifact_version ? { artifactVersion: result.fields.artifact_version } : {}),
     ...(result.fields.sha256 ? { sha256: result.fields.sha256 } : {}),

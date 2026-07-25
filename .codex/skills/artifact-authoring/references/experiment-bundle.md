@@ -42,4 +42,4 @@ Refresh the same Artifact identity:
 stack experiment render artifacts/experiment_bundle.json --update
 ```
 
-Rendering is local. Hosted publish and public promotion remain separate, operator-confirmed actions through `stack artifacts publish` and `stack artifacts share`.
+Rendering is local. Hosted publish is an operator-confirmed action through `stack artifacts publish`.
