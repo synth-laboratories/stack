@@ -17,6 +17,24 @@ push. Pair with `docs/USAGE.md` updates and Jstack release notes; see
 
 ## [Unreleased]
 
+### Fixed
+
+- **EffortBench app-server worker sandbox override.** Stack now sends the
+  app-server `thread/start` sandbox as `sandbox: "danger-full-access"` when
+  `STACK_CODEX_THREAD_SANDBOX=danger-full-access` is configured, while keeping
+  workspace-write roots under `config.sandbox_workspace_write`. This fixes
+  EffortBench workers that had Josh-approved open sandbox posture but still
+  could not access Docker/OrbStack because the previous override used the
+  `turn/start` `sandboxPolicy` shape.
+
+### Dogfood Evidence
+
+- EffortBench gold campaign packets from the patched install accepted
+  `banking77-agent-eval` (`0.86` heldout accuracy) and
+  `craftax-react-llm-policy` (`1.596875` heldout mean reward, zero budget
+  violations). `craftax-agent-hillclimb` remains an honest incomplete packet
+  and is not a gold claim.
+
 ## [0.2.0-dev.20260706.1] - 2026-07-06
 
 Efforts serious-work cockpit dev release.
