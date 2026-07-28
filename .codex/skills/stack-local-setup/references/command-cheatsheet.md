@@ -5,7 +5,7 @@ Paths assume `~/Documents/GitHub/{stack,synth-dev,synth-ai}`. Adjust if your che
 ## Stack
 
 ```bash
-make -C ~/Documents/GitHub/stack install   # stack, stack-mcp, Codex skills
+make -C ~/Documents/GitHub/stack install   # Stack product binaries
 stack                                       # launch TUI
 cd ~/Documents/GitHub/stack && bun run check
 ```
@@ -95,24 +95,4 @@ export STACK_README_SMOKE_INSTANCE=slot1
 ```bash
 tail -f ~/Documents/GitHub/stack/.stack/bootstrap/dev-slot.log
 tail -f ~/Documents/GitHub/stack/.stack/optimizers/gepa-service.log
-```
-
-## Codex skills install (manual)
-
-Stack symlinks on `make install` and every launch. Manual repair:
-
-```bash
-mkdir -p ~/.codex/skills
-for skill in stack-local-setup synth-via-stack stack-agent-bridge; do
-  ln -sf ~/Documents/GitHub/stack/.codex/skills/"$skill" ~/.codex/skills/"$skill"
-done
-```
-
-## Claude Code skills install (manual)
-
-```bash
-mkdir -p ~/.claude/skills
-for skill in stack-local-setup synth-via-stack stack-agent-bridge; do
-  ln -sf ~/Documents/GitHub/stack/.codex/skills/"$skill" ~/.claude/skills/"$skill"
-done
 ```

@@ -1,19 +1,13 @@
 ---
 name: oss-gepa
 title: OSS GEPA (research engineering)
-description: Use when running local prompt optimization with synth-optimizers — install the CLI, start the GEPA service, wire eval containers, and read the full gepa skill from the optimizers repo. Stack is built for research engineering first; this is the default optimizer path in Local Research.
+description: Use when running local prompt optimization with synth-optimizers — install the CLI, start the GEPA service, wire eval containers, and read the full gepa skill from the optimizers repo.
 owner: stack
 allowed_actors: both
 ---
 
-# OSS GEPA on Stack
+# OSS GEPA
 
-Stack is a **research engineering cockpit** first: eval containers, local GEPA,
-StackEval receipts, and optimizer artifacts. General software engineering works
-too, but the default skills and Local Research panel optimize for **prompt/search
-loops with inspectable evidence**.
-
-Load **`synth-via-stack`** for the full local → hosted optimizer mental model.
 Load **`gepa`** (from the optimizers repo) for TOML profiles, proposer workspaces,
 and cookbook containers.
 
@@ -70,19 +64,10 @@ Override detection: `export STACK_SYNTH_OPTIMIZERS_ROOT=/path/to/optimizers`
 1. **Container contract** — `GET /health`, `GET /info`, `POST /rollout` (synth-ai YAML).
 2. **Single rollout smoke** — prove scorer wiring before a search job.
 3. **Local GEPA job** — Local Research panel or `synth-optimizers` CLI; pick smoke vs
-   dev vs gate profile by the claim you need (see `synth-via-stack`).
+   dev vs gate profile by the claim you need (see the `gepa` skill).
 4. **StackEval receipt** — `bun run stackeval:run` when
    validating the Stack + optimizer path end-to-end.
 5. **Hosted optimizers** — same container config after local proof.
-
-## Stack MCP / skills tools
-
-- `stack_skills_list` — includes `oss-gepa`, bundled Stack skills, and bridged `gepa`
-  when the optimizers checkout is present
-- `stack_skills_read` — load skill body before proposing optimizer commands
-- `stack_skills_search` — query by `gepa`, `optimizers`, `stackeval`
-
-Monitor may push skill context when GEPA/StackEval work is detected without a skill read.
 
 ## Guardrails
 

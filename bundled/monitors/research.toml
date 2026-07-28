@@ -17,7 +17,7 @@ max_wakes_per_primary_turn = 8
 
 [skills]
 enabled = true
-allowed_skill_ids = ["synth-stack-productivity", "synth-via-stack", "stack-agent-bridge", "synth-ai", "hosted-gepa", "oss-gepa", "containers", "containers-coding", "gepa"]
+allowed_skill_ids = ["synth-ai", "hosted-gepa", "oss-gepa", "containers", "containers-coding", "gepa"]
 push_when_confident = true
 
 [tools]

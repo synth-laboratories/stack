@@ -1,7 +1,7 @@
 ---
 name: containers-coding
 title: Synth coding containers
-description: Use when operating or building coding-agent Synth containers, especially harbor_code pools, code rollouts, trace inspection, artifacts.zip retrieval, and patch/result readback through Stack and Synth hosted routes.
+description: Use when operating or building coding-agent Synth containers, especially harbor_code pools, code rollouts, trace inspection, artifacts.zip retrieval, and patch/result readback through Synth hosted routes.
 owner: stack
 allowed_actors: both
 ---
@@ -52,11 +52,9 @@ not the live API route.
 6. Download `/artifacts.zip`.
 7. Extract the patch, report, logs, and verifier result from artifacts.
 
-When using Stack MCP, prefer Stack-hosted artifact and WorkProduct tools for SMR
-outputs. For container pool discovery, health, and synchronous rollout smoke, use
-`stack_list_container_pools`, `stack_container_health`, and `stack_container_rollout`;
-use Synth API pool/rollout routes for deeper container-native artifacts that are
-not wrapped yet.
+Use the public synth-ai SDK/CLI for pool discovery, health, rollout, and artifact
+operations when those typed methods exist. Otherwise use the owning Synth API route;
+do not infer an unavailable bridge.
 
 ## Evidence Expectations
 

@@ -1,19 +1,18 @@
 ---
 name: synth-ai
 title: synth-ai SDK and CLI
-description: Use when working with Synth containers, rollouts, pools, and API access through the synth-ai Python SDK/CLI — install, auth, list/create containers, rollout smoke, and SDK patterns. Stack routes hosted ops through MCP when available; synth-ai is the typed client boundary.
+description: Use when working with Synth containers, rollouts, pools, and API access through the synth-ai Python SDK/CLI — install, auth, list/create containers, rollout smoke, and SDK patterns. synth-ai is the typed client boundary.
 owner: stack
 allowed_actors: both
 ---
 
-# synth-ai on Stack
+# synth-ai SDK and CLI
 
 **synth-ai** is the typed SDK/CLI for Synth API access — containers, rollouts, artifacts,
-usage, and research helpers. Stack surfaces it through Local Research, environment auth,
-and Stack MCP for live ops.
+usage, and research helpers.
 
 Load **`oss-gepa`** for local optimizer service. Load **`hosted-gepa`** when graduating
-to hosted optimizers. Load **`stack-agent-bridge`** for TUI/MCP live operations.
+to hosted optimizers.
 
 ## Install
 
@@ -23,7 +22,7 @@ pip install synth-ai
 pip install "synth-ai[research]"
 ```
 
-Stack dev bootstrap also expects `synth-optimizers` for local GEPA (`pip install synth-optimizers synth-ai`).
+Local GEPA workflows also use `synth-optimizers` (`pip install synth-optimizers synth-ai`).
 
 ## Auth
 
@@ -63,14 +62,11 @@ print(client.containers.list())
 
 Do **not** reimplement container HTTP with raw `curl` when the SDK exposes the operation.
 
-## Stack integration
+## Ownership
 
-| Need | Prefer |
-| --- | --- |
-| List/read skills | stackd `GET /skills` (registry is server-owned) |
-| Live SMR / Factory / hosted optimizers | Stack MCP (`stack-agent-bridge`) |
-| Local GEPA service | Local Research panel + `oss-gepa` |
-| Container rollout smoke | synth-dev slot + SDK or CLI |
+Use the public synth-ai SDK/CLI for supported operations. For a surface that is not
+implemented by synth-ai, use the owning repository's documented typed workflow or fail
+loudly; do not infer an unavailable bridge or scrape backend persistence.
 
 ## Managed Research
 

@@ -8,9 +8,8 @@ description: Use when a Stack user needs install, serve, prep, or Docker command
 Copy-paste commands for **Codex** and **Claude Code** operators. Stack is built for
 **research engineering** (eval containers, OSS GEPA, StackEval) first.
 
-Also load **`synth-stack-productivity`** (OSS + hosted map), **`oss-gepa`** (local GEPA),
-**`synth-via-stack`** (optimizer/container mental model), and **`stack-agent-bridge`**
-(usesynth.ai MCP ops). When `../optimizers` exists, load **`gepa`** for full TOML detail.
+Load **`oss-gepa`** only when local GEPA work is requested. When `../optimizers` exists,
+load **`gepa`** for full TOML detail.
 
 ## One-shot install
 
@@ -31,15 +30,6 @@ git clone https://github.com/synth-laboratories/optimizers.git ../optimizers
 # Auth — create key at https://usesynth.ai/keys (never print the value)
 export SYNTH_API_KEY="..."
 # Or set environments.*.authEnvFile in stack.config.json
-```
-
-Claude Code skills (optional):
-
-```bash
-mkdir -p ~/.claude/skills
-for skill in synth-stack-productivity stack-local-setup oss-gepa synth-via-stack stack-agent-bridge; do
-  ln -sf "$(pwd)/.codex/skills/$skill" ~/.claude/skills/"$skill"
-done
 ```
 
 ## Local GEPA optimizer service
@@ -83,15 +73,14 @@ Overrides: `STACK_WORKING_DIR`, `STACK_ENVIRONMENT`, `STACK_OPTIMIZER_*`,
 
 ## Agent checklist (first session)
 
-1. Load this skill + `synth-via-stack` + `stack-agent-bridge`.
-2. Confirm `SYNTH_API_KEY` present (do not echo the key).
-3. If local GEPA offline → `pip install synth-optimizers` or **Enter** on Local panel.
-4. `stack_status` with `mode: "all"` — report which surfaces are ready vs missing.
+1. Confirm `SYNTH_API_KEY` present when the requested workflow needs hosted auth; do not echo it.
+2. If local GEPA is requested and offline, install `synth-optimizers` or use the Local panel.
+3. Use only tools and services that are actually available in the current session.
 
 Full command reference: `references/command-cheatsheet.md` in this skill directory.
 
 ## Guardrails
 
 - Never print raw API keys.
-- Do not scrape Postgres/Redis; use Stack MCP and owner API routes.
+- Do not scrape Postgres/Redis; use the owning typed SDK, CLI, or API route.
 - Stack treats `~/.codex` as read-only (never read `auth.json` into Stack artifacts).

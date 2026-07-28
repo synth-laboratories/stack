@@ -49,7 +49,7 @@ skill_context_push = "queue_or_steer"
 
 [skills]
 enabled = true
-allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "gepa", "stack-agent-bridge", "synth-via-stack"]
+allowed_skill_ids = ["oss-gepa", "hosted-gepa", "synth-ai", "gepa"]
 push_when_confident = false
 
 [tools]

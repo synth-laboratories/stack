@@ -263,7 +263,7 @@ const DEFAULT_MONITOR_CONFIG: StackMonitorConfig = {
   },
   skills: {
     enabled: true,
-    allowedSkillIds: ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "containers", "containers-coding", "gepa", "stack-agent-bridge", "synth-via-stack"],
+    allowedSkillIds: ["oss-gepa", "hosted-gepa", "synth-ai", "containers", "containers-coding", "gepa"],
     pushWhenConfident: false,
   },
   tools: {
@@ -3156,9 +3156,6 @@ function recommendedSkillForMonitorPush(
     ...events.map((event) => JSON.stringify(event.payload)),
   ].join("\n").toLowerCase()
   const allowed = config.skills.allowedSkillIds
-  if (allowed.includes("synth-stack-productivity") && (text.includes("usesynth") || text.includes("hosted") || text.includes("smr") || text.includes("factory"))) {
-    return "synth-stack-productivity"
-  }
   if ((text.includes("hosted optimizer") || text.includes("hosted gepa") || text.includes("usesynth")) && allowed.includes("hosted-gepa")) {
     return "hosted-gepa"
   }
@@ -3171,11 +3168,7 @@ function recommendedSkillForMonitorPush(
   if (text.includes("gepa") && allowed.includes("gepa")) {
     return "gepa"
   }
-  if (text.includes("synth") && allowed.includes("synth-via-stack")) {
-    return "synth-via-stack"
-  }
-  if (allowed.includes("stack-agent-bridge")) return "stack-agent-bridge"
-  return allowed[0]
+  return undefined
 }
 
 function hasPushedSkill(events: StackThreadMetaEvent[], skillId: string): boolean {
@@ -3604,7 +3597,7 @@ function defaultMonitorToml(): string {
     "",
     "[skills]",
     "enabled = true",
-    'allowed_skill_ids = ["synth-stack-productivity", "oss-gepa", "hosted-gepa", "synth-ai", "containers", "containers-coding", "gepa", "stack-agent-bridge", "synth-via-stack"]',
+    'allowed_skill_ids = ["oss-gepa", "hosted-gepa", "synth-ai", "containers", "containers-coding", "gepa"]',
     "push_when_confident = false",
     "",
     "[tools]",

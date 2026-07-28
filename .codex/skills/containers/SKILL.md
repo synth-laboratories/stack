@@ -68,13 +68,8 @@ For hosted Synth access, use the live backend routes:
 Do not build against `/v1/containers`; that SDK prefix is not the live backend
 router. Document the naming mismatch if it appears in user-facing context.
 
-Stack MCP wrappers for the common read paths:
-
-- `stack_list_container_pools`
-- `stack_container_health`
-- `stack_container_rollout`
-
-Use the wrappers first from Stack agents; drop to raw HTTP only when a route is not wrapped.
+Use the public synth-ai SDK/CLI when it exposes these routes. Otherwise use the owning
+typed backend route directly; do not infer an unavailable bridge.
 
 ## Task Info
 
