@@ -93,7 +93,7 @@ const items: PacketItem[] = [
       ? "Rerun docs alignment smoke on the selected candidate and before announcement copy changes."
       : exists("scripts/smoke_launch_docs_alignment.ts")
       ? "Run docs alignment smoke and cite the proof before announcement copy changes."
-      : "Verify Mintlify Stack overview/changelog agree with repo docs before public announcement."),
+      : "Verify Blume Stack overview/changelog agree with repo docs before public announcement."),
   item("marketing", "growth", exists("../growth/src/marketing/blogs/planned/stack-handoffs/README.md") ? "partial" : "missing",
     "../growth/src/marketing/blogs/planned/stack-handoffs/README.md",
     "Keep blog draft private until proof packet and launch checklist are green."),

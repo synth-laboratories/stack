@@ -25,7 +25,7 @@ users who expect the documented install, update, and support story to hold.
 | Version source | `X.Y.Z-dev.YYYYMMDD.N` from `version.json`. | Semver `X.Y.Z` tag and release notes. |
 | Distribution | First-party installer with `--channel nightly` when published; source clone for contributors. | First-party installer backed by GitHub Release assets and checksums. |
 | Required checks | `quality:static`; `quality:dev` before sharing broadly; focused `cargo check` when Rust changed. | `quality:release`; StackEval smoke when claims cite eval behavior; install proof; docs proof. |
-| Docs bar | README/release notes mention user-visible changes and known sharp edges. | README, Mintlify, CHANGELOG, and GitHub Release agree on install channel and support posture. |
+| Docs bar | README/release notes mention user-visible changes and known sharp edges. | README, Blume, CHANGELOG, and GitHub Release agree on install channel and support posture. |
 | Update behavior | Update Center may offer "latest dev" with dirty-check warnings. | Update Center offers stable updates by default and shows release notes / restart needs. |
 | Telemetry/readout | Count separately as `dev` channel; useful for dogfood learning. | Count separately as `stable` channel; used for launch/readout decisions. |
 | Rollback | Reinstall previous commit or previous dev version. | Reinstall previous stable release asset; migration notes must say whether rollback is safe. |
@@ -204,7 +204,7 @@ stack --version
 - [ ] **`CHANGELOG.md`** — move bullets into dated `## [0.x.y-dev.YYYYMMDD.N] - YYYY-MM-DD` matching `version.json` (never ship with only `[Unreleased]`)
 - [ ] **`docs/USAGE.md`** — update operator-visible behavior, keys, and commands; add a **`Changed`** bullet in CHANGELOG pointing here when relevant
 - [ ] **Jstack** `daily_notes/YYYY-MM-DD/stack_release_notes_<version>.md` — external release copy + internal caveats for ship packet
-- [ ] **Blog / Mintlify** — publish or record **WAIVED** in `release_ship_*.md` (not a silent skip)
+- [ ] **Blog / Blume** — publish or record **WAIVED** in `release_ship_*.md` (not a silent skip)
 - [ ] `make quality-static`
 - [ ] `make launch-readiness`
 - [ ] `make launch-nightly1`
@@ -248,4 +248,4 @@ stack --version
 - [ ] git tag `vX.Y.Z` + GitHub Release
 - [ ] installer points to signed/checksummed `vX.Y.Z` asset
 - [ ] clean install/update proof for the advertised channel
-- [ ] README, Mintlify, CHANGELOG, and GitHub Release agree
+- [ ] README, Blume, CHANGELOG, and GitHub Release agree

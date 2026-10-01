@@ -151,14 +151,14 @@ const gates: Gate[] = [
       : "Wire staging then prod download/signup/use flows with privacy-safe telemetry samples."),
   gate("S8_DOCS_CHANGELOG", "AT-STACK-DOCS-CHANGELOG-001", "stack+docs", docsAlignmentStatus(),
     docsAlignmentStatus() === "pass"
-      ? "Public README, changelog, release docs, Mintlify docs, and marketing draft alignment smoke are wired."
+      ? "Public README, changelog, release docs, Blume docs, and marketing draft alignment smoke are wired."
       : "Public README, changelog, release, and quality docs exist.",
     docsAlignmentStatus() === "pass"
       ? "README.md, CHANGELOG.md, docs/*.md, smoke:launch-docs-alignment"
       : "README.md, CHANGELOG.md, docs/RELEASE.md, docs/QUALITY.md, docs/DISTRIBUTION.md, docs/TELEMETRY.md, SECURITY.md",
     docsAlignmentStatus() === "pass"
       ? "Rerun make smoke-launch-docs-alignment on the selected candidate and before any announcement copy changes."
-      : "Before launch, verify README, Mintlify, GitHub Release, and changelog agree."),
+      : "Before launch, verify README, Blume, GitHub Release, and changelog agree."),
   gate("S9_SHIP_READOUT", "AT-STACK-SHIP-READOUT-001", "Jstack+synth-dev", "not_started",
     "Readout happens after a concrete nightly/stable candidate is exercised.",
     "Jstack ship record",

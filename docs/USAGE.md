@@ -3,7 +3,7 @@
 > **Public docs:** [docs.usesynth.ai/stack](https://docs.usesynth.ai/stack/overview) —
 > Quickstart, goal mode, cockpit, stackd, MCP, configuration.
 > This file is the **engineer/operator deep reference** in the repo (includes smoke
-> commands and internal paths). Keep user-facing Mintlify pages in sync when behavior
+> commands and internal paths). Keep user-facing Blume pages in sync when behavior
 > changes.
 
 > Controls, the stackd local API, the monitor, workspace config, and Stack MCP.
